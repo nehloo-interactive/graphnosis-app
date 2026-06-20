@@ -1436,6 +1436,234 @@ async fn configure_mcp_client(
     })
 }
 
+/// Result of configuring Hermes Agent (`~/.hermes/config.yaml`).
+#[derive(serde::Serialize)]
+pub struct HermesConfigResult {
+    client_name: String,
+    restart_hint: String,
+    config_path: String,
+    socket_path: String,
+    graphnosis_json_path: String,
+    already_configured: bool,
+    created_file: bool,
+    /// Previous `memory.provider` value, if any (for UI messaging).
+    previous_memory_provider: Option<String>,
+}
+
+fn hermes_config_path() -> Option<PathBuf> {
+    Some(dirs::home_dir()?.join(".hermes").join("config.yaml"))
+}
+
+fn hermes_graphnosis_json_path() -> Option<PathBuf> {
+    Some(dirs::home_dir()?.join(".hermes").join("graphnosis.json"))
+}
+
+fn yaml_mapping_get_str(map: &serde_yaml::Mapping, key: &str) -> Option<String> {
+    map.get(serde_yaml::Value::String(key.into()))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn build_hermes_graphnosis_mcp_entry(socket_path: &str) -> serde_yaml::Value {
+    let mut tools_include = serde_yaml::Sequence::new();
+    for name in [
+        "recall",
+        "remind",
+        "remember",
+        "edit",
+        "forget",
+        "stats",
+        "cross_search",
+        "confirm_data_access",
+    ] {
+        tools_include.push(serde_yaml::Value::String(name.into()));
+    }
+    let mut tools = serde_yaml::Mapping::new();
+    tools.insert(
+        serde_yaml::Value::String("include".into()),
+        serde_yaml::Value::Sequence(tools_include),
+    );
+
+    let mut args = serde_yaml::Sequence::new();
+    args.push(serde_yaml::Value::String("-y".into()));
+    args.push(serde_yaml::Value::String("@graphnosis/mcp-relay".into()));
+    args.push(serde_yaml::Value::String(socket_path.into()));
+
+    let mut entry = serde_yaml::Mapping::new();
+    entry.insert(
+        serde_yaml::Value::String("command".into()),
+        serde_yaml::Value::String("npx".into()),
+    );
+    entry.insert(
+        serde_yaml::Value::String("args".into()),
+        serde_yaml::Value::Sequence(args),
+    );
+    entry.insert(
+        serde_yaml::Value::String("enabled".into()),
+        serde_yaml::Value::Bool(true),
+    );
+    entry.insert(
+        serde_yaml::Value::String("tools".into()),
+        serde_yaml::Value::Mapping(tools),
+    );
+    serde_yaml::Value::Mapping(entry)
+}
+
+fn hermes_graphnosis_already_configured(root: &serde_yaml::Mapping, socket_path: &str) -> bool {
+    let provider_ok = root
+        .get(serde_yaml::Value::String("memory".into()))
+        .and_then(|m| m.as_mapping())
+        .and_then(|m| yaml_mapping_get_str(m, "provider"))
+        .as_deref()
+        == Some("graphnosis");
+
+    let desired = build_hermes_graphnosis_mcp_entry(socket_path);
+    let mcp_ok = root
+        .get(serde_yaml::Value::String("mcp_servers".into()))
+        .and_then(|m| m.as_mapping())
+        .and_then(|m| m.get(serde_yaml::Value::String("graphnosis".into())))
+        .map(|existing| existing == &desired)
+        .unwrap_or(false);
+
+    provider_ok && mcp_ok
+}
+
+/// Configure Hermes Agent for Graphnosis memory (provider + MCP catalog).
+///
+/// Writes `memory.provider: graphnosis` and `mcp_servers.graphnosis` to
+/// `~/.hermes/config.yaml`, plus `$HERMES_HOME/graphnosis.json` socket settings.
+#[tauri::command]
+async fn configure_hermes_client(state: State<'_, AppState>) -> Result<HermesConfigResult, String> {
+    {
+        let inner = state.inner.lock().await;
+        if inner.cortex_dir.is_none() {
+            return Err(
+                "Unlock Graphnosis first — Hermes connects to the running app.".to_string(),
+            );
+        }
+    }
+
+    let config_path = hermes_config_path().ok_or_else(|| {
+        "Could not locate ~/.hermes/config.yaml for this user.".to_string()
+    })?;
+    let graphnosis_json_path = hermes_graphnosis_json_path().ok_or_else(|| {
+        "Could not locate ~/.hermes/graphnosis.json for this user.".to_string()
+    })?;
+    let socket_path = sidecar::mcp_socket_path().map_err(|e| e.to_string())?;
+    let socket_str = socket_path.to_string_lossy().into_owned();
+
+    let (mut root, created_file) = match std::fs::read_to_string(&config_path) {
+        Ok(s) => {
+            let parsed: serde_yaml::Value = serde_yaml::from_str(&s).map_err(|e| {
+                format!(
+                    "{} is not valid YAML: {}. Fix or remove it, then try again.",
+                    config_path.display(),
+                    e
+                )
+            })?;
+            (parsed, false)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), true)
+        }
+        Err(e) => return Err(format!("Could not read {}: {}", config_path.display(), e)),
+    };
+
+    let root_map = root.as_mapping_mut().ok_or_else(|| {
+        format!(
+            "{} root is not a YAML mapping — aborting.",
+            config_path.display()
+        )
+    })?;
+
+    let previous_memory_provider = root_map
+        .get(serde_yaml::Value::String("memory".into()))
+        .and_then(|m| m.as_mapping())
+        .and_then(|m| yaml_mapping_get_str(m, "provider"));
+
+    let already_configured = hermes_graphnosis_already_configured(root_map, &socket_str);
+
+    // memory.provider: graphnosis
+    {
+        let memory_key = serde_yaml::Value::String("memory".into());
+        let memory_entry = root_map
+            .entry(memory_key)
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        if !memory_entry.is_mapping() {
+            return Err("`memory` exists but is not a mapping — aborting.".to_string());
+        }
+        memory_entry
+            .as_mapping_mut()
+            .expect("checked above")
+            .insert(
+                serde_yaml::Value::String("provider".into()),
+                serde_yaml::Value::String("graphnosis".into()),
+            );
+    }
+
+    // mcp_servers.graphnosis
+    {
+        let servers_key = serde_yaml::Value::String("mcp_servers".into());
+        let servers_entry = root_map
+            .entry(servers_key)
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        if !servers_entry.is_mapping() {
+            return Err("`mcp_servers` exists but is not a mapping — aborting.".to_string());
+        }
+        servers_entry.as_mapping_mut().expect("checked above").insert(
+            serde_yaml::Value::String("graphnosis".into()),
+            build_hermes_graphnosis_mcp_entry(&socket_str),
+        );
+    }
+
+    // graphnosis.json beside config.yaml
+    if let Some(parent) = graphnosis_json_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!("Could not create {}: {}", parent.display(), e)
+        })?;
+    }
+    let graphnosis_json = serde_json::json!({
+        "socket_path": socket_str,
+        "default_engram": "",
+        "prefetch_max_tokens": 1500,
+    });
+    let json_pretty = serde_json::to_string_pretty(&graphnosis_json)
+        .map_err(|e| format!("Could not serialize graphnosis.json: {}", e))?;
+    std::fs::write(&graphnosis_json_path, json_pretty).map_err(|e| {
+        format!(
+            "Could not write {}: {}",
+            graphnosis_json_path.display(),
+            e
+        )
+    })?;
+
+    // Atomic YAML write
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!("Could not create {}: {}", parent.display(), e)
+        })?;
+    }
+    let yaml_out = serde_yaml::to_string(&root)
+        .map_err(|e| format!("Could not serialize Hermes config: {}", e))?;
+    let tmp = config_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, yaml_out)
+        .map_err(|e| format!("Could not write {}: {}", tmp.display(), e))?;
+    std::fs::rename(&tmp, &config_path).map_err(|e| {
+        format!("Could not finalize {}: {}", config_path.display(), e)
+    })?;
+
+    Ok(HermesConfigResult {
+        client_name: "Hermes Agent".to_string(),
+        restart_hint: "Start a new Hermes chat session (or restart Hermes Desktop) to load Graphnosis memory and MCP tools.".to_string(),
+        config_path: config_path.to_string_lossy().into_owned(),
+        socket_path: socket_str,
+        graphnosis_json_path: graphnosis_json_path.to_string_lossy().into_owned(),
+        already_configured,
+        created_file,
+        previous_memory_provider,
+    })
+}
+
 /// Where each supported MCP client stores its config on this OS.
 ///
 /// macOS paths are the upstream-documented locations:
@@ -3698,6 +3926,7 @@ pub fn run() {
             trigger_connector_pull,
             get_connector_auth_url,
             configure_mcp_client,
+            configure_hermes_client,
             open_cortex_in_finder,
             reveal_file_in_finder,
             open_attachment_in_default_app,

@@ -1,6 +1,6 @@
 ---
 title: Connect Your AI
-description: Wire Graphnosis into Claude Desktop, Claude Code, Cursor, Zed, Cline, mobile, or any MCP-compatible client.
+description: Wire Graphnosis into Claude Desktop, Claude Code, Cursor, Hermes Agent, Zed, Cline, mobile, or any MCP-compatible client.
 sidebar:
   order: 3
 ---
@@ -302,6 +302,79 @@ Full setup walkthroughs for each connector: **[Auto-ingest from your tools](/gui
 **`recall` returns no results**
 - Your cortex may be empty. [Add some content](/guides/adding-content/) first.
 - The cortex may be locked. Click the menu bar icon and unlock it.
+
+## Hermes Agent and Hermes Desktop
+
+Graphnosis integrates with [Hermes Agent](https://github.com/NousResearch/hermes-agent) and [Hermes Desktop](https://github.com/fathah/hermes-desktop) through **two co-primary paths** — enable both for the best experience.
+
+| Path | What you get | Install |
+|------|----------------|---------|
+| **Memory provider** | Auto-prefetch before each turn; `graphnosis_recall` / `graphnosis_remember` tools; shows on Hermes Desktop **Memory** screen | `hermes memory setup` → Graphnosis |
+| **MCP catalog** | Full tool surface as `mcp_graphnosis_*` — `edit`, `forget`, `cross_search`, skills, consent | `hermes mcp install graphnosis` |
+
+### Recommended: one-click from Graphnosis
+
+1. Unlock your cortex in Graphnosis.
+2. Open **Get Connected** (or **Settings → AI Clients**) and click **Hermes**.
+3. Click **Apply** — writes both `memory.provider: graphnosis` and `mcp_servers.graphnosis` to `~/.hermes/config.yaml`, plus `~/.hermes/graphnosis.json`.
+
+Start a **new Hermes chat session** after applying.
+
+### Manual CLI setup
+
+```bash
+hermes memory setup          # select graphnosis
+hermes mcp install graphnosis
+hermes graphnosis status     # after memory provider merges upstream
+hermes skills install https://graphnosis.com/skills/graphnosis/SKILL.md
+```
+
+### Manual `~/.hermes/config.yaml`
+
+```yaml
+memory:
+  provider: graphnosis
+
+mcp_servers:
+  graphnosis:
+    command: npx
+    args: ["-y", "@graphnosis/mcp-relay", "${HOME}/.graphnosis/mcp.sock"]
+    enabled: true
+    tools:
+      include: [recall, remind, remember, edit, forget, stats, cross_search, confirm_data_access]
+```
+
+Also create `~/.hermes/graphnosis.json`:
+
+```json
+{
+  "socket_path": "/Users/you/.graphnosis/mcp.sock",
+  "default_engram": "",
+  "prefetch_max_tokens": 1500
+}
+```
+
+Replace the socket path with your home directory. On Windows, use your `%USERPROFILE%\.graphnosis\mcp.sock` path in the args list.
+
+### Hermes tool names
+
+When both paths are enabled, Hermes exposes two namespaces:
+
+- Memory provider: `graphnosis_recall`, `graphnosis_remember`, `graphnosis_stats`
+- MCP catalog: `mcp_graphnosis_recall`, `mcp_graphnosis_edit`, `mcp_graphnosis_cross_search`, etc.
+
+Use MCP tools for edits and advanced operations; the memory provider handles prefetch and everyday recall/remember.
+
+### Hermes troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Provider not listed | Merge the Graphnosis plugin from [GraphnosisApp integrations](https://github.com/nehloo-interactive/GraphnosisApp/tree/main/integrations/hermes-agent) into hermes-agent, or wait for upstream release |
+| Socket not found | Unlock Graphnosis; confirm `~/.graphnosis/mcp.sock` exists |
+| MCP tools missing | Run `hermes mcp install graphnosis` and restart the session |
+| `npx` relay fails | Install Node 18+; or use the relay binary from Graphnosis.app |
+
+Upstream PR artifacts live in the GraphnosisApp repo under `integrations/hermes-agent/` and `integrations/hermes-desktop/`.
 
 ---
 

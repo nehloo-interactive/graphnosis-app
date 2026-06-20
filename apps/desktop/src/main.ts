@@ -201,8 +201,20 @@ interface ClaudeConfigResult {
   preserved_servers: string[];
 }
 
-/** Identifiers accepted by the Rust `configure_mcp_client` command. */
-type McpClientId = 'claude-desktop' | 'claude-code' | 'cursor';
+/** Identifiers accepted by the Rust `configure_mcp_client` / `configure_hermes_client` commands. */
+type McpClientId = 'claude-desktop' | 'claude-code' | 'cursor' | 'hermes';
+
+/** Result of `configure_hermes_client`. */
+interface HermesConfigResult {
+  client_name: string;
+  restart_hint: string;
+  config_path: string;
+  socket_path: string;
+  graphnosis_json_path: string;
+  already_configured: boolean;
+  created_file: boolean;
+  previous_memory_provider: string | null;
+}
 
 type ContentCacheMode = 'all' | 'ephemeral-only' | 'off';
 type ForgetMode = 'soft' | 'purge';
@@ -2267,6 +2279,7 @@ function renderRailGetConnected(): void {
   els.railGcClients.appendChild(makeClientChip('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
   els.railGcClients.appendChild(makeClientChip('Claude Code', () => openConfigureClientModal('claude-code')));
   els.railGcClients.appendChild(makeClientChip('Cursor', () => openConfigureClientModal('cursor')));
+  els.railGcClients.appendChild(makeClientChip('Hermes', () => openConfigureClientModal('hermes')));
   // Copilot has its own setup modal (VS Code / Copilot Chat MCP wiring) rather
   // than the generic configure-client flow. It never lights "connected" — the
   // live-relay map keys on Claude/Cursor sessions, not Copilot Chat.
@@ -5580,6 +5593,10 @@ const MCP_CLIENT_COPY: Record<McpClientId, ClientUiCopy> = {
     title: 'Configure Cursor',
     subtitle: "Make Cursor's Graphnosis MCP tools talk to Graphnosis Synapse. Writes the user-level `~/.cursor/mcp.json` with the relay binary and `~/.graphnosis/mcp.sock`. Optional: install the Graphnosis Cursor plugin for rules, skills, and hooks — MCP is configured here, not by the plugin.",
   },
+  'hermes': {
+    title: 'Configure Hermes Agent',
+    subtitle: 'Enable Graphnosis memory provider (auto-prefetch) and MCP tools in `~/.hermes/config.yaml`. Requires Hermes Agent or Hermes Desktop with a local Hermes install.',
+  },
 };
 
 function openConfigureClientModal(clientId: McpClientId): void {
@@ -5629,6 +5646,34 @@ els.btnClaudeApply.addEventListener('click', async () => {
   els.btnClaudeApply.textContent = 'Writing…';
   els.claudeFooterNote.textContent = '';
   try {
+    if (clientId === 'hermes') {
+      const r = (await invoke('configure_hermes_client')) as HermesConfigResult;
+      const providerNote = r.previous_memory_provider && r.previous_memory_provider !== 'graphnosis'
+        ? `<p style="margin-top: 6px;">Replaced external memory provider <code>${escape(r.previous_memory_provider)}</code> with Graphnosis.</p>`
+        : '';
+      const headline = r.already_configured
+        ? `${r.client_name} is already configured for Graphnosis.`
+        : r.created_file
+          ? `Created Hermes config with Graphnosis memory provider and MCP server.`
+          : `Updated Hermes config for Graphnosis memory and MCP.`;
+      els.claudePreview.innerHTML = `
+        <p><strong>${escape(headline)}</strong></p>
+        ${providerNote}
+        <p style="margin-top: 10px; font-size: 15px; color: var(--fg-dim);">
+          <strong>Config:</strong> <code>${escape(r.config_path)}</code><br/>
+          <strong>Provider config:</strong> <code>${escape(r.graphnosis_json_path)}</code><br/>
+          <strong>Socket:</strong> <code>${escape(r.socket_path)}</code>
+        </p>
+        <p style="margin-top: 8px;">Optional: <code>hermes skills install https://graphnosis.com/skills/graphnosis/SKILL.md</code></p>
+      `;
+      els.claudePreview.style.display = '';
+      els.claudeFooterNote.textContent = r.restart_hint;
+      els.claudeModalApplyHint.style.display = 'none';
+      els.btnClaudeApply.disabled = false;
+      els.btnClaudeApply.textContent = 'Done';
+      els.claudeModal.dataset['applyDone'] = '1';
+      return;
+    }
     const r = (await invoke('configure_mcp_client', { clientId })) as ClaudeConfigResult;
     const preservedLine = r.preserved_servers.length > 0
       ? `Preserved ${r.preserved_servers.length} other MCP server${r.preserved_servers.length === 1 ? '' : 's'}: <code>${r.preserved_servers.map(escape).join(', ')}</code>.`
