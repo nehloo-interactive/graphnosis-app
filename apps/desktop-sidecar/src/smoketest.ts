@@ -701,6 +701,48 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('sso-group-role.ok', { resolved, fallback });
 
+  // --- cortex catalog entitlements (Phase 4) -------------------------------
+  log('catalog-entitlements', {});
+  const {
+    resolveCatalogEntitlements,
+    checkCatalogUnlockEntitlement,
+    buildMdmCatalogBundle,
+    sanitizeCortexCatalogEntry,
+  } = await import('@graphnosis-app/core/settings');
+  const catalogEntry = sanitizeCortexCatalogEntry({
+    id: 'cat-smoke-1',
+    cortexId: 'acme-finance',
+    displayName: 'Acme Finance',
+    kind: 'org',
+    requiredIdpGroups: ['graphnosis-finance'],
+    hubPackageEngramIds: [],
+    cortexPath: '/tmp/acme-finance-cortex',
+  });
+  if (!catalogEntry) throw new Error('FAIL: catalog entry sanitize');
+  const entitled = checkCatalogUnlockEntitlement(catalogEntry, ['graphnosis-finance', 'other']);
+  if (!entitled.entitled) throw new Error('FAIL: expected finance group to entitle unlock');
+  const denied = checkCatalogUnlockEntitlement(catalogEntry, ['graphnosis-viewers']);
+  if (denied.entitled) throw new Error('FAIL: viewers group should not entitle finance cortex');
+  const subs = resolveCatalogEntitlements([catalogEntry], ['graphnosis-finance'], ['cat-smoke-1']);
+  if (subs.length !== 1 || !subs[0]!.entitled) {
+    throw new Error('FAIL: subscribed user with matching groups should be entitled');
+  }
+  const notSub = resolveCatalogEntitlements([catalogEntry], ['graphnosis-finance'], []);
+  if (notSub[0]?.reason !== 'not_subscribed') {
+    throw new Error(`FAIL: expected not_subscribed, got ${notSub[0]?.reason}`);
+  }
+  const mdm = buildMdmCatalogBundle(catalogEntry, {
+    enabled: true,
+    protocol: 'oidc',
+    breakGlassPassphrase: true,
+    groupRoleMappings: [],
+    oidc: { issuer: 'https://login.microsoftonline.com/tenant/v2.0', clientId: 'smoke-client', oidcTenantId: 'tenant-guid' },
+  }, ['cat-smoke-1']);
+  if (!mdm?.sso.issuer || mdm.subscriptions.length !== 1) {
+    throw new Error('FAIL: MDM bundle shape');
+  }
+  log('catalog-entitlements.ok', { mdmCatalogId: mdm.catalogId });
+
   // --- OIDC ID token verification (mock JWKS — no live IdP) ----------------
   log('sso-oidc-verify', {});
   const http = await import('node:http');
