@@ -190,7 +190,7 @@ async function loadAllGraphsFromDisk(
 
   for (const graphId of toLoad) {
     const tLoad = Date.now();
-    console.error(`[graphnosis-sidecar] loading engram '${graphId}' (${loaded + failed + 1}/${total})…`);
+    dbg(`[graphnosis-sidecar] loading engram '${graphId}' (${loaded + failed + 1}/${total})…`);
     // Kick off the real load WITHOUT awaiting it directly — that way the
     // same promise instance can be watched by both the race AND the
     // background watcher (we keep a reference so a timed-out load still
@@ -208,7 +208,7 @@ async function loadAllGraphsFromDisk(
         ),
       ]);
       loaded++;
-      console.error(
+      dbg(
         `[graphnosis-sidecar] engram '${graphId}' loaded (${loaded + failed}/${total}) in ${Date.now() - tLoad}ms`,
       );
     } catch (e) {

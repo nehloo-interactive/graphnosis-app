@@ -24,6 +24,12 @@ if (!process.env['GRAPHNOSIS_DEBUG']) {
     /pruned \d+ stale connection/,
     /autonomously healed \d+ duplicate/,
     /skipping mount/, // connector skip (disabled kind / archived engram) — expected state
+    // Boot sweep / deferred oplog reconcile — per-engram timing; summary + warnings stay visible.
+    /loadGraph engram\[[0-9a-f]+\]: decrypt=/,
+    /\[graphnosis-sidecar\] loading engram '/,
+    /\[graphnosis-sidecar\] engram '.*' loaded \(\d/,
+    /\[graphnosis-host\] boot deferred work:/,
+    /\[graphnosis-host\] boot reconcile engram\[[0-9a-f]+\]: (skipped|\d+ms)/,
   ];
   const wrap = (orig: (...a: unknown[]) => void) => (...args: unknown[]): void => {
     const first = typeof args[0] === 'string' ? args[0] : '';
