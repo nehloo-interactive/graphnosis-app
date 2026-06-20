@@ -67,6 +67,13 @@ export class GraphnosisImpl implements GraphnosisAdapter {
 
   async build(handle: GraphHandle): Promise<void> {
     const h = handle as Internal;
+    // fromBuffer() materializes the graph and clears documents[]. The SDK's
+    // build() discards the current graph and rebuilds from documents — calling
+    // it on an already-built handle wipes every node. Oplog reconcile calls
+    // build() to ensure a fresh graph is materialized before replay; that
+    // must be a no-op for loadFromBuffer handles (skills engrams with tail
+    // oplog events were hitting this on every boot → 0 nodes in 3D).
+    if (h.built) return;
     h.instance.build(h.graphId);
     h.built = true;
   }
