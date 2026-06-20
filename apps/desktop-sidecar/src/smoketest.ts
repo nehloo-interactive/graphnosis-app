@@ -701,47 +701,50 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('sso-group-role.ok', { resolved, fallback });
 
-  // --- cortex catalog entitlements (Phase 4) -------------------------------
+  // --- engram catalog entitlements (Phase 4, engram-only) ------------------
   log('catalog-entitlements', {});
   const {
     resolveCatalogEntitlements,
-    checkCatalogUnlockEntitlement,
-    buildMdmCatalogBundle,
-    sanitizeCortexCatalogEntry,
+    checkCatalogInstallEntitlement,
+    buildMdmEngramCatalogBundle,
+    sanitizeEngramCatalogEntry,
   } = await import('@graphnosis-app/core/settings');
-  const catalogEntry = sanitizeCortexCatalogEntry({
+  const catalogEntry = sanitizeEngramCatalogEntry({
     id: 'cat-smoke-1',
-    cortexId: 'acme-finance',
-    displayName: 'Acme Finance',
-    kind: 'org',
+    packageId: 'devops-skills',
+    displayName: 'DevOps Skills',
+    description: 'IT-published skill bundle',
+    kind: 'engram-package',
+    installMode: 'merge-copy',
     requiredIdpGroups: ['graphnosis-finance'],
-    hubPackageEngramIds: [],
-    cortexPath: '/tmp/acme-finance-cortex',
+    itControlled: true,
+    noReshare: true,
+    sourceEngramId: 'org-devops-skills',
   });
   if (!catalogEntry) throw new Error('FAIL: catalog entry sanitize');
-  const entitled = checkCatalogUnlockEntitlement(catalogEntry, ['graphnosis-finance', 'other']);
-  if (!entitled.entitled) throw new Error('FAIL: expected finance group to entitle unlock');
-  const denied = checkCatalogUnlockEntitlement(catalogEntry, ['graphnosis-viewers']);
-  if (denied.entitled) throw new Error('FAIL: viewers group should not entitle finance cortex');
+  const entitled = checkCatalogInstallEntitlement(catalogEntry, ['graphnosis-finance', 'other']);
+  if (!entitled.entitled) throw new Error('FAIL: expected finance group to entitle install');
+  const denied = checkCatalogInstallEntitlement(catalogEntry, ['graphnosis-viewers']);
+  if (denied.entitled) throw new Error('FAIL: viewers group should not entitle package');
   const subs = resolveCatalogEntitlements([catalogEntry], ['graphnosis-finance'], ['cat-smoke-1']);
   if (subs.length !== 1 || !subs[0]!.entitled) {
     throw new Error('FAIL: subscribed user with matching groups should be entitled');
   }
-  const notSub = resolveCatalogEntitlements([catalogEntry], ['graphnosis-finance'], []);
-  if (notSub[0]?.reason !== 'not_subscribed') {
-    throw new Error(`FAIL: expected not_subscribed, got ${notSub[0]?.reason}`);
+  const browse = resolveCatalogEntitlements([catalogEntry], ['graphnosis-finance'], undefined);
+  if (browse.length !== 1 || !browse[0]!.entitled) {
+    throw new Error('FAIL: browse mode should show entitled packages without subscription filter');
   }
-  const mdm = buildMdmCatalogBundle(catalogEntry, {
+  const mdm = buildMdmEngramCatalogBundle([catalogEntry], {
     enabled: true,
     protocol: 'oidc',
     breakGlassPassphrase: true,
     groupRoleMappings: [],
     oidc: { issuer: 'https://login.microsoftonline.com/tenant/v2.0', clientId: 'smoke-client', oidcTenantId: 'tenant-guid' },
-  }, ['cat-smoke-1']);
-  if (!mdm?.sso.issuer || mdm.subscriptions.length !== 1) {
+  }, ['devops-skills']);
+  if (!mdm?.sso.issuer || mdm.defaultSubscriptions.length !== 1) {
     throw new Error('FAIL: MDM bundle shape');
   }
-  log('catalog-entitlements.ok', { mdmCatalogId: mdm.catalogId });
+  log('catalog-entitlements.ok', { packageId: mdm.defaultSubscriptions[0] });
 
   // --- OIDC ID token verification (mock JWKS — no live IdP) ----------------
   log('sso-oidc-verify', {});
