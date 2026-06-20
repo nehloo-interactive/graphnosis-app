@@ -34,7 +34,7 @@ import {
 // ── UI domain modules (ui-modularize pass) ──────────────────────────────
 import { $, isTauriRuntime } from './ui/dom';
 import { escape, escapeHtml, formatBytes } from './ui/util';
-import { ipcCall, ipcCallTimeout, withTimeout, invokeRetry } from './ui/ipc';
+import { ipcCall, ipcCallTimeout, withTimeout, invokeRetry, withUiWorkScope } from './ui/ipc';
 import { initDialogs, gConfirm, gAlert } from './ui/dialogs';
 import { bindAppContext } from './ui/app-context';
 import {
@@ -983,6 +983,7 @@ let brainVitalityReport: {
   overall: number;
   byGraph: Record<string, number>;
   computedAt: number;
+  settling?: boolean;
   trust?: {
     activeNodes: number;
     avgConfidence: number;
@@ -996,6 +997,8 @@ let brainVitalityReport: {
 let cortexStats: { memories: number; sources: number; engrams: number } | null = null;
 /** Guard: renderHomeEngramBars → refreshGraphsCatalogAndStats self-heal (one in flight). */
 let _engramBarsCatalogResyncPending = false;
+/** Guard: renderHomeEngramBars → forced vitality refetch when byGraph is partial. */
+let _vitalityResyncPending = false;
 // Bumped on lock / cortex switch so in-flight stats IPC can't paint the
 // previous cortex after the user unlocks a different folder.
 let cortexUiGeneration = 0;
@@ -1042,6 +1045,10 @@ let mcpPollTimer: ReturnType<typeof setInterval> | null = null;
 let lastInspectorStats: StatsSummary | null = null;
 let sourcesFilterTerm = '';
 let sourcesEngramFilter = ''; // graphId of the selected engram, '' = all
+/** Keys are `graphId::sourceId` for batch-forget selection. */
+let selectedSourceKeys = new Set<string>();
+let sourcesBatchForgetInProgress = false;
+let sourcesBatchControlsWired = false;
 // Serializes source-move IPC calls — concurrent moves on large engrams
 // trigger concurrent relink passes that saturate the sidecar event loop.
 // Each move is chained onto this promise; null means no move is in flight.
@@ -1350,6 +1357,8 @@ async function notifyIngestDone(fileName: string, nodesAdded: number, error?: st
 // Also tracks fileName so the notification body can name the file.
 interface IngestJob { toastId: string; fileName: string; }
 const ingestJobToasts = new Map<string, IngestJob>();
+/** jobId → toast metadata for bundled Graphnosis docs ingest (async background job). */
+const docsJobToasts = new Map<string, { toastId: string; successSuffix: string }>();
 
 // Escape-hatch: if the events socket was interrupted and the done event was
 // missed, pending toasts would stick forever. After MAX_PENDING_MS with no
@@ -1603,6 +1612,53 @@ void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: numb
   },
 );
 
+// Bundled Graphnosis docs ingest — async job with page-level progress.
+void listen<{
+  jobId: string;
+  phase: string;
+  pagesDone?: number;
+  totalPages?: number;
+}>(
+  'graphnosis://docs-progress',
+  (evt) => {
+    const job = docsJobToasts.get(evt.payload.jobId);
+    if (!job) return;
+    const { toastId } = job;
+    const { phase, pagesDone, totalPages } = evt.payload;
+    if (phase === 'ingest' && pagesDone != null && totalPages != null) {
+      updateIngestToast(toastId, { message: `Page ${pagesDone} of ${totalPages}…` });
+    } else if (phase === 'wipe') {
+      updateIngestToast(toastId, { message: 'Preparing docs engram…' });
+    } else if (phase === 'relink') {
+      updateIngestToast(toastId, { message: 'Linking cross-references…' });
+    } else if (phase === 'save') {
+      updateIngestToast(toastId, { message: 'Saving engram…' });
+    }
+  },
+);
+
+void listen<{ jobId: string; ingested: number; failed: number; error?: string }>(
+  'graphnosis://docs-done',
+  (evt) => {
+    const job = docsJobToasts.get(evt.payload.jobId);
+    if (!job) return;
+    docsJobToasts.delete(evt.payload.jobId);
+    const { toastId, successSuffix } = job;
+    if (evt.payload.error) {
+      finishIngestToast(toastId, 'error', evt.payload.error);
+      return;
+    }
+    const { ingested, failed } = evt.payload;
+    finishIngestToast(
+      toastId,
+      'success',
+      `${successSuffix} · ${ingested} pages${failed ? `, ${failed} failed` : ''}`,
+    );
+    void fetchGraphsMetadata();
+    void refreshStats();
+  },
+);
+
 /**
  * Status snapshot deferred while the one-time recovery phrase modal is on
  * screen. We want the recovery phrase to be a gate on the lock screen, not
@@ -1630,6 +1686,8 @@ function invalidateCortexScopedState(): void {
   brainGoals = [];
   brainHealingJournal = [];
   brainMemoryHealth = null;
+  homeBrainCardsFetchGen += 1;
+  homeBrainCardsFetched = false;
   brainNeuralNetworkStatus = null;
   brainStatus = null;
 
@@ -1643,6 +1701,11 @@ function invalidateCortexScopedState(): void {
 
   homeLoadToken += 1;
   homePrefetchDone = false;
+  bumpActiveEngramHomeLoadGen();
+  if (_activeEngramMaterializeRetryTimer) {
+    clearTimeout(_activeEngramMaterializeRetryTimer);
+    _activeEngramMaterializeRetryTimer = null;
+  }
 
   resetCortexStatsDom();
 }
@@ -1686,10 +1749,14 @@ function resetCortexStatsDom(): void {
  *  memory; the picker lists every engram from metadata — refresh when the
  *  loaded set catches up so Home / Per engram / trust strip stay in sync. */
 let _cortexStatsRefreshToken = 0;
-async function refreshCortexScopedStats(): Promise<void> {
+async function refreshCortexScopedStats(opts?: { forceVitality?: boolean }): Promise<void> {
   const gen = cortexUiGeneration;
   const token = ++_cortexStatsRefreshToken;
-  await Promise.all([refreshStats(), refreshFederatedStats(), refreshBrainState()]);
+  await Promise.all([
+    refreshStats(),
+    refreshFederatedStats(),
+    refreshBrainState(opts?.forceVitality),
+  ]);
   if (gen !== cortexUiGeneration || token !== _cortexStatsRefreshToken) return;
   renderHomeDashboard();
 }
@@ -1749,6 +1816,8 @@ function render(status: StatusSnapshot): void {
       seedCortexStatsFromCatalog();
       cancelDebouncedFederatedStats();
       void refreshCortexScopedStats();
+      void refreshBrainStatus(); // cheap sync IPC — feeds Autonomous Brain home card
+      kickHomeBrainCardLoads(); // memory-health + self-healing IPC head start (eeb2f0b7 pattern)
       void refreshConnectorsList();
       void applyMdmCatalogAutoInstall();
       void maybeOfferCatalogPackages();
@@ -1802,6 +1871,7 @@ function render(status: StatusSnapshot): void {
           populateStudioEngramSelects();
           if (graphs.some((g) => !g.metadata.archived && g.graphId === saved)) {
             await switchActiveEngram(saved);
+            if (isHomeDashboardView()) scheduleHomeDataLoad();
           } else {
             syncEngramPicker();
           }
@@ -3000,6 +3070,10 @@ function activateMode(mode: Mode): void {
   // vitality/health/self-healing/activity moved to Home). CSS hides the rest
   // of #living-brain. Goals will grow into future-prediction (non-deterministic).
   document.body.classList.toggle('goals-mode', mode === 'goals');
+  // Your Cortex home — CSS belt-and-suspenders so the checkin dashboard is
+  // never blank when graphnosisActiveTab is stale 'brain' (retired Consolidation
+  // tab) after nav away/back. JS still calls switchGraphnosisTab('checkin').
+  document.body.classList.toggle('atlas-home-mode', mode === 'atlas');
   // Rail button visual state
   document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.mode === mode);
@@ -3018,7 +3092,8 @@ function activateMode(mode: Mode): void {
   // (atlas mount, dashboard render, neuronField start/stop, brain/LLM refresh).
   const sub = ATLAS_SUBMODES[mode];
   if (sub) {
-    switchGraphnosisTab(sub.gtab);
+    if (mode === 'atlas') showAtlasHomeDashboard();
+    else switchGraphnosisTab(sub.gtab);
     if (sub.studioTool) switchStudioTool(sub.studioTool, sub.studioTool !== 'skills');
     if (mode === 'search') {
       // Entering search: recenter the hero box + show guidance unless a query
@@ -3125,7 +3200,12 @@ function activateMode(mode: Mode): void {
 document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     const m = btn.dataset.mode as Mode | undefined;
-    if (m) activateMode(m);
+    if (m) {
+      activateMode(m);
+      // Belt-and-suspenders (matches mobile nav): re-tap Your Cortex always
+      // restores the home dashboard, not whichever inner tab was last open.
+      if (m === 'atlas') showAtlasHomeDashboard();
+    }
   });
 });
 
@@ -3192,7 +3272,7 @@ document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((btn) =>
     activateMode(m);
     // The Memory tab lands on MemoryStudio (the checkin sub-tab), not whatever
     // inner tab (3D Engram, etc.) was last open.
-    if (m === 'atlas') switchGraphnosisTab('checkin');
+    if (m === 'atlas') showAtlasHomeDashboard();
   });
 });
 
@@ -3828,6 +3908,7 @@ async function pollGraphMutations(): Promise<void> {
     deferredAtlasLoadGraph = null;
     await refreshAtlasView(); // ingest finished — render the full graph now
     hideAtlasLoading();
+    if (graphnosisActiveTab === 'checkin') renderHealth();
     return;
   }
   try {
@@ -3881,6 +3962,245 @@ function sourceLegalHoldTooltip(matter?: string): string {
   return matter
     ? `Legal hold (${matter}) — forget, edit, and transfer blocked until released.`
     : 'Legal hold — forget, edit, and transfer blocked until released.';
+}
+
+function sourceSelectionKey(graphId: string, sourceId: string): string {
+  return `${graphId}::${sourceId}`;
+}
+
+function parseSourceSelectionKey(key: string): { graphId: string; sourceId: string } | null {
+  const idx = key.indexOf('::');
+  if (idx < 0) return null;
+  return { graphId: key.slice(0, idx), sourceId: key.slice(idx + 2) };
+}
+
+function isSourceRowForgettable(row: HTMLElement): boolean {
+  return row.dataset.forgettable === 'true';
+}
+
+function visibleForgettableSourceRows(): HTMLElement[] {
+  return Array.from(els.sourcesList.querySelectorAll<HTMLElement>('.source-row[data-forgettable="true"]'))
+    .filter((row) => row.style.display !== 'none');
+}
+
+function findSourceRow(graphId: string, sourceId: string): HTMLElement | null {
+  return els.sourcesList.querySelector<HTMLElement>(
+    `.source-row[data-graph-id="${CSS.escape(graphId)}"][data-source-id="${CSS.escape(sourceId)}"]`,
+  );
+}
+
+function pruneSourceSelection(): void {
+  const live = new Set(
+    Array.from(els.sourcesList.querySelectorAll<HTMLElement>('.source-row[data-forgettable="true"]'))
+      .map((row) => {
+        const { graphId, sourceId } = sourceRowContext(row);
+        return sourceSelectionKey(graphId, sourceId);
+      }),
+  );
+  for (const key of selectedSourceKeys) {
+    if (!live.has(key)) selectedSourceKeys.delete(key);
+  }
+}
+
+function syncSourceRowSelectionUi(): void {
+  pruneSourceSelection();
+  els.sourcesList.querySelectorAll<HTMLElement>('.source-row[data-forgettable="true"]').forEach((row) => {
+    const { graphId, sourceId } = sourceRowContext(row);
+    const checked = selectedSourceKeys.has(sourceSelectionKey(graphId, sourceId));
+    const cb = row.querySelector<HTMLInputElement>('.source-row-check');
+    if (cb) cb.checked = checked;
+    row.classList.toggle('source-row-selected', checked);
+  });
+  updateSourcesBatchBar();
+}
+
+function updateSourcesBatchBar(): void {
+  const selectBtn = document.getElementById('sources-select-visible-btn') as HTMLButtonElement | null;
+  const clearBtn = document.getElementById('sources-clear-selection-btn') as HTMLButtonElement | null;
+  const forgetBtn = document.getElementById('sources-forget-selected-btn') as HTMLButtonElement | null;
+  if (!selectBtn || !clearBtn || !forgetBtn) return;
+
+  const n = selectedSourceKeys.size;
+  const visible = visibleForgettableSourceRows();
+  const allVisibleSelected = visible.length > 0 && visible.every((row) => {
+    const { graphId, sourceId } = sourceRowContext(row);
+    return selectedSourceKeys.has(sourceSelectionKey(graphId, sourceId));
+  });
+
+  selectBtn.disabled = visible.length === 0 || sourcesBatchForgetInProgress;
+  selectBtn.textContent = allVisibleSelected ? 'Deselect visible' : 'Select visible';
+  clearBtn.disabled = n === 0 || sourcesBatchForgetInProgress;
+  forgetBtn.disabled = n === 0 || sourcesBatchForgetInProgress;
+  forgetBtn.textContent = n === 0 ? 'Forget selected' : `Forget selected (${n})`;
+}
+
+function closeSourcesBatchForgetConfirm(): void {
+  const panel = document.getElementById('sources-batch-forget-confirm');
+  const input = document.getElementById('sources-batch-forget-input') as HTMLInputElement | null;
+  if (!panel) return;
+  panel.classList.add('hidden');
+  panel.removeAttribute('data-open');
+  if (input) input.value = '';
+  const goBtn = document.getElementById('sources-batch-forget-go') as HTMLButtonElement | null;
+  if (goBtn) {
+    goBtn.disabled = true;
+    goBtn.textContent = 'Forget';
+  }
+}
+
+let pendingBatchForgetTargets: Array<{ graphId: string; sourceId: string }> = [];
+
+async function openSourcesBatchForgetConfirm(): Promise<void> {
+  if (sourcesBatchForgetInProgress) return;
+  const panel = document.getElementById('sources-batch-forget-confirm');
+  if (panel && !panel.classList.contains('hidden')) return;
+
+  const targets = collectSelectedForgetTargets();
+  if (targets.length === 0) return;
+
+  const skillCount = targets.filter((t) => t.kind === 'skill').length;
+  if (skillCount > 0) {
+    const body = skillCount === 1
+      ? '1 selected source is a trained skill — forgetting removes it from your Skills library permanently.'
+      : `${skillCount} selected sources are trained skills — forgetting removes them from your Skills library permanently.`;
+    const ok = await gConfirm('Forget trained skills?', `${body}\n\nContinue?`);
+    if (!ok) return;
+  }
+
+  const countEl = document.getElementById('sources-batch-forget-count');
+  const input = document.getElementById('sources-batch-forget-input') as HTMLInputElement | null;
+  const goBtn = document.getElementById('sources-batch-forget-go') as HTMLButtonElement | null;
+  if (!panel || !countEl || !input || !goBtn) return;
+
+  pendingBatchForgetTargets = targets.map(({ graphId, sourceId }) => ({ graphId, sourceId }));
+  closeAllSourceMenus();
+  countEl.textContent = String(targets.length);
+  panel.classList.remove('hidden');
+  panel.setAttribute('data-open', 'true');
+  goBtn.disabled = true;
+  goBtn.textContent = 'Forget';
+  input.value = '';
+  input.focus();
+  syncSourcesBatchForgetGo();
+}
+
+function syncSourcesBatchForgetGo(): void {
+  const input = document.getElementById('sources-batch-forget-input') as HTMLInputElement | null;
+  const goBtn = document.getElementById('sources-batch-forget-go') as HTMLButtonElement | null;
+  if (!input || !goBtn) return;
+  goBtn.disabled = input.value.trim().toLowerCase() !== 'forget' || sourcesBatchForgetInProgress;
+}
+
+function collectSelectedForgetTargets(): Array<{
+  graphId: string;
+  sourceId: string;
+  kind: string;
+  ref: string;
+}> {
+  const targets: Array<{ graphId: string; sourceId: string; kind: string; ref: string }> = [];
+  for (const key of selectedSourceKeys) {
+    const parsed = parseSourceSelectionKey(key);
+    if (!parsed) continue;
+    const row = findSourceRow(parsed.graphId, parsed.sourceId);
+    if (!row || !isSourceRowForgettable(row)) continue;
+    targets.push({ ...parsed, ...sourceRowContext(row) });
+  }
+  return targets;
+}
+
+async function runBatchSourceForget(
+  targets: Array<{ graphId: string; sourceId: string }>,
+): Promise<void> {
+  sourcesBatchForgetInProgress = true;
+  updateSourcesBatchBar();
+  closeSourcesBatchForgetConfirm();
+  const failures: string[] = [];
+  for (const { graphId, sourceId } of targets) {
+    try {
+      await invoke('forget_source', { graphId, sourceId });
+      selectedSourceKeys.delete(sourceSelectionKey(graphId, sourceId));
+      findSourceRow(graphId, sourceId)?.remove();
+    } catch (e) {
+      failures.push(`${sourceId}: ${sanitizeErrorForDisplay(String(e))}`);
+    }
+  }
+  els.sourcesList.querySelectorAll<HTMLElement>('.sources-engram-group').forEach((group) => {
+    const hasRows = group.querySelector('.source-row') !== null;
+    group.style.display = hasRows ? '' : 'none';
+  });
+  sourcesBatchForgetInProgress = false;
+  syncSourceRowSelectionUi();
+  if (failures.length > 0) {
+    const extra = failures.length > 3 ? `\n…and ${failures.length - 3} more` : '';
+    showError(
+      `Failed to forget ${failures.length} of ${targets.length} source(s):\n${failures.slice(0, 3).join('\n')}${extra}`,
+    );
+  }
+}
+
+function wireSourcesBatchControls(): void {
+  if (sourcesBatchControlsWired) return;
+  sourcesBatchControlsWired = true;
+
+  const selectBtn = document.getElementById('sources-select-visible-btn');
+  const clearBtn = document.getElementById('sources-clear-selection-btn');
+  const forgetBtn = document.getElementById('sources-forget-selected-btn');
+  const panel = document.getElementById('sources-batch-forget-confirm');
+  const input = document.getElementById('sources-batch-forget-input') as HTMLInputElement | null;
+  const cancelBtn = document.getElementById('sources-batch-forget-cancel');
+  const goBtn = document.getElementById('sources-batch-forget-go') as HTMLButtonElement | null;
+
+  selectBtn?.addEventListener('click', () => {
+    const visible = visibleForgettableSourceRows();
+    if (visible.length === 0) return;
+    const allSelected = visible.every((row) => {
+      const { graphId, sourceId } = sourceRowContext(row);
+      return selectedSourceKeys.has(sourceSelectionKey(graphId, sourceId));
+    });
+    if (allSelected) {
+      visible.forEach((row) => {
+        const { graphId, sourceId } = sourceRowContext(row);
+        selectedSourceKeys.delete(sourceSelectionKey(graphId, sourceId));
+      });
+    } else {
+      visible.forEach((row) => {
+        const { graphId, sourceId } = sourceRowContext(row);
+        selectedSourceKeys.add(sourceSelectionKey(graphId, sourceId));
+      });
+    }
+    syncSourceRowSelectionUi();
+  });
+
+  clearBtn?.addEventListener('click', () => {
+    selectedSourceKeys.clear();
+    closeSourcesBatchForgetConfirm();
+    syncSourceRowSelectionUi();
+  });
+
+  forgetBtn?.addEventListener('click', () => { void openSourcesBatchForgetConfirm(); });
+
+  input?.addEventListener('input', () => syncSourcesBatchForgetGo());
+  input?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeSourcesBatchForgetConfirm();
+    }
+    if (e.key === 'Enter' && goBtn && !goBtn.disabled) {
+      e.preventDefault();
+      goBtn.click();
+    }
+  });
+  cancelBtn?.addEventListener('click', () => closeSourcesBatchForgetConfirm());
+  goBtn?.addEventListener('click', () => {
+    if (goBtn.disabled || pendingBatchForgetTargets.length === 0) return;
+    const targets = [...pendingBatchForgetTargets];
+    pendingBatchForgetTargets = [];
+    void runBatchSourceForget(targets);
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (!panel.contains(e.target as Node)) closeSourcesBatchForgetConfirm();
+  }, true);
 }
 
 function closeAllSourceMenus(except?: Element): void {
@@ -4285,6 +4605,12 @@ function wireSourcesListDelegation(): void {
   els.sourcesList.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
 
+    const selectWrap = target.closest<HTMLElement>('.source-row-select-wrap');
+    if (selectWrap) {
+      e.stopPropagation();
+      return;
+    }
+
     const menuBtn = target.closest<HTMLButtonElement>('.btn-source-menu');
     if (menuBtn) {
       e.stopPropagation();
@@ -4319,6 +4645,19 @@ function wireSourcesListDelegation(): void {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeAllSourceMenus();
+  });
+
+  els.sourcesList.addEventListener('change', (e) => {
+    const cb = (e.target as HTMLElement).closest<HTMLInputElement>('.source-row-check');
+    if (!cb) return;
+    const row = cb.closest<HTMLElement>('.source-row');
+    if (!row || !isSourceRowForgettable(row)) return;
+    const { graphId, sourceId } = sourceRowContext(row);
+    const key = sourceSelectionKey(graphId, sourceId);
+    if (cb.checked) selectedSourceKeys.add(key);
+    else selectedSourceKeys.delete(key);
+    row.classList.toggle('source-row-selected', cb.checked);
+    updateSourcesBatchBar();
   });
 }
 
@@ -4439,7 +4778,8 @@ async function refreshStats(): Promise<void> {
         );
 
         return `
-          <div class="source-row${isExcluded ? ' source-row-excluded' : ''}${sourceHeld ? ' source-row-held' : ''}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}" data-node-count="${s.nodeIds.length}">
+          <div class="source-row${isExcluded ? ' source-row-excluded' : ''}${sourceHeld ? ' source-row-held' : ''}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}" data-node-count="${s.nodeIds.length}" data-forgettable="${mutationBlocked ? 'false' : 'true'}">
+            ${mutationBlocked ? '' : `<label class="source-row-select-wrap" title="Select for batch forget"><input type="checkbox" class="source-row-check" aria-label="Select source" /></label>`}
             <div class="source-row-main">
               ${skillBadge}<span class="source-name" title="${escape(s.ref)}" data-pres="source:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
               <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
@@ -4471,6 +4811,8 @@ async function refreshStats(): Promise<void> {
           </div>`;
       }).join('');
       wireSourcesListDelegation();
+      wireSourcesBatchControls();
+      syncSourceRowSelectionUi();
     }
   } catch (e) {
     const msg = String(e);
@@ -4508,10 +4850,13 @@ function applySourcesFilter(): void {
       .some((r) => r.style.display !== 'none');
     group.style.display = (engramMatch && (!term || hasVisibleRow)) ? '' : 'none';
   });
+  updateSourcesBatchBar();
 }
 
 
 // ---- event wiring -------------------------------------------------------
+
+wireSourcesBatchControls();
 
 els.sourcesFilter.addEventListener('input', () => {
   sourcesFilterTerm = els.sourcesFilter.value.trim();
@@ -6628,19 +6973,28 @@ async function refreshGraphsCatalogAndStats(): Promise<void> {
 
 function openGraphWizard(): void {
   showError(null);
-  gwSelected = null;
+  // Wizard UI is name + sensitivity only (template cards were removed from
+  // index.html). Default to the personal template so Create can proceed.
+  gwSelected = 'personal';
   els.gwName.value = '';
   els.gwId.value = '';
+  delete els.gwId.dataset.userTouched;
   els.gwNote.innerHTML = '🔒 <strong>Stays on your machine.</strong> Your engram is stored only in your local cortex folder — never uploaded or synced. When you use Graphnosis with an AI client, relevant memories are shared with that AI to enrich your conversations. Nothing else leaves your device. <button id="gw-gh-link" style="background:none;border:none;padding:0;color:inherit;opacity:0.6;font-size:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;">View source on GitHub ↗</button>';
   document.getElementById('gw-gh-link')?.addEventListener('click', () => {
     void invoke('plugin:opener|open_url', { url: 'https://github.com/nehloo-interactive/graphnosis-app' });
   });
-  els.btnGwCreate.disabled = true;
-  renderGraphTemplateCards();
+  updateGwCreateEnabled();
   els.graphWizardModal.classList.remove('hidden');
 }
 
 function renderGraphTemplateCards(): void {
+  // Legacy template-picker containers (#gw-free etc.) were removed from the
+  // wizard modal; keep this helper for any future reintroduction.
+  const free = document.getElementById('gw-free');
+  const power = document.getElementById('gw-power');
+  const enterprise = document.getElementById('gw-enterprise');
+  if (!free || !power || !enterprise) return;
+
   const groups: Record<'free' | 'power' | 'enterprise', GraphTemplateDef[]> = {
     free: [], power: [], enterprise: [],
   };
@@ -6656,9 +7010,9 @@ function renderGraphTemplateCards(): void {
         <div class="gt-desc">${escape(t.desc)}</div>
       </button>`;
     }).join('');
-  els.gwFree.innerHTML = renderGroup('free', groups.free);
-  els.gwPower.innerHTML = renderGroup('power', groups.power);
-  els.gwEnterprise.innerHTML = renderGroup('enterprise', groups.enterprise);
+  free.innerHTML = renderGroup('free', groups.free);
+  power.innerHTML = renderGroup('power', groups.power);
+  enterprise.innerHTML = renderGroup('enterprise', groups.enterprise);
 
   els.graphWizardModal.querySelectorAll<HTMLButtonElement>('.graph-template-card').forEach((card) => {
     card.addEventListener('click', () => {
@@ -7287,21 +7641,147 @@ function computeHealth(): HealthSummary {
   return { score, grade, phrase, detail, avgConfidence, connectedFraction, activeNodes: active.length, orphans, highConfidenceFraction };
 }
 
+/** Hollow .gai + bundle sources — nodes arrive after deferred materialize. */
+function isEngramHollowMaterializing(graphId: string): boolean {
+  const row = lastInspectorStats?.graphs?.find((g) => g.graphId === graphId);
+  if (row) return row.totalNodes === 0 && row.sources > 0;
+  return graphId === 'graphnosis-docs';
+}
+
+/** Active-engram card load generation — bumped on engram switch so stale
+ *  ensureActiveEngramLoadedForHome() completions don't repaint the wrong graph. */
+let _activeEngramHomeLoadGen = 0;
+/** Set when loadGraphnosisData fails for the current active engram — drives the
+ *  error/retry state on the Home Active engram card instead of an infinite skeleton. */
+let _activeEngramLoadFailed: string | null = null;
+let _activeEngramMaterializeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleActiveEngramMaterializeRetry(graphId: string): void {
+  if (_activeEngramMaterializeRetryTimer) clearTimeout(_activeEngramMaterializeRetryTimer);
+  _activeEngramMaterializeRetryTimer = setTimeout(() => {
+    _activeEngramMaterializeRetryTimer = null;
+    if (atlasActiveGraph !== graphId || !isHomeDashboardView()) return;
+    bumpActiveEngramHomeLoadGen();
+    void ensureActiveEngramLoadedForHome();
+  }, 4000);
+}
+
+function bumpActiveEngramHomeLoadGen(): void {
+  _activeEngramHomeLoadGen++;
+  _activeEngramLoadFailed = null;
+}
+
+/** Load nodes for atlasActiveGraph when the Home card needs them but the cache
+ *  is stale (common after rail navigation without a picker change, or when
+ *  switchActiveEngram early-returned because the id matched but data never loaded). */
+async function ensureActiveEngramLoadedForHome(): Promise<void> {
+  const graphId = atlasActiveGraph;
+  if (!graphId || graphId === FULL_CORTEX) return;
+  if (deferredAtlasLoadGraph === graphId) return;
+  if (isEngramHollowMaterializing(graphId) && atlasLoadedForGraph !== graphId) {
+    scheduleActiveEngramMaterializeRetry(graphId);
+    if (isHomeDashboardView()) renderHealth();
+    return;
+  }
+  if (atlasLoadedForGraph === graphId) {
+    _activeEngramLoadFailed = null;
+    return;
+  }
+  const gen = _activeEngramHomeLoadGen;
+  try {
+    await withTimeout(loadGraphnosisData(graphId), 45_000, 'active engram load');
+    if (gen !== _activeEngramHomeLoadGen || atlasActiveGraph !== graphId) return;
+    _activeEngramLoadFailed = null;
+    if (isHomeDashboardView() && graphnosisActiveTab === 'checkin') {
+      applyGraphnosisFilter();
+      renderHealth();
+    }
+  } catch {
+    if (gen !== _activeEngramHomeLoadGen || atlasActiveGraph !== graphId) return;
+    if (isEngramHollowMaterializing(graphId)) {
+      _activeEngramLoadFailed = null;
+      scheduleActiveEngramMaterializeRetry(graphId);
+      if (isHomeDashboardView()) renderHealth();
+      return;
+    }
+    _activeEngramLoadFailed = graphId;
+    if (isHomeDashboardView()) renderHealth();
+  }
+}
+
+function wireHomeEngramRetry(graphId: string): void {
+  const btn = document.getElementById('home-engram-retry') as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.onclick = () => {
+    void (async () => {
+      bumpActiveEngramHomeLoadGen();
+      graphLoadFailedAt.delete(graphId);
+      _activeEngramLoadFailed = null;
+      renderHealth();
+      await ensureActiveEngramLoadedForHome();
+    })();
+  };
+}
+
 function renderHealth(): void {
-  const activeLoading =
-    !!atlasActiveGraph
-    && atlasActiveGraph !== FULL_CORTEX
-    && (atlasLoadedForGraph !== atlasActiveGraph
-      || (graphnosisAllNodes.length === 0 && isEngramPreloadInProgress()));
-  if (activeLoading) {
+  const graphId = atlasActiveGraph;
+  if (!graphId || graphId === FULL_CORTEX) {
+    els.gHealthGrade.textContent = '—';
+    els.gHealthGrade.className = 'g-health-grade';
+    els.gHealthFill.style.width = '0%';
+    els.gHealthPhrase.textContent = 'Select an engram to see its health.';
+    els.gHealthDetail.textContent = '';
+    renderHomeDashboard();
+    return;
+  }
+
+  if (deferredAtlasLoadGraph === graphId) {
+    els.gHealthGrade.textContent = '…';
+    els.gHealthGrade.className = 'g-health-grade';
+    els.gHealthFill.style.width = '0%';
+    els.gHealthPhrase.textContent = 'Importing into this engram…';
+    els.gHealthDetail.textContent = 'The graph will update when the import finishes.';
+    renderHomeDashboard();
+    return;
+  }
+
+  if (isEngramHollowMaterializing(graphId) && atlasLoadedForGraph !== graphId) {
+    els.gHealthGrade.textContent = '…';
+    els.gHealthGrade.className = 'g-health-grade';
+    els.gHealthFill.style.width = '0%';
+    els.gHealthPhrase.textContent = 'Building this engram…';
+    els.gHealthDetail.textContent = 'Documentation and bundled sources are loading in the background.';
+    void ensureActiveEngramLoadedForHome();
+    renderHomeDashboard();
+    return;
+  }
+
+  if (_activeEngramLoadFailed === graphId) {
+    els.gHealthGrade.textContent = '!';
+    els.gHealthGrade.className = 'g-health-grade d';
+    els.gHealthFill.style.width = '0%';
+    els.gHealthFill.style.background = 'var(--error)';
+    els.gHealthPhrase.textContent = `Couldn't load ${engramName(graphId)}.`;
+    els.gHealthDetail.innerHTML =
+      'The read timed out or the engram isn\'t resident yet. ' +
+      '<button type="button" id="home-engram-retry" class="btn-sm">Retry</button>';
+    wireHomeEngramRetry(graphId);
+    renderHomeDashboard();
+    return;
+  }
+
+  const needsLoad = atlasLoadedForGraph !== graphId;
+  if (needsLoad) {
     els.gHealthGrade.textContent = '…';
     els.gHealthGrade.className = 'g-health-grade';
     els.gHealthFill.style.width = '0%';
     els.gHealthPhrase.textContent = 'Loading this engram…';
     els.gHealthDetail.textContent = '';
+    void ensureActiveEngramLoadedForHome();
     renderHomeDashboard();
     return;
   }
+
   const h = computeHealth();
   els.gHealthGrade.textContent = h.grade;
   els.gHealthGrade.className = `g-health-grade ${h.grade.toLowerCase()}`;
@@ -7443,6 +7923,9 @@ function renderHomeDashboard(): void {
   renderHomeEngramBars();
   refreshHomeStranded();   // dedicated stranded-memories card (cheap, sync)
   refreshHomeOnPremise();  // sovereignty/egress ledger (cheap, sync)
+  renderHomeBrainActivity(); // sync from brainStatus — must not wait on scheduleHomeDataLoad
+  renderHomeSelfHealing();   // sync from cache — empty state beats infinite skeleton
+  renderHomeMemoryHealth({ loading: !homeBrainCardsFetched }); // interim text until IPC lands
   annotateHomeHelp();      // "?" explainers on each card (idempotent)
 }
 
@@ -7488,14 +7971,17 @@ function renderHomeEngramBars(): void {
   const resident = loadedGraphs.filter((g) => g.loaded !== false);
   const liveGraphIds = new Set(resident.map((g) => g.graphId));
   const vitalityByGraph = brainVitalityReport?.byGraph ?? {};
+  const vitalitySettling = brainVitalityReport?.settling === true;
   const rows = resident
     .map((g) => {
       const score = vitalityByGraph[g.graphId];
-      const archived = g.metadata.archived ? ' (archived)' : '';
+      const isArchived = g.metadata.archived ?? false;
+      const archivedSuffix = isArchived ? ' (archived)' : '';
       return {
         gid: g.graphId,
-        name: `${g.metadata.displayName ?? g.graphId}${archived}`,
+        name: `${g.metadata.displayName ?? g.graphId}${archivedSuffix}`,
         score: typeof score === 'number' ? score : -1,
+        archived: isArchived,
       };
     })
     .sort((a, b) => {
@@ -7505,7 +7991,7 @@ function renderHomeEngramBars(): void {
       return b.score - a.score;
     });
   // Stale vitality from a prior cortex — refetch when catalog has rows but none rendered.
-  const stillBooting = isEngramPreloadInProgress();
+  const stillBooting = isEngramPreloadInProgress() || vitalitySettling;
   if (rows.length === 0 && liveGraphIds.size > 0 && !stillBooting) {
     void refreshCortexScopedStats();
     return;
@@ -7518,6 +8004,21 @@ function renderHomeEngramBars(): void {
     void refreshGraphsCatalogAndStats().finally(() => { _engramBarsCatalogResyncPending = false; });
     return;
   }
+  // Vitality cached mid-boot covers only the engrams resident at first fetch —
+  // refetch when the catalog lists scores still missing for loaded rows.
+  const pendingVitality = rows.filter((r) => r.score < 0).length;
+  if (!stillBooting && pendingVitality > 0 && !_vitalityResyncPending) {
+    _vitalityResyncPending = true;
+    void ipcCall('brain:getVitality', { force: true })
+      .then((v) => {
+        if (v) brainVitalityReport = v as typeof brainVitalityReport;
+      })
+      .catch(() => { /* keep prior */ })
+      .finally(() => {
+        _vitalityResyncPending = false;
+        if (isHomeDashboardView()) renderHomeDashboard();
+      });
+  }
   barsEl.style.display = '';
   if (rows.length === 0) {
     barsEl.innerHTML = `<div class="home-bars-title">Per engram</div><p class="home-bars-empty">No engrams to break down yet.</p>`;
@@ -7528,22 +8029,23 @@ function renderHomeEngramBars(): void {
   // thousands, of engrams, so this never triggers in practice.
   const CAP = 300;
   const shown = rows.length > CAP ? rows.slice(0, CAP) : rows;
-  const bar = (r: { gid: string; name: string; score: number }): string => {
+  const bar = (r: { gid: string; name: string; score: number; archived: boolean }): string => {
+    const archivedCls = r.archived ? ' home-bar-row-archived' : '';
     const nameSpan = `<span class="home-bar-name" data-pres="engram:${escapeHtml(r.gid)}">${escapeHtml(r.name)}</span>`;
     if (r.score < 0) {
-      return `<div class="home-bar-row home-bar-row-pending">${nameSpan}` +
+      return `<div class="home-bar-row home-bar-row-pending${archivedCls}">${nameSpan}` +
         `<span class="home-bar-track"></span><span class="home-bar-val">…</span></div>`;
     }
     if (r.score === 0) {
-      return `<div class="home-bar-row home-bar-row-empty">${nameSpan}` +
+      return `<div class="home-bar-row home-bar-row-empty${archivedCls}">${nameSpan}` +
         `<span class="home-bar-track"></span><span class="home-bar-val">empty</span></div>`;
     }
     const COLOR_DARK  = r.score >= 85 ? '#4ade80' : r.score >= 70 ? '#6ab3c8' : r.score >= 50 ? '#d9a445' : '#f87171';
     const COLOR_LIGHT = r.score >= 85 ? '#15803d' : r.score >= 70 ? '#0891b2' : r.score >= 50 ? '#d9a445' : '#b91c1c';
-    // Use CSS custom properties so WebKit on macOS applies them even when
-    // the element is injected via innerHTML (avoids class-rule + CSP edge cases).
-    const style = `--bar-w:${r.score}%;--bar-color-dark:${COLOR_DARK};--bar-color-light:${COLOR_LIGHT}`;
-    return `<div class="home-bar-row">${nameSpan}` +
+    // Inline width (production WebViews may ignore var(--bar-w) on injected fills).
+    // Colors stay on CSS custom properties so dark-mode rules still apply.
+    const style = `width:${r.score}%;--bar-color-dark:${COLOR_DARK};--bar-color-light:${COLOR_LIGHT}`;
+    return `<div class="home-bar-row${archivedCls}">${nameSpan}` +
       `<span class="home-bar-track"><span class="home-bar-fill" style="${style}"></span></span>` +
       `<span class="home-bar-val">${r.score}</span></div>`;
   };
@@ -7553,7 +8055,10 @@ function renderHomeEngramBars(): void {
   const titleCount = stillBooting && liveGraphIds.size > rows.length
     ? liveGraphIds.size
     : rows.length;
-  barsEl.innerHTML = `<div class="home-bars-title">Per engram (${titleCount.toLocaleString()})</div>${shown.map(bar).join('')}${more}`;
+  const settlingHint = vitalitySettling
+    ? ' <span class="home-bars-settling">· updating…</span>'
+    : '';
+  barsEl.innerHTML = `<div class="home-bars-title">Per engram (${titleCount.toLocaleString()})${settlingHint}</div>${shown.map(bar).join('')}${more}`;
 }
 
 // "Since you last opened" — the autonomy digest. The anchor (last app-open
@@ -7779,7 +8284,7 @@ async function refreshHomeGrowth(): Promise<void> {
   const bars = buckets.map((c, i) => {
     const pctH = c > 0 ? Math.max(8, Math.round((c / max) * 100)) : 2;
     const day = new Date(todayStart - (DAYS - 1 - i) * 864e5);
-    return `<span class="home-spark-bar${c > 0 ? '' : ' empty'}" style="height:${pctH}%" title="${day.toLocaleDateString()}: ${c}"></span>`;
+    return `<span class="home-spark-bar${c > 0 ? '' : ' empty'}" style="--bar-h:${pctH}%" title="${day.toLocaleDateString()}: ${c}"></span>`;
   }).join('');
   body.innerHTML =
     `<div class="home-growth-stat"><strong>${adds.length.toLocaleString()}</strong> source${adds.length === 1 ? '' : 's'} added in the last ${DAYS} days</div>` +
@@ -7875,10 +8380,7 @@ function scheduleHomePrefetch(): void {
 
       // If the user is already on the home page, refresh the cards that just got
       // populated so they appear without waiting for another navigation.
-      if (graphnosisActiveTab === 'checkin' &&
-          !document.body.classList.contains('search-mode') &&
-          !document.body.classList.contains('skills-studio-mode') &&
-          !document.body.classList.contains('powertools-mode')) {
+      if (isHomeDashboardView()) {
         renderHomeSelfHealing();
         renderHomeMemoryHealth();
       }
@@ -7891,14 +8393,25 @@ function scheduleHomePrefetch(): void {
 // the single-threaded sidecar (memory-health walks the whole graph), which
 // starved engram-switching + the 3D graph — the freezing the user saw.
 let homeLoadToken = 0;
+
+/** True when the Your Cortex home dashboard (not search/skills/power-tools) is the active surface. */
+function isHomeDashboardView(): boolean {
+  return document.body.classList.contains('atlas-home-mode');
+}
+
+/** Re-enter Your Cortex home: correct inner tab + repaint dashboard cards. */
+function showAtlasHomeDashboard(): void {
+  switchGraphnosisTab('checkin');
+}
+
 function scheduleHomeDataLoad(): void {
   const token = ++homeLoadToken;
   const stillHome = (): boolean =>
-    token === homeLoadToken &&
-    graphnosisActiveTab === 'checkin' &&
-    !document.body.classList.contains('search-mode') &&
-    !document.body.classList.contains('skills-studio-mode') &&
-    !document.body.classList.contains('powertools-mode');
+    token === homeLoadToken && isHomeDashboardView();
+  // Brain autonomy cards (Autonomous Brain / Self-healing / Memory health) must
+  // not sit behind ensureActiveEngramLoadedForHome + digest/growth — that chain
+  // could take minutes and left the Autonomous Brain card on skeleton placeholders.
+  kickHomeBrainCardLoads();
   // Run the loads SEQUENTIALLY (≤1 sidecar call in flight at a time) so they
   // don't hammer the single-threaded sidecar all at once — and so an engram
   // switch's nodes.list waits behind at most ONE Home call, not six. No
@@ -7909,10 +8422,18 @@ function scheduleHomeDataLoad(): void {
   // walk) last. digest+growth share one op-log read (first warms, second is
   // instant). Each fn is timeout-bounded → no step can stall the chain.
   void (async () => {
-    const steps = [refreshHomeNeeds, refreshHomePolicy, refreshHomeForesight, refreshHomeDigest, refreshHomeGrowth, refreshHomeBrainData];
+    const steps = [ensureActiveEngramLoadedForHome, refreshHomeNeeds, refreshHomePolicy, refreshHomeForesight, refreshHomeDigest, refreshHomeGrowth];
     for (const step of steps) {
       if (!stillHome()) return;
-      try { await step(); } catch { /* per-card fns own their errors */ }
+      try {
+        // Graph load is plain IPC — never under P0 (orchestration is LLM-only).
+        // Home card fetches get a short P0 burst so Ghampus classify/enrichment defer.
+        if (step === ensureActiveEngramLoadedForHome) {
+          await step();
+        } else {
+          await withUiWorkScope(() => step());
+        }
+      } catch { /* per-card fns own their errors */ }
     }
   })();
 }
@@ -7920,29 +8441,41 @@ function scheduleHomeDataLoad(): void {
 // ── Home autonomy cards (Self-healing · Memory health · Recent brain activity)
 // These reuse the brain's already-computed data — but it's only loaded on the
 // brain/Goals pane, so fetch the two pieces Home needs on Home entry.
-async function refreshHomeBrainData(): Promise<void> {
-  // Each of the three brain cards loads + renders INDEPENDENTLY (decoupled), so
-  // the heavy memory-health walk can't hold the others hostage. All bounded by
-  // a client timeout → on slow/failure each shows its quiet empty state.
-  renderHomeBrainActivity(); // no fetch — brainStatus is already in memory
+let homeBrainCardsFetchGen = 0;
+let homeBrainCardsFetched = false;
 
-  void ipcCallTimeout('brain:getHealingJournal', {})
+/** Sync paint + parallel IPC for brain cards — never sequenced behind digest/growth. */
+function kickHomeBrainCardLoads(): void {
+  const gen = ++homeBrainCardsFetchGen;
+  renderHomeBrainActivity(); // brainStatus — sync read, or honest empty state
+  renderHomeSelfHealing();
+  renderHomeMemoryHealth({ loading: !homeBrainCardsFetched });
+  void ipcCallTimeout('brain:getHealingJournal', {}, 10_000)
     .then((hj) => { brainHealingJournal = (hj as BrainHealingRecord[]) ?? brainHealingJournal; })
     .catch(() => { /* keep prior */ })
-    .finally(() => renderHomeSelfHealing());
-
-  void ipcCallTimeout('brain:getMemoryHealth', {})
+    .finally(() => { if (gen === homeBrainCardsFetchGen) renderHomeSelfHealing(); });
+  void ipcCallTimeout('brain:getMemoryHealth', {}, 15_000)
     .then((mh) => { brainMemoryHealth = mh as typeof brainMemoryHealth; })
     .catch(() => { /* keep prior; renders empty state if still null */ })
-    .finally(() => renderHomeMemoryHealth());
+    .finally(() => {
+      if (gen !== homeBrainCardsFetchGen) return;
+      homeBrainCardsFetched = true;
+      renderHomeMemoryHealth();
+    });
 }
 
-function renderHomeMemoryHealth(): void {
+function renderHomeMemoryHealth(opts?: { loading?: boolean }): void {
   const card = document.getElementById('home-mhealth');
   const body = document.getElementById('home-mhealth-body');
   if (!card || !body) return;
   const h = brainMemoryHealth;
-  if (!h) { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Memory health isn’t available right now.</p>'; return; }
+  if (!h) {
+    card.style.display = '';
+    body.innerHTML = opts?.loading
+      ? '<p class="home-card-empty">Computing memory health…</p>'
+      : '<p class="home-card-empty">Memory health isn’t available right now.</p>';
+    return;
+  }
   card.style.display = '';
   const pct = (f: number): string => `${Math.round(f * 100)}%`;
   // [label, value, tooltip] — the tooltip is a short plain-language explainer
@@ -7974,12 +8507,29 @@ function renderHomeSelfHealing(): void {
     body.innerHTML = `<p class="home-stranded-zero">No duplicates have needed merging yet — your memory is clean. ✓</p>`;
     return;
   }
-  const recheckLabel = rechecked === merged ? 'all re-checked ✓' : 're-checked by local AI';
+  // Two distinct journal fields: total auto-heals vs. those the local LLM has
+  // second-opinioned. When every merge is reviewed the counts match — show
+  // one number, not the same value twice (looked like a binding bug).
+  let statsHtml: string;
+  if (rechecked === 0) {
+    statsHtml =
+      `<div class="home-sh-stats">` +
+        `<div class="home-sh-stat"><span class="home-sh-val">${merged.toLocaleString()}</span><span class="home-sh-label">merged automatically</span></div>` +
+      `</div>`;
+  } else if (rechecked === merged) {
+    statsHtml =
+      `<div class="home-sh-stats">` +
+        `<div class="home-sh-stat"><span class="home-sh-val">${merged.toLocaleString()}</span><span class="home-sh-label">merged automatically · all re-checked ✓</span></div>` +
+      `</div>`;
+  } else {
+    statsHtml =
+      `<div class="home-sh-stats">` +
+        `<div class="home-sh-stat"><span class="home-sh-val">${merged.toLocaleString()}</span><span class="home-sh-label">merged automatically</span></div>` +
+        `<div class="home-sh-stat"><span class="home-sh-val">${rechecked.toLocaleString()}</span><span class="home-sh-label">re-checked by local AI</span></div>` +
+      `</div>`;
+  }
   body.innerHTML =
-    `<div class="home-sh-stats">` +
-      `<div class="home-sh-stat"><span class="home-sh-val">${merged.toLocaleString()}</span><span class="home-sh-label">merged automatically</span></div>` +
-      `<div class="home-sh-stat"><span class="home-sh-val">${rechecked.toLocaleString()}</span><span class="home-sh-label">${recheckLabel}</span></div>` +
-    `</div>` +
+    statsHtml +
     `<p class="home-sh-note">Nothing is ever lost — every merge is a soft-delete you can undo from Recovery.</p>` +
     `<button type="button" class="home-digest-link" id="home-sh-activity">See self-healing in Activity →</button>`;
   body.querySelector<HTMLButtonElement>('#home-sh-activity')?.addEventListener('click', () => {
@@ -8038,7 +8588,7 @@ function renderHomeBrainActivity(): void {
     btn.disabled = true; btn.textContent = '↻ Scanning…';
     void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
     // Refresh status shortly after so the schedule line updates.
-    window.setTimeout(() => { void refreshBrainStatus().then(() => renderHomeBrainActivity()); }, 1500);
+    window.setTimeout(() => { void refreshBrainStatus(); }, 1500);
   });
 }
 
@@ -8053,7 +8603,7 @@ async function refreshHomePolicy(): Promise<void> {
   const source = document.getElementById('home-policy-source');
   if (!card || !body) return;
   let p: { disabledConnectorKinds: string[]; disabledClients: string[]; managed: boolean } | null = null;
-  try { p = await ipcCall('policy.get', {}); } catch { card.style.display = 'none'; return; }
+  try { p = await ipcCallTimeout('policy.get', {}, 8000); } catch { card.style.display = 'none'; return; }
   blockedClientNames = new Set((p?.disabledClients ?? []).map((s) => s.toLowerCase()));
   refreshGetConnectedStatus(); // re-mark blocked clients in the Connections card
   if (!p || (p.disabledConnectorKinds.length === 0 && p.disabledClients.length === 0)) {
@@ -8151,7 +8701,7 @@ async function refreshHomeForesight(): Promise<void> {
   card.style.display = '';
   let llmReady = false;
   try {
-    const s = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; enabled: boolean }>('llm:status', {});
+    const s = await ipcCallTimeout<{ ollamaReachable: boolean; installedModels: string[]; enabled: boolean }>('llm:status', {}, 8000);
     llmReady = !!(s.ollamaReachable && s.installedModels?.length && s.enabled);
   } catch { llmReady = false; }
   const door = '<button type="button" class="home-foresight-go" data-foresight-open>Open Foresight →</button>';
@@ -12615,6 +13165,8 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   // and would otherwise keep the single-threaded sidecar busy while this
   // engram's nodes.list is trying to load, making the switch crawl.
   homeLoadToken++;
+  bumpActiveEngramHomeLoadGen();
+  if (isHomeDashboardView()) scheduleHomeDataLoad();
   // Keep the Sources dropdown in sync with the newly active engram.
   // Also force a full refreshStats() so the sources DOM is rebuilt from
   // a fresh IPC snapshot — this fixes the "no sources listed" stale-DOM
@@ -12662,6 +13214,7 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
       loadedGraphs.find((g) => g.graphId === atlasActiveGraph)?.metadata.displayName ?? atlasActiveGraph,
       'importing… the graph will render automatically when the ingest finishes',
     );
+    if (graphnosisActiveTab === 'checkin') renderHealth();
     return;
   }
   // Paint the cleared graph + loading overlay BEFORE kicking off the heavy
@@ -13718,7 +14271,8 @@ function resetPageScopesForFullCortex(): void {
 }
 
 async function switchActiveEngram(graphId: string): Promise<void> {
-  if (atlasActiveGraph === graphId && !atlasGalaxyMode) return;
+  if (atlasActiveGraph === graphId && !atlasGalaxyMode && atlasLoadedForGraph === graphId) return;
+  bumpActiveEngramHomeLoadGen();
   atlasGalaxyMode = false; // leaving Full Cortex for a real engram
   atlasActiveGraph = graphId;
   persistActiveEngram(graphId);
@@ -13763,8 +14317,13 @@ async function switchActiveEngram(graphId: string): Promise<void> {
       setTimeout(() => mainAtlas?.zoomToFit(700, 20), 800);
     }
     void refreshGraphsCatalogAndStats();
+    _activeEngramLoadFailed = null;
+  } catch {
+    _activeEngramLoadFailed = graphId;
+    if (graphnosisActiveTab === 'checkin') renderHealth();
   } finally {
     hideAtlasLoading();
+    if (isHomeDashboardView()) scheduleHomeDataLoad();
   }
 }
 
@@ -13976,7 +14535,7 @@ function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = fals
     const newResidentCount = graphs.filter((g) => g.loaded !== false).length;
     if (allDone || forceStatsRefresh) {
       cancelDebouncedFederatedStats();
-      void refreshCortexScopedStats();
+      void refreshCortexScopedStats({ forceVitality: allDone });
     } else if (
       newActiveCount !== prevActiveCount
       || newResidentCount !== prevResidentCount
@@ -14273,7 +14832,7 @@ function renderStatusProcess(): void {
 }
 
 /** Pull all brain state from the sidecar into module cache, then repaint. */
-async function refreshBrainState(): Promise<void> {
+async function refreshBrainState(forceVitality = false): Promise<void> {
   const gen = cortexUiGeneration;
   // Each panel applies its own IPC result independently. The previous
   // Promise.all-then-assign pattern meant that ONE slow IPC (memory health
@@ -14282,7 +14841,7 @@ async function refreshBrainState(): Promise<void> {
   // "Loading…" placeholders. Promise.allSettled paints each panel as soon
   // as its own call returns, and a failure on one doesn't poison the rest.
   const fetchers: Array<{ name: string; promise: Promise<unknown>; apply: (v: unknown) => void }> = [
-    { name: 'vitality',     promise: ipcCall('brain:getVitality', {}),             apply: (v) => { brainVitalityReport = v as typeof brainVitalityReport; } },
+    { name: 'vitality',     promise: ipcCall('brain:getVitality', forceVitality ? { force: true } : {}),             apply: (v) => { brainVitalityReport = v as typeof brainVitalityReport; } },
     { name: 'insights',     promise: ipcCall('brain:getInsights', {}),             apply: (v) => { brainInsights = v as typeof brainInsights; } },
     { name: 'goals',        promise: ipcCall('brain:listGoals', {}),               apply: (v) => { brainGoals = v as BrainGoal[]; } },
     { name: 'healing',      promise: ipcCall('brain:getHealingJournal', {}),       apply: (v) => { brainHealingJournal = v as BrainHealingRecord[]; } },
@@ -14357,7 +14916,17 @@ function updateBrainUI(): void {
     const v = brainVitalityReport.overall;
     els.brainVitality.style.display = '';
     mainAtlas?.setBrainVitality?.(v);
-    animateVitality(v);
+    if (brainVitalityReport.settling) {
+      // Hold the prior-session snapshot steady — no ring animation churn.
+      const targetOpacity = 0.4 + (v / 100) * 0.6;
+      els.lbVitalityScore.textContent = String(v);
+      els.lbVitalityRing.style.setProperty('--v', String(v));
+      els.brainVitality.textContent = `🧠 Vitality ${v}`;
+      els.brainVitality.style.opacity = String(targetOpacity);
+      els.livingBrain.classList.remove('lb-scanning');
+    } else {
+      animateVitality(v);
+    }
   }
   renderLivingBrainPane();
   // Home Trust & Vitality + Per-engram bars read brainVitalityReport / cortexStats
@@ -15504,13 +16073,17 @@ function renderLbHealingLog(): void {
     return;
   }
   const reviewed = brainHealingJournal.filter((r) => r.llmReviewed).length;
+  const mergedLabel =
+    reviewed === n
+      ? `duplicate memor${n === 1 ? 'y' : 'ies'} merged · all re-checked ✓`
+      : `duplicate memor${n === 1 ? 'y' : 'ies'} merged`;
   host.innerHTML = `
     <div class="lb-stats-row">
       <div class="lb-stat">
         <span class="lb-stat-value">${n}</span>
-        <span class="lb-stat-label">duplicate memor${n === 1 ? 'y' : 'ies'} merged</span>
+        <span class="lb-stat-label">${mergedLabel}</span>
       </div>
-      ${reviewed > 0 ? `
+      ${reviewed > 0 && reviewed < n ? `
       <div class="lb-stat">
         <span class="lb-stat-value">${reviewed}</span>
         <span class="lb-stat-label">re-checked by local AI</span>
@@ -15923,6 +16496,8 @@ els.btnNeedsReviewClose.addEventListener('click', () => {
 async function refreshBrainStatus(): Promise<void> {
   try {
     brainStatus = await ipcCall<NonNullable<typeof brainStatus>>('brain:getStatus', {});
+    renderHomeBrainActivity();
+    renderScanStatus();
   } catch { /* non-fatal */ }
 }
 
@@ -17016,10 +17591,9 @@ document.getElementById('status-lowpower')?.addEventListener('click', () => {
   els.btnSettings.click();
 });
 
-// Background-process line — same target as the vitality chip; the
-// Deterministic Consolidation tab is where the live feed + schedule live.
+// Background-process line — Autonomous Brain schedule + activity live on Home.
 els.statusProcess?.addEventListener('click', () => {
-  activateMode('goals');
+  activateMode('atlas');
 });
 
 // Layered intelligence pills — jump straight to Foresight, which now hosts the
@@ -17296,6 +17870,26 @@ async function waitForEngramsLoaded(timeoutMs?: number): Promise<void> {
   ]);
 }
 
+/** Start async docs ingest; toast updates via docs.progress / docs.done events. */
+async function startDocsIngestJob(
+  label: string,
+  message: string,
+  appVersion: string,
+  successSuffix = 'Graphnosis docs ready',
+): Promise<void> {
+  const toastId = addIngestToast(label, message);
+  try {
+    const ack = await ipcCall<{ accepted?: boolean; jobId?: string }>('docs:ingest', { appVersion });
+    if (ack?.jobId) {
+      docsJobToasts.set(ack.jobId, { toastId, successSuffix });
+    } else {
+      finishIngestToast(toastId, 'error', 'Docs ingest did not start');
+    }
+  } catch (e) {
+    finishIngestToast(toastId, 'error', `Couldn't start docs ingest: ${String(e)}`);
+  }
+}
+
 /** Ask the sidecar what to do about the docs engram, then act on it. Runs
  *  once per unlock. `offer` shows a banner; `reingest` runs silently with a
  *  toast; `none` does nothing. */
@@ -17321,36 +17915,26 @@ async function checkDocsIngestOffer(): Promise<void> {
       // engrams-loading frame before the event stream connects (frame is
       // dropped with no subscribers), which would otherwise hang forever.
       await waitForEngramsLoaded();
-      const tid = addIngestToast('Setting up Graphnosis docs', 'Loading the documentation into your cortex…');
-      try {
-        const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
-          'docs:ingest', { appVersion },
-        );
-        finishIngestToast(tid, 'success', `Graphnosis docs ready · ${ingested} pages${failed ? `, ${failed} failed` : ''}`);
-        void fetchGraphsMetadata();
-        void refreshStats();
-      } catch (e) {
-        finishIngestToast(tid, 'error', `Couldn't load docs: ${String(e)}`);
-      }
+      void startDocsIngestJob(
+        'Setting up Graphnosis docs',
+        'Loading the documentation into your cortex…',
+        appVersion,
+        'Graphnosis docs ready',
+      );
     } else if (decision === 'reingest') {
       // App updated — refresh the docs silently. Wait for the initial
       // engram loading sweep to finish first so the heavy docs ingest
-      // (24 pages, each awaiting embed workers) doesn't saturate the
+      // (32 pages, each awaiting embed workers) doesn't saturate the
       // embed workers while the loading loop is still running, which
       // makes the loading progress appear frozen.
       //
       await waitForEngramsLoaded();
-      const tid = addIngestToast('Updating Graphnosis docs', 'The app updated — refreshing docs…');
-      try {
-        const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
-          'docs:ingest', { appVersion },
-        );
-        finishIngestToast(tid, 'success', `Docs updated · ${ingested} pages${failed ? `, ${failed} failed` : ''}`);
-        void fetchGraphsMetadata();
-        void refreshStats();
-      } catch (e) {
-        finishIngestToast(tid, 'error', `Couldn't update docs: ${String(e)}`);
-      }
+      void startDocsIngestJob(
+        'Updating Graphnosis docs',
+        'The app updated — refreshing docs…',
+        appVersion,
+        'Docs updated',
+      );
     }
     // 'none' → nothing to do.
   } catch (e) {
@@ -17373,24 +17957,17 @@ document.getElementById('docs-offer-add')?.addEventListener('click', () => {
   if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'Ingesting docs…'; }
   if (dismissBtn) dismissBtn.disabled = true;
   void (async () => {
-    const tid = addIngestToast('Adding Graphnosis docs', 'Ingesting the documentation site…');
-    try {
-      const appVersion = await getVersion();
-      const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
-        'docs:ingest', { appVersion },
-      );
-      hideDocsOfferBanner();
-      finishIngestToast(tid, 'success', `Graphnosis docs added · ${ingested} pages${failed ? `, ${failed} failed` : ''}`);
-      // Surface the freshly-created engram in the picker + stats.
-      await fetchGraphsMetadata();
-      void refreshStats();
-      void pollGraphMutations();
-    } catch (e) {
-      finishIngestToast(tid, 'error', `Couldn't add docs: ${String(e)}`);
-      // Re-enable so the user can retry from the banner.
-      if (addBtn) { addBtn.disabled = false; addBtn.textContent = 'Add docs'; }
-      if (dismissBtn) dismissBtn.disabled = false;
-    }
+    const appVersion = await getVersion();
+    await startDocsIngestJob(
+      'Adding Graphnosis docs',
+      'Ingesting the documentation site…',
+      appVersion,
+      'Graphnosis docs added',
+    );
+    hideDocsOfferBanner();
+    await fetchGraphsMetadata();
+    void refreshStats();
+    void pollGraphMutations();
   })();
 });
 
@@ -19341,11 +19918,10 @@ async function openSharingModal(): Promise<void> {
       for (const g of visible) {
         sharingEngramLabels.set(g.graphId, g.metadata.displayName ?? g.graphId);
         const label = document.createElement('label');
-        label.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:2px 0;';
+        label.className = 'sharing-engram-picker-label';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.value = g.graphId;
-        cb.style.cssText = 'flex-shrink:0;margin:0;';
         const span = document.createElement('span');
         span.textContent = g.metadata.displayName ?? g.graphId;
         label.appendChild(cb);
@@ -19453,7 +20029,7 @@ async function openSharingModal(): Promise<void> {
 
   document.getElementById('sharing-new-engrams-mode')?.addEventListener('change', (e) => {
     const picker = document.getElementById('sharing-engram-picker');
-    if (picker) picker.style.display = (e.target as HTMLSelectElement).value === 'select' ? 'flex' : 'none';
+    if (picker) picker.classList.toggle('is-visible', (e.target as HTMLSelectElement).value === 'select');
     updateSharingCreateReview();
   });
 
@@ -23451,10 +24027,15 @@ async function refreshFederatedStats(): Promise<void> {
     // Cache cortex-wide totals for the Home hero + refresh it if mounted.
     cortexStats = { memories: totalMemories, sources: totalSources, engrams };
     renderHomeDashboard();
-    const nodes = graphnosisAllNodes.filter((n) => n.confidence > 0.2);
-    const avgTrust = nodes.length > 0
-      ? (nodes.reduce((s, n) => s + n.confidence, 0) / nodes.length).toFixed(2)
-      : '—';
+    const t = brainVitalityReport?.trust;
+    const avgTrust = t && t.activeNodes > 0
+      ? t.avgConfidence.toFixed(2)
+      : (() => {
+          const nodes = graphnosisAllNodes.filter((n) => n.confidence > 0.2);
+          return nodes.length > 0
+            ? (nodes.reduce((s, n) => s + n.confidence, 0) / nodes.length).toFixed(2)
+            : '—';
+        })();
     const f = (n: number) => n.toLocaleString();
     const el = (id: string) => document.getElementById(id);
     const mem = el('stat-total-memories');
