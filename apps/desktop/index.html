@@ -13261,9 +13261,19 @@ ollama list</code></pre>
                     Structured Evidence Pack for auditors — op-log, consent records, MCP audit trail, and engram file hashes.
                     Respects the date range and engram scope filters above.
                   </p>
-                  <button id="btn-activity-evidence-export" type="button" title="Download a JSON Evidence Pack for compliance review or SIEM ingestion">
-                    Export Evidence Pack (.json)
+                  <button id="btn-activity-evidence-export" type="button" title="Download a signed JSON Evidence Pack for compliance review or SIEM ingestion">
+                    Export signed evidence pack
                   </button>
+                  <div id="activity-recall-as-of-panel" class="activity-recall-as-of-panel" style="margin-top:12px;display:none;">
+                    <p class="panel-title" style="margin:0 0 6px;font-size:13px;">Recall as of (audit preview)</p>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+                      <input id="activity-recall-as-of-query" type="search" placeholder="Search query" class="activity-search" style="min-width:160px;" />
+                      <input id="activity-recall-as-of-seq" type="number" min="0" placeholder="Seq" style="width:88px;" title="Op-log sequence boundary" />
+                      <input id="activity-recall-as-of-ts" type="number" min="0" placeholder="Unix ms" style="width:120px;" title="Timestamp boundary (ms)" />
+                      <button id="btn-activity-recall-as-of" type="button" class="btn-sm">Preview</button>
+                    </div>
+                    <pre id="activity-recall-as-of-preview" class="activity-recall-preview" style="max-height:200px;overflow:auto;font-size:11px;margin:0;padding:8px;background:var(--bg-elev);border-radius:6px;"></pre>
+                  </div>
                 </div>
               </div>
               <div id="activity-mcp-toolbar" class="activity-toolbar hidden">
@@ -13301,17 +13311,6 @@ ollama list</code></pre>
                   <button id="mcp-activity-date-clear" class="btn-sm activity-date-clear hidden" title="Clear date and hour filters">Clear</button>
                 </div>
                 <span id="mcp-activity-stats" class="subtitle"></span>
-              </div>
-              <!-- Enterprise-only: compliance Evidence Pack (op-log + consent + MCP audit + hashes) -->
-              <div id="activity-compliance-section" class="panel activity-compliance-section" style="display: none; margin-bottom: 14px;">
-                <p class="panel-title" style="margin: 0 0 4px;">Compliance export</p>
-                <p class="subtitle activity-compliance-hint" style="font-size: 13px; margin: 0 0 10px;">
-                  Structured Evidence Pack for auditors — op-log, consent records, MCP audit trail, and engram file hashes.
-                  Respects the date range and engram scope filters above.
-                </p>
-                <button id="btn-activity-evidence-export" type="button" title="Download a JSON Evidence Pack for compliance review or SIEM ingestion">
-                  Export Evidence Pack (.json)
-                </button>
               </div>
               <div id="activity-list" class="activity-list">
                 <p class="subtitle">Loading…</p>
@@ -13377,7 +13376,52 @@ ollama list</code></pre>
                 <div id="sharing-token-summary" style="margin-top:8px; font-size:13px; color:var(--fg-muted);"></div>
               </section>
 
+              <!-- Enterprise Compliance ops -->
+              <section class="gc-section" id="gc-section-compliance" style="display:none;">
+                <h3 class="gc-section-title">Compliance operations</h3>
+                <div id="gc-compliance-upsell" class="hidden">
+                  <div class="pro-upgrade-card" style="margin-top:0;">
+                    <h3>Enterprise plan required</h3>
+                    <p class="subtitle">Retention dry-run and purge controls for regulated cortices.</p>
+                    <div class="pro-upgrade-actions">
+                      <button class="primary" data-pro-upgrade-btn>View Premium Plans</button>
+                      <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                    </div>
+                  </div>
+                </div>
+                <div id="gc-compliance-config" class="hidden">
+                  <p class="gc-section-hint">Dry-run lists sources that would be purged; purge requires compliance enabled in Settings.</p>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;">
+                    <button id="gc-btn-compliance-retention-dry-run" type="button" class="g-btn">Run retention dry-run</button>
+                    <button id="gc-btn-compliance-retention-purge" type="button" class="g-btn">Run retention purge</button>
+                  </div>
+                  <p id="gc-compliance-retention-status" class="subtitle" style="font-size:12px;margin:0;"></p>
+                </div>
+              </section>
+
               <!-- Organization Engram Catalog — IT publish + employee subscribe -->
+              <section class="gc-section" id="gc-section-compliance-schema">
+                <h3 class="gc-section-title">Compliance classification</h3>
+                <p class="gc-section-hint">Define the label palette employees see when classifying engrams. Each label maps to an internal tier (public / personal / sensitive) and optional recall caps. Push via MDM bundle or edit here.</p>
+                <div id="gc-compliance-schema-admin">
+                  <div id="gc-compliance-schema-upsell" class="panel hidden" style="padding:12px;margin-bottom:10px;">
+                    <p class="subtitle" style="margin:0;">Enterprise license required to configure the IT classification schema.</p>
+                  </div>
+                  <div id="gc-compliance-schema-config">
+                    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;">
+                      <input type="checkbox" id="compliance-schema-enabled" />
+                      Enable IT classification labels (hide raw public/personal/sensitive in Settings → Graphs)
+                    </label>
+                    <div id="compliance-label-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;"></div>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+                      <button type="button" id="btn-compliance-schema-save" class="g-btn primary">Save classification schema</button>
+                      <button type="button" id="btn-compliance-schema-reset" class="g-btn">Reset to green / yellow / red defaults</button>
+                    </div>
+                    <p id="compliance-schema-status" class="subtitle" style="margin:0;font-size:12px;"></p>
+                  </div>
+                </div>
+              </section>
+
               <section class="gc-section" id="gc-section-org-catalog">
                 <h3 class="gc-section-title">Organization engram catalog</h3>
                 <p class="gc-section-hint">IT publishes engram packages (DevOps Skills, compliance baselines, etc.); employees add entitled packages to their cortex. IdP groups gate subscribe — not unlock. Org packages use explicit share only.</p>
@@ -13832,6 +13876,16 @@ ollama list</code></pre>
                   </label>
                 </div>
 
+                <div style="margin-bottom:14px;padding:10px;border-radius:8px;border:1px solid var(--border);">
+                  <p style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;">Org signing key (optional)</p>
+                  <p class="subtitle" style="font-size:12px;margin:0 0 8px;">Second signature on evidence packs and op-log compaction checkpoints.</p>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                    <button id="btn-sso-generate-org-key" type="button" class="g-btn">Generate org signing key</button>
+                    <button id="btn-sso-clear-org-key" type="button" class="g-btn">Remove org key</button>
+                  </div>
+                  <p id="sso-org-key-status" class="subtitle" style="font-size:11px;margin:8px 0 0;"></p>
+                </div>
+
                 <div style="margin-bottom:14px;">
                   <p style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;">IdP group → role mapping</p>
                   <p class="subtitle" style="font-size:12px;margin:0 0 8px;">Highest matching privilege wins when a user belongs to multiple mapped groups.</p>
@@ -13845,6 +13899,52 @@ ollama list</code></pre>
                   <span id="sso-save-status" class="subtitle" style="font-size:12px;"></span>
                 </div>
                 </div><!-- /settings-panel-sso-config -->
+              </div>
+
+              <!-- Enterprise Compliance -->
+              <div class="panel" id="settings-panel-compliance" style="display:none;">
+                <p class="panel-title">Compliance</p>
+                <div id="settings-panel-compliance-upsell" class="hidden">
+                  <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                    Retention policies, signed evidence packs, and audit reconstruction for regulated teams.
+                  </p>
+                  <div class="pro-upgrade-card" style="margin-top: 0;">
+                    <h3>Enterprise plan required</h3>
+                    <p class="subtitle">Compliance mode adds retention TTLs, signed evidence exports, and point-in-time recall previews for IT audit.</p>
+                    <div class="pro-upgrade-actions">
+                      <button class="primary" data-pro-upgrade-btn>View Premium Plans</button>
+                      <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                    </div>
+                  </div>
+                </div>
+                <div id="settings-panel-compliance-config" class="hidden">
+                  <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                    Master toggle for automated retention purge. Legal hold and preservation always apply regardless.
+                    A weekly dry-run is logged to Activity when enabled — purge never runs without your explicit action.
+                  </p>
+                  <p id="compliance-status-line" class="subtitle" style="font-size: 13px; margin: 0 0 12px; color: var(--fg-muted);" aria-live="polite"></p>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">
+                    <input type="checkbox" id="compliance-enabled" />
+                    <span>Enable compliance retention operations</span>
+                  </label>
+                  <label style="font-size:13px;display:block;margin-bottom:10px;">
+                    Default retention TTL (days)
+                    <input id="compliance-default-ttl-days" type="number" min="1" placeholder="none" style="display:block;width:120px;margin-top:4px;" />
+                  </label>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:14px;">
+                    <input type="checkbox" id="compliance-default-export" checked />
+                    <span>Export slice before purge (default)</span>
+                  </label>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+                    <button id="btn-compliance-retention-dry-run" type="button" class="g-btn">Run retention dry-run</button>
+                    <button id="btn-compliance-retention-purge" type="button" class="g-btn">Run retention purge</button>
+                  </div>
+                  <p id="compliance-retention-status" class="subtitle" style="font-size:12px;margin:0 0 10px;"></p>
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <button id="btn-compliance-save" type="button" class="primary">Save compliance settings</button>
+                    <span id="compliance-save-status" class="subtitle" style="font-size:12px;"></span>
+                  </div>
+                </div>
               </div>
 
               <div class="panel">

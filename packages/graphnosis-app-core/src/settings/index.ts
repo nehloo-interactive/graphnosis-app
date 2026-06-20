@@ -539,6 +539,12 @@ export interface GraphMetadata {
   sensitivityTier?: 'public' | 'personal' | 'sensitive';
 
   /**
+   * IT classification label id when `compliance.classificationSchema` is enabled.
+   * Maps to internalTier + recall caps via `resolveClassificationPolicy`.
+   */
+  classificationLabelId?: string;
+
+  /**
    * Per-graph consent interval override (ms). -1 = permanent, 0 = every call.
    * When set, this overrides the global consentInterval{Personal|Sensitive}Ms
    * for this specific graph. The stricter of (per-graph, global) always wins —
@@ -602,6 +608,12 @@ export interface GraphMetadata {
   legalHoldAt?: number;
   /** Optional matter / case label for compliance exports. */
   legalHoldMatter?: string;
+
+  /**
+   * Regulated-industry classification tags (hipaa, pci, export-controlled, …).
+   * Auto-tightens effective sensitivity tier and recall caps.
+   */
+  industryTags?: string[];
 }
 
 /**
@@ -622,6 +634,17 @@ export interface CloudOnboardingSettings {
 export interface ComplianceSettings {
   /** Master toggle. When off, retention purge is skipped; legal hold still enforced. */
   enabled: boolean;
+  /**
+   * Default per-engram retention TTL (ms) when an engram has no `retentionTtlMs`.
+   * Does not auto-purge until `enabled` is true and an operator runs purge.
+   */
+  defaultRetentionTtlMs?: number;
+  /** Default export-before-purge for engrams without an explicit override. Default true. */
+  defaultExportBeforePurge?: boolean;
+  /** Unix ms of last scheduled retention dry-run (sidecar idle hook). */
+  lastRetentionDryRunAt?: number;
+  /** IT-configurable classification label palette (Enterprise). */
+  classificationSchema?: import('../compliance/classification-schema.js').ClassificationSchema;
 }
 
 export interface HttpBridgeSettings {
@@ -843,6 +866,7 @@ export {
 } from './engram-catalog.js';
 import type { EngramCatalogSettings } from './engram-catalog.js';
 import { DEFAULT_ENGRAM_CATALOG_SETTINGS, engramCatalogFromAppSettings } from './engram-catalog.js';
+import { sanitizeClassificationSchema } from '../compliance/classification-schema.js';
 
 /**
  * Engram scope attached to a sharing token.
@@ -908,6 +932,12 @@ export interface OplogCompactionRecord {
   eventsAfter: number;
   bytesBefore?: number;
   bytesAfter?: number;
+  /** Ed25519 device signature over the compaction manifest hash (base64). */
+  deviceSignature?: string;
+  /** Optional org signing key signature when Enterprise SSO org key is configured. */
+  orgSignature?: string;
+  /** SHA-256 hex of the signed compaction manifest. */
+  manifestHash?: string;
 }
 
 /** Cortex-wide boot and memory policy. */
@@ -1912,7 +1942,26 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ? { sharing: sanitizeSharingSettings(partial.sharing) }
       : {}),
     ...(partial?.compliance && typeof partial.compliance === 'object'
-      ? { compliance: { enabled: partial.compliance.enabled === true } }
+      ? {
+          compliance: {
+            enabled: partial.compliance.enabled === true,
+            ...(typeof partial.compliance.defaultRetentionTtlMs === 'number' && partial.compliance.defaultRetentionTtlMs > 0
+              ? { defaultRetentionTtlMs: Math.floor(partial.compliance.defaultRetentionTtlMs) }
+              : {}),
+            ...(partial.compliance.defaultExportBeforePurge !== undefined
+              ? { defaultExportBeforePurge: partial.compliance.defaultExportBeforePurge !== false }
+              : {}),
+            ...(typeof partial.compliance.lastRetentionDryRunAt === 'number'
+              ? { lastRetentionDryRunAt: partial.compliance.lastRetentionDryRunAt }
+              : {}),
+            ...(partial.compliance.classificationSchema !== undefined
+              ? (() => {
+                const schema = sanitizeClassificationSchema(partial.compliance.classificationSchema);
+                return schema ? { classificationSchema: schema } : {};
+              })()
+              : {}),
+          },
+        }
       : {}),
     ...(partial?.cloudOnboarding && typeof partial.cloudOnboarding === 'object'
       ? { cloudOnboarding: sanitizeCloudOnboarding(partial.cloudOnboarding) }

@@ -1164,7 +1164,7 @@ async function main(): Promise<void> {
     licenseValidator,
   });
   skillMaintenanceScheduler.start();
-  const sidecarIdleMaintenance = new SidecarIdleMaintenance({ host, broadcastRaw });
+  const sidecarIdleMaintenance = new SidecarIdleMaintenance({ host, cortexDir: env.cortexDir, broadcastRaw });
   sidecarIdleMaintenance.start();
   // Build a dispatcher bound to mcpDeps so Ghampus can call any of the 47+
   // MCP tool handlers without going through the network transport. The Server

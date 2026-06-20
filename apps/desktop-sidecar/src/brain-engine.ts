@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { detectPolicyContradictions } from '@graphnosis-app/core';
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
@@ -74,6 +75,8 @@ export interface ContradictionPair {
   sharedEntities: string[];
   description: string;
   detectedAt: number;
+  /** semantic = reflectGraph scan; policy = canonical policy / skill conflict */
+  kind?: 'semantic' | 'policy';
 }
 
 export interface Insight {
@@ -875,9 +878,9 @@ export class BrainEngine {
 
       for (const graphId of slice) {
         try {
+          const nodeById = new Map(this.host.listNodes(graphId).map(n => [n.id, n]));
           const results = this.host.reflectGraph(graphId);
           if (results.length) {
-            const nodeById = new Map(this.host.listNodes(graphId).map(n => [n.id, n]));
             for (const c of results) {
               const key = keyOf(graphId, c.nodeA, c.nodeB);
               if (known.has(key)) continue;
@@ -899,8 +902,39 @@ export class BrainEngine {
                 sharedEntities: c.sharedEntities,
                 description: c.description,
                 detectedAt: now,
+                kind: 'semantic',
               });
             }
+          }
+          const meta = this.host.getGraphMetadata(graphId);
+          const policyHits = detectPolicyContradictions({
+            graphId,
+            ...(meta ? { meta } : {}),
+            sources: this.host.listSources(graphId),
+            nodePreview: (nodeId) => {
+              const n = nodeById.get(nodeId);
+              return n?.contentPreview;
+            },
+          });
+          for (const hit of policyHits) {
+            const key = keyOf(graphId, hit.nodeId, hit.canonicalNodeId);
+            if (known.has(key)) continue;
+            const a = nodeById.get(hit.nodeId);
+            const b = nodeById.get(hit.canonicalNodeId);
+            if (!a || !b) continue;
+            known.add(key);
+            found.push({
+              id: randomUUID(),
+              graphId,
+              nodeA: hit.nodeId,
+              nodeB: hit.canonicalNodeId,
+              snippetA: cleanSnippet(a.contentPreview).slice(0, 140),
+              snippetB: cleanSnippet(b.contentPreview).slice(0, 140),
+              sharedEntities: hit.sharedTokens,
+              description: `Policy conflict: ${hit.reason}`,
+              detectedAt: now,
+              kind: 'policy',
+            });
           }
         } catch (e) {
           // One engram failing must not abort the batch.

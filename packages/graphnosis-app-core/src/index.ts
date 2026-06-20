@@ -15,6 +15,21 @@ export {
   retentionTtlMsForGraph,
   isRetentionExpired,
   shouldExportBeforePurge,
+  effectiveSensitivityTier,
+  TIER_CAPS,
+  industryRecallBudgetClamp,
+  budgetForGraph,
+  normalizeIndustryTags,
+  detectPolicyContradictions,
+  resolveClassificationPolicy,
+  sanitizeClassificationSchema,
+  userAssignableLabels,
+  DEFAULT_CLASSIFICATION_LABELS,
+} from './compliance/index.js';
+export type {
+  ClassificationLabel,
+  ClassificationSchema,
+  ClassificationPolicy,
 } from './compliance/index.js';
 
 // Source tracking types are App-specific and stay here.

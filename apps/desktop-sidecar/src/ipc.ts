@@ -63,6 +63,8 @@ import {
   recordInstalledPackage,
 } from './catalog-subscriptions.js';
 import { readSsoUnlockOffer, discoverSsoUnlock, idpUiHints, probeIdpReachability } from '@graphnosis-app/core/sso';
+import { resolveClassificationPolicy, sanitizeClassificationSchema } from '@graphnosis-app/core';
+import type { GraphMetadata } from '@graphnosis-app/core/settings';
 import {
   isCortexSessionBusy,
   isSessionLeaseFresh,
@@ -641,11 +643,21 @@ async function installCatalogPackage(
   const graphs = deps.host.listGraphs();
   if (!graphs.includes(engramId)) {
     await deps.host.createGraph(engramId);
-    await deps.host.setGraphMetadata(engramId, {
+    const schema = deps.host.complianceSchema();
+    const meta: GraphMetadata = {
       template: entry.itControlled ? 'compliance' : 'team',
       displayName: entry.displayName,
       createdAt: Date.now(),
-    });
+    };
+    if (entry.defaultClassificationLabelId && schema?.enabled) {
+      meta.classificationLabelId = entry.defaultClassificationLabelId;
+      meta.sensitivityTier = resolveClassificationPolicy(
+        entry.defaultClassificationLabelId,
+        schema,
+        meta,
+      ).tier;
+    }
+    await deps.host.setGraphMetadata(engramId, meta);
   }
 
   if (entry.installMode === 'merge-copy' && entry.sourceEngramId?.trim()) {
@@ -1597,6 +1609,26 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         tier: z.enum(['public', 'personal', 'sensitive']),
       }).parse(params);
       await deps.host.setGraphTier(args.graphId, args.tier);
+      return { ok: true };
+    }
+    case 'graphs.setClassificationLabel': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      const args = z.object({
+        graphId: z.string(),
+        labelId: z.string().min(1).nullable(),
+      }).parse(params);
+      const schema = deps.host.complianceSchema();
+      if (schema?.enabled && args.labelId) {
+        const label = schema.labels.find((l) => l.id === args.labelId && l.enabled !== false);
+        if (!label) {
+          return { ok: false, reason: 'unknown_label', message: 'Classification label is not in the IT schema.' };
+        }
+        if (!hasEnterprise && label.userAssignable === false) {
+          return { ok: false, reason: 'not_assignable', message: 'This label is IT-assigned only.' };
+        }
+      }
+      await deps.host.setGraphClassificationLabel(args.graphId, args.labelId);
       return { ok: true };
     }
     case 'engram.setConfig': {
@@ -6951,6 +6983,8 @@ OUTPUT RULES — non-negotiable:
           idpGroup: z.string().min(1).max(256),
           role: z.enum(SHARING_TOKEN_ROLES as unknown as [SharingRole, ...SharingRole[]]),
         })).max(64).optional(),
+        generateOrgSigningKey: z.boolean().optional(),
+        clearOrgSigningKey: z.boolean().optional(),
       }).parse(params ?? {});
 
       const current = deps.host.getSettings();
@@ -7006,6 +7040,17 @@ OUTPUT RULES — non-negotiable:
           ...(ssoUrl ? { ssoUrl } : {}),
           ...(idpCertificate ? { idpCertificate } : {}),
         };
+      }
+
+      if (args.clearOrgSigningKey) {
+        delete next.orgSignPublicKey;
+        delete next.orgSignSecret;
+        delete next.orgSignSecretEnc;
+      } else if (args.generateOrgSigningKey) {
+        const kp = await deps.host.provisionOrgSigningKey();
+        next.orgSignPublicKey = kp.publicKey;
+        next.orgSignSecret = kp.secretKey;
+        delete next.orgSignSecretEnc;
       }
 
       const sanitized = sanitizeEnterpriseSsoSettings(next);
@@ -7295,7 +7340,14 @@ OUTPUT RULES — non-negotiable:
       const settings = deps.host.getSettings();
       const packageIds = args.defaultSubscriptions
         ?? entries.filter((e) => e.published !== false).map((e) => e.packageId);
-      const bundle = buildMdmEngramCatalogBundle(entries, settings.sso, packageIds);
+      const bundle = buildMdmEngramCatalogBundle(
+        entries,
+        settings.sso,
+        packageIds,
+        settings.compliance?.classificationSchema
+          ? { classificationSchema: settings.compliance.classificationSchema }
+          : undefined,
+      );
       if (!bundle) {
         return {
           ok: false,
@@ -7386,6 +7438,9 @@ OUTPUT RULES — non-negotiable:
             tenantId: z.string().optional(),
           }),
           defaultSubscriptions: z.array(z.string()),
+          compliance: z.object({
+            classificationSchema: z.unknown(),
+          }).optional(),
         }).optional(),
         mergeSsoHints: z.boolean().optional(),
       }).parse(params ?? {});
@@ -7393,6 +7448,9 @@ OUTPUT RULES — non-negotiable:
       let bundlePath = args.bundlePath?.trim();
       let bundle = bundlePath ? await readMdmBundleFile(bundlePath) : null;
       if (!bundle && args.bundle) {
+        const inlineSchema = args.bundle.compliance?.classificationSchema
+          ? sanitizeClassificationSchema(args.bundle.compliance.classificationSchema)
+          : undefined;
         bundle = {
           sso: {
             issuer: args.bundle.sso.issuer.trim(),
@@ -7400,6 +7458,7 @@ OUTPUT RULES — non-negotiable:
             ...(args.bundle.sso.tenantId?.trim() ? { tenantId: args.bundle.sso.tenantId.trim() } : {}),
           },
           defaultSubscriptions: args.bundle.defaultSubscriptions.map((p) => p.trim()).filter(Boolean),
+          ...(inlineSchema ? { compliance: { classificationSchema: inlineSchema } } : {}),
         };
         await fs.mkdir(path.dirname(DEFAULT_MDM_BUNDLE_PATH), { recursive: true, mode: 0o700 });
         await fs.writeFile(DEFAULT_MDM_BUNDLE_PATH, JSON.stringify(bundle, null, 2), { encoding: 'utf8', mode: 0o600 });
@@ -7413,7 +7472,7 @@ OUTPUT RULES — non-negotiable:
         };
       }
       await importMdmCatalogBundle(bundlePath, bundle);
-      if (args.mergeSsoHints === true) {
+      if (args.mergeSsoHints === true || bundle.compliance?.classificationSchema) {
         await mergeMdmSsoHints(deps.host, bundle);
       }
       return {
@@ -7762,6 +7821,124 @@ OUTPUT RULES — non-negotiable:
       return { ok: true, count: events.length, events, mcpCount: mcpEvents.length, mcpEvents };
     }
 
+    case 'compliance.get': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const enterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      const settings = deps.host.getSettings();
+      return {
+        ok: true,
+        enterprise,
+        compliance: settings.compliance ?? { enabled: false },
+      };
+    }
+
+    case 'compliance.save': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return { ok: false, reason: 'not_licensed', message: 'Compliance settings require an Enterprise license.' };
+      }
+      const args = z.object({
+        enabled: z.boolean().optional(),
+        defaultRetentionTtlMs: z.number().int().positive().nullable().optional(),
+        defaultExportBeforePurge: z.boolean().optional(),
+      }).parse(params ?? {});
+      const prev = deps.host.getSettings().compliance ?? { enabled: false };
+      const next = {
+        enabled: args.enabled !== undefined ? args.enabled : prev.enabled,
+        ...(args.defaultRetentionTtlMs === null
+          ? {}
+          : args.defaultRetentionTtlMs !== undefined
+            ? { defaultRetentionTtlMs: args.defaultRetentionTtlMs }
+            : prev.defaultRetentionTtlMs !== undefined
+              ? { defaultRetentionTtlMs: prev.defaultRetentionTtlMs }
+              : {}),
+        ...(args.defaultExportBeforePurge !== undefined
+          ? { defaultExportBeforePurge: args.defaultExportBeforePurge }
+          : prev.defaultExportBeforePurge !== undefined
+            ? { defaultExportBeforePurge: prev.defaultExportBeforePurge }
+            : {}),
+        ...(prev.lastRetentionDryRunAt !== undefined ? { lastRetentionDryRunAt: prev.lastRetentionDryRunAt } : {}),
+        ...(prev.classificationSchema ? { classificationSchema: prev.classificationSchema } : {}),
+      };
+      await deps.host.setSettings({ compliance: next });
+      return { ok: true, compliance: deps.host.getSettings().compliance };
+    }
+
+    case 'compliance.getClassificationSchema': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const enterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      const schema = deps.host.complianceSchema();
+      return { ok: true, enterprise, schema: schema ?? { enabled: false, labels: [] } };
+    }
+
+    case 'compliance.setClassificationSchema': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return { ok: false, reason: 'not_licensed', message: 'Classification schema requires an Enterprise license.' };
+      }
+      const args = z.object({
+        enabled: z.boolean(),
+        labels: z.array(z.object({
+          id: z.string().min(1).max(64),
+          displayName: z.string().min(1).max(64),
+          color: z.string().min(1).max(32),
+          internalTier: z.enum(['public', 'personal', 'sensitive']),
+          userAssignable: z.boolean().optional(),
+          enabled: z.boolean().optional(),
+          capOverrides: z.object({
+            maxTokens: z.number().int().positive().optional(),
+            maxNodes: z.number().int().positive().optional(),
+          }).optional(),
+        })).max(32),
+        defaultEngramLabel: z.string().max(64).nullable().optional(),
+      }).parse(params ?? {});
+      const schema = sanitizeClassificationSchema({
+        enabled: args.enabled,
+        labels: args.labels,
+        ...(args.defaultEngramLabel ? { defaultEngramLabel: args.defaultEngramLabel } : {}),
+      });
+      if (!schema) {
+        return { ok: false, reason: 'invalid_schema', message: 'Classification schema is invalid.' };
+      }
+      const prev = deps.host.getSettings().compliance ?? { enabled: false };
+      await deps.host.setSettings({
+        compliance: {
+          enabled: prev.enabled === true,
+          ...(prev.defaultRetentionTtlMs !== undefined ? { defaultRetentionTtlMs: prev.defaultRetentionTtlMs } : {}),
+          ...(prev.defaultExportBeforePurge !== undefined ? { defaultExportBeforePurge: prev.defaultExportBeforePurge } : {}),
+          ...(prev.lastRetentionDryRunAt !== undefined ? { lastRetentionDryRunAt: prev.lastRetentionDryRunAt } : {}),
+          classificationSchema: schema,
+        },
+      });
+      return { ok: true, schema: deps.host.complianceSchema() };
+    }
+
+    case 'graphs.updateCompliance': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return { ok: false, reason: 'not_licensed', message: 'Per-engram compliance fields require Enterprise.' };
+      }
+      const args = z.object({
+        graphId: z.string(),
+        retentionTtlMs: z.number().int().positive().nullable().optional(),
+        retentionExportBeforePurge: z.boolean().optional(),
+        industryTags: z.array(z.string().max(64)).max(16).nullable().optional(),
+        classificationLabelId: z.string().max(64).nullable().optional(),
+      }).parse(params);
+      await deps.host.updateGraphComplianceFields(args.graphId, {
+        ...(args.retentionTtlMs !== undefined ? { retentionTtlMs: args.retentionTtlMs } : {}),
+        ...(args.retentionExportBeforePurge !== undefined ? { retentionExportBeforePurge: args.retentionExportBeforePurge } : {}),
+        ...(args.industryTags !== undefined ? { industryTags: args.industryTags } : {}),
+      });
+      if (args.classificationLabelId !== undefined) {
+        await deps.host.setGraphClassificationLabel(args.graphId, args.classificationLabelId);
+      }
+      return { ok: true };
+    }
+
     case 'compliance.setEngramPreserve': {
       const args = z.object({
         graphId: z.string(),
@@ -7795,13 +7972,36 @@ OUTPUT RULES — non-negotiable:
         until: z.number().optional(),
         engram: z.string().optional(),
       }).parse(params ?? {});
-      const { buildEvidencePack } = await import('./compliance.js');
-      const pack = await buildEvidencePack(deps.host, deps.cortexDir, {
+      const { buildSignedEvidencePack } = await import('./compliance.js');
+      const signed = await buildSignedEvidencePack(deps.host, deps.cortexDir, {
         ...(args.since !== undefined ? { since: args.since } : {}),
         ...(args.until !== undefined ? { until: args.until } : {}),
         ...(args.engram !== undefined ? { engram: args.engram } : {}),
       });
-      return { ok: true, pack };
+      return { ok: true, pack: signed.pack, manifestHash: signed.manifestHash, signatures: signed.signatures, detachedSig: signed.detachedSig };
+    }
+
+    case 'compliance.recallAsOf': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return { ok: false, reason: 'not_licensed', message: 'Point-in-time recall preview requires Enterprise.' };
+      }
+      const args = z.object({
+        query: z.string().min(1),
+        graphId: z.string().optional(),
+        asOfSeq: z.number().int().nonnegative().optional(),
+        asOfTs: z.number().int().nonnegative().optional(),
+        maxNodes: z.number().int().min(1).max(50).optional(),
+      }).parse(params ?? {});
+      const { recallAsOf } = await import('./compliance.js');
+      const result = await recallAsOf(deps.host, args.query, {
+        ...(args.graphId ? { graphId: args.graphId } : {}),
+        ...(args.asOfSeq !== undefined ? { asOfSeq: args.asOfSeq } : {}),
+        ...(args.asOfTs !== undefined ? { asOfTs: args.asOfTs } : {}),
+        ...(args.maxNodes !== undefined ? { maxNodes: args.maxNodes } : {}),
+      });
+      return { ok: true, result };
     }
 
     case 'compliance.runRetention': {

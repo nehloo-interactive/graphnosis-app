@@ -10,6 +10,10 @@ import {
   sources,
   assertEngramNotOnLegalHold,
   assertSourceNotOnLegalHold,
+  effectiveSensitivityTier,
+  normalizeIndustryTags,
+  resolveClassificationPolicy,
+  sanitizeClassificationSchema,
   type SourceRecord,
 } from '@graphnosis-app/core';
 import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
@@ -449,12 +453,13 @@ export class GraphnosisHost {
     // (power-user / admin override path); settings fill in the rest.
     const base = opts.policy ?? { defaultBudget: policy.DEFAULT_BUDGET, graphs: [] };
     const envGraphIds = new Set(base.graphs.map((g) => g.graphId));
+    const schema = this.complianceSchema();
     const fromSettings: policy.GraphPolicy[] = Object.entries(settings.graphMetadata)
       .filter(([id, m]) => m.sensitivityTier && !envGraphIds.has(id))
       .map(([id, m]) => ({
         graphId: id,
-        tier: m.sensitivityTier as policy.SensitivityTier,
-        shareWithAi: m.sensitivityTier !== 'sensitive',
+        tier: effectiveSensitivityTier(m, schema) as policy.SensitivityTier,
+        shareWithAi: effectiveSensitivityTier(m, schema) !== 'sensitive',
       }));
     this.policyCfg = { ...base, graphs: [...base.graphs, ...fromSettings] };
   }
@@ -721,6 +726,14 @@ export class GraphnosisHost {
     }, { userInitiated: true });
     console.error(`[graphnosis-host] provisioned ${FEDERATED_MASTER_FILE} for federated SSO unlock.`);
     return { federatedUnlockKey: key };
+  }
+
+  /** Generate an org Ed25519 signing keypair for evidence-pack co-signing. */
+  async provisionOrgSigningKey(): Promise<{ publicKey: string; secretKey: string }> {
+    const kp = await crypto.generateSigningKeyPair();
+    const publicKey = Buffer.from(kp.publicKey).toString('base64');
+    const secretKey = Buffer.from(kp.secretKey).toString('base64');
+    return { publicKey, secretKey };
   }
 
   /**
@@ -1282,6 +1295,128 @@ export class GraphnosisHost {
     return this.opts.adapter.reflectGraph(g.handle);
   }
 
+  /** Active IT classification schema from compliance settings. */
+  complianceSchema(): ReturnType<typeof sanitizeClassificationSchema> {
+    return sanitizeClassificationSchema(this.settings.compliance?.classificationSchema);
+  }
+
+  private patchPolicyTier(graphId: GraphId, meta: settingsMod.GraphMetadata): void {
+    const tier = effectiveSensitivityTier(meta, this.complianceSchema());
+    const graphs = this.policyCfg.graphs.filter((g) => g.graphId !== graphId);
+    graphs.push({ graphId, shareWithAi: tier !== 'sensitive', tier });
+    this.policyCfg = { ...this.policyCfg, graphs };
+  }
+
+  /** Assign IT classification label — updates metadata tier + live policy. */
+  async setGraphClassificationLabel(graphId: GraphId, labelId: string | null): Promise<void> {
+    const schema = this.complianceSchema();
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const updated: settingsMod.GraphMetadata = { ...existing };
+    if (labelId === null || labelId === '') {
+      delete updated.classificationLabelId;
+    } else {
+      updated.classificationLabelId = labelId;
+    }
+    const { tier } = resolveClassificationPolicy(updated.classificationLabelId, schema, updated);
+    updated.sensitivityTier = tier;
+    await this.setGraphMetadata(graphId, updated);
+    this.patchPolicyTier(graphId, updated);
+  }
+
+  /** Device + optional org Ed25519 signers for compliance evidence packs. */
+  getEvidencePackSigners(): Array<{
+    kind: 'device' | 'org';
+    deviceId?: string;
+    publicKey: Uint8Array;
+    secretKey: Uint8Array;
+  }> {
+    const out: Array<{
+      kind: 'device' | 'org';
+      deviceId?: string;
+      publicKey: Uint8Array;
+      secretKey: Uint8Array;
+    }> = [{
+      kind: 'device',
+      deviceId: this.deviceIdentity.deviceId,
+      publicKey: this.deviceIdentity.signPublicKey,
+      secretKey: this.deviceIdentity.signSecretKey,
+    }];
+    const org = this.settings.sso?.orgSignSecret;
+    const orgPub = this.settings.sso?.orgSignPublicKey;
+    if (org && orgPub) {
+      try {
+        out.push({
+          kind: 'org',
+          publicKey: new Uint8Array(Buffer.from(orgPub, 'base64')),
+          secretKey: new Uint8Array(Buffer.from(org, 'base64')),
+        });
+      } catch { /* skip malformed org key */ }
+    }
+    return out;
+  }
+
+  /** Log a compliance retention dry-run to the op-log (Activity) — never purges. */
+  async recordComplianceRetentionDryRun(itemCount: number): Promise<void> {
+    this.oplogWriter.emit({
+      graphId: '__compliance',
+      op: 'merge',
+      target: { kind: 'source', id: '__compliance:retention-dry-run' },
+      after: {
+        action: 'retentionDryRun',
+        itemCount,
+        triggeredBy: 'compliance:scheduler',
+      },
+    });
+    this.invalidateOplogCache();
+    const prev = this.getSettings().compliance;
+    await this.setSettings({
+      compliance: {
+        enabled: prev?.enabled === true,
+        ...(prev?.defaultRetentionTtlMs !== undefined ? { defaultRetentionTtlMs: prev.defaultRetentionTtlMs } : {}),
+        ...(prev?.defaultExportBeforePurge !== undefined ? { defaultExportBeforePurge: prev.defaultExportBeforePurge } : {}),
+        ...(prev?.classificationSchema ? { classificationSchema: prev.classificationSchema } : {}),
+        lastRetentionDryRunAt: Date.now(),
+      },
+    });
+  }
+
+  async updateGraphComplianceFields(
+    graphId: GraphId,
+    fields: {
+      retentionTtlMs?: number | null;
+      retentionExportBeforePurge?: boolean;
+      industryTags?: string[] | null;
+    },
+  ): Promise<void> {
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const updated: settingsMod.GraphMetadata = { ...existing };
+    if (fields.retentionTtlMs === null) {
+      delete updated.retentionTtlMs;
+    } else if (typeof fields.retentionTtlMs === 'number' && fields.retentionTtlMs > 0) {
+      updated.retentionTtlMs = Math.floor(fields.retentionTtlMs);
+    }
+    if (fields.retentionExportBeforePurge !== undefined) {
+      updated.retentionExportBeforePurge = fields.retentionExportBeforePurge;
+    }
+    if (fields.industryTags === null) {
+      delete updated.industryTags;
+    } else if (fields.industryTags !== undefined) {
+      const normalized = normalizeIndustryTags(fields.industryTags);
+      if (normalized?.length) updated.industryTags = normalized;
+      else delete updated.industryTags;
+    }
+    await this.setGraphMetadata(graphId, updated);
+    this.patchPolicyTier(graphId, updated);
+  }
+
   /**
    * Slightly increase the confidence of a node that was recalled and acted on.
    * This is the reinforcement half of temporal decay — nodes the user finds
@@ -1418,11 +1553,12 @@ export class GraphnosisHost {
       displayName: graphId,
       createdAt: 0,
     };
-    await this.setGraphMetadata(graphId, { ...existing, sensitivityTier: tier });
-    // Patch the live policy so the change takes effect immediately without restart.
-    const graphs = this.policyCfg.graphs.filter((g) => g.graphId !== graphId);
-    graphs.push({ graphId, shareWithAi: tier !== 'sensitive', tier });
-    this.policyCfg = { ...this.policyCfg, graphs };
+    const updated = { ...existing, sensitivityTier: tier };
+    if (this.complianceSchema()?.enabled) {
+      delete updated.classificationLabelId;
+    }
+    await this.setGraphMetadata(graphId, updated);
+    this.patchPolicyTier(graphId, updated);
   }
 
   /** Update an engram's sensitivity tier and/or per-graph consent interval in
@@ -1448,12 +1584,12 @@ export class GraphnosisHost {
     if (config.clearConsentInterval) {
       delete (updated as { consentIntervalMs?: number }).consentIntervalMs;
     }
+    if (config.tier !== undefined && this.complianceSchema()?.enabled) {
+      delete updated.classificationLabelId;
+    }
     await this.setGraphMetadata(graphId, updated);
     if (config.tier !== undefined) {
-      const tier = config.tier;
-      const graphs = this.policyCfg.graphs.filter((g) => g.graphId !== graphId);
-      graphs.push({ graphId, shareWithAi: tier !== 'sensitive', tier });
-      this.policyCfg = { ...this.policyCfg, graphs };
+      this.patchPolicyTier(graphId, updated);
     }
   }
 
@@ -4804,7 +4940,7 @@ export class GraphnosisHost {
 
   private async persistOplogCompactionRecord(result: OplogCompactionResult): Promise<void> {
     if (!result.compacted || result.eventsRemoved === undefined) return;
-    const record: settingsMod.OplogCompactionRecord = {
+    const base: settingsMod.OplogCompactionRecord = {
       at: Date.now(),
       eventsRemoved: result.eventsRemoved,
       eventsBefore: result.eventsBefore ?? 0,
@@ -4812,6 +4948,23 @@ export class GraphnosisHost {
       ...(result.bytesBefore !== undefined ? { bytesBefore: result.bytesBefore } : {}),
       ...(result.bytesAfter !== undefined ? { bytesAfter: result.bytesAfter } : {}),
     };
+    let record = base;
+    try {
+      const { compactionManifestHash, signManifestHash } = await import('./compliance.js');
+      const manifestHash = compactionManifestHash(base);
+      const signers = this.getEvidencePackSigners();
+      if (signers.length > 0) {
+        const signatures = await signManifestHash(manifestHash, signers);
+        const deviceSig = signatures.find((s) => s.signer === 'device');
+        const orgSig = signatures.find((s) => s.signer === 'org');
+        record = {
+          ...base,
+          manifestHash,
+          ...(deviceSig ? { deviceSignature: deviceSig.signature } : {}),
+          ...(orgSig ? { orgSignature: orgSig.signature } : {}),
+        };
+      }
+    } catch { /* signing is best-effort */ }
     await this.setSettings({
       cortex: {
         ...this.settings.cortex,
@@ -6347,6 +6500,12 @@ async function encryptSsoSecretsInSettings(
     nextSso = { ...rest, federatedUnlockKeyEnc };
     changed = true;
   }
+  if (sso.orgSignSecret) {
+    const orgSignSecretEnc = await encryptTokenField(sso.orgSignSecret, dataKey);
+    const { orgSignSecret: _drop, ...rest } = nextSso;
+    nextSso = { ...rest, orgSignSecretEnc };
+    changed = true;
+  }
   return changed ? { ...settings, sso: nextSso } : settings;
 }
 
@@ -6381,6 +6540,12 @@ async function decryptSsoSecretsInSettings(
     const federatedUnlockKey = await recover(sso.federatedUnlockKeyEnc, 'federated unlock key');
     const { federatedUnlockKeyEnc: _drop, ...rest } = nextSso;
     nextSso = { ...rest, ...(federatedUnlockKey ? { federatedUnlockKey } : {}) };
+    changed = true;
+  }
+  if (sso.orgSignSecretEnc) {
+    const orgSignSecret = await recover(sso.orgSignSecretEnc, 'org signing key');
+    const { orgSignSecretEnc: _drop, ...rest } = nextSso;
+    nextSso = { ...rest, ...(orgSignSecret ? { orgSignSecret } : {}) };
     changed = true;
   }
   return changed ? { ...settings, sso: nextSso } : settings;

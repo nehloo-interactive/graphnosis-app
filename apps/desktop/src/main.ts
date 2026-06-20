@@ -84,6 +84,11 @@ import {
   type SkillListEntry,
 } from './ui/skills';
 import { renderSettingsGraphsList } from './ui/settings-graphs';
+import {
+  refreshComplianceSettingsPanel,
+  refreshComplianceGetConnectedPanel,
+  wireComplianceSettingsPanel,
+} from './ui/settings-compliance';
 
 
 
@@ -1000,6 +1005,7 @@ interface BrainContradictionPair {
   id: string; graphId: string; nodeA: string; nodeB: string;
   snippetA: string; snippetB: string;
   sharedEntities: string[]; description: string; detectedAt: number;
+  kind?: 'semantic' | 'policy';
 }
 // One autonomous-heal event from the healing journal — rendered in the
 // Autonomous Brain "Self-healing" log. The llm* fields are filled in
@@ -3057,6 +3063,7 @@ function activateMode(mode: Mode): void {
     renderGcRecipes((document.getElementById('gc-recipe-filter') as HTMLInputElement | null)?.value ?? '');
     void refreshConnectorsList();
     void refreshCatalogGetConnectedPanel();
+    void refreshComplianceGetConnectedPanel();
     void refreshEmployeeCatalogPanel();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
@@ -3077,6 +3084,7 @@ function activateMode(mode: Mode): void {
     renderSettingsTab();
     void refreshModelsPanel();
     void refreshSsoSettingsPanel();
+    void refreshComplianceSettingsPanel();
     refreshLicenseLauncherStatus();
     // Always scroll to top so the user lands at the beginning of the page.
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
@@ -15592,10 +15600,13 @@ async function renderContradictionsReview(): Promise<void> {
     return;
   }
   els.needsReviewOverlayTitle.textContent =
-    `Contradicting memories — ${pairs.length} pair${pairs.length === 1 ? '' : 's'}`;
+    pairs.some((p) => p.kind === 'policy')
+      ? `Policy conflicts — ${pairs.length} pair${pairs.length === 1 ? '' : 's'}`
+      : `Contradicting memories — ${pairs.length} pair${pairs.length === 1 ? '' : 's'}`;
   host.innerHTML = pairs.map((c) => `
     <div class="lb-dup-card">
       <div class="lb-dup-card-pair">
+        ${c.kind === 'policy' ? '<span class="sgr-badge" style="margin-bottom:6px;">Policy conflict</span>' : ''}
         <div class="lb-snippet"><span class="lb-snippet-tag">A</span>${escape(clampText(c.snippetA, 160))}</div>
         <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(clampText(c.snippetB, 160))}</div>
       </div>
@@ -19793,6 +19804,8 @@ interface SsoPublicView {
   enabled: boolean;
   protocol: 'oidc' | 'saml';
   breakGlassPassphrase: boolean;
+  hasOrgSigningKey?: boolean;
+  orgSignPublicKey?: string;
   oidc?: {
     issuer: string;
     clientId: string;
@@ -19926,6 +19939,12 @@ async function refreshSsoSettingsPanel(): Promise<void> {
       if (secret) secret.value = '';
       if (secretHint) secretHint.style.display = s.oidc.hasClientSecret ? '' : 'none';
     }
+    const orgKeyStatus = document.getElementById('sso-org-key-status');
+    if (orgKeyStatus) {
+      orgKeyStatus.textContent = s.hasOrgSigningKey
+        ? `Org signing key configured${s.orgSignPublicKey ? ` (${s.orgSignPublicKey.slice(0, 12)}…)` : ''}`
+        : 'No org signing key — evidence packs are device-signed only.';
+    }
 
     const mappings = document.getElementById('sso-group-mappings');
     if (mappings) {
@@ -19953,6 +19972,25 @@ function wireSsoSettingsPanel(): void {
     container.appendChild(row);
     wireSsoMappingRows(container);
     void updateSsoMappingPreview();
+  });
+
+  document.getElementById('btn-sso-generate-org-key')?.addEventListener('click', async () => {
+    if (!await gConfirm('Generate org signing key?', 'Creates a new Ed25519 key for co-signing evidence packs.')) return;
+    try {
+      await ipcCall('sso:set', { generateOrgSigningKey: true });
+      void refreshSsoSettingsPanel();
+    } catch (e) {
+      showError(`Could not generate org key: ${e}`);
+    }
+  });
+  document.getElementById('btn-sso-clear-org-key')?.addEventListener('click', async () => {
+    if (!await gConfirm('Remove org signing key?', 'Evidence packs will be device-signed only.')) return;
+    try {
+      await ipcCall('sso:set', { clearOrgSigningKey: true });
+      void refreshSsoSettingsPanel();
+    } catch (e) {
+      showError(`Could not remove org key: ${e}`);
+    }
   });
 
   document.getElementById('btn-sso-save')?.addEventListener('click', async () => {
@@ -20032,6 +20070,7 @@ function wireSsoSettingsPanel(): void {
 }
 
 wireSsoSettingsPanel();
+wireComplianceSettingsPanel();
 
 // ── Organization Engram Catalog (Enterprise Phase 4) ───────────────────────
 
