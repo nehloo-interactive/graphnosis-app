@@ -233,6 +233,91 @@ mod kc {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct SsoKeychainSecrets {
+    pub federated_unlock_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+}
+
+fn sso_account(cortex_dir: &str) -> String {
+    format!("sso:{}", account_for(&normalize_cortex_dir(cortex_dir)))
+}
+
+#[cfg(any(target_os = "windows", feature = "keychain"))]
+mod sso_kc {
+    use super::{account_for, normalize_cortex_dir, SsoKeychainSecrets};
+    use anyhow::{Context, Result};
+
+    const SERVICE: &str = "app.graphnosis.sso";
+
+    fn entry(cortex_dir: &str) -> Result<keyring::Entry> {
+        keyring::Entry::new(SERVICE, &super::sso_account(cortex_dir))
+            .context("create SSO keyring entry")
+    }
+
+    pub fn store(cortex_dir: &str, secrets: &SsoKeychainSecrets) -> Result<()> {
+        let json = serde_json::to_string(secrets).context("serialize SSO secrets")?;
+        entry(cortex_dir)?.set_password(&json).context("write SSO secrets")
+    }
+
+    pub fn load(cortex_dir: &str) -> Result<Option<SsoKeychainSecrets>> {
+        match entry(cortex_dir)?.get_password() {
+            Ok(json) => Ok(Some(serde_json::from_str(&json).context("parse SSO secrets")?)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+#[cfg(all(not(target_os = "windows"), not(feature = "keychain")))]
+mod sso_kc {
+    use super::{account_for, normalize_cortex_dir, SsoKeychainSecrets};
+    use anyhow::{Context, Result};
+    use std::path::PathBuf;
+
+    fn cache_file(cortex_dir: &str) -> Result<PathBuf> {
+        let base = dirs::data_local_dir()
+            .or_else(dirs::home_dir)
+            .context("resolve app support dir")?;
+        let dir = base.join("Graphnosis").join("touchid-cache");
+        std::fs::create_dir_all(&dir).context("create SSO cache dir")?;
+        Ok(dir.join(format!("sso-{}.json", account_for(&normalize_cortex_dir(cortex_dir)))))
+    }
+
+    pub fn store(cortex_dir: &str, secrets: &SsoKeychainSecrets) -> Result<()> {
+        let path = cache_file(cortex_dir)?;
+        let json = serde_json::to_string(secrets).context("serialize SSO secrets")?;
+        std::fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+
+    pub fn load(cortex_dir: &str) -> Result<Option<SsoKeychainSecrets>> {
+        let path = cache_file(cortex_dir)?;
+        match std::fs::read_to_string(&path) {
+            Ok(json) => Ok(Some(serde_json::from_str(&json).context("parse SSO secrets")?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+pub fn store_sso_secrets(cortex_dir: &str, secrets: &SsoKeychainSecrets) -> Result<()> {
+    if secrets.federated_unlock_key.trim().is_empty() {
+        return Err(anyhow::anyhow!("refusing to store empty federated unlock key"));
+    }
+    sso_kc::store(&normalize_cortex_dir(cortex_dir), secrets)
+}
+
+pub fn load_sso_secrets(cortex_dir: &str) -> Result<Option<SsoKeychainSecrets>> {
+    sso_kc::load(&normalize_cortex_dir(cortex_dir))
+}
+
 pub fn store_passphrase(cortex_dir: &str, passphrase: &str) -> Result<()> {
     if !is_usable_passphrase(passphrase) {
         return Err(anyhow::anyhow!("refusing to store empty passphrase for Touch ID"));

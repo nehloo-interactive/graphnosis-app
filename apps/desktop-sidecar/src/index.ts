@@ -99,6 +99,8 @@ if (role === 'embed') {
   // top-level side effects (process.on('message', …)) that keep the
   // process alive — no need to await indefinitely here.
   await import('./embed-worker.js');
+} else if (process.env['GRAPHNOSIS_SSO_LISTENER'] === '1') {
+  await import('./sso-listener.js');
 } else {
   // Full sidecar. main.ts boots cortex lock, IPC, events, MCP, host.
   await import('./main.js');

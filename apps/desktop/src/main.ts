@@ -57,7 +57,7 @@ import {
 } from './ui/ghampus';
 import {
   initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
-  offerSidecarRecovery,
+  offerSidecarRecovery, configureSsoUnlockButton,
 } from './ui/unlock';
 import {
   initCloudOnboardingHandlers,
@@ -90,6 +90,7 @@ interface StatusSnapshot {
   unlocked: boolean;
   cortex_dir: string | null;
   sidecar_running: boolean;
+  sso_session?: { role: string; email?: string | null } | null;
 }
 
 interface GraphSummary {
@@ -4616,7 +4617,9 @@ function refreshCortexCloudHint(path: string): void {
     refreshCortexCloudHint(els.cortexDir.value);
     if (timer !== null) window.clearTimeout(timer);
     timer = window.setTimeout(() => {
-      void refreshBiometricButton(els.cortexDir.value.trim());
+      const path = els.cortexDir.value.trim();
+      void refreshBiometricButton(path);
+      void configureSsoUnlockButton();
     }, 250);
   });
 }
@@ -19749,6 +19752,7 @@ interface SsoPublicView {
   groupRoleMappings: Array<{ idpGroup: string; role: string }>;
   lastLogin?: { at: number; email?: string; groups?: string[]; resolvedRole?: string };
   configured: boolean;
+  federatedUnlockReady?: boolean;
 }
 
 interface SsoGetResult {
@@ -19828,8 +19832,8 @@ async function refreshSsoSettingsPanel(): Promise<void> {
     if (statusLine) {
       const parts = [
         s.configured ? 'OIDC configured' : 'Not configured',
-        s.enabled ? 'SSO unlock enabled (pending IdP flow)' : 'Passphrase unlock',
-        data.unlockMode === 'sso-pending' ? '— federated login ships next' : '',
+        s.enabled && s.federatedUnlockReady ? 'SSO unlock ready' : s.enabled ? 'Provision federated key (save while unlocked)' : 'Passphrase unlock',
+        s.federatedUnlockReady ? 'Lock screen IdP sign-in enabled' : '',
       ];
       if (s.lastLogin?.email) {
         parts.push(`Last IdP login: ${s.lastLogin.email}`);
@@ -19908,7 +19912,12 @@ function wireSsoSettingsPanel(): void {
         if (g) groupRoleMappings.push({ idpGroup: g, role: r });
       });
 
-      const result = await ipcCall<{ ok: boolean; message?: string; reason?: string }>('sso:set', {
+      const result = await ipcCall<{
+        ok: boolean;
+        message?: string;
+        reason?: string;
+        keychainSync?: { federatedUnlockKey: string; clientSecret?: string };
+      }>('sso:set', {
         enabled,
         protocol,
         breakGlassPassphrase: breakGlass,
@@ -19924,6 +19933,24 @@ function wireSsoSettingsPanel(): void {
       if (!result.ok) {
         if (status) status.textContent = result.message ?? result.reason ?? 'Save failed';
         return;
+      }
+      if (result.keychainSync && IS_TAURI) {
+        const cortexDir = (document.getElementById('cortex-dir') as HTMLInputElement | null)?.value.trim()
+          ?? (await invoke<{ cortex_dir: string | null }>('status')).cortex_dir
+          ?? '';
+        if (cortexDir) {
+          try {
+            await invoke('sso_store_keychain', {
+              cortex_dir: cortexDir,
+              federated_unlock_key: result.keychainSync.federatedUnlockKey,
+              client_secret: result.keychainSync.clientSecret ?? null,
+            });
+          } catch (e) {
+            if (status) status.textContent = `Saved (keychain sync failed: ${String(e)})`;
+            void refreshSsoSettingsPanel();
+            return;
+          }
+        }
       }
       if (status) status.textContent = 'Saved';
       void refreshSsoSettingsPanel();

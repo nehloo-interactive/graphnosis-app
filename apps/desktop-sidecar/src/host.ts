@@ -27,6 +27,7 @@ import { SkillRunStore } from './skill-runs.js';
 import { WebAuthnCredentialStore } from './webauthn-store.js';
 import { ConnectorFileMapStore } from './connectors/file-map-store.js';
 import { DeviceIdentity } from './device-identity.js';
+import { FEDERATED_MASTER_FILE, federatedMasterPath, generateFederatedUnlockKey } from '@graphnosis-app/core/sso';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -62,6 +63,11 @@ export interface HostOptions {
    * `passphrase` is ignored when `recoveryPhrase` is provided.
    */
   recoveryPhrase?: string;
+  /**
+   * Federated org unlock key (Phase 2 SSO). When set, unwraps `federated.master.enc`
+   * instead of `master.enc` with the owner passphrase. Ignored when `recoveryPhrase` is set.
+   */
+  federatedUnlockKey?: string;
 }
 
 /** Return type of `GraphnosisHost.open()`. The `recoveryPhrase` field is
@@ -435,6 +441,7 @@ export class GraphnosisHost {
     await fs.mkdir(opts.cortexDir, { recursive: true });
     const saltPath = path.join(opts.cortexDir, 'salt.bin');
     const masterEncPath = path.join(opts.cortexDir, 'master.enc');
+    const federatedEncPath = federatedMasterPath(opts.cortexDir);
     const recoveryEncPath = path.join(opts.cortexDir, 'recovery.enc');
 
     // ── cortex unlock architecture ──────────────────────────────────────
@@ -518,18 +525,41 @@ export class GraphnosisHost {
       await writeFileAtomic(recoveryEncPath, Buffer.from(recBlob));
     } else {
       // ── Returning user: salt exists ───────────────────────────────────
-      const wrap = await deriveKey(opts.passphrase, salt);
+      const useFederated = Boolean(opts.federatedUnlockKey?.length) && !opts.recoveryPhrase;
+      const wrap = useFederated
+        ? await deriveKey(opts.federatedUnlockKey!, salt)
+        : await deriveKey(opts.passphrase, salt);
       derivedSalt = salt;
 
       // Check whether this cortex has been migrated to the master.enc model.
       let masterBlob: Uint8Array | null = null;
+      let federatedBlob: Uint8Array | null = null;
       try {
-        masterBlob = new Uint8Array(await fs.readFile(masterEncPath));
+        if (useFederated) {
+          federatedBlob = new Uint8Array(await fs.readFile(federatedEncPath));
+        } else {
+          masterBlob = new Uint8Array(await fs.readFile(masterEncPath));
+        }
       } catch {
-        // master.enc absent → legacy cortex
+        // master.enc / federated.master.enc absent
       }
 
-      if (masterBlob) {
+      if (useFederated) {
+        if (!federatedBlob) {
+          throw new Error(
+            'FATAL: federated SSO unlock is not provisioned for this cortex. ' +
+            'Ask the cortex owner to enable Enterprise SSO while unlocked.',
+          );
+        }
+        try {
+          dataKey = await decrypt(federatedBlob, wrap.key);
+        } catch (e) {
+          throw new Error(
+            `FATAL: federated SSO unlock failed: Decryption failed ` +
+            `(wrong org key or federated.master.enc tampered): ${(e as Error).message}`,
+          );
+        }
+      } else if (masterBlob) {
         // New-format cortex: unwrap dataKey from master.enc.
         try {
           dataKey = await decrypt(masterBlob, wrap.key);
@@ -614,11 +644,12 @@ export class GraphnosisHost {
     // same way: on-disk `*Enc` → in-memory plaintext. Legacy plaintext tokens
     // pass through and re-encrypt on the next persistSettings() call.
     const decryptedSettings = await decryptBridgeTokensInSettings(withCreds, dataKey);
+    const withSso = await decryptSsoSecretsInSettings(decryptedSettings, dataKey);
     // Load (or create on first unlock) this install's stable device identity:
     // a persisted deviceId, an Ed25519 keypair (secret encrypted under dataKey),
     // the op-log sequence counter, and the TOFU registry of peer device keys.
     const deviceIdentity = await DeviceIdentity.loadOrCreate(opts.cortexDir, dataKey);
-    const host = new GraphnosisHost(opts, derived, decryptedSettings, deviceIdentity);
+    const host = new GraphnosisHost(opts, derived, withSso, deviceIdentity);
     return recoveryPhrase ? { host, recoveryPhrase } : { host };
   }
 
@@ -649,7 +680,27 @@ export class GraphnosisHost {
   }
 
   /**
-   * Rewrap master.enc with a key derived from `newPassphrase`. The dataKey
+   * Provision or rotate the federated org unlock key used for IdP-gated unlock.
+   * Writes `federated.master.enc` wrapping the current dataKey. Owner-only.
+   */
+  async provisionFederatedUnlockKey(existingKey?: string): Promise<{ federatedUnlockKey: string }> {
+    const key = existingKey?.trim() || generateFederatedUnlockKey();
+    const wrap = await deriveKey(key, this.salt);
+    const blob = await encrypt(this.key, wrap.key, wrap.salt);
+    await writeFileAtomic(federatedMasterPath(this.opts.cortexDir), Buffer.from(blob));
+    const current = this.settings;
+    await this.setSettings({
+      sso: {
+        ...(current.sso ?? { enabled: false, protocol: 'oidc', breakGlassPassphrase: true, groupRoleMappings: [] }),
+        federatedUnlockReady: true,
+        federatedUnlockKey: key,
+      },
+    }, { userInitiated: true });
+    console.error(`[graphnosis-host] provisioned ${FEDERATED_MASTER_FILE} for federated SSO unlock.`);
+    return { federatedUnlockKey: key };
+  }
+
+  /**
    * — and therefore every other file in the cortex — is unchanged. Recovery
    * phrase remains valid: it still unwraps the (unchanged) dataKey via
    * recovery.enc.
@@ -1646,7 +1697,8 @@ export class GraphnosisHost {
    */
   private async persistSettings(next: settingsMod.AppSettings): Promise<void> {
     const withEncCreds = await encryptConnectorCredentialsInSettings(next, this.key);
-    const onDiskNext = await encryptBridgeTokensInSettings(withEncCreds, this.key);
+    const withEncBridges = await encryptBridgeTokensInSettings(withEncCreds, this.key);
+    const onDiskNext = await encryptSsoSecretsInSettings(withEncBridges, this.key);
     await settingsMod.saveSettings(this.opts.cortexDir, onDiskNext);
     this.settings = next;
   }
@@ -7356,4 +7408,67 @@ async function decryptBridgeTokensInSettings(
   }
 
   return out;
+}
+
+async function encryptSsoSecretsInSettings(
+  settings: settingsMod.AppSettings,
+  dataKey: Uint8Array,
+): Promise<settingsMod.AppSettings> {
+  const sso = settings.sso;
+  if (!sso) return settings;
+  let nextSso = { ...sso };
+  let changed = false;
+
+  if (sso.oidc?.clientSecret) {
+    const clientSecretEnc = await encryptTokenField(sso.oidc.clientSecret, dataKey);
+    const { clientSecret: _drop, ...oidcRest } = sso.oidc;
+    nextSso = {
+      ...nextSso,
+      oidc: { ...oidcRest, clientSecretEnc },
+    };
+    changed = true;
+  }
+  if (sso.federatedUnlockKey) {
+    const federatedUnlockKeyEnc = await encryptTokenField(sso.federatedUnlockKey, dataKey);
+    const { federatedUnlockKey: _drop, ...rest } = nextSso;
+    nextSso = { ...rest, federatedUnlockKeyEnc };
+    changed = true;
+  }
+  return changed ? { ...settings, sso: nextSso } : settings;
+}
+
+async function decryptSsoSecretsInSettings(
+  settings: settingsMod.AppSettings,
+  dataKey: Uint8Array,
+): Promise<settingsMod.AppSettings> {
+  const sso = settings.sso;
+  if (!sso) return settings;
+  let nextSso = { ...sso };
+  let changed = false;
+
+  const recover = async (enc: string, label: string): Promise<string> => {
+    try {
+      return await decryptTokenField(enc, dataKey);
+    } catch (e) {
+      console.error(`[graphnosis-host] ${label} decryption failed: ${(e as Error).message}`);
+      return '';
+    }
+  };
+
+  if (sso.oidc?.clientSecretEnc) {
+    const clientSecret = await recover(sso.oidc.clientSecretEnc, 'SSO client secret');
+    const { clientSecretEnc: _drop, ...oidcRest } = sso.oidc;
+    nextSso = {
+      ...nextSso,
+      oidc: { ...oidcRest, ...(clientSecret ? { clientSecret } : {}) },
+    };
+    changed = true;
+  }
+  if (sso.federatedUnlockKeyEnc) {
+    const federatedUnlockKey = await recover(sso.federatedUnlockKeyEnc, 'federated unlock key');
+    const { federatedUnlockKeyEnc: _drop, ...rest } = nextSso;
+    nextSso = { ...rest, ...(federatedUnlockKey ? { federatedUnlockKey } : {}) };
+    changed = true;
+  }
+  return changed ? { ...settings, sso: nextSso } : settings;
 }

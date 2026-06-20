@@ -11127,6 +11127,7 @@
               </p>
             </div>
             <div class="actions">
+              <button id="btn-sso-unlock" class="btn-secondary hidden" type="button">Sign in with company account</button>
               <button id="btn-unlock" class="primary">Unlock</button>
               <!-- Browser-mode biometric/security-key unlock (A8). Hidden unless
                    the personal-server reports WebAuthn is available + a device is
@@ -13603,14 +13604,14 @@ ollama list</code></pre>
                 <p class="panel-title">Enterprise SSO</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Sign in with your corporate IdP (Okta, Azure AD, Google Workspace) and map directory groups to Graphnosis roles.
-                  <strong>Phase 1:</strong> configure here — federated unlock ships next. Today, use
-                  <code>/admin/provision</code> for MCP token onboarding.
+                  <strong>Phase 2:</strong> federated OIDC unlock is available on the lock screen when SSO is enabled and saved on this Mac.
+                  Use <code>/admin/provision</code> for headless MCP seat onboarding.
                 </p>
                 <p id="sso-status-line" class="subtitle" style="font-size: 13px; margin: 0 0 12px; color: var(--fg-muted);" aria-live="polite"></p>
 
                 <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">
                   <input type="checkbox" id="sso-enabled" />
-                  <span>Enable SSO unlock (when federated login ships)</span>
+                  <span>Enable SSO unlock (IdP sign-in on lock screen)</span>
                 </label>
 
                 <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">

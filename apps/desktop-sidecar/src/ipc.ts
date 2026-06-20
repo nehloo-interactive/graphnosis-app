@@ -47,6 +47,7 @@ import {
   type EnterpriseSsoSettings,
   type IdpGroupRoleMapping,
 } from '@graphnosis-app/core/settings';
+import { readSsoUnlockOffer } from '@graphnosis-app/core/sso';
 import {
   isCortexSessionBusy,
   isSessionLeaseFresh,
@@ -178,6 +179,12 @@ export interface IpcDeps {
    * Absent only in contexts where no MCP server was built (e.g. some unit tests).
    */
   callMcpTool?: McpCallTool;
+  /** Present when the desktop session was unlocked via Enterprise SSO (not owner). */
+  ssoSession?: {
+    role: SharingRole;
+    email?: string;
+    subject?: string;
+  };
 }
 
 /** Returns true when socketPath is a TCP address like "127.0.0.1:PORT". */
@@ -6581,13 +6588,15 @@ OUTPUT RULES — non-negotiable:
       const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
       const domainSeat = (settings.domainSeatLicenseToken ?? null) !== null
         && deps.licenseValidator?.verifyToken(settings.domainSeatLicenseToken ?? '') !== null;
+      const ssoReady = settings.sso?.enabled
+        && isEnterpriseSsoConfigured(settings.sso)
+        && settings.sso.federatedUnlockReady === true;
       return {
         ok: true,
         enterprise: hasEnterprise || domainSeat,
-        phase: 'config-only',
-        unlockMode: settings.sso?.enabled && isEnterpriseSsoConfigured(settings.sso)
-          ? 'sso-pending'
-          : 'passphrase',
+        phase: 'oidc-unlock',
+        unlockMode: ssoReady ? 'sso' : 'passphrase',
+        ssoSession: deps.ssoSession ?? null,
         settings: enterpriseSsoPublicView(settings.sso),
       };
     }
@@ -6600,19 +6609,31 @@ OUTPUT RULES — non-negotiable:
         && deps.licenseValidator?.verifyToken(settings.domainSeatLicenseToken ?? '') !== null;
       const sso = settings.sso;
       const configured = isEnterpriseSsoConfigured(sso);
+      const ssoReady = sso?.enabled && configured && sso.federatedUnlockReady === true;
       return {
         ok: true,
         enterprise: hasEnterprise || domainSeat,
         enabled: sso?.enabled ?? false,
         protocol: sso?.protocol ?? 'oidc',
         configured,
+        federatedUnlockReady: sso?.federatedUnlockReady === true,
         breakGlassPassphrase: sso?.breakGlassPassphrase ?? true,
         groupMappingCount: sso?.groupRoleMappings?.length ?? 0,
         lastLogin: sso?.lastLogin ?? null,
-        unlockMode: sso?.enabled && configured ? 'sso-pending' : 'passphrase',
-        phase: 'config-only',
-        note: 'IdP unlock flow not yet wired — configure here; use /admin/provision for MCP token onboarding today.',
+        unlockMode: ssoReady ? 'sso' : 'passphrase',
+        phase: 'oidc-unlock',
+        ssoSession: deps.ssoSession ?? null,
+        note: ssoReady
+          ? 'Federated OIDC unlock is available on the lock screen when SSO credentials are in the OS keychain on this Mac.'
+          : 'Enable SSO and save while unlocked to provision federated unlock.',
       };
+    }
+
+    case 'sso:offer': {
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { ok: false, reason: 'no_cortex' };
+      const offer = await readSsoUnlockOffer(cortexDir);
+      return { ok: true, offer };
     }
 
     case 'sso:set': {
@@ -6708,9 +6729,29 @@ OUTPUT RULES — non-negotiable:
         sso: sanitized ?? next,
       });
 
+      let keychainSync: { federatedUnlockKey: string; clientSecret?: string } | undefined;
+      const saved = deps.host.getSettings().sso;
+      const shouldProvision = saved?.enabled
+        && isEnterpriseSsoConfigured(saved)
+        && saved.protocol === 'oidc';
+      if (shouldProvision) {
+        let federatedUnlockKey = saved.federatedUnlockKey;
+        if (!saved.federatedUnlockReady) {
+          const provisioned = await deps.host.provisionFederatedUnlockKey();
+          federatedUnlockKey = provisioned.federatedUnlockKey;
+        }
+        if (federatedUnlockKey) {
+          keychainSync = {
+            federatedUnlockKey,
+            ...(saved.oidc?.clientSecret ? { clientSecret: saved.oidc.clientSecret } : {}),
+          };
+        }
+      }
+
       return {
         ok: true,
-        settings: enterpriseSsoPublicView(sanitized ?? next),
+        settings: enterpriseSsoPublicView(deps.host.getSettings().sso),
+        ...(keychainSync ? { keychainSync } : {}),
       };
     }
 
