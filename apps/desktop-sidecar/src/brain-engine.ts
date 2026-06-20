@@ -372,8 +372,9 @@ const TEMPORAL_INTERVAL_MS      = 24 * 60 * 60 * 1000; // 24 h
 const GOAL_CHECK_INTERVAL_MS    =  4 * 60 * 60 * 1000; // 4 h
 // Short IPC breathe after the sidecar signals boot settled — NOT a wall-clock
 // grace period. The sidecar calls notifyBootSettled() once loadAllGraphsFromDisk
-// and flushBootDeferredWork finish; we wait this long so pending IPC (list_nodes,
-// vitality, engram picker) can drain before the first embedding-heavy scan.
+// finishes (oplog reconcile continues in the background); we wait this long so
+// pending IPC (list_nodes, vitality, engram picker) can drain before the first
+// embedding-heavy scan.
 const BOOT_SETTLE_MS            = 7 * 1000;         // 7 s
 // Debounce window after a file ingest completes before the brain runs a
 // duplicate scan. A batch of files dropped in together coalesces into a
@@ -558,6 +559,8 @@ export class BrainEngine {
   start(): void {
     // Load the autonomous-healing journal off-disk. Fire-and-forget — the
     // first scan that would append to it is gated behind notifyBootSettled(),
+    // which fires once the disk sweep finishes — not after background oplog
+    // reconcile.
     // far longer than this read takes. The `healingJournalLoaded` flag lets
     // runAutoHeal defer if a scan somehow races the load.
     void this.host.loadHealingJournal()
@@ -584,8 +587,8 @@ export class BrainEngine {
 
     // Do NOT scan at boot. The duplicate scan does real embedding math;
     // running it while engrams are still loading starves IPC. The sidecar
-    // calls notifyBootSettled() once loadAllGraphsFromDisk +
-    // flushBootDeferredWork finish — event-based, not a fixed delay. Until
+    // calls notifyBootSettled() once loadAllGraphsFromDisk finishes — event-based,
+    // not a fixed delay. Background oplog reconcile may still be running; until
     // then brainPassesPaused() keeps every pass (including manual "Scan now")
     // standing down via isBootSweepActive(). Periodic intervals, post-ingest
     // debounced scans, and "Scan now" cover everything after the first sweep.
@@ -683,9 +686,8 @@ export class BrainEngine {
   }
 
   /**
-   * Called by the sidecar once boot housekeeping finishes:
-   * loadAllGraphsFromDisk → flushBootDeferredWork → bootPhaseActive cleared.
-   * Schedules the first duplicate scan + temporal decay after a short IPC
+   * Called by the sidecar once the disk sweep finishes (background oplog
+   * reconcile may still be running). Schedules the first duplicate scan + temporal decay after a short IPC
    * breathe (BOOT_SETTLE_MS). Idempotent — safe if called twice.
    */
   notifyBootSettled(): void {
