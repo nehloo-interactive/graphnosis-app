@@ -1,0 +1,188 @@
+/**
+ * Run dispatch-export-sync against a live sidecar (writes CLAUDE.local.md,
+ * Cursor plugin rule, and skill-dispatch-registry.json per cortex config).
+ *
+ * Works with any sidecar that supports skill:export + skill:walkSequence.
+ * Does not require skill:syncDispatchExport (added in sidecar builds after
+ * the Autonomous Skill Lifecycle batch).
+ *
+ * Prerequisite: `{cortexDir}/dispatch-export-targets.json` with projectRoots
+ * and optional cursorPluginRulePath.
+ *
+ * Usage:
+ *   node apps/desktop-sidecar/scripts/run-dispatch-export-sync.mjs
+ */
+import net from 'node:net';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const SOCKET =
+  process.env.GRAPHNOSIS_IPC_SOCKET ??
+  '/Users/nelulazar/Graphnosis-test/sidecar.sock';
+const GRAPH_ID = process.env.GRAPHNOSIS_SKILLS_GRAPH ?? 'graphnosis-skills';
+const CORTEX_DIR = process.env.GRAPHNOSIS_CORTEX ?? path.dirname(SOCKET);
+
+let nextId = 1;
+
+function ipcCall(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    const payload = JSON.stringify({ id, method, params }) + '\n';
+    const socket = net.connect(SOCKET);
+    let buf = '';
+    socket.setEncoding('utf8');
+    socket.on('connect', () => socket.write(payload));
+    socket.on('data', (chunk) => {
+      buf += chunk;
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.id === id) {
+          socket.destroy();
+          if (msg.error) reject(new Error(JSON.stringify(msg.error)));
+          else resolve(msg.result);
+        }
+      }
+    });
+    socket.on('error', reject);
+    socket.setTimeout(120_000, () => {
+      socket.destroy();
+      reject(new Error(`IPC timeout for ${method}`));
+    });
+  });
+}
+
+function baseSkillName(ref) {
+  return String(ref ?? '')
+    .replace(/^skill:\d+:/, '')
+    .replace(/\s*\(trained[^)]*\)\s*$/i, '')
+    .trim();
+}
+
+async function loadSyncHelpers() {
+  const sidecarDir = path.dirname(fileURLToPath(import.meta.url));
+  const mod = await import(pathToFileURL(path.join(sidecarDir, '..', 'dist', 'skill-dispatch-sync.js')).href);
+  return mod;
+}
+
+async function resolveTargets() {
+  const projectRoots = new Set();
+  let cursorPluginRulePath;
+  const configPath = path.join(CORTEX_DIR, 'dispatch-export-targets.json');
+  try {
+    const cfg = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    for (const root of cfg.projectRoots ?? []) {
+      if (typeof root === 'string' && root.trim()) projectRoots.add(path.resolve(root.trim()));
+    }
+    if (typeof cfg.cursorPluginRulePath === 'string' && cfg.cursorPluginRulePath.trim()) {
+      cursorPluginRulePath = path.resolve(cfg.cursorPluginRulePath.trim());
+    }
+  } catch {
+    throw new Error(`Missing or invalid ${configPath}`);
+  }
+  return { projectRoots: [...projectRoots], cursorPluginRulePath };
+}
+
+async function main() {
+  // Prefer native IPC when the running sidecar supports it.
+  try {
+    const ipcResult = await ipcCall('skill:syncDispatchExport', { graphId: GRAPH_ID });
+    if (ipcResult?.ok) {
+      console.log(JSON.stringify(ipcResult, null, 2));
+      return;
+    }
+  } catch (e) {
+    const msg = String(e.message ?? e);
+    if (!msg.includes('Unknown IPC method')) throw e;
+  }
+
+  const {
+    extractDispatchTriggerLines,
+    mergeClaudeLocalSkillsSection,
+    mergeCursorDispatchRule,
+  } = await loadSyncHelpers();
+  const targets = await resolveTargets();
+
+  const skills = await ipcCall('skill:list', { graphId: GRAPH_ID });
+  const dispatch = skills.find((s) => baseSkillName(s.ref ?? s.label) === 'skill-dispatch');
+  if (!dispatch) throw new Error(`skill-dispatch not found in ${GRAPH_ID}`);
+
+  const detail = await ipcCall('skill:get', { graphId: GRAPH_ID, sourceId: dispatch.sourceId });
+  const claudeMd = await ipcCall('skill:export', {
+    graphId: GRAPH_ID,
+    sourceId: dispatch.sourceId,
+    format: 'claude-md',
+  });
+  const cursorrules = await ipcCall('skill:export', {
+    graphId: GRAPH_ID,
+    sourceId: dispatch.sourceId,
+    format: 'cursorrules',
+  });
+  const walk = await ipcCall('skill:walkSequence', {
+    graphId: GRAPH_ID,
+    sourceId: dispatch.sourceId,
+    recursive: false,
+  });
+
+  const triggerLines = extractDispatchTriggerLines(detail?.text ?? '');
+  const registry = {
+    exportedAt: new Date().toISOString(),
+    skillGraphId: GRAPH_ID,
+    skillSourceId: dispatch.sourceId,
+    skillName: 'skill-dispatch',
+    stepCount: walk?.steps?.length ?? 0,
+    routes: [],
+  };
+  const registryPath = path.join(CORTEX_DIR, 'skill-dispatch-registry.json');
+  await fs.writeFile(registryPath, JSON.stringify(registry, null, 2), 'utf8');
+
+  const claudeLocalPaths = [];
+  const cursorrulesPaths = [];
+  const MARKER = '<!-- generated by dispatch-export-sync; do not hand-edit -->';
+
+  for (const root of targets.projectRoots) {
+    const claudePath = path.join(root, 'CLAUDE.local.md');
+    let existing = '';
+    try { existing = await fs.readFile(claudePath, 'utf8'); } catch { /* create */ }
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(claudePath, mergeClaudeLocalSkillsSection(existing, String(claudeMd ?? '')), 'utf8');
+    claudeLocalPaths.push(claudePath);
+
+    if (cursorrules) {
+      const rulesPath = path.join(root, '.cursorrules');
+      await fs.writeFile(rulesPath, `${MARKER}\n\n${String(cursorrules).trim()}\n`, 'utf8');
+      cursorrulesPaths.push(rulesPath);
+    }
+  }
+
+  let cursorRulePath = null;
+  if (targets.cursorPluginRulePath) {
+    let existing = '';
+    try { existing = await fs.readFile(targets.cursorPluginRulePath, 'utf8'); } catch { /* create */ }
+    await fs.mkdir(path.dirname(targets.cursorPluginRulePath), { recursive: true });
+    await fs.writeFile(
+      targets.cursorPluginRulePath,
+      mergeCursorDispatchRule(existing, triggerLines),
+      'utf8',
+    );
+    cursorRulePath = targets.cursorPluginRulePath;
+  }
+
+  console.log(JSON.stringify({
+    ok: true,
+    mode: 'ipc-fallback',
+    registryPath,
+    claudeLocalPaths,
+    cursorRulePath,
+    cursorrulesPaths,
+    triggerCount: triggerLines.length,
+  }, null, 2));
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

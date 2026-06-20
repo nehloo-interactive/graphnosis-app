@@ -54,10 +54,28 @@ export const DEFAULT_BASELINE = {
   outputUsdPer1M: 15.00,
 };
 
+export type SavingsBaseline = typeof DEFAULT_BASELINE;
+
+/** Resolve counterfactual baseline from settings, falling back to Sonnet 4.6. */
+export function resolveSavingsBaseline(
+  settings?: { models?: { savingsBaseline?: SavingsBaseline } } | null,
+): SavingsBaseline {
+  const b = settings?.models?.savingsBaseline;
+  if (
+    b
+    && typeof b.modelDisplayName === 'string'
+    && typeof b.inputUsdPer1M === 'number'
+    && typeof b.outputUsdPer1M === 'number'
+  ) {
+    return b;
+  }
+  return DEFAULT_BASELINE;
+}
+
 export function computeBaselineCostUsd(
   inputTokens: number,
   outputTokens: number,
-  baseline = DEFAULT_BASELINE,
+  baseline: SavingsBaseline = DEFAULT_BASELINE,
 ): number {
   return (inputTokens / 1_000_000) * baseline.inputUsdPer1M
     + (outputTokens / 1_000_000) * baseline.outputUsdPer1M;
@@ -71,8 +89,9 @@ export function computeBaselineCostUsd(
 export async function recordRecallOnlySavings(
   cortexDir: string,
   args: { inputTokensSaved: number; outputTokensSaved: number; source?: string },
+  baseline: SavingsBaseline = DEFAULT_BASELINE,
 ): Promise<void> {
-  const baselineUsd = computeBaselineCostUsd(args.inputTokensSaved, args.outputTokensSaved);
+  const baselineUsd = computeBaselineCostUsd(args.inputTokensSaved, args.outputTokensSaved, baseline);
   await appendSavings(cortexDir, {
     recordedAt: Date.now(),
     kind: 'recall-only',
@@ -97,8 +116,9 @@ export async function recordRoutingSavings(
     pickedModelDisplayName: string;
     source?: string;
   },
+  baseline: SavingsBaseline = DEFAULT_BASELINE,
 ): Promise<void> {
-  const baselineUsd = computeBaselineCostUsd(args.inputTokens, args.outputTokens);
+  const baselineUsd = computeBaselineCostUsd(args.inputTokens, args.outputTokens, baseline);
   const savedUsd = Math.max(0, baselineUsd - args.actualUsd);
   await appendSavings(cortexDir, {
     recordedAt: Date.now(),
@@ -131,6 +151,8 @@ export interface SavingsSummary {
     routing: { events: number; savedUsd: number };
     walk: { events: number; savedUsd: number };
   };
+  /** Counterfactual baseline model used for this summary. */
+  baselineModel: string;
   /** Per-week buckets, newest first. Each entry covers a 7-day window
    *  starting at `weekStartMs`. UIs render these as a sparkline / bar chart. */
   weekly: Array<{
@@ -155,6 +177,7 @@ export interface SavingsSummary {
 export async function summariseSavings(
   cortexDir: string,
   windowDays = 30,
+  baseline: SavingsBaseline = DEFAULT_BASELINE,
 ): Promise<SavingsSummary> {
   const sinceMs = Date.now() - windowDays * 24 * 60 * 60 * 1000;
   let raw: string;
@@ -162,7 +185,7 @@ export async function summariseSavings(
     raw = await fs.readFile(path.join(cortexDir, SAVINGS_FILE), 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
-      return emptySummary(windowDays);
+      return emptySummary(windowDays, baseline);
     }
     throw err;
   }
@@ -175,7 +198,7 @@ export async function summariseSavings(
       entries.push(e);
     } catch { /* tolerate torn tails */ }
   }
-  if (entries.length === 0) return emptySummary(windowDays);
+  if (entries.length === 0) return emptySummary(windowDays, baseline);
 
   let totalSavedUsd = 0;
   let totalBaselineUsd = 0;
@@ -202,12 +225,13 @@ export async function summariseSavings(
     totalBaselineUsd,
     totalActualUsd,
     byKind,
+    baselineModel: baseline.modelDisplayName,
     weekly,
-    reportLine: buildReportLine(totalSavedUsd, entries.length, windowDays),
+    reportLine: buildReportLine(totalSavedUsd, entries.length, windowDays, baseline.modelDisplayName),
   };
 }
 
-function emptySummary(windowDays: number): SavingsSummary {
+function emptySummary(windowDays: number, baseline: SavingsBaseline = DEFAULT_BASELINE): SavingsSummary {
   return {
     windowDays,
     totalEvents: 0,
@@ -219,6 +243,7 @@ function emptySummary(windowDays: number): SavingsSummary {
       routing: { events: 0, savedUsd: 0 },
       walk: { events: 0, savedUsd: 0 },
     },
+    baselineModel: baseline.modelDisplayName,
     weekly: [],
     reportLine: 'Once you start using Ghampus, I\'ll track what your memory layer saves you vs sending every prompt to a paid model.',
   };
@@ -240,13 +265,19 @@ function bucketByWeek(entries: SavingsEntry[]): SavingsSummary['weekly'] {
     .map(([weekStartMs, agg]) => ({ weekStartMs, ...agg }));
 }
 
-function buildReportLine(savedUsd: number, events: number, windowDays: number): string {
+function buildReportLine(
+  savedUsd: number,
+  events: number,
+  windowDays: number,
+  baselineName: string,
+): string {
   if (events === 0) {
     return 'Once you start using Ghampus, I\'ll track what your memory layer saves you vs sending every prompt to a paid model.';
   }
   const win = windowDays === 30 ? 'this month' : `over the last ${windowDays} days`;
+  const vs = `vs ${baselineName}`;
   if (savedUsd < 0.01) {
-    return `Tracked ${events} event${events === 1 ? '' : 's'} ${win}. Savings rounding to under a cent — local routing + recall paid off the cost difference.`;
+    return `Tracked ${events} event${events === 1 ? '' : 's'} ${win}. Savings rounding to under a cent — local routing + recall paid off the cost difference ${vs}.`;
   }
-  return `You've saved ≈ $${savedUsd.toFixed(2)} ${win} across ${events} event${events === 1 ? '' : 's'} vs sending the same prompts to a baseline paid model.`;
+  return `You've saved ≈ $${savedUsd.toFixed(2)} ${win} across ${events} event${events === 1 ? '' : 's'} ${vs}.`;
 }

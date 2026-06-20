@@ -30,6 +30,7 @@ import { SkillCallLinkStore } from './skill-call-links.js';
 import { SkillRunStore } from './skill-runs.js';
 import { WebAuthnCredentialStore } from './webauthn-store.js';
 import { ConnectorFileMapStore } from './connectors/file-map-store.js';
+import { ObligationIndex, type ObligationWriteInput } from './obligation-index.js';
 import {
   encryptModelProviderKeysInSettings,
   decryptModelProviderKeysInSettings,
@@ -349,6 +350,8 @@ export class GraphnosisHost {
   /** Connector file→source map — only used by connectors in opt-in mirror mode
    *  (prune/update on file delete/modify). */
   readonly connectorFileMap: ConnectorFileMapStore;
+  /** Temporal Job Memory — deadline / renewal / review-by index keyed by nodeId. */
+  readonly obligationIndex: ObligationIndex;
   private policyCfg: policy.PolicyConfig;
   // Mutable so runtime model switches (Settings → Search model) can update
   // them without rebuilding the host. The actual re-embed of every graph
@@ -438,6 +441,11 @@ export class GraphnosisHost {
       salt: this.salt,
     });
     this.connectorFileMap = new ConnectorFileMapStore({
+      cortexDir: opts.cortexDir,
+      key: this.key,
+      salt: this.salt,
+    });
+    this.obligationIndex = new ObligationIndex({
       cortexDir: opts.cortexDir,
       key: this.key,
       salt: this.salt,
@@ -1249,7 +1257,17 @@ export class GraphnosisHost {
   /** Inspect every node in a graph, including soft-deleted ones — used by the Nodes table when there's no active search. */
   listNodes(graphId: GraphId): ReturnType<GraphnosisAdapter['inspectNodes']> {
     const g = this.must(graphId);
-    return this.opts.adapter.inspectNodes(g.handle);
+    const nodes = this.opts.adapter.inspectNodes(g.handle);
+    return nodes.map((n) => {
+      const ob = this.obligationIndex.get(n.id);
+      if (!ob || ob.graphId !== graphId) return n;
+      return {
+        ...n,
+        obligationType: ob.obligationType,
+        effectiveDate: ob.effectiveDate,
+        expiresAt: ob.expiresAt,
+      };
+    });
   }
 
   /** Get the FULL untruncated content of a single node. The general
@@ -3024,7 +3042,14 @@ export class GraphnosisHost {
     kind: SourceRecord['kind'],
     ref: string,
     input: AppendDocumentInput,
-    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean; skipSave?: boolean; skipOplogEmit?: boolean },
+    opts?: {
+      addedBy?: string;
+      triggeredBy?: string;
+      skipAutoRelink?: boolean;
+      skipSave?: boolean;
+      skipOplogEmit?: boolean;
+      obligation?: ObligationWriteInput;
+    },
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
@@ -3112,21 +3137,45 @@ export class GraphnosisHost {
     }
 
     const trigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
+    const obligationPayload = opts?.obligation
+      ? {
+          obligationType: opts.obligation.obligationType,
+          effectiveDate: opts.obligation.effectiveDate ?? Date.now(),
+          expiresAt: opts.obligation.expiresAt,
+        }
+      : undefined;
     if (!opts?.skipOplogEmit) {
       this.oplogWriter.emit({
         graphId,
         op: 'ingestSource',
         target: { kind: 'source', id: sourceId },
-        after: { ...record, ...trigAttr },
+        after: {
+          ...record,
+          ...trigAttr,
+          ...(obligationPayload ? { obligation: obligationPayload } : {}),
+        },
       });
       for (const nodeId of result.newNodeIds) {
         this.oplogWriter.emit({
           graphId,
           op: 'addNode',
           target: { kind: 'node', id: nodeId },
-          after: { sourceId, ...trigAttr },
+          after: {
+            sourceId,
+            ...trigAttr,
+            ...(obligationPayload ? { obligation: obligationPayload } : {}),
+          },
         });
       }
+    }
+
+    if (opts?.obligation && result.newNodeIds.length > 0) {
+      await this.obligationIndex.register(
+        graphId,
+        result.newNodeIds[0]!,
+        sourceId,
+        opts.obligation,
+      );
     }
 
     // Content cache — respect user settings + per-source size cap. Failures

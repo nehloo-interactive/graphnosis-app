@@ -102,7 +102,15 @@ export const LOCAL_LLM_BACKENDS: Record<LocalLlmRuntimeId, LocalLlmBackend | nul
   // v2 placeholders. The verification UI shows "Backend: <id> — descriptor
   // missing, contact maintainer" if a user manages to select a null backend.
   'llama.cpp': null,
-  mlx: null,
+  mlx: {
+    id: 'mlx',
+    displayName: 'MLX-LM Server',
+    baseUrl: 'http://127.0.0.1:8080/v1',
+    api: 'openai-compatible',
+    processNames: ['python', 'mlx_lm'],
+    knownExternalHosts: [],
+    defaultPort: 8080,
+  },
   lmstudio: null,
   gpt4all: null,
   jan: null,

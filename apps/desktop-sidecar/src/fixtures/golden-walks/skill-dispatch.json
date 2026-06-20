@@ -1,0 +1,22 @@
+{
+  "skill": {
+    "title": "skill-dispatch golden"
+  },
+  "steps": [
+    {
+      "index": 3,
+      "text": "1. Call @skill: verify-target.",
+      "unresolvedCall": "verify-target"
+    },
+    {
+      "index": 4,
+      "text": "2. Report routing complete."
+    }
+  ],
+  "requires": [
+    "signal"
+  ],
+  "constraints": {
+    "trigger": "route by signal [dispatch-safe: test]"
+  }
+}

@@ -12,6 +12,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { policy, oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
@@ -170,7 +171,15 @@ ferry to Naxos. The food in Mykonos was overrated.`;
 
   log('skill-walk-structured', {});
   const walkTrain = await skillTrainer.trainSkill({
-    skill: '# Walk smoke skill\n\n1. Verify step one.\n2. Verify step two.\n',
+    skill: [
+      '# Walk smoke skill',
+      '',
+      'trip-context: Before trip tasks',
+      '- recall: When did the user go to Greece?',
+      '',
+      '1. Verify step one.',
+      '2. Verify step two.',
+    ].join('\n'),
     graphId: 'personal',
     skillName: 'walk-smoke',
     save: true,
@@ -178,6 +187,12 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   });
   const walkSourceId = walkTrain.skillId;
   if (!walkSourceId) throw new Error('FAIL: walk smoke skill train did not return skillId');
+  const citedAfterTrain = host.getSettings().skillCitedNodes?.[walkSourceId];
+  if (!citedAfterTrain || Object.keys(citedAfterTrain.nodes).length === 0) {
+    throw new Error('FAIL: train with recall recipe did not persist skillCitedNodes');
+  }
+  log('skill-cited-nodes-bind.ok', { cited: Object.keys(citedAfterTrain.nodes).length });
+
   const { walkSkillSequence, walkSkillToJson } = await import('./skill-trainer.js');
   const walked = walkSkillSequence(host, 'personal', walkSourceId, { recursive: false });
   if (walked.steps.length < 2) {
@@ -194,9 +209,8 @@ ferry to Naxos. The food in Mykonos was overrated.`;
 
   // --- Ghampus skill maintenance — queue → idle tick → retrain one ----------
   log('skill-maintenance', {});
-  const { enqueueSkillsForNodeChange, countSkillRetrainQueue, persistSkillCitedNodes } = await import('./skill-retrain-queue.js');
-  const citedNode = src.nodeIds[0]!;
-  await persistSkillCitedNodes(host, walkSourceId, 'personal', [citedNode]);
+  const { enqueueSkillsForNodeChange, countSkillRetrainQueue } = await import('./skill-retrain-queue.js');
+  const citedNode = Object.keys(citedAfterTrain.nodes)[0]!;
   await enqueueSkillsForNodeChange(host, 'personal', [citedNode], 'source-edited', skillTrainer);
   if (countSkillRetrainQueue(host) !== 1) {
     throw new Error(`FAIL: expected 1 queued stale skill, got ${countSkillRetrainQueue(host)}`);
@@ -245,6 +259,259 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   if (badCheck.ok) throw new Error('FAIL: rewrite that changed @skill: name should fail validation');
   log('skill-sop-preservation.ok', { tokenCount: snap.tokens.length });
 
+  // --- @needs capability tags (deriveStepsFromText) -------------------------
+  log('skill-needs-tags', {});
+  const { deriveStepsFromText } = await import('./model-router.js');
+  const needsSteps = deriveStepsFromText([
+    { index: 1, text: '1. Analyze root cause @needs: reasoning, code' },
+    { index: 2, text: '2. Summarize findings @needs: summarization' },
+    { index: 3, text: '3. Plain step without annotation' },
+  ]);
+  const s0 = needsSteps[0];
+  const s1 = needsSteps[1];
+  const s2 = needsSteps[2];
+  if (!s0?.capabilities?.includes('reasoning') || !s0.capabilities.includes('code')) {
+    throw new Error(`FAIL: @needs reasoning,code not parsed: ${JSON.stringify(s0?.capabilities ?? [])}`);
+  }
+  if (!s1?.capabilities?.includes('summarization')) {
+    throw new Error(`FAIL: @needs summarization not parsed: ${JSON.stringify(s1?.capabilities ?? [])}`);
+  }
+  if ((s2?.capabilities?.[0] ?? '') !== 'general') {
+    throw new Error('FAIL: step without @needs should default to general');
+  }
+  log('skill-needs-tags.ok', { steps: needsSteps.length });
+
+  // --- Golden walk regression (skill-dispatch / ship / bug shapes) ------------
+  log('skill-golden-walks', {});
+  const { compareGoldenWalk, normalizeWalkPlanForGolden } = await import('./skill-golden-walk.js');
+  const goldenDir = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'src',
+    'fixtures',
+    'golden-walks',
+  );
+
+  const targetSkill = await skillTrainer.trainSkill({
+    skill: '# verify-target\n\n1. Verify the target step executed.\n',
+    graphId: 'personal', skillName: 'verify-target', save: true, addedBy: 'smoke:golden',
+  });
+  const rollbackSkill = await skillTrainer.trainSkill({
+    skill: '# rollback-ship\n\n1. Roll back the failed ship.\n',
+    graphId: 'personal', skillName: 'rollback-ship', save: true, addedBy: 'smoke:golden',
+  });
+  if (!targetSkill.skillId || !rollbackSkill.skillId) {
+    throw new Error('FAIL: golden walk helper skills did not return skillId');
+  }
+
+  const goldenCases: Array<{ fixture: string; skill: string; skillName: string; title: string }> = [
+    {
+      fixture: 'skill-dispatch.json',
+      skillName: 'skill-dispatch-golden',
+      title: 'skill-dispatch golden',
+      skill: [
+        '# skill-dispatch golden',
+        '',
+        'Trigger: route by signal [dispatch-safe: test]',
+        '',
+        '1. Call @skill: verify-target.',
+        '',
+        '2. Report routing complete.',
+        '',
+        'Requires: $signal',
+      ].join('\n'),
+    },
+    {
+      fixture: 'ship-workflow.json',
+      skillName: 'ship-workflow-golden',
+      title: 'ship-workflow golden',
+      skill: [
+        '# ship-workflow golden',
+        '',
+        'Trigger: user says ship',
+        '',
+        '1. Review changelog.',
+        '',
+        '2. Bump version @loop: 2 max=3',
+        '',
+        '3. Publish release.',
+        '',
+        'On failure: @skill: rollback-ship',
+      ].join('\n'),
+    },
+    {
+      fixture: 'bug-investigation.json',
+      skillName: 'bug-investigation-golden',
+      title: 'bug-investigation golden',
+      skill: [
+        '# bug-investigation golden',
+        '',
+        'Trigger: bug report',
+        '',
+        '1. Reproduce the issue.',
+        '',
+        '2. Narrow root cause @loop: 1 max=5',
+        '',
+        '3. Propose fix.',
+        '',
+        'Requires: $errorDescription:string',
+        'Produces: $rootCause',
+      ].join('\n'),
+    },
+  ];
+
+  for (const gc of goldenCases) {
+    const trained = await skillTrainer.trainSkill({
+      skill: gc.skill,
+      graphId: 'personal',
+      skillName: gc.skillName,
+      save: true,
+      addedBy: 'smoke:golden',
+    });
+    if (!trained.skillId) throw new Error(`FAIL: golden train missing skillId for ${gc.fixture}`);
+    const walkedGolden = walkSkillSequence(host, 'personal', trained.skillId, { recursive: false });
+    const plan = walkSkillToJson(walkedGolden, { sourceId: trained.skillId, title: gc.title });
+    const fixturePath = path.join(goldenDir, gc.fixture);
+    let golden: import('./skill-golden-walk.js').GoldenWalkFixture;
+    try {
+      golden = JSON.parse(await fs.readFile(fixturePath, 'utf8')) as import('./skill-golden-walk.js').GoldenWalkFixture;
+    } catch {
+      // First run / fixture missing — write snapshot for developer to commit.
+      await fs.mkdir(goldenDir, { recursive: true });
+      await fs.writeFile(fixturePath, JSON.stringify(normalizeWalkPlanForGolden(plan), null, 2), 'utf8');
+      log('skill-golden-walks.seed', { fixture: gc.fixture });
+      continue;
+    }
+    const diff = compareGoldenWalk(plan, golden, gc.fixture);
+    if (!diff.ok) {
+      throw new Error(
+        `FAIL: golden walk drift at ${diff.path}: expected ${JSON.stringify(diff.expected)} got ${JSON.stringify(diff.actual)}`,
+      );
+    }
+    log('skill-golden-walks.ok', { fixture: gc.fixture, steps: plan.steps.length });
+  }
+
+  // --- GSK semver + lineage export smoke ------------------------------------
+  log('skill-gsk-export', {});
+  const { parseGskPackage, bumpSemver } = await import('./gsk-format.js');
+  if (bumpSemver('1.2.3') !== '1.2.4') throw new Error('FAIL: bumpSemver patch');
+  if (bumpSemver('1.2.3', 'minor') !== '1.3.0') throw new Error('FAIL: bumpSemver minor');
+  const gskBuf = skillTrainer.exportSkillFromSource('personal', walkSourceId, 'gsk');
+  if (!Buffer.isBuffer(gskBuf)) throw new Error('FAIL: exportSkillFromSource gsk must return Buffer');
+  const gskPayload = parseGskPackage(gskBuf);
+  if (!gskPayload.version || gskPayload.version === '') {
+    throw new Error('FAIL: GSK export missing version');
+  }
+  log('skill-gsk-export.ok', { version: gskPayload.version, skills: gskPayload.skills.length });
+
+  // --- Vitality cited-node drift --------------------------------------------
+  log('skill-vitality-drift', {});
+  const vitalityBefore = skillTrainer.computeSkillVitality('personal', walkSourceId);
+  if ((vitalityBefore.citedNodesCount ?? 0) === 0) {
+    throw new Error('FAIL: vitality should report citedNodesCount after recipe bind');
+  }
+  log('skill-vitality-drift.ok', {
+    score: vitalityBefore.score,
+    cited: vitalityBefore.citedNodesCount,
+    missing: vitalityBefore.missingCitedNodesCount ?? 0,
+  });
+
+  // --- Hollow skill repair (snapshot restore) ---------------------------------
+  log('skill-hollow-repair', {});
+  const hollowTrain = await skillTrainer.trainSkill({
+    skill: '# Hollow repair probe\n\n1. Step one only.\n',
+    graphId: 'personal',
+    skillName: 'hollow-repair-probe',
+    save: true,
+    addedBy: 'smoke:hollow',
+  });
+  const hollowId = hollowTrain.skillId;
+  if (!hollowId) throw new Error('FAIL: hollow probe train missing skillId');
+  // In-place retrain creates a snapshot of the prior version.
+  await skillTrainer.trainSkill({
+    skill: '# Hollow repair probe\n\n1. Step one updated.\n',
+    graphId: 'personal',
+    skillName: 'hollow-repair-probe',
+    save: true,
+    addedBy: 'smoke:hollow',
+  });
+  await host.clearSourceNodes('personal', hollowId, { triggeredBy: 'smoke:hollow', reason: 'simulate failed in-place retrain' });
+  const repaired = await skillTrainer.repairHollowSkillSource('personal', hollowId);
+  if (!repaired) throw new Error('FAIL: repairHollowSkillSource returned false');
+  const hollowWalk = walkSkillSequence(host, 'personal', hollowId, { recursive: false });
+  if (hollowWalk.steps.length < 1) throw new Error('FAIL: hollow skill not walkable after repair');
+  log('skill-hollow-repair.ok', { steps: hollowWalk.steps.length });
+
+  // --- Dispatch export sync (CLAUDE.local + Cursor plugin rule) ---------------
+  log('skill-dispatch-export-sync', {});
+  const dispatchExportDir = path.join(cortexDir, 'dispatch-export-smoke');
+  const cursorRulePath = path.join(dispatchExportDir, 'graphnosis-skill-dispatch.mdc');
+  await fs.mkdir(dispatchExportDir, { recursive: true });
+  await fs.writeFile(
+    path.join(cortexDir, 'dispatch-export-targets.json'),
+    JSON.stringify({
+      projectRoots: [dispatchExportDir],
+      cursorPluginRulePath: cursorRulePath,
+    }, null, 2),
+    'utf8',
+  );
+  await skillTrainer.trainSkill({
+    skill: [
+      '# skill-dispatch',
+      '',
+      'Trigger: route by signal [dispatch-safe: smoke]',
+      '',
+      '1. Call list_skills.',
+      '',
+      '2. Classify context:',
+      '   - Session start → session-start',
+      '   - Bug found → bug-investigation',
+      '',
+      '3. Execute matched skills.',
+    ].join('\n'),
+    graphId: 'personal',
+    skillName: 'skill-dispatch',
+    save: true,
+    addedBy: 'smoke:dispatch-export',
+  });
+  const {
+    exportDispatchToExternalTargets,
+    extractDispatchTriggerLines,
+    mergeClaudeLocalSkillsSection,
+    findSkillDispatchSourceId,
+  } = await import('./skill-dispatch-sync.js');
+  const dispatchSourceId = findSkillDispatchSourceId(host, 'personal');
+  if (!dispatchSourceId) throw new Error('FAIL: skill-dispatch source not found for export sync smoke');
+  const triggers = extractDispatchTriggerLines(
+    skillTrainer.getSkill('personal', dispatchSourceId)?.text ?? '',
+  );
+  if (triggers.length < 2) throw new Error('FAIL: dispatch trigger extraction expected ≥2 lines');
+  const merged = mergeClaudeLocalSkillsSection('', 'exported skills block');
+  if (!merged.includes('<!-- generated by dispatch-export-sync')) {
+    throw new Error('FAIL: mergeClaudeLocalSkillsSection missing generated marker');
+  }
+  const exportResult = await exportDispatchToExternalTargets(host, skillTrainer, 'personal');
+  if (!exportResult.registry || exportResult.registry.routes.length < 0) {
+    throw new Error('FAIL: dispatch registry export missing');
+  }
+  const claudeLocalPath = path.join(dispatchExportDir, 'CLAUDE.local.md');
+  await fs.stat(claudeLocalPath);
+  const claudeLocal = await fs.readFile(claudeLocalPath, 'utf8');
+  if (!claudeLocal.includes('generated by dispatch-export-sync')) {
+    throw new Error('FAIL: CLAUDE.local.md missing dispatch-export-sync marker');
+  }
+  await fs.stat(cursorRulePath);
+  const cursorRule = await fs.readFile(cursorRulePath, 'utf8');
+  if (!cursorRule.includes('Session start → session-start')) {
+    throw new Error('FAIL: Cursor plugin rule missing synced trigger line');
+  }
+  await fs.stat(path.join(cortexDir, 'skill-dispatch-registry.json'));
+  log('skill-dispatch-export-sync.ok', {
+    claudeLocal: claudeLocalPath,
+    cursorRule: cursorRulePath,
+    triggers: triggers.length,
+  });
+
   // --- Model provider API key encrypt round-trip + cloud dispatch gating ----
   log('model-provider-keys', {});
   const { requireProviderApiKey } = await import('./cloud-llm.js');
@@ -277,6 +544,62 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error('FAIL: provider API key not encrypted to apiKeyEnc on disk');
   }
   log('model-provider-keys.ok', { keyTail: host.getSettings().models?.providers?.anthropic?.keyTail });
+
+  // --- mlx / vllm local OpenAI-compatible adapters -------------------------
+  log('mlx-vllm-adapters', {});
+  const {
+    LOCAL_OPENAI_COMPAT_BASE_URLS,
+    resolveLocalOpenAiBaseUrl,
+    dispatchLocalOpenAiModelCall,
+    pingOpenAiCompatible,
+  } = await import('./cloud-llm.js');
+  const { planSkillWalk } = await import('./model-router.js');
+  if (LOCAL_OPENAI_COMPAT_BASE_URLS.mlx !== 'http://127.0.0.1:8080/v1') {
+    throw new Error('FAIL: mlx default base URL mismatch');
+  }
+  if (LOCAL_OPENAI_COMPAT_BASE_URLS.vllm !== 'http://127.0.0.1:8000/v1') {
+    throw new Error('FAIL: vllm default base URL mismatch');
+  }
+  const customBase = 'http://127.0.0.1:9999/v1';
+  await host.setSettings({
+    ...host.getSettings(),
+    models: {
+      ...(host.getSettings().models ?? { strategy: 'adaptive', providers: { ollama: { enabled: true } } }),
+      providers: {
+        ollama: { enabled: true },
+        mlx: { enabled: true, baseUrl: customBase },
+        vllm: { enabled: false },
+      },
+    },
+  });
+  if (resolveLocalOpenAiBaseUrl(host, 'mlx') !== customBase) {
+    throw new Error('FAIL: mlx baseUrl override not applied');
+  }
+  if (resolveLocalOpenAiBaseUrl(host, 'vllm') !== LOCAL_OPENAI_COMPAT_BASE_URLS.vllm) {
+    throw new Error('FAIL: vllm should fall back to default base URL');
+  }
+  const mlxPlan = planSkillWalk(
+    deriveStepsFromText([{ index: 1, text: 'Summarize subsystem status. @needs: summarization' }]),
+    { strategy: 'local-only', enabledProviders: ['mlx'], customRates: [] },
+  );
+  if (!mlxPlan.feasible || mlxPlan.steps[0]?.pickedProvider !== 'mlx') {
+    throw new Error(`FAIL: mlx not picked for local-only plan: ${JSON.stringify(mlxPlan.steps[0])}`);
+  }
+  const mlxReachable = await pingOpenAiCompatible(customBase, 500);
+  if (mlxReachable) {
+    log('mlx-vllm-adapters.skip-live', { note: 'mlx server running on test port — skipping unreachable assertion' });
+  } else {
+    let mlxErr = '';
+    try {
+      await dispatchLocalOpenAiModelCall('mlx', 'test-model', 'ping', host);
+    } catch (e) {
+      mlxErr = (e as Error).message;
+    }
+    if (!mlxErr.includes('unreachable')) {
+      throw new Error(`FAIL: expected unreachable error for mlx, got: ${mlxErr}`);
+    }
+  }
+  log('mlx-vllm-adapters.ok', { mlxPicked: mlxPlan.steps[0]?.pickedModelId, customBase });
 
   // --- op-log merge on loadGraph (before supersede correction) ------------
   log('oplog-merge-roundtrip', {});
@@ -645,6 +968,62 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   await host.setSourceLegalHold('personal', src.sourceId, false);
   log('compliance-source-legal-hold.ok', { blocked: true });
 
+  // --- Temporal Job Memory (obligations) ------------------------------------
+  log('obligation-remember', {});
+  const { ingestClip } = await import('./ingest.js');
+  const obligationDueAt = Date.now() + 3 * 24 * 60 * 60 * 1000;
+  const obligationRec = await ingestClip(
+    host,
+    'personal',
+    'SOC 2 audit prep due next week',
+    'Audit deadline',
+    {
+      triggeredBy: 'smoke:obligation',
+      obligation: { obligationType: 'deadline', expiresAt: obligationDueAt },
+    },
+  );
+  await host.obligationIndex.ensureLoaded();
+  const obligationNodeId = obligationRec.nodeIds[0];
+  if (!obligationNodeId) throw new Error('FAIL: obligation remember produced no node');
+  const obligationStored = host.obligationIndex.get(obligationNodeId);
+  if (!obligationStored || obligationStored.expiresAt !== obligationDueAt) {
+    throw new Error('FAIL: obligation index missing expiresAt');
+  }
+  const obligationNode = host.listNodes('personal').find((n) => n.id === obligationNodeId);
+  if (!obligationNode || (obligationNode as { obligationType?: string }).obligationType !== 'deadline') {
+    throw new Error('FAIL: listNodes missing obligationType badge fields');
+  }
+  log('obligation-remember.ok', { nodeId: obligationNodeId });
+
+  log('obligation-due-window', {});
+  const due7d = host.obligationIndex.list({
+    graphIds: ['personal'],
+    dueWithinMs: 7 * 24 * 60 * 60 * 1000,
+  });
+  if (!due7d.some((o) => o.nodeId === obligationNodeId)) {
+    throw new Error('FAIL: obligation not in 7-day due window');
+  }
+  const due1d = host.obligationIndex.list({
+    graphIds: ['personal'],
+    dueWithinMs: 1 * 24 * 60 * 60 * 1000,
+  });
+  if (due1d.some((o) => o.nodeId === obligationNodeId)) {
+    throw new Error('FAIL: 3-day obligation incorrectly matched 1-day window');
+  }
+  log('obligation-due-window.ok', { matched7d: due7d.length });
+
+  log('obligation-retention-guard', {});
+  await host.setSettings({ compliance: { enabled: true, defaultRetentionTtlMs: 1 } });
+  await host.updateGraphComplianceFields('personal', { retentionTtlMs: 1 });
+  const dryOb = await (await import('./compliance.js')).runRetentionPurge(host, cortexDir, true);
+  const obSkipped = dryOb.items.find(
+    (i) => i.sourceId === obligationRec.sourceId && i.skippedReason === 'active-obligation',
+  );
+  if (!obSkipped) {
+    throw new Error('FAIL: retention purge should skip sources with active obligations');
+  }
+  log('obligation-retention-guard.ok', {});
+
   log('compliance-evidence-pack', {});
   const { buildEvidencePack, buildSignedEvidencePack, recallAsOf, verifyEvidencePackSignature } = await import('./compliance.js');
   const pack = await buildEvidencePack(host, cortexDir, { engram: 'personal' });
@@ -661,7 +1040,11 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     oplog: pack.oplog.count,
     mcp: pack.mcpAudit.count,
     hashes: pack.engramHashes.length,
+    skillRuns: pack.skillRuns.count,
   });
+  if (!pack.skillRuns || pack.skillRuns.count < 0) {
+    throw new Error('FAIL: evidence pack missing skillRuns slice');
+  }
 
   log('compliance-evidence-pack-signed', {});
   const signed = await buildSignedEvidencePack(host, cortexDir, { engram: 'personal' });
@@ -956,6 +1339,9 @@ ferry to Naxos. The food in Mykonos was overrated.`;
 
   // --- enterprise RBAC matrix (Batch 4) ------------------------------------
   log('rbac-matrix', {});
+  if (!isMcpToolAllowedForRole('recall_obligations', 'recall-only')) {
+    throw new Error('FAIL: recall-only role must allow recall_obligations');
+  }
   if (isMcpToolAllowedForRole('remember', 'recall-only')) {
     throw new Error('FAIL: recall-only role must not allow remember');
   }
@@ -1123,6 +1509,56 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('catalog-sharepoint-map.ok', { packageId: spEntry.packageId });
 
+  log('skill-run-ledger', {});
+  const { redactSkillRunVars, deriveSkillRunStatus } = await import('./skill-runs.js');
+  const runStore = host.skillRuns;
+  const testRunId = 'smoke-run-ledger-1';
+  await runStore.save({
+    runId: testRunId,
+    skillGraphId: 'personal',
+    skillSourceId: walkSourceId,
+    planTitle: 'Smoke playbook run',
+    capturedVars: { branch: 'main', apiToken: 'secret-should-redact' },
+    completedStepIndex: 2,
+    status: 'paused',
+    actorId: 'smoke-actor',
+    actorLabel: 'Smoke tester',
+    stepLog: [{ stepIndex: 1, actor: 'smoke', outcome: 'ok', ts: Date.now() }],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  const listedRuns = await runStore.listPublic();
+  if (!listedRuns.some((r) => r.runId === testRunId && r.status === 'paused')) {
+    throw new Error('FAIL: skill:listRuns public list missing smoke run');
+  }
+  const redacted = redactSkillRunVars({ apiToken: 'x', note: 'hello world' });
+  if (redacted.apiToken !== '[redacted]') throw new Error('FAIL: skill run var redaction');
+  if (deriveSkillRunStatus({ completedStepIndex: 1 }) !== 'paused') {
+    throw new Error('FAIL: deriveSkillRunStatus legacy inference');
+  }
+  await runStore.delete(testRunId);
+  log('skill-run-ledger.ok', { listed: listedRuns.length });
+
+  log('catalog-version-drift', {});
+  const { catalogVersionDrift, compareSemver } = await import('./gsk-format.js');
+  const { detectCatalogDrift } = await import('./catalog-drift.js');
+  if (compareSemver('1.0.0', '1.0.1') !== -1) throw new Error('FAIL: compareSemver');
+  if (!catalogVersionDrift('1.0.0', '1.0.1')) throw new Error('FAIL: catalogVersionDrift');
+  const driftItems = detectCatalogDrift(
+    [{ ...catalogEntry!, catalogVersion: '2.0.0', packId: 'devops-pack' }],
+    {
+      subscribedCatalogIds: [],
+      installedPackageIds: [catalogEntry!.packageId],
+      installedPackages: {
+        [catalogEntry!.packageId]: { catalogVersion: '1.0.0', packId: 'devops-pack', installedAt: Date.now() },
+      },
+    },
+  );
+  if (!driftItems.some((d) => d.versionDrift)) {
+    throw new Error('FAIL: detectCatalogDrift version drift');
+  }
+  log('catalog-version-drift.ok', { drift: driftItems.length });
+
   // --- OIDC ID token verification (mock JWKS — no live IdP) ----------------
   log('sso-oidc-verify', {});
   const http = await import('node:http');
@@ -1264,6 +1700,116 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error('FAIL: session lease not cleared');
   }
   log('session-lease.ok', { deviceName: lease.deviceName });
+
+  // --- Batch A: proactive dispatch matching --------------------------------
+  log('proactive-dispatch-match', {});
+  const { matchDispatchTriggers, parseDispatchTriggerLine } = await import('./proactive-dispatch-match.js');
+  const parsed = parseDispatchTriggerLine('- Bug found → bug-investigation');
+  if (!parsed || parsed.skillSlug !== 'bug-investigation') {
+    throw new Error('FAIL: parseDispatchTriggerLine');
+  }
+  const bugMatches = matchDispatchTriggers('error crash bug in sidecar', [
+    '- Bug found → bug-investigation',
+    '- Ship signal → ship-workflow',
+  ]);
+  if (!bugMatches.some((m) => m.skillSlug === 'bug-investigation' && m.score >= 3)) {
+    throw new Error(`FAIL: dispatch trigger match expected bug-investigation, got ${JSON.stringify(bugMatches)}`);
+  }
+  log('proactive-dispatch-match.ok', { top: bugMatches[0]?.skillSlug });
+
+  // --- Batch A: away digest dedupe + grouping ------------------------------
+  log('away-digest', {});
+  const {
+    hasRecentAwayDigest,
+    buildGroupedDigestBody,
+    AWAY_DIGEST_PREFIX,
+    AWAY_DIGEST_DEDUPE_MS,
+  } = await import('./away-digest.js');
+  const digestNow = Date.now();
+  const quietTail = [{
+    kind: 'ghampus',
+    text: `${AWAY_DIGEST_PREFIX} (just now) — all quiet. Nothing new arrived in your cortex.`,
+    ts: digestNow - 1000,
+  }];
+  if (!hasRecentAwayDigest(quietTail, true, digestNow)) {
+    throw new Error('FAIL: quiet away digest dedupe should detect recent quiet digest');
+  }
+  if (hasRecentAwayDigest(quietTail, true, digestNow + AWAY_DIGEST_DEDUPE_MS + 1)) {
+    throw new Error('FAIL: away digest dedupe should expire after 6h');
+  }
+  const grouped = buildGroupedDigestBody([
+    {
+      id: 'personal:a1', engramId: 'personal', tier: 'personal', sourceId: 'a1',
+      originKind: 'connector', origin: 'github', label: 'README.md', ingestedAtMs: digestNow,
+    },
+    {
+      id: 'personal:a2', engramId: 'personal', tier: 'sensitive', sourceId: 'a2',
+      originKind: 'direct', origin: 'app', label: 'secret-note', ingestedAtMs: digestNow,
+    },
+  ], 2);
+  if (!grouped.includes('connectors') || !grouped.includes('[preview hidden')) {
+    throw new Error(`FAIL: grouped digest missing originKind or sensitive redaction: ${grouped}`);
+  }
+  log('away-digest.ok', { groupedLines: grouped.split('\n').length });
+
+  // --- Linked files: attach → verify → repair by content hash ---------------
+  log('linked-files', {});
+  const { addAttachment, listAttachments, verifyAttachment, repairAttachmentPath } =
+    await import('./attachments-store.js');
+  const attachDir = path.join(cortexDir, 'smoke-linked-files');
+  await fs.mkdir(attachDir, { recursive: true });
+  const origPath = path.join(attachDir, 'note.txt');
+  const movedPath = path.join(attachDir, 'moved-note.txt');
+  await fs.writeFile(origPath, 'linked file smoke content v1', 'utf8');
+  const att = await addAttachment(cortexDir, {
+    path: origPath,
+    graphId: 'personal',
+    label: 'smoke-linked-note',
+  });
+  if (!att.contentHash) throw new Error('FAIL: attachment missing contentHash');
+  const listedAttachments = await listAttachments(cortexDir, { graphId: 'personal' });
+  if (!listedAttachments.some((a) => a.id === att.id)) throw new Error('FAIL: attachment not listed after attach');
+  await fs.rename(origPath, movedPath);
+  const broken = await verifyAttachment(cortexDir, att.id);
+  if (broken?.lastVerifiedOk !== false) throw new Error('FAIL: verify should report missing file after move');
+  const repairResult = await repairAttachmentPath(cortexDir, att.id, movedPath);
+  if (!repairResult.ok) throw new Error(`FAIL: repairAttachmentPath: ${JSON.stringify(repairResult)}`);
+  if (!repairResult.attachment.lastVerifiedOk) throw new Error('FAIL: repaired attachment not verified ok');
+  log('linked-files.ok', { id: att.id, hash: att.contentHash.slice(0, 8) });
+
+  // --- Batch A: savings baseline from settings -----------------------------
+  log('savings-baseline', {});
+  const {
+    resolveSavingsBaseline,
+    recordRecallOnlySavings,
+    summariseSavings,
+    computeBaselineCostUsd,
+  } = await import('./savings-tracker.js');
+  await host.setSettings({
+    ...host.getSettings(),
+    models: {
+      ...(host.getSettings().models ?? { strategy: 'adaptive', providers: { ollama: { enabled: true } } }),
+      savingsBaseline: {
+        modelDisplayName: 'GPT-4o smoke baseline',
+        inputUsdPer1M: 5.0,
+        outputUsdPer1M: 15.0,
+      },
+    },
+  });
+  const customBaseline = resolveSavingsBaseline(host.getSettings());
+  const customCost = computeBaselineCostUsd(1_000_000, 0, customBaseline);
+  if (Math.abs(customCost - 5.0) > 0.001) {
+    throw new Error(`FAIL: custom baseline cost expected 5.0, got ${customCost}`);
+  }
+  await recordRecallOnlySavings(cortexDir, { inputTokensSaved: 2000, outputTokensSaved: 0, source: 'smoke' }, customBaseline);
+  const summary = await summariseSavings(cortexDir, 30, customBaseline);
+  if (summary.baselineModel !== 'GPT-4o smoke baseline') {
+    throw new Error(`FAIL: summary baselineModel ${summary.baselineModel}`);
+  }
+  if (summary.totalEvents < 1 || summary.totalSavedUsd <= 0) {
+    throw new Error(`FAIL: savings summary expected events, got ${JSON.stringify(summary)}`);
+  }
+  log('savings-baseline.ok', { baselineModel: summary.baselineModel, savedUsd: summary.totalSavedUsd });
 }
 
 function log(phase: string, data: Record<string, unknown>): void {

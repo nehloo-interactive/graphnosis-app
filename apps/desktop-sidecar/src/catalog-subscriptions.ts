@@ -31,11 +31,29 @@ export async function readCatalogSubscriptions(): Promise<CatalogSubscriptionSto
     const mdmDefaultSubscriptions = Array.isArray(parsed.mdmDefaultSubscriptions)
       ? parsed.mdmDefaultSubscriptions.filter((id): id is string => typeof id === 'string' && id.length > 0)
       : undefined;
+    let installedPackages: CatalogSubscriptionStore['installedPackages'];
+    if (parsed.installedPackages && typeof parsed.installedPackages === 'object') {
+      installedPackages = {};
+      for (const [pkgId, meta] of Object.entries(parsed.installedPackages as Record<string, unknown>)) {
+        if (!pkgId.trim() || !meta || typeof meta !== 'object') continue;
+        const m = meta as Record<string, unknown>;
+        installedPackages[pkgId.trim()] = {
+          installedAt: typeof m.installedAt === 'number' ? m.installedAt : Date.now(),
+          ...(typeof m.catalogVersion === 'string' && m.catalogVersion.trim()
+            ? { catalogVersion: m.catalogVersion.trim() }
+            : {}),
+          ...(typeof m.packId === 'string' && m.packId.trim()
+            ? { packId: m.packId.trim() }
+            : {}),
+        };
+      }
+    }
     return {
       subscribedCatalogIds: [...new Set(ids)],
       installedPackageIds: [...new Set(installed)],
       ...(mdmBundlePath ? { mdmBundlePath } : {}),
       ...(mdmDefaultSubscriptions?.length ? { mdmDefaultSubscriptions: [...new Set(mdmDefaultSubscriptions)] } : {}),
+      ...(installedPackages && Object.keys(installedPackages).length ? { installedPackages } : {}),
       ...(parsed.updatedAt != null ? { updatedAt: parsed.updatedAt } : {}),
     };
   } catch {
@@ -49,6 +67,13 @@ export async function writeCatalogSubscriptions(store: CatalogSubscriptionStore)
     subscribedCatalogIds: [...new Set(store.subscribedCatalogIds)],
     installedPackageIds: [...new Set(store.installedPackageIds ?? [])],
     updatedAt: Date.now(),
+    ...(store.installedPackages && Object.keys(store.installedPackages).length
+      ? { installedPackages: store.installedPackages }
+      : {}),
+    ...(store.mdmBundlePath ? { mdmBundlePath: store.mdmBundlePath } : {}),
+    ...(store.mdmDefaultSubscriptions?.length
+      ? { mdmDefaultSubscriptions: [...new Set(store.mdmDefaultSubscriptions)] }
+      : {}),
   };
   await fs.writeFile(STORE_FILE, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
@@ -69,11 +94,25 @@ export async function unsubscribeCatalogEntry(catalogId: string): Promise<Catalo
   return store;
 }
 
-export async function recordInstalledPackage(packageId: string): Promise<CatalogSubscriptionStore> {
+export async function recordInstalledPackage(
+  packageId: string,
+  meta?: { catalogVersion?: string; packId?: string },
+): Promise<CatalogSubscriptionStore> {
   const store = await readCatalogSubscriptions();
   const installed = new Set(store.installedPackageIds ?? []);
   installed.add(packageId);
   store.installedPackageIds = [...installed];
+  const packages = { ...(store.installedPackages ?? {}) };
+  packages[packageId] = {
+    installedAt: Date.now(),
+    ...(meta?.catalogVersion ? { catalogVersion: meta.catalogVersion } : packages[packageId]?.catalogVersion
+      ? { catalogVersion: packages[packageId]!.catalogVersion }
+      : {}),
+    ...(meta?.packId ? { packId: meta.packId } : packages[packageId]?.packId
+      ? { packId: packages[packageId]!.packId }
+      : {}),
+  };
+  store.installedPackages = packages;
   await writeCatalogSubscriptions(store);
   return store;
 }

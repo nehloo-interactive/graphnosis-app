@@ -77,6 +77,35 @@ export function countSkillRetrainQueue(host: GraphnosisHost): number {
   return Object.keys(host.getSettings().skillRetrainQueue ?? {}).length;
 }
 
+/** Enqueue skills whose cited memory nodes are missing or soft-deleted. */
+export async function auditSkillCitedNodeDrift(
+  host: GraphnosisHost,
+  skillTrainer?: SkillTrainer,
+): Promise<number> {
+  const cited = host.getSettings().skillCitedNodes ?? {};
+  const now = Date.now();
+  let enqueued = 0;
+
+  for (const [sourceId, entry] of Object.entries(cited)) {
+    const missing: string[] = [];
+    for (const [nodeId, graphId] of Object.entries(entry.nodes)) {
+      if (!host.listGraphs().includes(graphId)) {
+        missing.push(nodeId);
+        continue;
+      }
+      const nodes = host.listNodes(graphId);
+      const n = nodes.find((x) => x.id === nodeId);
+      if (!n || n.confidence <= 0.2 || (n.validUntil !== undefined && n.validUntil <= now)) {
+        missing.push(nodeId);
+      }
+    }
+    if (missing.length === 0) continue;
+    await enqueueSkillsForNodeChange(host, entry.graphId, missing, 'source-forgotten', skillTrainer);
+    enqueued++;
+  }
+  return enqueued;
+}
+
 /** Oldest queued skill that is still valid — used by Ghampus maintenance. */
 export function pickNextQueueEntry(
   host: GraphnosisHost,
@@ -169,6 +198,19 @@ export async function retrainSingleQueuedSkill(
     }
     if (Object.keys(patch).length > 0) await host.setSettings(patch);
     console.log(`[skill-maintenance] retrained ${detail.label} (${sourceId}) — ${entry.reason}`);
+
+    // Re-bind cited nodes from recall recipes (empty-engram train contract).
+    try {
+      const { syncSkillCitedNodesFromRecipes } = await import('./skill-recall-bindings.js');
+      await syncSkillCitedNodesFromRecipes(host, entry.graphId, sourceId);
+    } catch { /* non-fatal */ }
+
+    // Refresh dispatch registry when skill-dispatch or dispatch-export-sync retrained.
+    try {
+      const { scheduleDispatchSyncAfterRetrain } = await import('./skill-dispatch-sync.js');
+      await scheduleDispatchSyncAfterRetrain(host, skillTrainer, entry.graphId, sourceId);
+    } catch { /* non-fatal */ }
+
     return { ok: true, label: detail.label };
   } catch (e) {
     console.warn(`[skill-maintenance] retrain failed for ${sourceId}:`, e);
