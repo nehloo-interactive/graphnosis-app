@@ -107,39 +107,16 @@ async function loadAllGraphsFromDisk(
   broadcastRaw?: BroadcastRawFn,
 ): Promise<void> {
   const graphsDir = path.join(cortexDir, 'graphs');
-  let entries: string[];
   try {
-    entries = await fs.readdir(graphsDir);
+    await fs.access(graphsDir);
   } catch (e) {
     const err = e as NodeJS.ErrnoException;
     if (err.code === 'ENOENT') return; // first-run cortex — only the default graph exists
-    console.error(`[graphnosis-sidecar] could not list ${graphsDir}: ${err.message}`);
+    console.error(`[graphnosis-sidecar] could not access ${graphsDir}: ${err.message}`);
     return;
   }
   const seen = new Set<string>(host.listGraphs());
-  // Collect the list of graphIds to load first; then dispatch them
-  // SEQUENTIALLY with a yield between each. Earlier this used Promise.all
-  // for parallelism, but host.loadGraph contains sync decryption that
-  // monopolizes the Node event loop — 12 concurrent loads starved the IPC
-  // socket for ~25s, freezing the lock screen on "Loading memories…" while
-  // the boot's list_nodes('personal') call sat in the IPC queue. Sequential
-  // + setImmediate yield lets IPC interleave so the default engram stays
-  // queryable throughout the background load. Per-graph try/catch keeps
-  // "partial failure is partial visibility" intact: one bad graph doesn't
-  // block the rest.
-  const toLoad: string[] = [];
-  for (const name of entries) {
-    // Match both the canonical .gai and the legacy .aikg path; strip the
-    // extension to get the graphId. Skip .bak / .tmp leftovers from
-    // interrupted purges.
-    const m = name.match(/^(.+)\.(gai|aikg)$/);
-    if (!m) continue;
-    const graphId = m[1] as string;
-    if (graphId === defaultGraphId) continue; // already loaded
-    if (seen.has(graphId)) continue;
-    if (!LAZY_BOOT) toLoad.push(graphId); // lazy-boot: don't preload; load on first access
-  }
-
+  const toLoad = LAZY_BOOT ? [] : host.listBootPendingEngramIds(seen);
   const total = toLoad.length;
   let loaded = 0;
   let failed = 0;
@@ -1243,10 +1220,16 @@ async function main(): Promise<void> {
       console.error(`[graphnosis-sidecar] background engram sweep failed: ${(e as Error).message}`);
     })
     .then(async () => {
-      // Deferred reconcile + sourceRef sweeps; clears bootPhaseActive at end.
-      await host.flushBootDeferredWork();
-      // Event-based first brain scan — replaces the old 60 s wall-clock grace.
+      // Sweep done — engrams are resident; UI "Loading N engrams" and brain
+      // first-scan must not wait on sequential oplog reconcile (39 s+ each on
+      // large tails). Reconcile + sourceRef sweeps run in the background.
+      host.setBootPhaseActive(false);
       brainEngine.notifyBootSettled();
+      void host.flushBootDeferredWork().catch((e: unknown) => {
+        console.error(
+          `[graphnosis-sidecar] boot deferred work failed: ${(e as Error).message}`,
+        );
+      });
       await backfillGraphMetadata(host);
       (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
     });

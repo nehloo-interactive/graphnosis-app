@@ -1772,7 +1772,10 @@ function render(status: StatusSnapshot): void {
         const { loaded, total } = _missedDuringUnlockPayload;
         _missedDuringUnlockPayload = null;
         const allDone = loaded >= total;
-        if (allDone) markEngramsLoaded();
+        if (allDone) {
+          _bootSweepComplete = true;
+          markEngramsLoaded();
+        }
         processEngramsLoadingRefresh(allDone, true);
       }
       // Belt-and-suspenders: start the periodic greyed-refresh poll. If any
@@ -14119,17 +14122,25 @@ function engramsPendingDiskLoad(): GraphWithMetadata[] {
   return loadedGraphs.filter((g) => !g.metadata.archived && g.loaded === false);
 }
 
-/** Status-bar line for the background engram sweep. Prefer picker truth
- *  (loadedGraphs) over the event payload — broadcasts can be missed or
- *  lag behind resident state after unlockPending catch-up. */
+/** Latest sidecar sweep progress — canonical total is non-archived .gai on disk. */
+let _engramLoadProgress: { loaded: number; total: number } = { loaded: 0, total: 0 };
+
+/** Status-bar line for the background engram sweep. Sidecar `total` is the
+ *  canonical count (non-archived engrams with .gai on disk); picker pending
+ *  can drift when metadata-only rows exist (e.g. graphnosis-docs w/o .gai). */
 function updateEngramLoadingStatus(loaded: number, total: number): void {
   if (!els.statusSaved) return;
-  if (allEngramsReportLoaded()) {
+  if (total > 0 || loaded > 0) {
+    _engramLoadProgress = { loaded, total };
+  }
+  if (_bootSweepComplete || allEngramsReportLoaded()) {
     els.statusSaved.textContent = '';
     return;
   }
-  const pending = engramsPendingDiskLoad().length;
-  const remaining = pending > 0 ? pending : Math.max(0, total - loaded);
+  const { loaded: eventLoaded, total: eventTotal } = _engramLoadProgress;
+  const eventRemaining = eventTotal > 0 ? Math.max(0, eventTotal - eventLoaded) : 0;
+  const pickerPending = engramsPendingDiskLoad().length;
+  const remaining = eventRemaining > 0 ? eventRemaining : pickerPending;
   els.statusSaved.textContent = remaining <= 0
     ? ''
     : `Loading ${remaining} more engram${remaining === 1 ? '' : 's'}…`;
@@ -14147,6 +14158,7 @@ void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (
   const { loaded, total } = evt.payload;
   const remaining = total - loaded;
   const allDone = remaining <= 0;
+  if (allDone) _bootSweepComplete = true;
 
   // Unblock any docs reingest that was waiting for loading to complete.
   if (allDone) markEngramsLoaded();
@@ -17418,6 +17430,8 @@ let docsOfferChecked = false;
 // engrams-loading during its boot sweep).
 let _engramsLoadedResolve: (() => void) | null = null;
 let engramsLoaded: Promise<void> = createEngramsLoadedPromise();
+/** Set when the sidecar broadcasts engrams-loading with loaded >= total. */
+let _bootSweepComplete = false;
 
 function createEngramsLoadedPromise(): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -17431,12 +17445,15 @@ function resetEngramsLoaded(): void {
 
 /** True while the sidecar's boot sweep still has unloaded engrams in the picker. */
 function isEngramPreloadInProgress(): boolean {
+  if (_bootSweepComplete) return false;
   return loadedGraphs.length > 0 && loadedGraphs.some((g) => g.loaded === false);
 }
 
 /** True when the picker shows no greyed engrams — sidecar sweep is done. */
 function allEngramsReportLoaded(): boolean {
-  return loadedGraphs.length === 0 || loadedGraphs.every((g) => g.loaded !== false);
+  return _bootSweepComplete
+    || loadedGraphs.length === 0
+    || loadedGraphs.every((g) => g.loaded !== false);
 }
 
 /** Resolve the engramsLoaded promise. Called from the engrams-loading listener. */

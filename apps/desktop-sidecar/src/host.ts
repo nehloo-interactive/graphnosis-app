@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync, readdirSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -286,13 +286,14 @@ export class GraphnosisHost {
   private bootEmbBuildInFlight = 0;
   private bootEmbBuildWaiters: Array<() => void> = [];
   private static readonly BOOT_EMB_BUILD_MAX = 1;
-  /** True from sidecar open until the background engram sweep finishes.
-   *  While active, oplog reconcile + sourceRef sweeps are queued — each
-   *  reconcile calls sync adapter.build() and replaying 22 of them concurrently
-   *  monopolizes the event loop and starves IPC mid-sweep. */
+  /** True from sidecar open until the disk sweep finishes (not until deferred
+   *  oplog reconcile). While active, oplog reconcile + sourceRef sweeps are
+   *  queued — each reconcile calls sync adapter.build() and replaying 22 of
+   *  them concurrently monopolizes the event loop and starves IPC mid-sweep. */
   private bootPhaseActive = false;
   private bootReconcileQueue: Array<{ graphId: GraphId; entry: LoadedGraph }> = [];
-  private bootSourceRefQueue: GraphId[] = [];
+  /** sourceRef sweeps deferred from boot — run on first engram access. */
+  private deferredSourceRefSweep = new Set<GraphId>();
   private bootDeferredFlushPromise: Promise<void> | null = null;
   private readonly oplogWriter: oplog.OpLogWriter;
   /** Append-only LLM event log — one .gll file per engram. */
@@ -1287,10 +1288,15 @@ export class GraphnosisHost {
     if (!opts.includeUnloaded) return loadedRows;
     const pendingRows = Object.entries(this.settings.graphMetadata)
       .filter(([graphId]) => !loadedSet.has(graphId))
-      // An LRU-evicted engram (everLoaded) is still available — report it as
-      // loaded so the picker doesn't grey/disable it. Only never-yet-loaded
-      // engrams (genuine boot-pending / failed) report loaded:false.
-      .map(([graphId, metadata]) => ({ graphId, metadata, loaded: this.everLoaded.has(graphId) }));
+      .map(([graphId, metadata]) => {
+        const onDisk = this.graphOnDisk(graphId);
+        // An LRU-evicted engram (everLoaded) is still available — report it as
+        // loaded so the picker doesn't grey/disable it. Metadata-only rows
+        // with no .gai (e.g. never-created system engrams) aren't part of the
+        // boot sweep — don't grey them as "still loading from disk".
+        const loaded = !onDisk || this.everLoaded.has(graphId);
+        return { graphId, metadata, loaded };
+      });
     return [...loadedRows, ...pendingRows];
   }
 
@@ -1783,7 +1789,7 @@ export class GraphnosisHost {
     this.bootPhaseActive = active;
   }
 
-  /** Drain deferred reconcile + sourceRef sweeps sequentially after boot. */
+  /** Background oplog reconcile after boot — does not block notifyBootSettled(). */
   flushBootDeferredWork(): Promise<void> {
     if (this.bootDeferredFlushPromise) return this.bootDeferredFlushPromise;
     this.bootDeferredFlushPromise = this.runBootDeferredWork();
@@ -1792,19 +1798,52 @@ export class GraphnosisHost {
 
   private async runBootDeferredWork(): Promise<void> {
     const reconciles = this.bootReconcileQueue.splice(0);
-    const sourceRefs = [...new Set(this.bootSourceRefQueue.splice(0))];
-    if (reconciles.length > 0 || sourceRefs.length > 0) {
-      console.error(
-        `[graphnosis-host] boot deferred work: ${reconciles.length} oplog reconcile(s), ${sourceRefs.length} sourceRef sweep(s)`,
-      );
+    if (reconciles.length === 0) {
+      this.bootDeferredFlushPromise = null;
+      return;
     }
+    console.error(
+      `[graphnosis-host] boot deferred work: ${reconciles.length} oplog reconcile(s)`,
+    );
+
+    type OplogEventBatch = Awaited<ReturnType<typeof oplog.readAllEvents>>;
+    let fullEvents: OplogEventBatch | null = null;
+    let tailEvents: OplogEventBatch | null = null;
+
+    const needsFull = reconciles.some(
+      ({ graphId }) => this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint === undefined,
+    );
+    const tailCheckpoints = reconciles
+      .map(({ graphId }) => this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint)
+      .filter((ck): ck is NonNullable<typeof ck> => ck !== undefined);
+
+    if (needsFull) {
+      fullEvents = await this.listOplogEvents();
+    } else if (tailCheckpoints.length > 0) {
+      const minCk = this.minOplogReconcileCheckpoint(tailCheckpoints);
+      const oplogDir = path.join(this.opts.cortexDir, 'oplog');
+      tailEvents = await oplog.readEventsSince(oplogDir, this.key, {
+        ...this.oplogReadOptions(),
+        sinceTs: minCk.maxTs,
+        ...(minCk.maxSeq !== undefined ? { sinceSeq: minCk.maxSeq } : {}),
+      });
+    }
+
+    const prefetch = { fullEvents, tailEvents };
+
     for (const { graphId, entry } of reconciles) {
       const t0 = Date.now();
       try {
-        await this.reconcileGraphFromOplog(graphId, entry);
-        console.error(
-          `[graphnosis-host] boot reconcile engram[${redactId(graphId)}]: ${Date.now() - t0}ms`,
-        );
+        const outcome = await this.reconcileGraphFromOplog(graphId, entry, prefetch);
+        if (outcome === 'skipped') {
+          console.error(
+            `[graphnosis-host] boot reconcile engram[${redactId(graphId)}]: skipped (checkpoint current)`,
+          );
+        } else {
+          console.error(
+            `[graphnosis-host] boot reconcile engram[${redactId(graphId)}]: ${Date.now() - t0}ms`,
+          );
+        }
       } catch (e: unknown) {
         console.error(
           `[graphnosis-host] boot reconcile failed engram[${redactId(graphId)}] after ${Date.now() - t0}ms: ${(e as Error).message}`,
@@ -1812,21 +1851,6 @@ export class GraphnosisHost {
       }
       await this.yieldToLoop();
     }
-    for (const graphId of sourceRefs) {
-      const t0 = Date.now();
-      try {
-        await this.sweepSourceRefArtifacts(graphId);
-        console.error(
-          `[graphnosis-host] boot sourceRef sweep engram[${redactId(graphId)}]: ${Date.now() - t0}ms`,
-        );
-      } catch (e: unknown) {
-        console.error(
-          `[graphnosis-host] boot sourceRef sweep failed engram[${redactId(graphId)}]: ${(e as Error).message}`,
-        );
-      }
-      await this.yieldToLoop();
-    }
-    this.bootPhaseActive = false;
     this.bootDeferredFlushPromise = null;
   }
 
@@ -1848,7 +1872,8 @@ export class GraphnosisHost {
 
   private scheduleSourceRefSweep(graphId: GraphId): void {
     if (this.bootPhaseActive || this.bootSweepActive) {
-      this.bootSourceRefQueue.push(graphId);
+      // Orphan cleanup is idempotent — defer to first access, not boot critical path.
+      this.deferredSourceRefSweep.add(graphId);
       return;
     }
     void this.sweepSourceRefArtifacts(graphId).catch((e: unknown) => {
@@ -1922,6 +1947,45 @@ export class GraphnosisHost {
 
   private cachePath(graphId: GraphId): string {
     return path.join(this.opts.cortexDir, 'graphs', `${graphId}.embcache`);
+  }
+
+  /** True when a canonical or legacy graph file exists on disk. */
+  private graphOnDisk(graphId: GraphId): boolean {
+    return existsSync(this.graphPath(graphId)) || existsSync(this.legacyGraphPath(graphId));
+  }
+
+  /** Non-archived engrams with a .gai/.aikg on disk, excluding already-resident ids. */
+  listBootPendingEngramIds(residentIds: Iterable<GraphId> = []): GraphId[] {
+    const resident = new Set(residentIds);
+    const graphsDir = path.join(this.opts.cortexDir, 'graphs');
+    let entries: string[];
+    try {
+      entries = readdirSync(graphsDir);
+    } catch {
+      return [];
+    }
+    const out: GraphId[] = [];
+    const seen = new Set<string>();
+    for (const name of entries) {
+      const m = name.match(/^(.+)\.(gai|aikg)$/);
+      if (!m) continue;
+      const graphId = m[1] as GraphId;
+      if (resident.has(graphId) || seen.has(graphId)) continue;
+      seen.add(graphId);
+      if (this.settings.graphMetadata[graphId]?.archived) continue;
+      out.push(graphId);
+    }
+    return out;
+  }
+
+  private kickoffDeferredSourceRefSweep(graphId: GraphId): void {
+    if (!this.deferredSourceRefSweep.has(graphId)) return;
+    this.deferredSourceRefSweep.delete(graphId);
+    void this.sweepSourceRefArtifacts(graphId).catch((e: unknown) => {
+      console.error(
+        `[graphnosis-host] sourceRef-artifact sweep failed for engram[${redactId(graphId)}]: ${(e as Error).message}`,
+      );
+    });
   }
 
   async createGraph(graphId: GraphId): Promise<void> {
@@ -5699,6 +5763,325 @@ export class GraphnosisHost {
     return { id, sizeBytes, fileCount };
   }
 
+  // ── Op-log merge / materialization ─────────────────────────────────────
+  //
+  // On loadGraph, converge the on-disk .gai cache with the merged op-log
+  // (all devices' *.oplog files). Corrections (edit/supersede/delete) and
+  // source lifecycle (ingest/forget/reorder) from peer devices are replayed
+  // here; missing recoverable sources are re-ingested without duplicating
+  // op-log rows (skipOplogEmit).
+
+  private async reconcileGraphFromOplog(
+    graphId: GraphId,
+    entry: LoadedGraph,
+    prefetch?: {
+      fullEvents?: Awaited<ReturnType<typeof oplog.readAllEvents>> | null;
+      tailEvents?: Awaited<ReturnType<typeof oplog.readAllEvents>> | null;
+    },
+  ): Promise<'skipped' | 'ran'> {
+    const checkpoint = this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint;
+    const tailReplay = checkpoint !== undefined;
+    type OplogEventBatch = Awaited<ReturnType<typeof oplog.readAllEvents>>;
+    let events: OplogEventBatch;
+
+    if (tailReplay && checkpoint) {
+      if (prefetch?.tailEvents != null) {
+        events = this.filterOplogEventsSince(prefetch.tailEvents, checkpoint);
+      } else if (prefetch?.fullEvents != null) {
+        events = this.filterOplogEventsSince(prefetch.fullEvents, checkpoint);
+      } else {
+        const oplogDir = path.join(this.opts.cortexDir, 'oplog');
+        events = await oplog.readEventsSince(oplogDir, this.key, {
+          ...this.oplogReadOptions(),
+          sinceTs: checkpoint.maxTs,
+          ...(checkpoint.maxSeq !== undefined ? { sinceSeq: checkpoint.maxSeq } : {}),
+        });
+      }
+    } else {
+      events = prefetch?.fullEvents ?? await this.listOplogEvents();
+    }
+
+    const graphEvents = events.filter((e) => e.graphId === graphId);
+    if (graphEvents.length === 0) {
+      if (events.length > 0) await this.persistOplogReconcileCheckpoint(graphId, events);
+      return 'skipped';
+    }
+
+    await this.opts.adapter.build(entry.handle);
+
+    let dirty = false;
+    const liveSources = this.buildLiveSourceMapFromOplog(graphId, graphEvents, entry);
+
+    for (const [sourceId, rec] of liveSources) {
+      const local = entry.sourceIndex.get(sourceId);
+      if (!local) {
+        if (await this.recoverSourceFromOplog(graphId, entry, rec)) dirty = true;
+      } else if (JSON.stringify(local.nodeIds) !== JSON.stringify(rec.nodeIds)) {
+        try {
+          entry.sourceIndex.reorderNodes(sourceId, rec.nodeIds);
+          dirty = true;
+        } catch {
+          // nodeId mismatch between .gai and op-log — leave for manual recovery
+        }
+      }
+    }
+
+    // Full replay reconstructs the live source set from the entire log; tail
+    // replay only applies deltas — never sweep sources absent from the tail slice.
+    if (!tailReplay) {
+      for (const s of [...entry.sourceIndex.list()]) {
+        if (!liveSources.has(s.sourceId)) {
+          await this.reconcileForgetSource(graphId, entry, s.sourceId);
+          dirty = true;
+        }
+      }
+    } else {
+      for (const ev of graphEvents) {
+        if (ev.op === 'forgetSource' && ev.target.kind === 'source') {
+          if (entry.sourceIndex.get(ev.target.id)) {
+            await this.reconcileForgetSource(graphId, entry, ev.target.id);
+            dirty = true;
+          }
+        }
+      }
+    }
+
+    dirty = await this.replayNodeCorrectionsFromOplog(entry, graphEvents) || dirty;
+
+    if (dirty) {
+      entry.dirty = true;
+      await this.save(graphId);
+      this.invalidateOplogCache();
+    }
+
+    await this.persistOplogReconcileCheckpoint(graphId, events);
+    return 'ran';
+  }
+
+  private isAfterOplogCheckpoint(
+    ev: Awaited<ReturnType<typeof oplog.readAllEvents>>[number],
+    sinceTs: number,
+    sinceSeq?: number,
+  ): boolean {
+    if (ev.ts > sinceTs) return true;
+    if (ev.ts < sinceTs) return false;
+    if (sinceSeq === undefined) return false;
+    return typeof ev.seq === 'number' && ev.seq > sinceSeq;
+  }
+
+  private filterOplogEventsSince(
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+    checkpoint: { maxTs: number; maxSeq?: number },
+  ): Awaited<ReturnType<typeof oplog.readAllEvents>> {
+    return events.filter((ev) =>
+      this.isAfterOplogCheckpoint(ev, checkpoint.maxTs, checkpoint.maxSeq),
+    );
+  }
+
+  private minOplogReconcileCheckpoint(
+    checkpoints: Array<{ maxTs: number; maxSeq?: number }>,
+  ): { maxTs: number; maxSeq?: number } {
+    return checkpoints.reduce((min, ck) => {
+      if (ck.maxTs < min.maxTs) return ck;
+      if (ck.maxTs > min.maxTs) return min;
+      const ckSeq = ck.maxSeq ?? -1;
+      const minSeq = min.maxSeq ?? -1;
+      return ckSeq < minSeq ? ck : min;
+    });
+  }
+
+  /** forgetSource during loadGraph reconcile — entry is not yet in graphs.set(). */
+  private async reconcileForgetSource(
+    graphId: GraphId,
+    entry: LoadedGraph,
+    sourceId: string,
+  ): Promise<void> {
+    const priorRecord = entry.sourceIndex.get(sourceId);
+    const nodeIds = entry.sourceIndex.forget(sourceId);
+    for (const nodeId of nodeIds) {
+      const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
+      if (!local || local.confidence <= 0.2) continue;
+      await this.opts.adapter.applyCorrection(entry.handle, {
+        kind: 'delete',
+        nodeId,
+        reason: 'oplog-sync: source forgotten on peer device',
+      });
+    }
+    if (priorRecord && nodeIds.length > 0) {
+      // skip op-log emit — replaying existing history
+    }
+  }
+
+  /** Advance per-engram reconcile checkpoint to the high-water of `events`. */
+  private async persistOplogReconcileCheckpoint(
+    graphId: GraphId,
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): Promise<void> {
+    const next = this.mergeOplogReconcileCheckpoint(
+      this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint,
+      events,
+    );
+    if (!next) return;
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    await this.setGraphMetadata(graphId, { ...existing, oplogReconcileCheckpoint: next });
+  }
+
+  private mergeOplogReconcileCheckpoint(
+    prev: settingsMod.GraphMetadata['oplogReconcileCheckpoint'],
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): { maxTs: number; maxSeq?: number } | undefined {
+    if (events.length === 0) return prev;
+    let maxTs = prev?.maxTs ?? 0;
+    let maxSeq = prev?.maxSeq;
+    for (const ev of events) {
+      if (ev.ts > maxTs) {
+        maxTs = ev.ts;
+        maxSeq = typeof ev.seq === 'number' ? ev.seq : undefined;
+      } else if (ev.ts === maxTs && typeof ev.seq === 'number') {
+        maxSeq = Math.max(maxSeq ?? -1, ev.seq);
+      }
+    }
+    return { maxTs, ...(maxSeq !== undefined ? { maxSeq } : {}) };
+  }
+
+  /** Clear tail-replay checkpoint after full op-log recovery rebuilds the engram. */
+  private async clearOplogReconcileCheckpoint(graphId: GraphId): Promise<void> {
+    const existing = this.settings.graphMetadata[graphId];
+    if (!existing?.oplogReconcileCheckpoint) return;
+    const { oplogReconcileCheckpoint: _removed, ...rest } = existing;
+    await this.setGraphMetadata(graphId, rest);
+  }
+
+  /** Walk op-log source events chronologically — ingestSource wins over reorderSource partials. */
+  private buildLiveSourceMapFromOplog(
+    graphId: GraphId,
+    graphEvents: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+    entry: LoadedGraph,
+  ): Map<string, SourceRecord> {
+    const live = new Map<string, SourceRecord>();
+    for (const ev of graphEvents) {
+      if (ev.op === 'ingestSource' && ev.target.kind === 'source') {
+        const rec = ev.after as Partial<SourceRecord> | undefined;
+        if (!rec?.ref || !rec?.kind) continue;
+        live.set(ev.target.id, {
+          sourceId: ev.target.id,
+          graphId,
+          kind: rec.kind,
+          ref: rec.ref,
+          ingestedAt: rec.ingestedAt ?? ev.ts,
+          nodeIds: rec.nodeIds ?? [],
+          ...(rec.contentHash ? { contentHash: rec.contentHash } : {}),
+          ...(rec.addedBy ? { addedBy: rec.addedBy } : {}),
+        });
+      } else if (ev.op === 'forgetSource' && ev.target.kind === 'source') {
+        live.delete(ev.target.id);
+      } else if ((ev.op as string) === 'reorderSource' && ev.target.kind === 'source') {
+        const after = ev.after as { nodeIds?: string[] } | undefined;
+        const base = live.get(ev.target.id) ?? entry.sourceIndex.get(ev.target.id);
+        if (base && after?.nodeIds) {
+          live.set(ev.target.id, { ...base, nodeIds: after.nodeIds });
+        }
+      }
+    }
+    return live;
+  }
+
+  private async recoverSourceFromOplog(
+    graphId: GraphId,
+    _entry: LoadedGraph,
+    rec: SourceRecord,
+  ): Promise<boolean> {
+    try {
+      await fs.stat(this.contentPath(rec.sourceId));
+      const blob = await this.readContentBlob(rec.sourceId);
+      if (!blob) return false;
+      const content = blob.header.docKind === 'pdf'
+        ? Buffer.from(blob.content)
+        : new TextDecoder().decode(blob.content);
+      await this.ingest(graphId, blob.header.kind, blob.header.ref, {
+        kind: blob.header.docKind,
+        content: content as never,
+        sourceRef: blob.header.ref,
+      }, { triggeredBy: 'oplog-sync', skipOplogEmit: true, skipAutoRelink: true });
+      return true;
+    } catch { /* no cache blob */ }
+
+    if (rec.kind === 'file') {
+      try {
+        const buf = await fs.readFile(rec.ref);
+        const ext = path.extname(rec.ref).toLowerCase().replace(/^\./, '');
+        const docKind: 'markdown' | 'text' | 'json' | 'html' | 'pdf' = (
+          ext === 'md' || ext === 'markdown' ? 'markdown' :
+          ext === 'json' ? 'json' :
+          ext === 'html' || ext === 'htm' ? 'html' :
+          ext === 'pdf' ? 'pdf' :
+          'text'
+        );
+        const content = docKind === 'pdf' ? buf : new TextDecoder().decode(buf);
+        await this.ingest(graphId, 'file', rec.ref, {
+          kind: docKind,
+          content: content as never,
+          sourceRef: rec.ref,
+        }, { triggeredBy: 'oplog-sync', skipOplogEmit: true, skipAutoRelink: true });
+        return true;
+      } catch { /* file gone */ }
+    }
+    return false;
+  }
+
+  /** Replay edit/supersede/delete node ops in ts order (multi-device LWW is in reduce; here we apply the stream). */
+  private async replayNodeCorrectionsFromOplog(
+    entry: LoadedGraph,
+    graphEvents: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): Promise<boolean> {
+    let dirty = false;
+    for (const ev of graphEvents) {
+      if (ev.target.kind !== 'node') continue;
+      const nodeId = ev.target.id;
+      if (ev.op === 'deleteNode') {
+        const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
+        if (!local || local.confidence <= 0.2) continue;
+        await this.opts.adapter.applyCorrection(entry.handle, {
+          kind: 'delete',
+          nodeId,
+          reason: 'oplog-sync: deleted on peer device',
+        });
+        dirty = true;
+        continue;
+      }
+      if (ev.op !== 'editNode' && ev.op !== 'supersede') continue;
+      const after = ev.after as { content?: string; reason?: string } | undefined;
+      if (typeof after?.content !== 'string') continue;
+      const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
+      if (!local) continue;
+      const preview = after.content.slice(0, 200);
+      if (local.contentPreview === preview || local.contentPreview === after.content) continue;
+      await this.opts.adapter.applyCorrection(entry.handle, {
+        kind: ev.op === 'supersede' ? 'supersede' : 'edit',
+        nodeId,
+        content: after.content,
+        reason: String(after.reason ?? 'oplog-sync'),
+      });
+      dirty = true;
+    }
+    return dirty;
+  }
+
+  /** Enterprise MCP audit export — encrypted at rest in mcp-audit.enc. */
+  async listMcpAuditEvents(): Promise<import('./mcp-audit.js').McpAuditEvent[]> {
+    const { listMcpAuditEvents } = await import('./mcp-audit.js');
+    return listMcpAuditEvents(this.opts.cortexDir, this.key);
+  }
+
+  async appendMcpAuditEvent(partial: Omit<import('./mcp-audit.js').McpAuditEvent, 'id' | 'ts'>): Promise<void> {
+    const { appendMcpAuditEvent } = await import('./mcp-audit.js');
+    await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
+  }
+
   // ── Recovery ────────────────────────────────────────────────────────────
   //
   // Replay the encrypted op-log to reconstruct sources that were lost from
@@ -5938,6 +6321,7 @@ export class GraphnosisHost {
   private must(graphId: GraphId): LoadedGraph {
     const g = this.graphs.get(graphId);
     if (!g) throw new Error(`Graph not loaded: ${graphId}`);
+    this.kickoffDeferredSourceRefSweep(graphId);
     return g;
   }
 }
