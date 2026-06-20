@@ -594,12 +594,12 @@ export class BrainEngine {
     // debounced scans, and "Scan now" cover everything after the first sweep.
 
     this.duplicateScanTimer = setInterval(
-      () => { void this.runDuplicateScan(); },
+      () => { if (this.brainPassesPaused()) return; void this.runDuplicateScan(); },
       DUPLICATE_SCAN_INTERVAL_MS,
     ).unref();
 
     this.contradictionScanTimer = setInterval(
-      () => { void this.runContradictionScan(); },
+      () => { if (this.brainPassesPaused()) return; void this.runContradictionScan(); },
       CONTRADICTION_SCAN_INTERVAL_MS,
     ).unref();
 
@@ -1192,9 +1192,13 @@ export class BrainEngine {
 
   /** Single gate for every background brain pass: defer while an ingest is in
    *  flight (contention), the boot engram sweep is loading graphs from disk,
-   *  or Low-power mode is on (user opt-out). */
+   *  a boot-throttled embedding-cache rebuild is still running, or Low-power
+   *  mode is on (user opt-out). */
   private brainPassesPaused(): boolean {
-    return isIngestActive() || this.host.isBootSweepActive() || this.lowPower();
+    return isIngestActive()
+      || this.host.isBootSweepActive()
+      || this.host.isBootEmbBuildActive()
+      || this.lowPower();
   }
 
   async runFullScan(opts: { skipLlmLoops?: boolean } = {}): Promise<void> {

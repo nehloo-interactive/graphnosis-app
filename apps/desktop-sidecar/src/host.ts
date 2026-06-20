@@ -1784,6 +1784,13 @@ export class GraphnosisHost {
     return this.bootPhaseActive || this.bootSweepActive;
   }
 
+  /** True while a boot-throttled embedding-cache rebuild is still in flight.
+   *  loadGraph returns before buildEmbeddings finishes; brain passes defer until
+   *  the last boot-slot rebuild completes so duplicate scan doesn't race cold caches. */
+  isBootEmbBuildActive(): boolean {
+    return this.bootEmbBuildInFlight > 0;
+  }
+
   /** Mark the sidecar boot window — defer oplog reconcile until flushBootDeferredWork. */
   setBootPhaseActive(active: boolean): void {
     this.bootPhaseActive = active;

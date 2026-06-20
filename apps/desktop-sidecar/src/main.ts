@@ -707,17 +707,10 @@ async function main(): Promise<void> {
     }
   }
 
-  // Backfill metadata for the default graph before IPC starts — the engram
-  // picker reads graphMetadata keys, so the default engram must have an entry
-  // or it won't appear in the picker at unlock time. Idempotent: skips graphs
-  // that already have metadata. Secondary engrams are backfilled later in the
-  // background task once they finish loading.
+  // Backfill metadata for the default graph before the sweep — the engram
+  // picker reads graphMetadata keys, so the default engram must have an entry.
+  // Idempotent: skips graphs that already have metadata.
   await backfillGraphMetadata(host);
-
-  // Background load of all other engrams — starts after IPC is up so
-  // broadcastRaw is available for progress events. The default engram is
-  // already loaded and fully usable; the picker gains entries as each
-  // additional graph finishes decrypting.
 
   // Filesystem auto-reingest. Off by default; honors the
   // `ai.autoReingestOnFileChange` flag in settings.json. We wire the
@@ -1136,6 +1129,17 @@ async function main(): Promise<void> {
     proactiveWatcher,
     callMcpTool,
   };
+
+  // Full engram sweep BEFORE IPC. Tauri unlock waits for the sidecar IPC
+  // socket, so the lock screen stays up until every non-archived engram is
+  // resident — no partial Home with consolidation running mid-sweep. Oplog
+  // reconcile stays deferred (flushBootDeferredWork) so boot doesn't replay
+  // 23× checkpoints synchronously.
+  await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
+  host.setBootPhaseActive(false);
+  await backfillGraphMetadata(host);
+  (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
+
   await startIpc(ipcDeps);
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
 
@@ -1203,36 +1207,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // Start brain + connectors before the engram sweep — activity, vitality, and
-  // IPC handlers must work while secondary engrams load. Awaiting the full
-  // sequential decrypt ahead of brainEngine.start() blocks the event loop for
-  // minutes on large cortexes (sync decrypt monopolizes the loop) and leaves
-  // the UI stuck on "Loading N more engrams…" with no terminal progress until
-  // the entire batch finishes.
+  // Brain + connectors start only after the full cortex is resident — avoids
+  // duplicate scan / consolidation / auto-link running while engrams are still
+  // loading. notifyBootSettled() schedules the first scan; deferred oplog
+  // reconcile runs in the background and does not block it.
   brainEngine.start();
   await connectorManager.start();
-
-  // Background engram sweep — sequential with yields between each graph so IPC
-  // can interleave. broadcastRaw fires incremental progress for the picker/status
-  // bar. Metadata backfill runs when the sweep finishes.
-  void loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw)
-    .catch((e) => {
-      console.error(`[graphnosis-sidecar] background engram sweep failed: ${(e as Error).message}`);
-    })
-    .then(async () => {
-      // Sweep done — engrams are resident; UI "Loading N engrams" and brain
-      // first-scan must not wait on sequential oplog reconcile (39 s+ each on
-      // large tails). Reconcile + sourceRef sweeps run in the background.
-      host.setBootPhaseActive(false);
-      brainEngine.notifyBootSettled();
-      void host.flushBootDeferredWork().catch((e: unknown) => {
-        console.error(
-          `[graphnosis-sidecar] boot deferred work failed: ${(e as Error).message}`,
-        );
-      });
-      await backfillGraphMetadata(host);
-      (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
-    });
+  brainEngine.notifyBootSettled();
+  void host.flushBootDeferredWork().catch((e: unknown) => {
+    console.error(
+      `[graphnosis-sidecar] boot deferred work failed: ${(e as Error).message}`,
+    );
+  });
   // ZERO op-log at boot. The op-log is cold storage (2M events / ~2.2 GB on a
   // mature cortex) — reading it all here cost ~4.5 GB of resident JS heap that
   // never came back (it was THE memory floor). Corrections are baked into each
