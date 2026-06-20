@@ -1180,6 +1180,12 @@ export interface AppSettings {
       overall: number;
       /** Unix ms when this was computed. */
       computedAt: number;
+      /** Per-engram scores from the same compute — replayed pre-scan so Home
+       *  per-engram bars don't flash +15 pts while duplicatePairs is still 0. */
+      byGraph?: Record<string, number>;
+      /** Duplicate-pair count at compute time — used for the coherence term
+       *  on the next boot until the post-boot duplicate scan finishes. */
+      pendingDuplicatePairs?: number;
     };
   };
 
@@ -1837,6 +1843,27 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
               // Clamp to a valid percent range; reject NaN/Infinity defensively.
               overall: Math.max(0, Math.min(100, b.lastVitality.overall)),
               computedAt: b.lastVitality.computedAt,
+              ...(typeof b.lastVitality.pendingDuplicatePairs === 'number'
+                && Number.isFinite(b.lastVitality.pendingDuplicatePairs)
+                ? {
+                    pendingDuplicatePairs: Math.max(
+                      0,
+                      Math.floor(b.lastVitality.pendingDuplicatePairs),
+                    ),
+                  }
+                : {}),
+              ...(b.lastVitality.byGraph && typeof b.lastVitality.byGraph === 'object'
+                ? {
+                    byGraph: Object.fromEntries(
+                      Object.entries(b.lastVitality.byGraph as Record<string, unknown>)
+                        .filter(([, v]) => typeof v === 'number' && Number.isFinite(v))
+                        .map(([k, v]) => [
+                          k,
+                          Math.max(0, Math.min(100, Math.round(v as number))),
+                        ]),
+                    ),
+                  }
+                : {}),
             },
           }
         : {}),
