@@ -134,10 +134,14 @@ export class OllamaLlm implements LocalLlm {
     private readonly baseUrl = 'http://127.0.0.1:11434',
   ) {}
 
-  async complete(input: { system: string; user: string; jsonSchema?: unknown }): Promise<string> {
+  async complete(input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal }): Promise<string> {
+    if (input.signal?.aborted) {
+      throw new DOMException('LLM request aborted', 'AbortError');
+    }
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      ...(input.signal ? { signal: input.signal } : {}),
       body: JSON.stringify({
         model: this.model,
         stream: false,
@@ -159,9 +163,12 @@ export class OllamaLlm implements LocalLlm {
    *  Format=json is incompatible with streaming, so callers that want a
    *  structured response should use complete() instead. */
   async completeStream(
-    input: { system: string; user: string; jsonSchema?: unknown },
+    input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal },
     onChunk: (chunk: string) => void,
   ): Promise<string> {
+    if (input.signal?.aborted) {
+      throw new DOMException('LLM stream aborted', 'AbortError');
+    }
     // Streaming + json format together are not supported by Ollama —
     // requests that need structured output silently lose the format
     // constraint when streaming. Caller's responsibility to use
@@ -170,6 +177,7 @@ export class OllamaLlm implements LocalLlm {
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      ...(input.signal ? { signal: input.signal } : {}),
       body: JSON.stringify({
         model: this.model,
         stream: true,
@@ -184,9 +192,17 @@ export class OllamaLlm implements LocalLlm {
     const decoder = new TextDecoder();
     let buffer = '';
     let full = '';
+    const abortStream = (): void => {
+      void reader.cancel().catch(() => {});
+    };
+    input.signal?.addEventListener('abort', abortStream, { once: true });
+    try {
     // Ollama emits one JSON object per line. Boundaries don't always align
     // with fetch chunks, so we buffer until we see a newline before parsing.
     while (true) {
+      if (input.signal?.aborted) {
+        throw new DOMException('LLM stream aborted', 'AbortError');
+      }
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -218,6 +234,9 @@ export class OllamaLlm implements LocalLlm {
       } catch { /* ignore */ }
     }
     return full;
+    } finally {
+      input.signal?.removeEventListener('abort', abortStream);
+    }
   }
 
   /** Returns true if Ollama is reachable. Used by BrainEngine before LLM-dependent loops. */
@@ -262,12 +281,12 @@ export class DynamicOllamaLlm implements LocalLlm {
     return new OllamaLlm(`Ollama/${tag}`, tag, this.baseUrl);
   }
 
-  complete(input: { system: string; user: string; jsonSchema?: unknown }): Promise<string> {
+  complete(input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal }): Promise<string> {
     return this.client().complete(input);
   }
 
   completeStream(
-    input: { system: string; user: string; jsonSchema?: unknown },
+    input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal },
     onChunk: (chunk: string) => void,
   ): Promise<string> {
     return this.client().completeStream(input, onChunk);
