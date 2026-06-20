@@ -171,6 +171,60 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('skill-walk-structured.ok', { steps: walkJson.steps.length, requires: walkJson.requires?.length ?? 0 });
 
+  // --- SOP-preserving rewrite validation (no live LLM) ----------------------
+  log('skill-sop-preservation', {});
+  const { validateSopPreservation, extractSopPreservationSnapshot } = await import('./skill-sop-rewrite.js');
+  const sopSample = [
+    'Trigger: user asks to deploy',
+    '1. Check CI @skill: verify-ci',
+    '2. Deploy @loop: 1 max=3',
+    'Requires: $branch',
+  ].join('\n');
+  const snap = extractSopPreservationSnapshot(sopSample);
+  if (!snap.tokens.some((t) => t.includes('@skill:'))) {
+    throw new Error('FAIL: extractSopPreservationSnapshot missed @skill: token');
+  }
+  const goodRewrite = sopSample.replace('Check CI', 'Verify CI status');
+  const goodCheck = validateSopPreservation(sopSample, goodRewrite);
+  if (!goodCheck.ok) throw new Error(`FAIL: valid rewrite rejected: ${goodCheck.missing.join(', ')}`);
+  const badRewrite = sopSample.replace('@skill: verify-ci', '@skill: run-tests');
+  const badCheck = validateSopPreservation(sopSample, badRewrite);
+  if (badCheck.ok) throw new Error('FAIL: rewrite that changed @skill: name should fail validation');
+  log('skill-sop-preservation.ok', { tokenCount: snap.tokens.length });
+
+  // --- Model provider API key encrypt round-trip + cloud dispatch gating ----
+  log('model-provider-keys', {});
+  const { requireProviderApiKey } = await import('./cloud-llm.js');
+  let missingKeyErr = '';
+  try {
+    requireProviderApiKey(host, 'anthropic');
+  } catch (e) {
+    missingKeyErr = (e as Error).message;
+  }
+  if (!missingKeyErr.includes('requires a configured API key')) {
+    throw new Error(`FAIL: expected missing-key error, got: ${missingKeyErr}`);
+  }
+  await host.setSettings({
+    ...host.getSettings(),
+    models: {
+      providers: {
+        ollama: { enabled: true },
+        anthropic: { enabled: true, apiKey: 'sk-ant-smoke-test-key', hasKey: true, keyTail: '-key' },
+      },
+      strategy: 'adaptive',
+    },
+  });
+  const loadedKey = requireProviderApiKey(host, 'anthropic');
+  if (loadedKey !== 'sk-ant-smoke-test-key') throw new Error('FAIL: provider API key not readable in-memory');
+  const settingsRaw = await fs.readFile(path.join(cortexDir, 'settings.json'), 'utf8');
+  if (settingsRaw.includes('sk-ant-smoke-test-key')) {
+    throw new Error('FAIL: provider API key leaked plaintext into settings.json');
+  }
+  if (!settingsRaw.includes('apiKeyEnc')) {
+    throw new Error('FAIL: provider API key not encrypted to apiKeyEnc on disk');
+  }
+  log('model-provider-keys.ok', { keyTail: host.getSettings().models?.providers?.anthropic?.keyTail });
+
   // --- op-log merge on loadGraph (before supersede correction) ------------
   log('oplog-merge-roundtrip', {});
   const gaiPath = path.join(cortexDir, 'graphs', 'personal.gai');

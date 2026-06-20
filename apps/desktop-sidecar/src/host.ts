@@ -26,6 +26,10 @@ import { SkillCallLinkStore } from './skill-call-links.js';
 import { SkillRunStore } from './skill-runs.js';
 import { WebAuthnCredentialStore } from './webauthn-store.js';
 import { ConnectorFileMapStore } from './connectors/file-map-store.js';
+import {
+  encryptModelProviderKeysInSettings,
+  decryptModelProviderKeysInSettings,
+} from './model-provider-keys.js';
 import { DeviceIdentity } from './device-identity.js';
 import { FEDERATED_MASTER_FILE, federatedMasterPath, generateFederatedUnlockKey } from '@graphnosis-app/core/sso';
 
@@ -645,11 +649,12 @@ export class GraphnosisHost {
     // pass through and re-encrypt on the next persistSettings() call.
     const decryptedSettings = await decryptBridgeTokensInSettings(withCreds, dataKey);
     const withSso = await decryptSsoSecretsInSettings(decryptedSettings, dataKey);
+    const withModelKeys = await decryptModelProviderKeysInSettings(withSso, dataKey);
     // Load (or create on first unlock) this install's stable device identity:
     // a persisted deviceId, an Ed25519 keypair (secret encrypted under dataKey),
     // the op-log sequence counter, and the TOFU registry of peer device keys.
     const deviceIdentity = await DeviceIdentity.loadOrCreate(opts.cortexDir, dataKey);
-    const host = new GraphnosisHost(opts, derived, withSso, deviceIdentity);
+    const host = new GraphnosisHost(opts, derived, withModelKeys, deviceIdentity);
     return recoveryPhrase ? { host, recoveryPhrase } : { host };
   }
 
@@ -1698,7 +1703,8 @@ export class GraphnosisHost {
   private async persistSettings(next: settingsMod.AppSettings): Promise<void> {
     const withEncCreds = await encryptConnectorCredentialsInSettings(next, this.key);
     const withEncBridges = await encryptBridgeTokensInSettings(withEncCreds, this.key);
-    const onDiskNext = await encryptSsoSecretsInSettings(withEncBridges, this.key);
+    const withEncModelKeys = await encryptModelProviderKeysInSettings(withEncBridges, this.key);
+    const onDiskNext = await encryptSsoSecretsInSettings(withEncModelKeys, this.key);
     await settingsMod.saveSettings(this.opts.cortexDir, onDiskNext);
     this.settings = next;
   }
