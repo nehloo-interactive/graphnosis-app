@@ -45,6 +45,52 @@ export function isDocsGhostEngram(host: GraphnosisHost): boolean {
   );
 }
 
+export type DocsIngestDecision = 'offer' | 'reingest' | 'none';
+
+/** Shared state machine for docs:checkOffer and post-boot maintenance. */
+export async function evaluateDocsIngestDecision(
+  host: GraphnosisHost,
+  appVersion: string,
+  opts?: { bootBusy?: boolean; ingestInflight?: boolean },
+): Promise<DocsIngestDecision> {
+  if (opts?.ingestInflight) return 'none';
+
+  const settings = host.getSettings();
+  const loaded = host.listGraphs().includes(DOCS_ENGRAM_ID);
+  const onDisk = host.isGraphOnDisk(DOCS_ENGRAM_ID);
+  const docsState = settings.docsEngram;
+
+  if (isDocsGhostEngram(host)) {
+    return 'reingest';
+  }
+
+  if (loaded || onDisk) {
+    const sourceCount = loaded
+      ? host.listSources(DOCS_ENGRAM_ID).length
+      : await host.countBundleSources(DOCS_ENGRAM_ID);
+    const nodeCount = loaded ? host.listNodes(DOCS_ENGRAM_ID).length : 0;
+    const versionMismatch = docsState?.ingestedAppVersion !== appVersion;
+    const sourcesIncomplete = sourceCount < BUNDLED_DOCS.length;
+
+    if (!versionMismatch && !sourcesIncomplete) return 'none';
+    if (versionMismatch) {
+      if (opts?.bootBusy) return 'none';
+      return 'reingest';
+    }
+    // Hollow .gai (0 nodes) with bundle sources — deferred materialize, not wipe+reingest.
+    if (sourceCount > 0 && nodeCount === 0) return 'none';
+    // Incomplete ingest — defer while boot sweep / emb-cache rebuild is active.
+    if (opts?.bootBusy) return 'none';
+    return 'reingest';
+  }
+
+  if (docsState?.declined === true) return 'none';
+  if (typeof docsState?.ingestedAppVersion === 'string' && docsState.ingestedAppVersion.length > 0) {
+    return 'none';
+  }
+  return 'offer';
+}
+
 /**
  * Wipe (if present) and recreate + ingest bundled docs. Shared by IPC and boot
  * ghost repair so partial/orphan state is always rebuilt from a clean slate.
@@ -54,24 +100,49 @@ export async function recreateAndIngestDocsEngram(
   appVersion: string,
   onProgress?: (p: DocsIngestProgress) => void,
 ): Promise<{ ingested: number; failed: number }> {
-  const needsWipe =
-    host.listGraphs().includes(DOCS_ENGRAM_ID) ||
+  const resident = host.listGraphs().includes(DOCS_ENGRAM_ID);
+  const sourceCount = resident
+    ? host.listSources(DOCS_ENGRAM_ID).length
+    : (host.isGraphOnDisk(DOCS_ENGRAM_ID) ? await host.countBundleSources(DOCS_ENGRAM_ID) : 0);
+  const nodeCount = resident ? host.listNodes(DOCS_ENGRAM_ID).length : 0;
+  const emptyShell = sourceCount === 0 && nodeCount === 0;
+
+  // Interrupted re-ingest often leaves a hollow shell — skip wipe+recreate and
+  // resume ingesting into the existing engram instead of resetting every boot.
+  const needsWipe = !emptyShell && (
+    resident ||
     host.isGraphOnDisk(DOCS_ENGRAM_ID) ||
-    host.getGraphMetadata(DOCS_ENGRAM_ID) !== undefined;
+    host.getGraphMetadata(DOCS_ENGRAM_ID) !== undefined
+  );
   if (needsWipe) {
     onProgress?.({ phase: 'wipe' });
     await host.deleteGraph(DOCS_ENGRAM_ID);
   }
-  await host.createGraph(DOCS_ENGRAM_ID);
-  await host.setGraphMetadata(DOCS_ENGRAM_ID, {
-    template: 'reading',
-    displayName: 'Graphnosis Docs',
-    createdAt: Date.now(),
-  });
+  if (!host.listGraphs().includes(DOCS_ENGRAM_ID)) {
+    if (host.isGraphOnDisk(DOCS_ENGRAM_ID)) {
+      await host.loadGraph(DOCS_ENGRAM_ID);
+    } else {
+      await host.createGraph(DOCS_ENGRAM_ID);
+      await host.setGraphMetadata(DOCS_ENGRAM_ID, {
+        template: 'reading',
+        displayName: 'Graphnosis Docs',
+        createdAt: Date.now(),
+      });
+    }
+  }
+  if (host.getGraphMetadata(DOCS_ENGRAM_ID) === undefined) {
+    await host.setGraphMetadata(DOCS_ENGRAM_ID, {
+      template: 'reading',
+      displayName: 'Graphnosis Docs',
+      createdAt: Date.now(),
+    });
+  }
   const { ingested, failed } = await ingestGraphnosisDocs(host, DOCS_ENGRAM_ID, onProgress);
-  await host.setSettings({
-    docsEngram: { declined: false, ingestedAppVersion: appVersion },
-  });
+  if (ingested >= BUNDLED_DOCS.length) {
+    await host.setSettings({
+      docsEngram: { declined: false, ingestedAppVersion: appVersion },
+    });
+  }
   return { ingested, failed };
 }
 

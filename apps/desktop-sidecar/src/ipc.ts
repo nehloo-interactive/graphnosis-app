@@ -10,7 +10,7 @@ import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
 import {
   DOCS_ENGRAM_ID,
-  isDocsGhostEngram,
+  evaluateDocsIngestDecision,
   recreateAndIngestDocsEngram,
 } from './docs-ingest.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
@@ -488,13 +488,38 @@ export function whenBackgroundDocsIngestDone(): Promise<void> {
   return docsIngestInflight ?? Promise.resolve();
 }
 
+export function isDocsIngestInflight(): boolean {
+  return docsIngestInflight !== null;
+}
+
+/** After boot sweep + emb-cache rebuild, silently refresh docs when needed. */
+export async function schedulePostBootDocsReingest(
+  deps: IpcDeps,
+  appVersion: string,
+): Promise<void> {
+  if (docsIngestInflight) return;
+  if (deps.host.isBootEmbBuildActive()) {
+    await new Promise<void>((resolve) => deps.host.onBootEmbBuildIdle(resolve));
+  }
+  if (docsIngestInflight) return;
+  const bootBusy =
+    deps.host.isBootSweepActive() || deps.host.isBootEmbBuildActive();
+  const decision = await evaluateDocsIngestDecision(deps.host, appVersion, {
+    bootBusy,
+    ingestInflight: docsIngestInflight !== null,
+  });
+  if (decision === 'reingest') {
+    startBackgroundDocsIngest(deps, appVersion, 'post-boot');
+  }
+}
+
 /** Kick off bundled docs ingest in the background. Returns immediately with a
  *  jobId; progress + completion arrive via `docs.progress` / `docs.done` on the
  *  events socket (same pattern as ingest.upload / recovery.apply). */
 export function startBackgroundDocsIngest(
   deps: IpcDeps,
   appVersion: string,
-  reason: 'user' | 'boot-ghost' = 'user',
+  reason: 'user' | 'boot-ghost' | 'post-boot' = 'user',
 ): { accepted: boolean; jobId: string } {
   if (docsIngestInflight) {
     return { accepted: true, jobId: docsIngestJobId! };
@@ -3407,38 +3432,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     case 'docs:checkOffer': {
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
-      const settings = deps.host.getSettings();
-      const loaded = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
-      const onDisk = deps.host.isGraphOnDisk(DOCS_ENGRAM_ID);
-      const docsState = settings.docsEngram;
-      let decision: 'offer' | 'reingest' | 'none';
-      // Ghost metadata: settings row without a .gai — not a deliberate user
-      // delete (deleteGraph strips metadata). Repair on next unlock.
-      if (isDocsGhostEngram(deps.host)) {
-        decision = 'reingest';
-      } else if (loaded || onDisk) {
-        // Engram is present (loaded or on disk). Re-ingest if:
-        //  (a) app version changed — docs content may have changed, OR
-        //  (b) source count is below bundled pages — partial/interrupted ingest.
-        // Hollow .gai (0 nodes, bundle intact) is repaired by deferred bundle
-        // materialize — do not wipe+reingest here (that blocks boot for minutes).
-        const sourceCount = loaded
-          ? deps.host.listSources(DOCS_ENGRAM_ID).length
-          : await deps.host.countBundleSources(DOCS_ENGRAM_ID);
-        const versionMismatch = docsState?.ingestedAppVersion !== appVersion;
-        const sourcesIncomplete = sourceCount < BUNDLED_DOCS.length;
-        decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
-      } else if (docsState?.declined === true) {
-        // User explicitly clicked "Not now" — respect that, never re-offer.
-        decision = 'none';
-      } else if (typeof docsState?.ingestedAppVersion === 'string' && docsState.ingestedAppVersion.length > 0) {
-        // It was ingested before and is now gone ⇒ the user deleted the
-        // engram. Respect that deletion — don't silently recreate it.
-        decision = 'none';
-      } else {
-        // Never offered, never ingested, never declined → offer it.
-        decision = 'offer';
-      }
+      const bootBusy =
+        deps.host.isBootSweepActive() || deps.host.isBootEmbBuildActive();
+      const decision = await evaluateDocsIngestDecision(deps.host, appVersion, {
+        bootBusy,
+        ingestInflight: docsIngestInflight !== null,
+      });
       return { decision };
     }
 

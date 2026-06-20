@@ -18,7 +18,7 @@ import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { isDocsGhostEngram, isGhostMetadataEngram, isGhostLoadError, repairDocsGhostEngram, DOCS_ENGRAM_ID } from './docs-ingest.js';
 import { createRequire } from 'node:module';
-import { startIpc, startBackgroundDocsIngest, whenBackgroundDocsIngestDone } from './ipc.js';
+import { startIpc, startBackgroundDocsIngest, whenBackgroundDocsIngestDone, schedulePostBootDocsReingest } from './ipc.js';
 import { dbg } from './log-redact.js';
 import { startEvents } from './events.js';
 import { startHttpUiServer } from './http-ui-server.js';
@@ -1343,6 +1343,11 @@ async function main(): Promise<void> {
     .then(async () => {
       host.setBootPhaseActive(false);
       brainEngine.notifyBootSettled();
+      void schedulePostBootDocsReingest(ipcDeps, SIDECAR_VERSION).catch((e: unknown) => {
+        console.error(
+          `[graphnosis-sidecar] post-boot docs reingest failed: ${(e as Error).message}`,
+        );
+      });
       void host.flushBootDeferredWork()
         .then(() => {
           // Hollow-bundle materialize adds nodes after the sweep — finalize

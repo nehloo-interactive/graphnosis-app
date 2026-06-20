@@ -17937,19 +17937,10 @@ async function checkDocsIngestOffer(): Promise<void> {
         'Graphnosis docs ready',
       );
     } else if (decision === 'reingest') {
-      // App updated — refresh the docs silently. Wait for the initial
-      // engram loading sweep to finish first so the heavy docs ingest
-      // (32 pages, each awaiting embed workers) doesn't saturate the
-      // embed workers while the loading loop is still running, which
-      // makes the loading progress appear frozen.
-      //
-      await waitForEngramsLoaded();
-      void startDocsIngestJob(
-        'Updating Graphnosis docs',
-        'The app updated — refreshing docs…',
-        appVersion,
-        'Docs updated',
-      );
+      // Version bump / incomplete docs refresh is handled silently by the
+      // sidecar after boot settles (schedulePostBootDocsReingest). Starting
+      // here saturated embed workers during the sweep and re-triggered a
+      // wipe+reingest loop on every boot when ingest didn't finish in time.
     }
     // 'none' → nothing to do.
   } catch (e) {
