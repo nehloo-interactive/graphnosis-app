@@ -11140,6 +11140,7 @@
             </div>
             <div class="actions">
               <button id="btn-sso-unlock" class="btn-secondary hidden" type="button">Sign in with company account</button>
+              <p id="sso-unlock-hint" class="subtitle hidden" style="font-size:12px;margin:0;width:100%;text-align:center;"></p>
               <button id="btn-unlock" class="primary">Unlock</button>
               <!-- Browser-mode biometric/security-key unlock (A8). Hidden unless
                    the personal-server reports WebAuthn is available + a device is
@@ -13669,6 +13670,10 @@ ollama list</code></pre>
                     <input id="sso-oidc-issuer" type="url" placeholder="https://login.microsoftonline.com/{tenant}/v2.0" style="display:block;width:100%;margin-top:4px;" />
                   </label>
                   <label style="font-size:13px;">
+                    Tenant ID <span class="subtitle" style="font-size:11px;">(optional — Entra GUID; auto-derived from issuer)</span>
+                    <input id="sso-oidc-tenant-id" type="text" placeholder="00000000-0000-0000-0000-000000000000" style="display:block;width:100%;margin-top:4px;" />
+                  </label>
+                  <label style="font-size:13px;">
                     Client ID
                     <input id="sso-oidc-client-id" type="text" placeholder="Application (client) ID" style="display:block;width:100%;margin-top:4px;" />
                   </label>
@@ -14665,9 +14670,12 @@ ollama list</code></pre>
             </div>
           </div>
           <!-- ── Teams / Enterprise — domain seat ──────────────────── -->
-          <div class="settings-section">
+          <div class="settings-section" id="license-domain-seat-section">
             <p class="settings-section-label">Teams / Enterprise — domain seat</p>
-            <p class="subtitle" style="margin-bottom: 8px;">
+            <p id="license-domain-seat-sso-note" class="subtitle hidden" style="margin-bottom: 8px;color:var(--link);">
+              Your org uses SSO — sign in on the lock screen with your company account.
+            </p>
+            <p id="license-domain-seat-copy" class="subtitle" style="margin-bottom: 8px;">
               Enter your work email address. We'll send a 6-digit code to verify it
               and activate your domain seat.
             </p>
