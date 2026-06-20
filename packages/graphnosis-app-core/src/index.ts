@@ -30,6 +30,14 @@ export type {
   ClassificationLabel,
   ClassificationSchema,
   ClassificationPolicy,
+  ObligationType,
+  NodeObligation,
+  ObligationListFilter,
+} from './compliance/index.js';
+export {
+  isActiveObligation,
+  obligationDueWithin,
+  filterObligations,
 } from './compliance/index.js';
 
 // Source tracking types are App-specific and stay here.

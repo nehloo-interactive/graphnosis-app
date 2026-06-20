@@ -77,6 +77,7 @@ export const MCP_TOOL_CAPABILITIES: Readonly<Record<string, McpToolCapability[]>
   recent: ['recall'],
   get_engram_schema: ['recall'],
   recall_structured: ['recall'],
+  recall_obligations: ['recall'],
   recall_with_citations: ['recall'],
   recall_as_of: ['recall', 'audit'],
   compare_engrams: ['recall'],
