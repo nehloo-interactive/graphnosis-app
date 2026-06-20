@@ -414,6 +414,7 @@ export class ConnectorManager {
    * thread, and it is single-writer by design.)
    */
   private async doPull(cfg: ConnectorConfig, rc: RunningConnector, opts?: { forceFull?: boolean }): Promise<number> {
+    if (this.host.isBootSweepActive()) return 0; // defer until engram sweep finishes
     if (rc.paused) return 0;  // user stopped this connector; auto-poll/watch pulls no-op
     if (rc.pulling) {
       // A pull is "in flight". If it's still making progress (or just started),

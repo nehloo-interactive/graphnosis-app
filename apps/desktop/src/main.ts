@@ -14119,6 +14119,8 @@ function updateEngramLoadingStatus(loaded: number, total: number): void {
   els.statusSaved.textContent = remaining <= 0
     ? ''
     : `Loading ${remaining} more engram${remaining === 1 ? '' : 's'}…`;
+  renderStatusProcess();
+  refreshPillPulse();
 }
 
 /** Most-recent engrams-loading payload that arrived while `unlockPending` was
@@ -14413,6 +14415,12 @@ function renderStatusProcess(): void {
   const wrap = els.statusProcess;
   const text = els.statusProcessText;
   if (!wrap || !text) return;
+  // Engram preload owns the status bar — don't compete with "Loading N more
+  // engrams…" or pulse GLL/GNN pills for background brain work mid-sweep.
+  if (isEngramPreloadInProgress()) {
+    wrap.style.display = 'none';
+    return;
+  }
   // Skill training is a user-initiated foreground operation — show its
   // per-operation status with top priority over background brain phases.
   // (Presentation Mode redaction is handled by the element's data-pres tag.)
@@ -16513,8 +16521,9 @@ function refreshLayerPills(): void {
  * Both are gated on the pill being active (enabled) first.
  */
 function refreshPillPulse(): void {
-  const gllBusy = brainLlmReady && brainActivePhases.size > 0;
-  const gnnBusy = brainNeuralNetworkStatus?.enabled === true &&
+  const preload = isEngramPreloadInProgress();
+  const gllBusy = !preload && brainLlmReady && brainActivePhases.size > 0;
+  const gnnBusy = !preload && brainNeuralNetworkStatus?.enabled === true &&
     (brainNeuralNetworkStatus?.isRunning === true || brainActivePhases.has('gnn'));
   if (els.statusGllPill) {
     els.statusGllPill.classList.toggle('pill-pulsing', gllBusy);

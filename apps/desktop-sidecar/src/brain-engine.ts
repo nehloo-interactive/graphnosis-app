@@ -584,7 +584,15 @@ export class BrainEngine {
     // appear not to load. Hold the first sweep for a grace period; the
     // intervals below take over after that, a completed file ingest
     // triggers a debounced scan, and the "Scan now" button covers the rest.
-    this.warmupTimer = setTimeout(() => {
+    const runBootWarmup = (): void => {
+      if (this.brainPassesPaused()) {
+        // Boot engram sweep or a connector pull still owns the loop — retry
+        // once they're done instead of running consolidation/cross-engram
+        // alongside loadAllGraphsFromDisk.
+        this.warmupTimer = setTimeout(runBootWarmup, CLIENT_QUIET_MS);
+        this.warmupTimer.unref();
+        return;
+      }
       // One coordinated sweep. runFullScan serialises the scan loops so they
       // don't all pin the CPU at once in the post-boot window, and coalesces
       // with any scan the user triggered by opening the Brain tab early.
@@ -595,7 +603,8 @@ export class BrainEngine {
       // over from there.
       void this.runFullScan({ skipLlmLoops: true });
       void this.runTemporalDecay();
-    }, BOOT_GRACE_MS);
+    };
+    this.warmupTimer = setTimeout(runBootWarmup, BOOT_GRACE_MS);
     this.warmupTimer.unref();
 
     this.duplicateScanTimer = setInterval(
@@ -1168,9 +1177,10 @@ export class BrainEngine {
   }
 
   /** Single gate for every background brain pass: defer while an ingest is in
-   *  flight (contention) OR while Low-power mode is on (user opt-out). */
+   *  flight (contention), the boot engram sweep is loading graphs from disk,
+   *  or Low-power mode is on (user opt-out). */
   private brainPassesPaused(): boolean {
-    return isIngestActive() || this.lowPower();
+    return isIngestActive() || this.host.isBootSweepActive() || this.lowPower();
   }
 
   async runFullScan(opts: { skipLlmLoops?: boolean } = {}): Promise<void> {
@@ -2140,6 +2150,7 @@ export class BrainEngine {
   }
 
   private async runTemporalDecay(): Promise<void> {
+    if (this.brainPassesPaused()) return;
     this.emitActivity('temporal', 'start');
     try {
       const report = await this.temporalEngine.runDecay();
