@@ -588,19 +588,22 @@
          confirm widget wraps below instead of squeezing the name out. */
       .source-row.source-row-moving,
       .source-row.source-row-forgetting,
-      .source-row.source-row-reingesting {
+      .source-row.source-row-reingesting,
+      .source-row.source-row-holding {
         flex-wrap: wrap;
         align-items: flex-start;
       }
       .source-row.source-row-moving .source-row-main,
       .source-row.source-row-forgetting .source-row-main,
-      .source-row.source-row-reingesting .source-row-main {
+      .source-row.source-row-reingesting .source-row-main,
+      .source-row.source-row-holding .source-row-main {
         flex: 1 1 auto;
         overflow: visible;
       }
       .source-row.source-row-moving .source-name,
       .source-row.source-row-forgetting .source-name,
-      .source-row.source-row-reingesting .source-name {
+      .source-row.source-row-reingesting .source-name,
+      .source-row.source-row-holding .source-name {
         overflow: visible;
         text-overflow: clip;
       }
@@ -634,8 +637,9 @@
         cursor: help;
         flex-shrink: 0;
       }
-      /* Preserved engram badge — warm amber, distinct from archived/active. */
+      /* Preserved engram / source legal-hold badge — warm amber. */
       .sources-engram-preserved-chip,
+      .source-legal-hold-badge,
       .sgr-badge-preserved {
         font-size: 14px;
         padding: 1px 6px;
@@ -747,6 +751,7 @@
          Replaces the ⋯ menu in-place; collapses on Escape / blur. */
       .source-row-forget-confirm,
       .source-row-reingest-confirm,
+      .source-row-legal-hold-confirm,
       .source-row-move-picker {
         flex: 1 1 100%;
       }
@@ -785,6 +790,55 @@
       .source-row-reingest-go:hover {
         background: color-mix(in oklab, var(--accent) 15%, transparent);
       }
+      .source-row-legal-hold-confirm {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex: 1 1 100%;
+        padding: 4px 0 0;
+        font-size: 14px;
+      }
+      .source-legal-hold-copy { margin: 0; color: var(--fg-dim); line-height: 1.45; }
+      .source-legal-hold-matter-details summary {
+        cursor: pointer;
+        color: var(--fg-dim);
+        font-size: 13px;
+      }
+      .source-legal-hold-matter-input {
+        width: 100%;
+        margin-top: 6px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      .source-legal-hold-go,
+      .source-legal-hold-cancel {
+        align-self: flex-start;
+        font-size: 13px;
+        padding: 4px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .source-legal-hold-go {
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 45%, var(--border));
+        background: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 8%, transparent);
+        color: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 90%, var(--fg));
+      }
+      .source-legal-hold-go:hover {
+        background: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 16%, transparent);
+      }
+      .source-legal-hold-cancel {
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+      }
+      .source-legal-hold-cancel:hover { color: var(--fg); }
       .source-row-forget-input {
         width: 130px;
         font-size: 15px;
