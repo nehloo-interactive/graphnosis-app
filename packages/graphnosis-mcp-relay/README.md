@@ -13,8 +13,12 @@ Stdio ↔ Unix socket relay for Graphnosis MCP. Works with **any MCP client that
 npx --yes @graphnosis/mcp-relay ~/.graphnosis/mcp.sock
 ```
 
-Monorepo build: `pnpm --filter @graphnosis/mcp-relay build` compiles the sidecar
-first if needed, then copies `apps/desktop-sidecar/dist/mcp-relay.js` here.
+Monorepo CI does not build this package — the app uses the relay from
+`apps/desktop-sidecar/dist/mcp-relay.js`. To rebuild for npm publish:
+
+```bash
+pnpm --filter @graphnosis/mcp-relay run build:package
+```
 
 If you see `sh: graphnosis-mcp-relay: command not found`, clear stale npx cache and retry:
 
