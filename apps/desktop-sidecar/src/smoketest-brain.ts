@@ -93,8 +93,8 @@ The timeline is tight. Past projects slipped by about two months each.`;
   assert(Array.isArray(brain.getContradictionPairs()), 'getContradictionPairs must return an array');
 
   // 1 — VitalityScorer returns a 0-100 score. computeVitality() always
-  // computes (unlike the UI-facing getVitalityReport(), which withholds a
-  // number until the first full scan has run).
+  // computes (unlike the UI-facing getVitalityReport(), which withholds until
+  // the first duplicate scan unless a prior-session lastVitality snapshot exists).
   const vitality = await brain.computeVitality();
   assert(
     typeof vitality.overall === 'number' && vitality.overall >= 0 && vitality.overall <= 100,

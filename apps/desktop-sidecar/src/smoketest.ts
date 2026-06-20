@@ -20,12 +20,19 @@ import { proposeCorrection, applyCorrection } from './correction.js';
 import { SkillTrainer } from './skill-trainer.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
-import { ingestGraphnosisDocs } from './docs-ingest.js';
+import {
+  ingestGraphnosisDocs,
+  bundledDocForRef,
+  DOCS_ENGRAM_ID,
+  isDocsGhostEngram,
+  repairDocsGhostEngram,
+} from './docs-ingest.js';
 import { runRecallLatencyRegression } from './recall-latency-benchmark.js';
 import {
   isMcpToolAllowedForRole,
   mcpToolsForRole,
 } from '@graphnosis-app/core/settings';
+import { makeSourceId } from '@graphnosis-app/core/sources';
 import {
   writeSessionLease,
   readSessionLease,
@@ -237,6 +244,53 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error('FAIL: skillRetrainQueue should be drained after maintenance retrain');
   }
   log('skill-maintenance.ok', { action: tick.action, detail: tick.detail });
+
+  // --- Work priority orchestration (P0–P3 gating) ---------------------------
+  log('work-priority', {});
+  const wp = await import('./work-priority.js');
+  wp.resetWorkPriorityForTest();
+  const endP0 = wp.beginScope(wp.WorkPriority.P0_UI);
+  if (!wp.shouldSkipRecallEnrichment(wp.WorkPriority.P1_USER)) {
+    throw new Error('FAIL: P1 enrichment should skip while P0 active');
+  }
+  if (!wp.shouldSkipRecallEnrichment(wp.WorkPriority.P3_ENRICHMENT)) {
+    throw new Error('FAIL: P3 enrichment should skip while P0 active');
+  }
+  endP0();
+  if (wp.shouldSkipRecallEnrichment(wp.WorkPriority.P1_USER)) {
+    throw new Error('FAIL: P1 enrichment should run when sidecar idle');
+  }
+  const slotP3 = wp.tryAcquireLlmSlot(wp.WorkPriority.P3_ENRICHMENT);
+  if (!slotP3) throw new Error('FAIL: P3 LLM slot should acquire when idle');
+  wp.beginScope(wp.WorkPriority.P1_USER)();
+  if (!slotP3.signal.aborted) {
+    throw new Error('FAIL: P1 scope should preempt in-flight P3 LLM slot');
+  }
+  slotP3.release();
+  // P1 MCP recall tools (dig_deeper, cross_search, compare_engrams) use the
+  // same beginScope(P1) pattern — verify P1 preempts in-flight P2 Ghampus work.
+  const slotP2 = wp.tryAcquireLlmSlot(wp.WorkPriority.P2_GHAMPUS);
+  if (!slotP2) throw new Error('FAIL: P2 LLM slot should acquire when idle');
+  wp.beginScope(wp.WorkPriority.P1_USER)();
+  if (!slotP2.signal.aborted) {
+    throw new Error('FAIL: P1 scope (MCP recall) should preempt in-flight P2 LLM slot');
+  }
+  slotP2.release();
+  // P0 home-card bursts defer new Ghampus slots but must not abort an in-flight
+  // user chat when the user navigates away from the Ghampus tab.
+  const { incrementGhampusBusy, decrementGhampusBusy, resetGhampusBusyForTest } = await import('./ghampus-busy.js');
+  resetGhampusBusyForTest();
+  const slotP2User = wp.tryAcquireLlmSlot(wp.WorkPriority.P2_GHAMPUS);
+  if (!slotP2User) throw new Error('FAIL: P2 LLM slot should acquire when idle');
+  incrementGhampusBusy();
+  wp.beginScope(wp.WorkPriority.P0_UI)();
+  if (slotP2User.signal.aborted) {
+    throw new Error('FAIL: P0 scope should not abort in-flight Ghampus user query');
+  }
+  decrementGhampusBusy();
+  slotP2User.release();
+  wp.resetWorkPriorityForTest();
+  log('work-priority.ok', {});
 
   // --- SOP-preserving rewrite validation (no live LLM) ----------------------
   log('skill-sop-preservation', {});
@@ -830,6 +884,7 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   });
   const guardGai = path.join(cortexDir, 'graphs', `${guardId}.gai`);
   const guardLkg = `${guardGai}.lkg`;
+  const guardBundle = path.join(cortexDir, 'graphs', `${guardId}.bundle`);
   const guardStat = await fs.stat(guardGai);
   if (guardStat.size < 10 * 1024) {
     throw new Error(`FAIL: save-guards test engram not substantial (${guardStat.size}B)`);
@@ -846,6 +901,8 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   // (reconcile-before-save pattern — must not persist the empty graph).
   try { await fs.unlink(guardLkg); } catch { /* none yet */ }
   await fs.writeFile(guardGai, emptyShell);
+  // Drop bundle so loadGraph stays at 0 nodes — hollow-bundle recovery is tested separately.
+  try { await fs.unlink(guardBundle); } catch { /* none */ }
   await host.loadGraph(guardId);
   if (host.listNodes(guardId).length !== 0) {
     throw new Error('FAIL: save-guards empty-save expected 0 nodes from empty shell load');
@@ -878,16 +935,41 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('tiny-gai-lkg-restore.ok', { nodes: restoredNodes });
 
+  // Hollow bundle: source index + content cache but empty .gai shell (graphnosis-docs pattern).
+  log('hollow-bundle-recover', {});
+  const hollowBundleId = 'hollow-bundle-smoke';
+  await host.createGraph(hollowBundleId);
+  await host.ingest(hollowBundleId, 'clip', 'smoke://hollow-bundle', {
+    kind: 'markdown',
+    content: '# Hollow bundle probe\n\nRecovery payload for hollow bundle smoketest.',
+    sourceRef: 'smoke://hollow-bundle',
+  });
+  const hollowGai = path.join(cortexDir, 'graphs', `${hollowBundleId}.gai`);
+  const hollowNodesBefore = host.listNodes(hollowBundleId).length;
+  if (hollowNodesBefore === 0) throw new Error('FAIL: hollow-bundle ingest produced 0 nodes');
+  await host.unloadGraph(hollowBundleId);
+  await fs.writeFile(hollowGai, emptyShell);
+  await host.loadGraph(hollowBundleId);
+  await host.waitForBundleMaterialize(hollowBundleId);
+  const hollowNodesAfter = host.listNodes(hollowBundleId).length;
+  if (hollowNodesAfter === 0) {
+    throw new Error('FAIL: hollow-bundle loadGraph did not re-ingest sources from content cache');
+  }
+  log('hollow-bundle-recover.ok', { nodesBefore: hollowNodesBefore, nodesAfter: hollowNodesAfter });
+  await host.deleteGraph(hollowBundleId);
+
   // Shrink-save: tiny in-memory graph must not clobber substantial .gai/.lkg.
   const shrinkId = 'shrink-save-guard';
   await host.createGraph(shrinkId);
-  await host.ingest(shrinkId, 'clip', 'smoke://shrink-guard', {
+  const shrinkSrc = await host.ingest(shrinkId, 'clip', 'smoke://shrink-guard', {
     kind: 'text',
     content: 'shrink-payload-' + 'y'.repeat(60_000),
     sourceRef: 'smoke://shrink-guard',
   });
   const shrinkGai = path.join(cortexDir, 'graphs', `${shrinkId}.gai`);
   const shrinkLkg = `${shrinkGai}.lkg`;
+  const shrinkBundle = path.join(cortexDir, 'graphs', `${shrinkId}.bundle`);
+  const shrinkContent = path.join(cortexDir, 'content', `${shrinkSrc.sourceId}.bin`);
   const shrinkBefore = (await fs.stat(shrinkGai)).size;
   if (shrinkBefore < 10 * 1024) {
     throw new Error(`FAIL: shrink-save-guard test engram not substantial (${shrinkBefore}B)`);
@@ -897,7 +979,10 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   await host.unloadGraph(shrinkId);
   await fs.writeFile(shrinkGai, emptyShell);
   try { await fs.unlink(shrinkLkg); } catch { /* none */ }
+  try { await fs.unlink(shrinkBundle); } catch { /* isolate shrink-save */ }
+  try { await fs.unlink(shrinkContent); } catch { /* block oplog content recovery */ }
   await host.loadGraph(shrinkId);
+  await host.waitForReconcile(shrinkId);
   await host.ingest(shrinkId, 'clip', 'smoke://shrink-tiny', {
     kind: 'text',
     content: 'tiny',
@@ -1297,6 +1382,107 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('bundled-docs.ok', { pages: BUNDLED_DOCS.length });
 
+  // Ghost metadata: graphMetadata row without .gai (graphnosis-docs repair path).
+  log('docs-ghost-metadata', {});
+  const docsGhostId = 'graphnosis-docs-ghost-smoke';
+  try { await host.deleteGraph(docsGhostId); } catch { /* fresh */ }
+  await host.setGraphMetadata(docsGhostId, {
+    template: 'reading',
+    displayName: 'Graphnosis Docs Ghost',
+    createdAt: Date.now(),
+  });
+  if (host.isGraphOnDisk(docsGhostId)) {
+    throw new Error('FAIL: docs-ghost-metadata test engram should have no .gai');
+  }
+  await host.deleteGraph(docsGhostId);
+  if (host.getGraphMetadata(docsGhostId) !== undefined) {
+    throw new Error('FAIL: deleteGraph should strip ghost metadata');
+  }
+  await host.createGraph(docsGhostId);
+  const { ingested: ghostIngested } = await ingestGraphnosisDocs(host, docsGhostId);
+  if (ghostIngested < BUNDLED_DOCS.length) {
+    throw new Error(`FAIL: docs ghost repair ingested ${ghostIngested}/${BUNDLED_DOCS.length} pages`);
+  }
+  await host.deleteGraph(docsGhostId);
+  log('docs-ghost-metadata.ok', { ingested: ghostIngested });
+
+  // loadGraph on ghost metadata must fail cleanly (no raw .aikg path spam).
+  log('docs-ghost-loadGraph', {});
+  const ghostLoadId = 'graphnosis-docs-ghost-load-smoke';
+  try { await host.deleteGraph(ghostLoadId); } catch { /* fresh */ }
+  await host.setGraphMetadata(ghostLoadId, {
+    template: 'reading',
+    displayName: 'Ghost Load Smoke',
+    createdAt: Date.now(),
+  });
+  let ghostLoadErr: NodeJS.ErrnoException | null = null;
+  try {
+    await host.loadGraph(ghostLoadId);
+  } catch (e) {
+    ghostLoadErr = e as NodeJS.ErrnoException;
+  }
+  if (!ghostLoadErr) {
+    throw new Error('FAIL: loadGraph on ghost metadata should throw ENOENT');
+  }
+  if (ghostLoadErr.code !== 'ENOENT') {
+    throw new Error(`FAIL: ghost loadGraph expected ENOENT, got ${ghostLoadErr.code}`);
+  }
+  if (ghostLoadErr.message.includes('.aikg')) {
+    throw new Error('FAIL: ghost loadGraph leaked raw .aikg path in error message');
+  }
+  await host.deleteGraph(ghostLoadId);
+  log('docs-ghost-loadGraph.ok', { message: ghostLoadErr.message });
+
+  // Boot-path repair for graphnosis-docs ghost metadata.
+  log('docs-ghost-repair', {});
+  try { await host.deleteGraph(DOCS_ENGRAM_ID); } catch { /* fresh */ }
+  await host.setGraphMetadata(DOCS_ENGRAM_ID, {
+    template: 'reading',
+    displayName: 'Graphnosis Docs',
+    createdAt: Date.now(),
+  });
+  if (!isDocsGhostEngram(host)) {
+    throw new Error('FAIL: graphnosis-docs should register as ghost engram');
+  }
+  const { repaired: ghostRepaired, ingested: repairIngested } = await repairDocsGhostEngram(host, 'smoke-test');
+  if (!ghostRepaired) throw new Error('FAIL: repairDocsGhostEngram should repair ghost graphnosis-docs');
+  if (repairIngested < BUNDLED_DOCS.length) {
+    throw new Error(`FAIL: ghost repair ingested ${repairIngested}/${BUNDLED_DOCS.length} pages`);
+  }
+  await host.loadGraph(DOCS_ENGRAM_ID);
+  await host.deleteGraph(DOCS_ENGRAM_ID);
+  log('docs-ghost-repair.ok', { ingested: repairIngested });
+
+  // Bundled graphnosis-docs refs: hollow .gai + bundle, no content cache blob.
+  log('docs-bundled-hollow-recover', {});
+  const docsHollowId = 'graphnosis-docs-hollow-smoke';
+  try { await host.deleteGraph(docsHollowId); } catch { /* fresh */ }
+  await host.createGraph(docsHollowId);
+  const sampleRef = `graphnosis-docs:${BUNDLED_DOCS[0]!.slug}`;
+  const sampleBundled = bundledDocForRef(sampleRef);
+  if (!sampleBundled) throw new Error('FAIL: bundledDocForRef missing first doc');
+  await host.ingest(docsHollowId, 'clip', sampleRef, sampleBundled, { skipAutoRelink: true });
+  const docsHollowGai = path.join(cortexDir, 'graphs', `${docsHollowId}.gai`);
+  const docsHollowNodesBefore = host.listNodes(docsHollowId).length;
+  if (docsHollowNodesBefore === 0) throw new Error('FAIL: docs hollow probe ingest produced 0 nodes');
+  await host.unloadGraph(docsHollowId);
+  await fs.writeFile(docsHollowGai, emptyShell);
+  // Simulate production graphnosis-docs: bundle metadata survives, no content-cache blob.
+  const docsHollowSourceId = makeSourceId('clip', sampleRef);
+  try { await fs.unlink(path.join(cortexDir, 'content', `${docsHollowSourceId}.bin`)); } catch { /* none */ }
+  await host.loadGraph(docsHollowId);
+  await host.waitForBundleMaterialize(docsHollowId);
+  await host.waitForReconcile(docsHollowId);
+  const docsHollowNodesAfter = host.listNodes(docsHollowId).length;
+  if (docsHollowNodesAfter === 0) {
+    throw new Error('FAIL: graphnosis-docs bundled hollow recovery did not re-ingest from bundle');
+  }
+  await host.deleteGraph(docsHollowId);
+  log('docs-bundled-hollow-recover.ok', {
+    nodesBefore: docsHollowNodesBefore,
+    nodesAfter: docsHollowNodesAfter,
+  });
+
   // ── Bundled skill-demos integrity ──────────────────────────────────────
   // The three signed Graphnosis demo .gsk packs ship inside the sidecar.
   // scripts/generate-skill-demos-content.mjs reads dist/packs/bundle/*.gsk
@@ -1657,14 +1843,14 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   // --- recall latency regression (warm-cache P50 guard) --------------------
   // Ingests bundled docs into a dedicated engram (~thousands of nodes, offline)
   // then asserts warm recall P50 stays under GRAPHNOSIS_RECALL_LATENCY_P50_MS
-  // (default 200ms). Skip with GRAPHNOSIS_SKIP_RECALL_LATENCY=1.
+  // (default 250ms for ~3400-node bundled docs bench). Skip with GRAPHNOSIS_SKIP_RECALL_LATENCY=1.
   // Manual large-cortex: scripts/recall-benchmark-manual.mjs (pre-release).
   // performance-regression-check skill → this phase + manual script.
   if (process.env.GRAPHNOSIS_SKIP_RECALL_LATENCY !== '1') {
     log('recall-latency-regression.ingest', {});
     const benchGraphId = 'smoke-latency-bench';
     await host.createGraph(benchGraphId);
-    const { ingested, failed } = await ingestGraphnosisDocs(host, benchGraphId);
+    const { ingested, failed } = await ingestGraphnosisDocs(host, benchGraphId, undefined, { skipRelink: true });
     if (ingested === 0) {
       throw new Error('FAIL: recall-latency bench docs ingest produced 0 pages');
     }
