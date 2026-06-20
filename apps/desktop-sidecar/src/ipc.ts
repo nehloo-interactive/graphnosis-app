@@ -1383,6 +1383,14 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         if (targetSourceId) extra['targetSourceId'] = targetSourceId;
         return { ...ev, ...extra };
       });
+      // Sidecar housekeeping (not Ghampus): corrections sweep + maybe compact
+      // the op-log after Activity/Audit pulls audit data. Fire-and-forget so
+      // the IPC response is not blocked on compaction I/O.
+      void deps.host.refreshAllCorrectionsFromOplog().catch((e: unknown) => {
+        console.error(
+          `[graphnosis-ipc] activity.list oplog housekeeping failed: ${(e as Error).message}`,
+        );
+      });
       return { events: enriched, actors };
     }
     case 'activity.log': {
@@ -1545,6 +1553,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const total = filtered.length;
       const page = filtered.slice(offset, offset + limit);
 
+      void deps.host.refreshAllCorrectionsFromOplog().catch((e: unknown) => {
+        console.error(
+          `[graphnosis-ipc] activity.log oplog housekeeping failed: ${(e as Error).message}`,
+        );
+      });
       return {
         entries: page,
         total,

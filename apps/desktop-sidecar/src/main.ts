@@ -35,6 +35,7 @@ import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
 import { ProactiveWatcher } from './proactive-watcher.js';
 import { SkillMaintenanceScheduler } from './skill-maintenance-scheduler.js';
+import { SidecarIdleMaintenance } from './sidecar-idle-maintenance.js';
 import { SkillTrainer } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
 
@@ -1163,6 +1164,8 @@ async function main(): Promise<void> {
     licenseValidator,
   });
   skillMaintenanceScheduler.start();
+  const sidecarIdleMaintenance = new SidecarIdleMaintenance({ host });
+  sidecarIdleMaintenance.start();
   // Build a dispatcher bound to mcpDeps so Ghampus can call any of the 47+
   // MCP tool handlers without going through the network transport. The Server
   // returned here is not connected to any transport — it's just a side effect
@@ -1291,6 +1294,7 @@ async function main(): Promise<void> {
           `[graphnosis-sidecar] boot deferred work failed: ${(e as Error).message}`,
         );
       });
+      sidecarIdleMaintenance.notifyBootSettled();
       await backfillGraphMetadata(host);
       (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
     });
@@ -1300,7 +1304,8 @@ async function main(): Promise<void> {
   // engram's .gai on applyCorrection (loadGraph does no oplog replay), so boot
   // needs nothing from the log. The corrections COUNT + activity feed read the
   // log on demand (Activity/Audit view) and release it afterward — see
-  // listOplogEvents' idle-release below. Compaction is triggered lazily, not here.
+  // listOplogEvents' idle-release below. Compaction runs via SidecarIdleMaintenance
+  // (idle, post-boot) and activity.list / activity.log (on-demand).
 
   // Full graceful shutdown: flush dirty graphs, stop brain + connectors, then
   // release the lock and exit. Replaces the shallow pre-brain handlers above.

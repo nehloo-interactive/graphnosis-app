@@ -5223,7 +5223,7 @@ export class GraphnosisHost {
       return;
     }
 
-    console.error(
+    dbg(
       `[graphnosis-host] oplog compaction starting: ${events.length} → ${keepEvents.length} events` +
       ` (pruning ${prunedCount}), corrections baseline update for ${prunedCorrectionsByEngram.size} engram(s)…`,
     );
@@ -5301,7 +5301,7 @@ export class GraphnosisHost {
       // compacted file rather than serving the stale pre-compaction snapshot.
       this.invalidateOplogCache();
 
-      console.error(
+      dbg(
         `[graphnosis-host] oplog compaction done in ${Date.now() - t0}ms —` +
         ` ${events.length} → ${keepEvents.length} events.`,
       );
