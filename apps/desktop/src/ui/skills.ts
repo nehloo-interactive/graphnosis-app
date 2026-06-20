@@ -1408,6 +1408,29 @@ function showSkillsReviewMode(title: string): void {
  * path), just renders the trained text as plain text — no graph round-trip
  * is possible yet because the source doesn't exist.
  */
+/** Plain-text Trained Output for saved skills when the source-driven editor
+ *  can't bind (no body chunks yet, or IPC returned title/metadata only). */
+function paintTrainedOutputPlain(el: HTMLElement, text: string, skillId?: string, graphId?: string): void {
+  el.innerHTML = `<div class="skills-output-base">${escapeHtml(text)}</div>`;
+  if (skillId && graphId) {
+    el.setAttribute('data-pres', `skill:${skillId}`);
+    el.setAttribute('data-pres-engram', graphId);
+  } else {
+    el.removeAttribute('data-pres');
+    el.removeAttribute('data-pres-engram');
+  }
+  if (app().presActive()) app().applyPresentationMasking();
+}
+
+function trainedOutputPlainFallback(el: HTMLElement, skillId: string, graphId: string): boolean {
+  const raw = skillsActiveResult?.trained?.trim() ?? '';
+  if (!raw) return false;
+  const stripped = stripSkillMetadataHeader(raw);
+  const text = stripped || raw;
+  paintTrainedOutputPlain(el, text, skillId, graphId);
+  return true;
+}
+
 async function paintTrainedOutputSourceDriven(
   el: HTMLElement,
   skillId: string,
@@ -1416,12 +1439,17 @@ async function paintTrainedOutputSourceDriven(
   type ListNodesResult = { ok: boolean; nodes: Array<{ id: string; content: string; role?: string }> };
   let result: ListNodesResult | null = null;
   try {
-    result = await invoke<ListNodesResult>('source_list_nodes', { graphId, sourceId: skillId });
+    // Same sidecar path as skill:get (ipcCall) — avoids a separate Tauri
+    // command hop and keeps chunk fetch aligned with the detail the library
+    // row just loaded.
+    result = await ipcCall<ListNodesResult>('source.listNodes', { graphId, sourceId: skillId });
   } catch (e) {
+    if (trainedOutputPlainFallback(el, skillId, graphId)) return;
     el.textContent = `Could not load skill chunks: ${(e as Error).message}`;
     return;
   }
   if (!result?.ok) {
+    if (trainedOutputPlainFallback(el, skillId, graphId)) return;
     el.textContent = 'Could not load skill chunks.';
     return;
   }
@@ -1437,13 +1465,19 @@ async function paintTrainedOutputSourceDriven(
   });
 
   if (visible.length === 0) {
-    const fallback = skillsActiveResult?.trained
-      ? stripSkillMetadataHeader(skillsActiveResult.trained)
-      : '';
-    if (fallback) {
-      paintTrainedOutput(el, fallback, skillsActiveResult?.mode ?? '', skillsActiveResult?.influentialNodes ?? []);
+    if (trainedOutputPlainFallback(el, skillId, graphId)) return;
+    // Last resort: join any non-metadata node text (includes title-only skills).
+    const joined = result.nodes
+      .filter((n) => (n.role ?? '') !== 'metadata' && !n.content.trim().startsWith('<!--'))
+      .map((n) => n.content.trim())
+      .filter(Boolean)
+      .join('\n\n');
+    if (joined) {
+      paintTrainedOutputPlain(el, joined, skillId, graphId);
       return;
     }
+    el.textContent = 'No trained content found for this skill.';
+    return;
   }
 
   // Detect goal nodes to inject a "Goals" section header before the first one.
@@ -2753,7 +2787,7 @@ export function handleSkillTrainFrame(graphId: string, payload: GraphMutationPay
     const label = payload.label;
     if (typeof label === 'string' && label) {
       skillTrainStatusLabel = label;
-      renderStatusProcess();
+      app().renderStatusProcess();
     }
     return;
   }
@@ -2783,7 +2817,7 @@ export function handleSkillTrainFrame(graphId: string, payload: GraphMutationPay
     // Clear the status-bar training line so background brain phases (if any)
     // reclaim it, or it hides.
     skillTrainStatusLabel = null;
-    renderStatusProcess();
+    app().renderStatusProcess();
     return;
   }
 }
@@ -3083,7 +3117,7 @@ async function runSkillTraining(): Promise<void> {
     // skipped the done broadcast).
     if (skillTrainStatusLabel !== null) {
       skillTrainStatusLabel = null;
-      renderStatusProcess();
+      app().renderStatusProcess();
     }
   }
 }
@@ -3119,7 +3153,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
   const trainBtn = document.getElementById('btn-skills-train') as HTMLButtonElement | null;
   if (status && !opts.silent) status.textContent = 'Structuring from source…';
   skillTrainStatusLabel = 'Structuring skill from source…';
-  renderStatusProcess();
+  app().renderStatusProcess();
   if (btn) btn.disabled = true;
   if (trainBtn && opts.silent) trainBtn.disabled = true;
   // Standalone-invocation case (user clicked "Train without LLM" directly):
@@ -3147,7 +3181,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
     const freshNodes: SkillInfluentialNode[] = [];
 
     skillTrainStatusLabel = 'Finalizing trained skill…';
-    renderStatusProcess();
+    app().renderStatusProcess();
     const trained = params.skill;
     const engramName = getLoadedGraphs().find((g) => g.graphId === params.graphId)?.metadata.displayName ?? params.graphId;
     showSkillsReviewMode(skillFriendlyName(params.skillName || 'Skill (source-only)'));
@@ -3156,7 +3190,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
     let savedSkillId: string | undefined;
     if (params.save) {
       skillTrainStatusLabel = 'Saving the trained skill…';
-      renderStatusProcess();
+      app().renderStatusProcess();
       try {
         const saved = await ipcCall<{ ok: boolean; skillId?: string }>('skill:saveFallback', {
           graphId: params.graphId,
@@ -3205,7 +3239,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
     // silent fallback invoked from the Pro path).
     if (skillTrainStatusLabel !== null) {
       skillTrainStatusLabel = null;
-      renderStatusProcess();
+      app().renderStatusProcess();
     }
   }
 }
@@ -3805,7 +3839,7 @@ async function runGskImport(): Promise<void> {
   const destLabel = choice.existingGraphId
     ? (getLoadedGraphs().find((g) => g.graphId === choice.existingGraphId)?.metadata.displayName ?? choice.existingGraphId)
     : (choice.newEngramName ?? peek.pack?.displayName ?? 'new engram');
-  const importToastId = addIngestToast('Importing memory-trained skills…', `to "${destLabel}"`);
+  const importToastId = app().addIngestToast('Importing memory-trained skills…', `to "${destLabel}"`);
   try {
     const result = await ipcCall<SkillImportResult>('skill:importGsk', {
       graphId,
@@ -3814,7 +3848,7 @@ async function runGskImport(): Promise<void> {
     });
     if (!result?.ok) {
       const why = result?.message ?? result?.reason ?? 'Unknown error';
-      finishIngestToast(importToastId, 'error', `Import failed: ${why}`);
+      app().finishIngestToast(importToastId, 'error', `Import failed: ${why}`);
       return;
     }
     const n = result.imported?.length ?? 0;
@@ -3846,7 +3880,7 @@ async function runGskImport(): Promise<void> {
     }
     populateSkillsEngramPickers();
     renderSkillsLibrary();
-    finishIngestToast(
+    app().finishIngestToast(
       importToastId,
       'success',
       `Imported ${n} skill${n === 1 ? '' : 's'} into "${result.engramName ?? graphId}"${verifiedTag}${skippedTag}`,
@@ -3862,7 +3896,7 @@ async function runGskImport(): Promise<void> {
   } catch (e) {
     console.warn('[skills] importGsk failed', e);
     const msg = e instanceof Error ? e.message : String(e);
-    finishIngestToast(importToastId, 'error', `Import failed: ${msg}`);
+    app().finishIngestToast(importToastId, 'error', `Import failed: ${msg}`);
   }
 }
 
@@ -3992,8 +4026,8 @@ export function showSkillsToast(msg: string, kind: 'success' | 'error'): void {
   // toast surface is the user-visible channel.
   console.log(`[skills:${kind}] ${msg}`);
   try {
-    const id = addIngestToast('Skills', msg);
-    finishIngestToast(id, kind, msg);
+    const id = app().addIngestToast('Skills', msg);
+    app().finishIngestToast(id, kind, msg);
   } catch (e) {
     // Defensive: if the toast stack isn't mounted (very early init or
     // test harness), don't throw — the console.log above is enough.

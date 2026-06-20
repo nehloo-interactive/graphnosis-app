@@ -20902,6 +20902,7 @@ bindAppContext({
   },
   switchActiveEngram,
   getIngestJobCount: () => ingestJobToasts.size,
+  renderStatusProcess,
 });
 initActivity({
   activityList: els.activityList, activityDateFrom: els.activityDateFrom, activityDateTo: els.activityDateTo,
