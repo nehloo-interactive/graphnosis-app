@@ -3278,18 +3278,18 @@ function closeLicenseModal(): void {
 // and the top-header tagline. Useful as "lost? click here" navigation,
 // especially with the rail collapsed. Mirrored on Enter / Space for
 // keyboard users on each target.
+function scrollSkillsPaneToTop(): void {
+  document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 {
   const goHome = (): void => {
-    // 1. Make sure we're in atlas mode (the pane that holds MemoryStudio).
-    //    activateMode is a no-op when already on atlas.
+    // activateMode('atlas') shows data-pane=atlas and switchGraphnosisTab('checkin').
     app().activateMode('atlas');
-    // 2. Switch the inner pane tab to "checkin" (= MemoryStudio).
-    switchGraphnosisTab('checkin');
-    // 3. Clear any active search so the dashboard surface is visible
-    //    immediately (MemoryStudio is mounted under the dashboard pane).
-    if (els.gSearch && els.gSearch.value) {
-      els.gSearch.value = '';
-      applyGraphnosisFilter();
+    const searchEl = app().els['gSearch'] as HTMLInputElement | undefined;
+    if (searchEl?.value) {
+      searchEl.value = '';
+      searchEl.dispatchEvent(new Event('input', { bubbles: true }));
     }
   };
   const wireHome = (id: string): void => {
@@ -3984,7 +3984,7 @@ function chooseSkillImportDestination(
   });
 }
 
-function showSkillsToast(msg: string, kind: 'success' | 'error'): void {
+export function showSkillsToast(msg: string, kind: 'success' | 'error'): void {
   // Route through the real ingest-toast stack (addIngestToast +
   // finishIngestToast). The previous implementation looked for a
   // window.showToast global that was never wired, so every Skills
