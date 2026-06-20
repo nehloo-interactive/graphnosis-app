@@ -1987,7 +1987,8 @@ export class GraphnosisHost {
     return existsSync(this.graphPath(graphId)) || existsSync(this.legacyGraphPath(graphId));
   }
 
-  /** Non-archived engrams with a .gai/.aikg on disk, excluding already-resident ids. */
+  /** Engrams with a .gai/.aikg on disk, excluding already-resident ids. Archived
+   *  engrams are still loaded at boot — archived only hides them from pickers. */
   listBootPendingEngramIds(residentIds: Iterable<GraphId> = []): GraphId[] {
     const resident = new Set(residentIds);
     const graphsDir = path.join(this.opts.cortexDir, 'graphs');
@@ -2005,7 +2006,6 @@ export class GraphnosisHost {
       const graphId = m[1] as GraphId;
       if (resident.has(graphId) || seen.has(graphId)) continue;
       seen.add(graphId);
-      if (this.settings.graphMetadata[graphId]?.archived) continue;
       out.push(graphId);
     }
     return out;
