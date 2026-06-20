@@ -9,19 +9,18 @@ const sidecarDist = join(repoRoot, 'apps/desktop-sidecar/dist/mcp-relay.js');
 const outDir = join(root, 'dist');
 const out = join(outDir, 'mcp-relay.js');
 
+function runPnpm(args) {
+  const r = spawnSync('pnpm', args, { cwd: repoRoot, stdio: 'inherit' });
+  if (r.status !== 0) process.exit(r.status ?? 1);
+}
+
 function ensureSidecarRelayBuilt() {
   if (existsSync(sidecarDist)) return;
   console.log(
-    'Sidecar relay not compiled — building @graphnosis-app/desktop-sidecar first…',
+    'Sidecar relay not compiled — building core + sidecar for npm package copy…',
   );
-  const r = spawnSync(
-    'pnpm',
-    ['--filter', '@graphnosis-app/desktop-sidecar', 'run', 'build'],
-    { cwd: repoRoot, stdio: 'inherit' },
-  );
-  if (r.status !== 0) {
-    process.exit(r.status ?? 1);
-  }
+  runPnpm(['--filter', '@graphnosis-app/core', 'run', 'build']);
+  runPnpm(['--filter', '@graphnosis-app/desktop-sidecar', 'run', 'build']);
   if (!existsSync(sidecarDist)) {
     console.error(
       'Missing compiled relay at apps/desktop-sidecar/dist/mcp-relay.js after sidecar build.',

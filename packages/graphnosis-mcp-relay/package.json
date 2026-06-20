@@ -27,8 +27,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build:package": "node scripts/build.mjs",
     "smoke": "node dist/mcp-relay.js 2>&1 | head -1 || test $? -eq 2",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build:package"
   }
 }
