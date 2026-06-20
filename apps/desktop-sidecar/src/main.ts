@@ -440,6 +440,7 @@ async function acquireCortexLock(cortexDir: string): Promise<() => Promise<void>
 }
 
 async function main(): Promise<void> {
+  const sidecarStartMs = Date.now();
   const env = loadEnv();
 
   // Acquire the cortex lock BEFORE touching any files. If another sidecar
@@ -1130,19 +1131,13 @@ async function main(): Promise<void> {
     callMcpTool,
   };
 
-  // Full engram sweep BEFORE IPC. Tauri unlock waits for the sidecar IPC
-  // socket, so the lock screen stays up until every on-disk engram is
-  // resident — no partial Home with consolidation running mid-sweep. Oplog
-  // reconcile is batched (one op-log read) but MUST finish before IPC unlock
-  // so list_nodes / 3D never see a pre-reconcile empty shell.
-  await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
-  host.setBootPhaseActive(false);
-  await backfillGraphMetadata(host);
-  await host.flushBootDeferredWork();
-  (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
-
+  // Unlock soon after the default engram — Tauri waits on the IPC socket, not
+  // the full sweep. Remaining engrams load in the background; nodes.list /
+  // edges.list gate on waitForReconcile so 3D never shows a pre-reconcile shell.
   await startIpc(ipcDeps);
-  console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
+  console.error(
+    `[graphnosis-sidecar] IPC listening on ${ipcSocketPath} (${Date.now() - sidecarStartMs}ms from sidecar start)`,
+  );
 
   // Optional HTTP UI server for browser-based access (personal server mode).
   // Two ways to enable, in priority order:
@@ -1208,12 +1203,29 @@ async function main(): Promise<void> {
     }
   }
 
-  // Brain + connectors start only after the full cortex is resident and boot
-  // oplog reconcile has converged — avoids duplicate scan / consolidation /
-  // auto-link running while engrams are still loading or mid-reconcile.
+  // Brain + connectors start after IPC unlock — activity, vitality, and IPC
+  // handlers must work while secondary engrams load. brainPassesPaused() and
+  // isBootSweepActive() gate scans until notifyBootSettled() after the sweep.
   brainEngine.start();
   await connectorManager.start();
-  brainEngine.notifyBootSettled();
+
+  // Background engram sweep — sequential with yields between each graph so IPC
+  // can interleave. broadcastRaw fires incremental progress for the picker.
+  void loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw)
+    .catch((e) => {
+      console.error(`[graphnosis-sidecar] background engram sweep failed: ${(e as Error).message}`);
+    })
+    .then(async () => {
+      host.setBootPhaseActive(false);
+      brainEngine.notifyBootSettled();
+      void host.flushBootDeferredWork().catch((e: unknown) => {
+        console.error(
+          `[graphnosis-sidecar] boot deferred work failed: ${(e as Error).message}`,
+        );
+      });
+      await backfillGraphMetadata(host);
+      (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
+    });
   // ZERO op-log at boot. The op-log is cold storage (2M events / ~2.2 GB on a
   // mature cortex) — reading it all here cost ~4.5 GB of resident JS heap that
   // never came back (it was THE memory floor). Corrections are baked into each

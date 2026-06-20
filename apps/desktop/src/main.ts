@@ -1702,9 +1702,9 @@ function render(status: StatusSnapshot): void {
       els.brainVitality.style.display = '';
       els.brainVitality.textContent = '🧠 Vitality…';
       els.brainVitality.style.opacity = '0.5';
-      // Sidecar awaits loadAllGraphsFromDisk before IPC — every on-disk engram
-      // is resident at unlock. Seed hero/per-engram counts from the catalog
-      // synchronously, then fetch inspector_stats + vitality without debounce.
+      // Sidecar unlocks IPC after the default engram; sweep continues in the
+      // background. Seed hero/per-engram counts from the catalog synchronously,
+      // then fetch inspector_stats + vitality without debounce.
       markBootSweepCompleteIfCatalogReady();
       seedCortexStatsFromCatalog();
       cancelDebouncedFederatedStats();
@@ -17477,8 +17477,8 @@ function isEngramPreloadInProgress(): boolean {
   return loadedGraphs.some((g) => g.loaded === false);
 }
 
-/** Sidecar finishes loadAllGraphsFromDisk before IPC; engrams-loading events
- *  often fire before the UI subscribes. Treat a fully-resident catalog as done. */
+/** Background sweep may finish before the UI subscribes to engrams-loading.
+ *  Treat a fully-resident catalog as done when every row reports loaded. */
 function markBootSweepCompleteIfCatalogReady(): void {
   if (_bootSweepComplete || loadedGraphs.length === 0) return;
   if (!loadedGraphs.every((g) => g.loaded !== false)) return;
