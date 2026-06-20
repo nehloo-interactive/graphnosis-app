@@ -4259,6 +4259,18 @@
       #home-overview { display: block; margin: 4px 0 10px; }
       body.search-mode #home-overview,
       body.skills-studio-mode #home-overview { display: none; }
+      /* Autonomous Skills rail — always the library/trainer on checkin, never
+         the legacy #living-brain vitality dashboard (data-gpane="brain"). */
+      body.skills-studio-mode section.g-tab-pane[data-gpane="checkin"] {
+        display: flex !important;
+      }
+      body.skills-studio-mode section.g-tab-pane[data-gpane="brain"],
+      body.skills-studio-mode section.g-tab-pane[data-gpane="nondeterministic"] {
+        display: none !important;
+      }
+      body.skills-studio-mode #studio-section {
+        display: flex !important;
+      }
       /* Health, now a standalone Home card rather than an inline header item. */
       .home-health-card {
         display: flex; align-items: center; gap: 14px;

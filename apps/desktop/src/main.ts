@@ -78,6 +78,7 @@ import {
   purgeOrphanedHiddenSkills,
   skillsLibrary,
   handleSkillTrainFrame,
+  showSkillsToast,
   type SkillListEntry,
 } from './ui/skills';
 import { renderSettingsGraphsList } from './ui/settings-graphs';
@@ -2942,7 +2943,15 @@ function activateMode(mode: Mode): void {
   // moment Skills opens — so an engram that's already selected in "Saving to"
   // never shows the "won't be saved" warning on entry (it's only valid for the
   // '__preview__' sentinel).
-  if (mode === 'skills') { syncSkillsPreviewWarning(); updateSkillsResetButton(); }
+  if (mode === 'skills') {
+    syncSkillsPreviewWarning();
+    updateSkillsResetButton();
+    // Studio section starts with class hidden; updateStudioVisibility only runs
+    // inside switchGraphnosisTab('checkin'). Belt-and-suspenders here so Skills
+    // never opens with #home-overview hidden but studio still display:none while
+    // the legacy brain pane (vitality ring / Memory health) stays visible.
+    updateStudioVisibility();
+  }
   // Entering the 3D engram view: refresh connector state so the "Sync now"
   // button appears if the active engram has a manual (auto-sync off) connector.
   // Re-check the Sync-now button on EVERY entry to the 3D Engram page: first
