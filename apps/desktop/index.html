@@ -13715,6 +13715,21 @@ ollama list</code></pre>
                   <p id="models-catalog-version" class="subtitle" style="font-size: 11px; margin-bottom: 8px;">Catalog version: —</p>
                   <ul id="models-provider-list" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px;"></ul>
                 </div>
+
+                <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border, rgba(255,255,255,.08));">
+                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Ghampus skill maintenance</p>
+                  <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
+                    When source memories change, Ghampus can retrain affected skills during idle time.
+                  </p>
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 6px;">
+                    <input type="checkbox" id="ghampus-skill-maintenance-enabled" checked>
+                    <span>Retrain stale skills when idle</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
+                    <input type="checkbox" id="ghampus-skill-maintenance-idle" checked>
+                    <span>Ask before retraining (proactive card)</span>
+                  </label>
+                </div>
               </div>
 
               <!-- AI Client Integration panel removed from Settings — the AI

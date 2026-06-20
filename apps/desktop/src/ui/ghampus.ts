@@ -11,6 +11,7 @@ export function initGhampus(): void {
   wireGhampusSidecarEvents();
   wireGhampusChat();
   wireGhampusControls();
+  wireSkillMaintenanceSettings();
 }
 
 export function isGhampusEnabled(): boolean { return ghampusEnabled; }
@@ -25,6 +26,7 @@ let ghampusRunning = false;  // true while a skill walk or message is in flight
 
 export function setGhampusRunning(running: boolean): void {
   ghampusRunning = running;
+  void ipcCall('ghampus:activity', { busy: running }).catch(() => {});
   // "Stop all" only shows while something is actually in flight.
   document.getElementById('btn-ghampus-kill')
     ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
@@ -41,11 +43,34 @@ export function updateGhampusVisibility(): void {
 
 export async function refreshGhampusState(): Promise<void> {
   try {
-    const s = await ipcCall<{ enabled: boolean; plan: 'free' | 'pro' | 'teams' | 'enterprise' }>('agent:status', {});
+    const s = await ipcCall<{
+      enabled: boolean;
+      plan: 'free' | 'pro' | 'teams' | 'enterprise';
+      skillMaintenance?: { enabled: boolean; idleOnly: boolean };
+    }>('agent:status', {});
     ghampusEnabled = s.enabled;
     ghampusPlan = s.plan;
     updateGhampusVisibility();
+    paintSkillMaintenanceSettings(s.skillMaintenance);
   } catch { /* non-fatal — keep last known state */ }
+}
+
+function paintSkillMaintenanceSettings(sm?: { enabled: boolean; idleOnly: boolean }): void {
+  const enabledEl = document.getElementById('ghampus-skill-maintenance-enabled') as HTMLInputElement | null;
+  const idleEl = document.getElementById('ghampus-skill-maintenance-idle') as HTMLInputElement | null;
+  if (enabledEl && sm) enabledEl.checked = sm.enabled;
+  if (idleEl && sm) idleEl.checked = sm.idleOnly;
+}
+
+export function wireSkillMaintenanceSettings(): void {
+  const enabledEl = document.getElementById('ghampus-skill-maintenance-enabled') as HTMLInputElement | null;
+  const idleEl = document.getElementById('ghampus-skill-maintenance-idle') as HTMLInputElement | null;
+  enabledEl?.addEventListener('change', () => {
+    void ipcCall('agent:setSkillMaintenance', { enabled: enabledEl.checked }).catch(() => {});
+  });
+  idleEl?.addEventListener('change', () => {
+    void ipcCall('agent:setSkillMaintenance', { idleOnly: idleEl.checked }).catch(() => {});
+  });
 }
 
 // localStorage tracks when the user last visited the Ghampus tab so the
@@ -815,6 +840,8 @@ type GhampusChatMessage =
 interface ProactiveCardPayload {
   id: string; createdAt: number; signalType: string; signalLabel: string;
   skillSourceId: string; skillGraphId: string; skillLabel: string; why: string; status: string;
+  totalStale?: number;
+  batchSourceIds?: string[];
 }
 
 interface SkillMatchPayload {
@@ -953,6 +980,9 @@ function renderSkillMatchCard(skill: SkillMatchPayload, ts: number): string {
 }
 
 function renderProactiveCard(card: ProactiveCardPayload): string {
+  if (card.signalType === 'skill-stale') {
+    return renderSkillStaleCard(card);
+  }
   const signalIcon = card.signalType === 'time-based' ? '⏰' : card.signalType === 'recent-ingest' ? '📥' : '🔍';
   const skillName = card.skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   const whyHtml = escapeHtml(card.why).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -981,6 +1011,46 @@ function renderProactiveCard(card: ProactiveCardPayload): string {
             </div>
           </div>
           <button class="g-btn proactive-card-dismiss" data-card-id="${escapeHtml(card.id)}">Dismiss</button>
+        </div>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(card.createdAt)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderSkillStaleCard(card: ProactiveCardPayload): string {
+  const skillName = card.skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const whyHtml = escapeHtml(card.why).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const total = card.totalStale ?? 1;
+  const batchBtn = total > 1
+    ? `<button class="g-btn proactive-stale-batch" data-card-id="${escapeHtml(card.id)}">Retrain all ${total}</button>`
+    : '';
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="proactive-card proactive-card--skill-stale" data-card-id="${escapeHtml(card.id)}" data-skill-source="${escapeHtml(card.skillSourceId)}">
+        <div class="proactive-card-header">
+          <div class="proactive-card-signal">🔄 ${escapeHtml(card.signalLabel)}</div>
+          <span class="proactive-card-label">Skill maintenance</span>
+        </div>
+        <p class="proactive-card-why">${whyHtml}</p>
+        <div class="proactive-card-actions">
+          <button class="g-btn primary proactive-stale-run" data-card-id="${escapeHtml(card.id)}"
+                  data-source-id="${escapeHtml(card.skillSourceId)}">Retrain now${total === 1 ? ` · ${escapeHtml(skillName)}` : ''}</button>
+          ${batchBtn}
+          <div class="proactive-snooze-wrap">
+            <button class="g-btn proactive-card-snooze" data-card-id="${escapeHtml(card.id)}">Tonight ▾</button>
+            <div class="proactive-snooze-menu hidden">
+              <button class="proactive-snooze-opt" data-mins="480">This evening</button>
+              <button class="proactive-snooze-opt" data-mins="1440">Tomorrow</button>
+              <button class="proactive-snooze-opt" data-mins="10080">Next week</button>
+            </div>
+          </div>
+          <button class="g-btn proactive-stale-dismiss" data-card-id="${escapeHtml(card.id)}">Skip</button>
         </div>
       </div>
       <div class="chat-msg-meta">
@@ -1290,6 +1360,10 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
     });
   }
   if (msg.kind === 'proactive-card') {
+    if (msg.card.signalType === 'skill-stale') {
+      wireSkillStaleCardActions(node, msg.card);
+      return;
+    }
     node.querySelector<HTMLButtonElement>('.proactive-card-run')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
       const cardId = btn.dataset.cardId ?? '';
@@ -1332,6 +1406,83 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
       btn.closest('.ghampus-thread-entry')?.remove();
     });
   }
+}
+
+function wireSkillStaleCardActions(node: HTMLElement, card: ProactiveCardPayload): void {
+  node.querySelector<HTMLButtonElement>('.proactive-stale-run')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const cardId = btn.dataset.cardId ?? '';
+    btn.disabled = true;
+    setGhampusRunning(true);
+    try {
+      const res = await ipcCall<{ ok: boolean; retrained?: string[]; errors?: string[] }>(
+        'ghampus:skillMaintenance:run',
+        { cardId, sourceId: card.skillSourceId },
+      );
+      const label = card.skillLabel.replace(/-/g, ' ');
+      const text = res.ok
+        ? `Retrained **${label}** — skill is back in sync with your cortex.`
+        : `Retrain didn't complete: ${res.errors?.[0] ?? 'unknown error'}`;
+      appendToThread({ kind: 'ghampus', text, ts: Date.now() });
+      node.querySelector<HTMLElement>('.proactive-card-actions')?.remove();
+    } finally {
+      setGhampusRunning(false);
+    }
+  });
+  node.querySelector<HTMLButtonElement>('.proactive-stale-batch')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const cardId = btn.dataset.cardId ?? '';
+    const total = card.totalStale ?? 1;
+    const ok = await gConfirm(
+      'Retrain all stale skills?',
+      `This will retrain all ${total} queued skills now. It may take a few minutes.`,
+    );
+    if (!ok) return;
+    btn.disabled = true;
+    setGhampusRunning(true);
+    try {
+      const res = await ipcCall<{ ok: boolean; retrained?: string[] }>(
+        'ghampus:skillMaintenance:run',
+        { cardId, batch: true },
+      );
+      const n = res.retrained?.length ?? 0;
+      appendToThread({
+        kind: 'ghampus',
+        text: res.ok
+          ? `Retrained **${n}** skill${n === 1 ? '' : 's'} — queue cleared for those entries.`
+          : 'Batch retrain did not complete. Check the Skills library for details.',
+        ts: Date.now(),
+      });
+      node.querySelector<HTMLElement>('.proactive-card-actions')?.remove();
+    } finally {
+      setGhampusRunning(false);
+    }
+  });
+  node.querySelector<HTMLButtonElement>('.proactive-card-snooze')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = (e.currentTarget as HTMLElement)
+      .closest('.proactive-snooze-wrap')?.querySelector<HTMLElement>('.proactive-snooze-menu');
+    if (menu) menu.classList.toggle('hidden');
+  });
+  node.querySelectorAll<HTMLButtonElement>('.proactive-snooze-opt').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const mins = Number((e.currentTarget as HTMLButtonElement).dataset.mins ?? 480);
+      const cardId = card.id;
+      await ipcCall('ghampus:skillMaintenance:snooze', { cardId, snoozeMs: mins * 60_000 }).catch(() => {});
+      nextCardAllowedAt = Math.max(nextCardAllowedAt, Date.now() + mins * 60_000);
+      const label = btn.textContent ?? 'later';
+      node.querySelector<HTMLElement>('.proactive-card')?.classList.add('proactive-card--snoozed');
+      const actionsEl = node.querySelector<HTMLElement>('.proactive-card-actions');
+      if (actionsEl) {
+        actionsEl.innerHTML = `<span style="font-size:12px;opacity:.5;">Snoozed — I'll remind you ${label.toLowerCase()}</span>`;
+      }
+    });
+  });
+  node.querySelector<HTMLButtonElement>('.proactive-stale-dismiss')?.addEventListener('click', async () => {
+    await ipcCall('ghampus:skillMaintenance:dismiss', { cardId: card.id }).catch(() => {});
+    node.closest('.ghampus-thread-entry')?.remove();
+  });
 }
 
 let _skillRunningTimer: ReturnType<typeof setInterval> | null = null;

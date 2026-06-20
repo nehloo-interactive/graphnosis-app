@@ -187,6 +187,8 @@ export interface IpcDeps {
   licenseValidator?: import('./license-validator.js').LicenseValidator | null;
   /** Proactive watcher — surfaces skill-match cards into the Ghampus chat thread. */
   proactiveWatcher?: import('./proactive-watcher.js').ProactiveWatcher | null;
+  /** Ghampus stale-skill maintenance — drains skillRetrainQueue during idle windows. */
+  skillMaintenanceScheduler?: import('./skill-maintenance-scheduler.js').SkillMaintenanceScheduler | null;
   /**
    * Unified MCP tool dispatcher — routes to the exact same handler as external
    * AI clients for all 47+ tools. Used by Ghampus so no tool logic is duplicated.
@@ -3698,9 +3700,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // field drives the upgrade language not access.
       const settings = deps.host.getSettings();
       const plan = await resolveAgentPlan(deps);
+      const { resolveGhampusSkillMaintenance } = await import('@graphnosis-app/core/settings');
       return {
         enabled: settings.agent?.enabled !== false,
         plan,
+        skillMaintenance: resolveGhampusSkillMaintenance(settings.agent),
       };
     }
     case 'agent:setEnabled': {
@@ -3708,7 +3712,33 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // user can always disable Ghampus regardless of license state.
       const { enabled } = z.object({ enabled: z.boolean() }).parse(params ?? {});
       const current = deps.host.getSettings();
-      await deps.host.setSettings({ ...current, agent: { enabled } });
+      const prior = current.agent ?? { enabled: true };
+      await deps.host.setSettings({
+        ...current,
+        agent: { ...prior, enabled },
+      });
+      return { ok: true };
+    }
+    case 'agent:setSkillMaintenance': {
+      const args = z.object({
+        enabled: z.boolean().optional(),
+        idleOnly: z.boolean().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prior = current.agent ?? { enabled: true };
+      const { resolveGhampusSkillMaintenance } = await import('@graphnosis-app/core/settings');
+      const sm = resolveGhampusSkillMaintenance(prior);
+      await deps.host.setSettings({
+        ...current,
+        agent: {
+          ...prior,
+          skillMaintenance: {
+            ...sm,
+            ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
+            ...(args.idleOnly !== undefined ? { idleOnly: args.idleOnly } : {}),
+          },
+        },
+      });
       return { ok: true };
     }
     case 'agent:runTool': {
@@ -3876,6 +3906,53 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return { ok: true };
     }
 
+    case 'ghampus:activity': {
+      const { busy } = z.object({ busy: z.boolean() }).parse(params ?? {});
+      const { setGhampusUiBusy } = await import('./ghampus-busy.js');
+      setGhampusUiBusy(busy);
+      return { ok: true };
+    }
+
+    case 'ghampus:skillMaintenance:run': {
+      const args = z.object({
+        cardId: z.string().optional(),
+        sourceId: z.string().optional(),
+        batch: z.boolean().optional(),
+      }).parse(params ?? {});
+      const scheduler = deps.skillMaintenanceScheduler;
+      if (!scheduler) return { ok: false, reason: 'scheduler-unavailable' };
+      const card = scheduler.getPendingCard();
+      if (args.cardId && card?.id !== args.cardId) {
+        return { ok: false, reason: 'card-not-found' };
+      }
+      const sourceIds = args.batch && card
+        ? card.batchSourceIds
+        : [args.sourceId ?? card?.skillSourceId].filter(Boolean) as string[];
+      if (sourceIds.length === 0) return { ok: false, reason: 'no-target' };
+      const { incrementGhampusBusy, decrementGhampusBusy } = await import('./ghampus-busy.js');
+      incrementGhampusBusy();
+      try {
+        return await scheduler.runRetrain(sourceIds);
+      } finally {
+        decrementGhampusBusy();
+      }
+    }
+
+    case 'ghampus:skillMaintenance:snooze': {
+      const args = z.object({
+        cardId: z.string(),
+        snoozeMs: z.number().int().positive().optional(),
+      }).parse(params ?? {});
+      deps.skillMaintenanceScheduler?.snoozeCard(args.cardId, args.snoozeMs ?? 6 * 60 * 60 * 1000);
+      return { ok: true };
+    }
+
+    case 'ghampus:skillMaintenance:dismiss': {
+      const { cardId } = z.object({ cardId: z.string() }).parse(params ?? {});
+      await deps.skillMaintenanceScheduler?.dismissAndSnooze(cardId);
+      return { ok: true };
+    }
+
     case 'ghampus:digest': {
       const args = z.object({ sinceMs: z.number().optional() }).parse(params ?? {});
       const sinceMs = args.sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -3961,6 +4038,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }
       // Fire-and-forget so IPC returns immediately; response arrives via event.
       void (async () => {
+        const { incrementGhampusBusy, decrementGhampusBusy } = await import('./ghampus-busy.js');
+        incrementGhampusBusy();
         // Signal "thinking" immediately so the UI can show a spinner.
         deps.broadcastRaw({
           kind: 'ghampus.thinking',
@@ -4818,6 +4897,8 @@ OUTPUT RULES — non-negotiable:
             name: 'ghampus.message',
             payload: errMsg,
           });
+        } finally {
+          decrementGhampusBusy();
         }
       })();
       return { ok: true };
@@ -4948,12 +5029,15 @@ OUTPUT RULES — non-negotiable:
           models: { ...(settings.models ?? { providers: {} }), strategy: 'local-only' },
         });
       }
+      const { incrementGhampusBusy, decrementGhampusBusy } = await import('./ghampus-busy.js');
+      incrementGhampusBusy();
       try {
         return await dispatch(deps, 'agent:walkSkill', {
           sourceId: args.sourceId,
           graphId,
         });
       } finally {
+        decrementGhampusBusy();
         if (args.routing === 'local-only' && priorStrategy !== 'local-only') {
           const cur = deps.host.getSettings();
           await deps.host.setSettings({

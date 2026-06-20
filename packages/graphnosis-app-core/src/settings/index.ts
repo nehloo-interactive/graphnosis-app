@@ -1173,10 +1173,34 @@ export interface AppSettings {
   cortexCatalog?: EngramCatalogSettings;
 }
 
+/** Ghampus stale-skill maintenance — drains skillRetrainQueue during idle windows. */
+export interface GhampusSkillMaintenanceSettings {
+  /** Master switch. Default true. When false, stale skills stay queued until manual retrain. */
+  enabled: boolean;
+  /** When true (default), surface a proactive card before retraining. When false, retrain one skill per idle window automatically. */
+  idleOnly: boolean;
+  /** Unix ms — global snooze for stale-skill cards (Run later / Dismiss). */
+  snoozedUntil?: number;
+}
+
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
 export interface AgentSettings {
   /** User-controlled kill switch. Default true. Flipped from the tray menu or the Ghampus tab. */
   enabled: boolean;
+  /** Stale-skill retrain scheduler owned by Ghampus. Absent → defaults (enabled, idleOnly). */
+  skillMaintenance?: GhampusSkillMaintenanceSettings;
+}
+
+/** Defaults for agent.skillMaintenance — enabled + idleOnly. */
+export function resolveGhampusSkillMaintenance(
+  agent?: AgentSettings | null,
+): GhampusSkillMaintenanceSettings {
+  const sm = agent?.skillMaintenance;
+  return {
+    enabled: sm?.enabled !== false,
+    idleOnly: sm?.idleOnly !== false,
+    ...(typeof sm?.snoozedUntil === 'number' ? { snoozedUntil: sm.snoozedUntil } : {}),
+  };
 }
 
 /**
@@ -1749,7 +1773,19 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
   let agent: AgentSettings | undefined;
   if (partial?.agent && typeof partial.agent === 'object') {
     const a = partial.agent;
-    agent = { enabled: typeof a.enabled === 'boolean' ? a.enabled : true };
+    const sm = a.skillMaintenance;
+    agent = {
+      enabled: typeof a.enabled === 'boolean' ? a.enabled : true,
+      ...(sm && typeof sm === 'object'
+        ? {
+            skillMaintenance: {
+              enabled: sm.enabled !== false,
+              idleOnly: sm.idleOnly !== false,
+              ...(typeof sm.snoozedUntil === 'number' ? { snoozedUntil: sm.snoozedUntil } : {}),
+            },
+          }
+        : {}),
+    };
   }
 
   let models: ModelsSettings | undefined;

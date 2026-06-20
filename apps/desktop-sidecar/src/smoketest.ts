@@ -19,6 +19,8 @@ import { proposeCorrection, applyCorrection } from './correction.js';
 import { SkillTrainer } from './skill-trainer.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
+import { ingestGraphnosisDocs } from './docs-ingest.js';
+import { runRecallLatencyRegression } from './recall-latency-benchmark.js';
 import {
   isMcpToolAllowedForRole,
   mcpToolsForRole,
@@ -170,6 +172,38 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error('FAIL: walkSkillToJson steps malformed');
   }
   log('skill-walk-structured.ok', { steps: walkJson.steps.length, requires: walkJson.requires?.length ?? 0 });
+
+  // --- Ghampus skill maintenance — queue → idle tick → retrain one ----------
+  log('skill-maintenance', {});
+  const { enqueueSkillsForNodeChange, countSkillRetrainQueue, persistSkillCitedNodes } = await import('./skill-retrain-queue.js');
+  const citedNode = src.nodeIds[0]!;
+  await persistSkillCitedNodes(host, walkSourceId, 'personal', [citedNode]);
+  await enqueueSkillsForNodeChange(host, 'personal', [citedNode], 'source-edited', skillTrainer);
+  if (countSkillRetrainQueue(host) !== 1) {
+    throw new Error(`FAIL: expected 1 queued stale skill, got ${countSkillRetrainQueue(host)}`);
+  }
+  await host.setSettings({
+    ...host.getSettings(),
+    agent: { enabled: true, skillMaintenance: { enabled: true, idleOnly: false } },
+  });
+  const { SkillMaintenanceScheduler } = await import('./skill-maintenance-scheduler.js');
+  const { resetGhampusBusyForTest } = await import('./ghampus-busy.js');
+  resetGhampusBusyForTest();
+  const maintEvents: unknown[] = [];
+  const scheduler = new SkillMaintenanceScheduler({
+    host,
+    skillTrainer,
+    broadcastRaw: (frame) => { maintEvents.push(frame); },
+    licenseValidator: { hasFeature: () => true } as unknown as import('./license-validator.js').LicenseValidator,
+  });
+  const tick = await scheduler.tickForTest();
+  if (tick.action !== 'retrain') {
+    throw new Error(`FAIL: skill maintenance tick expected retrain, got ${tick.action} (${tick.detail ?? ''})`);
+  }
+  if (countSkillRetrainQueue(host) !== 0) {
+    throw new Error('FAIL: skillRetrainQueue should be drained after maintenance retrain');
+  }
+  log('skill-maintenance.ok', { action: tick.action, detail: tick.detail });
 
   // --- SOP-preserving rewrite validation (no live LLM) ----------------------
   log('skill-sop-preservation', {});
@@ -612,6 +646,14 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     content: big,
     sourceRef: 'smoke:secrets',
   });
+  // MCP consent gate reads sensitivityTier from engram metadata (policyCfg alone
+  // is not enough). UI tier edits write metadata; mirror that for smoke MCP tests.
+  const secretsMeta = host.getGraphMetadata('secrets') ?? {
+    template: 'personal' as const,
+    displayName: 'secrets',
+    createdAt: Date.now(),
+  };
+  await host.setGraphMetadata('secrets', { ...secretsMeta, sensitivityTier: 'sensitive' });
 
   log('maxed-recall-sensitive', { requested: { maxNodes: 50, maxTokens: 8000 } });
   const maxed = await host.recall('What is the codeword?', {
@@ -659,6 +701,93 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error(`FAIL: sensitive-tier token cap not enforced — got ${consentedAudit.tokensIncluded} (max 500)`);
   }
   log('sensitive-consented-recall.ok', { nodes: consentedAudit.nodesIncluded, tokens: consentedAudit.tokensIncluded });
+
+  // ── Headless consent flow (MCP confirm_data_access) ─────────────────────
+  // Real MCP path — not the host-level consentedGraphIds bypass above.
+  // No broadcastRaw → headless phrase notice (SSH/CI), not the in-app modal.
+  // Phrase: same helper as Settings → AI → Consent Phrases (optional
+  // GRAPHNOSIS_SMOKE_CONSENT_PHRASE env for local debugging only).
+  // Procedure: security-review-cadence / sidecar-change-verify skills.
+  log('consent-headless-flow', {});
+  const { createMcpServer, getConsentPhraseForTier } = await import('./mcp-server.js');
+  const { mcpRegistry } = await import('./mcp-registry.js');
+  const consentPendingDiffs = new Map<string, { graphId: string; diff: import('./correction.js').CorrectionDiff; createdAt: number }>();
+  const { callTool: callMcpTool } = createMcpServer({
+    host,
+    cortexDir,
+    llm: () => null,
+    defaultGraphId: () => 'personal',
+    pendingDiffs: consentPendingDiffs,
+  });
+  const smokeMcpClient = 'smoke-mcp-consent';
+  const smokeConnId = mcpRegistry.register('stdio');
+  mcpRegistry.setClientInfo(smokeConnId, smokeMcpClient, 'smoke-1.0');
+  try {
+    const blocked = await callMcpTool('recall', {
+      query: 'What is the codeword?',
+      only_engrams: ['secrets'],
+      maxTokens: 8000,
+      maxNodes: 50,
+    });
+    if (!blocked.isError) {
+      throw new Error('FAIL: sensitive MCP recall should require consent before confirm_data_access');
+    }
+    const blockedText = blocked.content.map((c) => c.text).join('\n');
+    if (!blockedText.includes('GRAPHNOSIS CONSENT REQUIRED')) {
+      throw new Error(`FAIL: expected consent-required notice, got: ${blockedText.slice(0, 240)}`);
+    }
+    log('consent-headless-flow.blocked', { noticeLen: blockedText.length });
+
+    const wrongPhrase = await callMcpTool('confirm_data_access', {
+      phrase: 'acorn adapt affix',
+      tier: 'sensitive',
+      engrams: ['secrets'],
+    });
+    if (!wrongPhrase.isError) {
+      throw new Error('FAIL: wrong consent phrase should be rejected');
+    }
+    log('consent-headless-flow.wrong-phrase-rejected', {});
+
+    const hmacKey = await host.getOrCreateConsentHmacKey();
+    const phrase =
+      process.env.GRAPHNOSIS_SMOKE_CONSENT_PHRASE?.trim()
+      || getConsentPhraseForTier(hmacKey, 'sensitive').phrase;
+
+    const confirmed = await callMcpTool('confirm_data_access', {
+      phrase,
+      tier: 'sensitive',
+      engrams: ['secrets'],
+    });
+    if (confirmed.isError) {
+      throw new Error(
+        `FAIL: confirm_data_access with valid phrase failed: ${confirmed.content.map((c) => c.text).join('\n')}`,
+      );
+    }
+    const confirmText = confirmed.content.map((c) => c.text).join('\n');
+    if (!confirmText.toLowerCase().includes('consent recorded')) {
+      throw new Error(`FAIL: unexpected confirm_data_access response: ${confirmText.slice(0, 240)}`);
+    }
+    log('consent-headless-flow.confirmed', {});
+
+    const afterConsent = await callMcpTool('recall', {
+      query: 'What is the codeword?',
+      only_engrams: ['secrets'],
+      maxTokens: 8000,
+      maxNodes: 50,
+    });
+    if (afterConsent.isError) {
+      throw new Error(
+        `FAIL: recall after consent should succeed: ${afterConsent.content.map((c) => c.text).join('\n')}`,
+      );
+    }
+    const afterText = afterConsent.content.map((c) => c.text).join('\n');
+    if (!afterText.includes('alpha-') && !afterText.toLowerCase().includes('codeword')) {
+      throw new Error('FAIL: consented MCP recall returned no secret content');
+    }
+    log('consent-headless-flow.ok', { servedLen: afterText.length });
+  } finally {
+    mcpRegistry.unregister(smokeConnId);
+  }
 
   // --- bundled docs --------------------------------------------------------
   // The Graphnosis docs ship inside the app — scripts/generate-docs-content.mjs
@@ -914,6 +1043,30 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error('FAIL: closed port should be unreachable');
   }
   log('sso-idp-probe.ok', { unreachableError: unreachable.error });
+
+  // --- recall latency regression (warm-cache P50 guard) --------------------
+  // Ingests bundled docs into a dedicated engram (~thousands of nodes, offline)
+  // then asserts warm recall P50 stays under GRAPHNOSIS_RECALL_LATENCY_P50_MS
+  // (default 200ms). Skip with GRAPHNOSIS_SKIP_RECALL_LATENCY=1.
+  // Manual large-cortex: scripts/recall-benchmark-manual.mjs (pre-release).
+  // performance-regression-check skill → this phase + manual script.
+  if (process.env.GRAPHNOSIS_SKIP_RECALL_LATENCY !== '1') {
+    log('recall-latency-regression.ingest', {});
+    const benchGraphId = 'smoke-latency-bench';
+    await host.createGraph(benchGraphId);
+    const { ingested, failed } = await ingestGraphnosisDocs(host, benchGraphId);
+    if (ingested === 0) {
+      throw new Error('FAIL: recall-latency bench docs ingest produced 0 pages');
+    }
+    log('recall-latency-regression.ingest.done', {
+      ingested,
+      failed,
+      nodes: host.listNodes(benchGraphId).length,
+    });
+    await runRecallLatencyRegression(host, benchGraphId, { log });
+  } else {
+    log('recall-latency-regression.skipped', { reason: 'GRAPHNOSIS_SKIP_RECALL_LATENCY=1' });
+  }
 
   // --- session heartbeat lease ---------------------------------------------
   log('session-lease', {});
