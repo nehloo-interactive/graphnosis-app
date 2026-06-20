@@ -209,6 +209,7 @@ The following table covers deployment considerations that enterprise IT teams co
 |---|---|
 | `GRAPHNOSIS_DISABLED_CONNECTORS=slack,github` | Blocks named connectors org-wide; they will not start even if configured |
 | `GRAPHNOSIS_DISABLED_CLIENTS=cursor,claude-ai` | Rejects MCP tool calls from named AI clients |
+| `GRAPHNOSIS_DISABLED_PROVIDERS=anthropic,openai` | Blocks named model providers from Ghampus routing; shows lock badges in Settings → Models |
 | `GRAPHNOSIS_MANAGED_POLICY=1` | Marks policy as centrally managed; local user cannot loosen it from Settings |
 | `GRAPHNOSIS_CORTEX=/path/to/managed/cortex` | Pins cortex location (e.g. to an encrypted volume or MDM-controlled path) |
 | `GRAPHNOSIS_BIND=127.0.0.1` | Locks optional HTTP bridges to loopback (override Docker default of `0.0.0.0`) |

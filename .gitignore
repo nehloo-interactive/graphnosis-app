@@ -27,10 +27,10 @@ apps/desktop/scripts/
 .env.*
 !.env.example
 
-# Per-project personal overrides + the generated Graphnosis skills routing hook
-# (dispatch-export-sync writes the skill-dispatch table here). Local only —
-# the personal skill library never enters a commit; only the tracked CLAUDE.md ships.
+# Per-project personal overrides + generated dispatch hooks (local only).
+# dispatch-export-sync writes CLAUDE.local.md and .cursorrules here.
 CLAUDE.local.md
+.cursorrules
 
 
 # App user data (must never be committed)

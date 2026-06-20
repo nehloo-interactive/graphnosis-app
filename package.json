@@ -26,6 +26,7 @@
     "test:settings": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/settings-matrix.test.ts",
     "test:edge": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/edge-cases.test.ts",
     "test:llm": "GRAPHNOSIS_OLLAMA=1 pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/llm.test.ts",
+    "release:sync-downloads": "node apps/docs/scripts/sync-graphnosis-md.mjs",
     "mcpb:build": "pnpm --filter @graphnosis-app/desktop-sidecar build && node apps/desktop-sidecar/scripts/mcpb-build.mjs",
     "mcpb:pack": "cd mcpb && mcpb pack . ../graphnosis.mcpb && echo Done: graphnosis.mcpb"
   },

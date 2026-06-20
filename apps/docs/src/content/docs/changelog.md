@@ -11,6 +11,46 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.19.0 — Skill runs, Temporal Job Memory, and Ghampus discipline
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Major skills-and-Ghampus release: resumable multi-skill runs with Activity oversight, Temporal Job Memory (obligations on memories + `recall_obligations`), proactive skill-dispatch matching, golden-walk regression fixtures, GSK semver/lineage, hollow-skill repair, catalog drift detection, Evidence Pack skill-run slice, and MLX/vLLM hooks for local OpenAI-compatible runtimes.
+
+### Added
+
+- **Skill runs (Team Playbooks 4b).** `save_skill_run` / `resume_skill_run` persist captured walk variables and step progress to encrypted per-run files. Activity → **Skill runs** tab lists status, actor, and redacted vars; Evidence Pack exports a `skillRuns` slice for compliance review.
+- **Temporal Job Memory (phase 1–2).** Optional `obligation` fields on `remember` / `ingest_batch` (`deadline`, `renewal`, `review-by`) with a local obligation index, retention guard (active obligations block purge), and MCP `recall_obligations` (due-window + type filters). Ghampus surfaces obligation-due proactive cards.
+- **Skill lifecycle hardening.** Golden-walk fixtures guard walk-plan shape; `skill-dispatch-sync` exports dispatch rules to Cursor/Claude after retrain; GSK packs carry semver + lineage metadata; `repairHollowSkillSource` restores zero-node skills from snapshots; skill-recall bindings wire walk-time recall recipes.
+- **Ghampus A′–D.** Proactive dispatch trigger matching (context → skill slug), away-digest dedupe for quiet periods, savings-tracker baseline calibration, and Ghampus operator skill training script. Cloud/local routing accepts MLX-LM and vLLM OpenAI-compatible endpoints when configured (bring-your-own server — not a bundled turnkey stack).
+- **Catalog drift.** Sidecar detects when subscribed org-catalog packages change on disk or SharePoint and surfaces drift in Activity for IT-aligned refresh.
+- **IPC/MCP surface.** `skill:walkStructured` for in-app structured walks; `settings:get` alias; trained-output title restoration in Skills library.
+
+### Changed
+
+- **Agent walker.** Richer structured walk plans (parallel steps, loop caps, failure handlers); smoke coverage expanded across obligations, golden walks, dispatch sync, and RBAC.
+- **Compliance export.** Evidence Pack JSON includes skill-run metadata (count + redacted list items) alongside op-log, consent, and MCP audit slices.
+- **Download sync.** `release:sync-downloads` / `sync-graphnosis-md.mjs` also updates `FALLBACK_VERSION` in Cloudflare download handlers alongside `_redirects`.
+
+### Fixed
+
+- **Self-healing Activity.** MCP and skill-run segments recover after transient sidecar errors without a full app restart.
+- **Hollow skills after in-place retrain.** Repair path + trainer ordering prevents empty trained graphs from breaking library open/export.
+
+### Security
+
+- **RBAC matrix.** `recall_obligations` requires `recall` capability (available to recall-only shares); skill-run save/resume requires `skill-walk` (editor+ roles).
+
+### Migrations
+
+- Obligation index builds on first unlock after upgrade; existing memories without obligations behave unchanged.
+
+### Deferred
+
+- Calendar integrations, remote Ghampus hub, Slide G multi-skill orchestration UI, turnkey MLX/vLLM install wizard (hooks exist; you run the server).
+
+---
+
 ## v1.18.0 — Enterprise SSO, org catalog, and compliance
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
