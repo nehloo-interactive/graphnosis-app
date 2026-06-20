@@ -11,6 +11,55 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.18.0 — Enterprise SSO, org catalog, and compliance
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Major enterprise release: federated OIDC cortex unlock, IT-managed engram catalog with MDM and SharePoint sync, compliance v1.2 (legal hold, retention, evidence packs), durable MCP audit logging, sharing RBAC, op-log tail replay with boot reliability fixes, Ghampus skill maintenance, and OpenAI/Anthropic walk adapters.
+
+### Added
+
+- **Enterprise SSO (OIDC).** Settings → Enterprise SSO: federated cortex unlock via corporate IdP (Okta, Azure AD, Google Workspace, and other OIDC providers). Lock-screen sign-in, IdP group → sharing-role mapping, optional Entra tenant binding, IdP reachability probe for VPN-only IdPs, break-glass passphrase fallback, and headless `/admin/provision` for MCP seats.
+- **Organization Engram Catalog.** IT publishes engram packages employees can subscribe to from the lock screen or **Get Connected**. SharePoint list sync, MDM bundle auto-install, IdP group entitlements, IT-controlled classification labels, and `requireSsoSession` packages that block subscribe/recall without an IdP unlock.
+- **Compliance v1.2.** Source- and engram-level legal hold, retention job hooks, Evidence Pack export (signed op-log + MCP audit bundle), `recall_as_of` MCP tool for point-in-time recall, and IT-configurable classification schema via MDM or admin UI.
+- **MCP audit log.** Durable encrypted per-call audit trail with Activity → AI access log and enterprise export — no boot-time reconcile required.
+- **Sharing RBAC matrix.** Session heartbeat lease, role-aware MCP `tools/list` and `tools/call` enforcement, and enterprise sharing role picker in Team Admin.
+- **Op-log tail replay.** `oplogReconcileCheckpoint` on loadGraph replays only new tail events; idle op-log compaction surfaces in status bar and Activity.
+- **Ghampus skill maintenance.** Stale-skill retrain queue, SOP-preserving local LLM rewrite on train, walk plan/digest routing, and OpenAI-compatible + Anthropic walk adapters.
+- **Performance guard.** Recall latency benchmark module with smoke regression guard (~200 ms p95 on warm single-engram corpus); docs qualify published ~75 ms figures.
+
+### Changed
+
+- **Autonomous Skills.** Renamed from Memory-trained Skills; library/trainer rail (not Remember form); 3D atlas hidden under Skills/Search sub-modes.
+- **Org catalog UI** moved to **Get Connected**; employee catalog shows entitlement reasons (groups, SSO required).
+- **Enterprise IT FAQ** documents OIDC SSO availability today; SAML 2.0 SP remains on the roadmap.
+- **Boot sequence.** Event-driven engram sweep, deferred brain passes, background reconcile — large cortexes unlock faster with correct engram counts immediately.
+- **Save guards.** Block empty/shrink `.gai` writes; auto-restore from `.lkg` when a shell overwrites substantial on-disk data.
+
+### Fixed
+
+- **Autonomous Skills pane.** Restored Trained Output when opening library skills; rail shows library/trainer not brain pane. In-place retrain no longer renames the source before inserts (avoids hollow skills with zero nodes); `repairHollowSkillSource` restores from snapshot on get/list/export; UI fallbacks and async race guards prevent stale Trained Output overwrites.
+- **Boot/reconcile.** Adapter.build no longer wipes loaded engrams; archived engrams load at boot; IPC unlock waits until engrams are queryable.
+- **Ghampus/UI.** Snooze dropdown contrast; quiet-away digest dedupe; Premium Plans modal wiring after skills extraction.
+- **Linux MCP paths.** Cursor and Claude Code config paths on Linux.
+- **Billing modal.** Hoisted constants and `billing:domainEmail` literal fix.
+- **Search rail.** Results stay visible when re-entering checkin with an active query.
+
+### Security
+
+- **requireSsoSession catalog gate.** Federated recall excludes SSO-gated engrams without IdP session; explicit recall throws a clear SSO-required error.
+- **Legal hold enforcement** blocks forget/delete on held sources and engrams.
+
+### Migrations
+
+- Automatic op-log checkpoint advancement on loadGraph; no manual cortex migration required.
+
+### Deferred
+
+- SAML 2.0 service-provider flows, native MDM `.mobileconfig`/`.admx` profiles, macOS App Sandbox, Linux desktop code signing, FedRAMP FIPS module, SOC 2 Type II report.
+
+---
+
 ## v1.17.4 — Skills compile contract + Cursor connect
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-19</p>
