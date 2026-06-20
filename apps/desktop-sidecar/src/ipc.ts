@@ -5010,6 +5010,62 @@ OUTPUT RULES — non-negotiable:
       });
       return { ok: true };
     }
+    case 'models:setProviderKey': {
+      const { providerId, apiKey } = z.object({
+        providerId: z.string().min(1),
+        apiKey: z.string().min(1),
+      }).parse(params ?? {});
+      const { getKnownProvider } = await import('./model-registry.js');
+      const providerInfo = getKnownProvider(providerId as import('./model-registry.js').ModelProviderId);
+      if (!providerInfo) return { ok: false, reason: 'unknown-provider' };
+      if (providerInfo.local) return { ok: false, reason: 'local-provider', message: 'Local providers do not use API keys.' };
+      const current = deps.host.getSettings();
+      const models = current.models ?? { providers: {}, strategy: 'adaptive' as const };
+      const providerState = models.providers[providerId] ?? { enabled: false };
+      if (providerState.adminLocked) {
+        return { ok: false, reason: 'admin-locked', message: 'This provider is locked by your organization admin.' };
+      }
+      const trimmed = apiKey.trim();
+      await deps.host.setSettings({
+        ...current,
+        models: {
+          ...models,
+          providers: {
+            ...models.providers,
+            [providerId]: {
+              ...providerState,
+              enabled: true,
+              apiKey: trimmed,
+              hasKey: true,
+              keyTail: trimmed.length >= 4 ? trimmed.slice(-4) : trimmed,
+            },
+          },
+        },
+      });
+      return { ok: true };
+    }
+    case 'models:clearProviderKey': {
+      const { providerId } = z.object({ providerId: z.string().min(1) }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const models = current.models ?? { providers: {}, strategy: 'adaptive' as const };
+      const providerState = models.providers[providerId];
+      if (!providerState) return { ok: true };
+      if (providerState.adminLocked) {
+        return { ok: false, reason: 'admin-locked', message: 'This provider is locked by your organization admin.' };
+      }
+      const { apiKey: _k, apiKeyEnc: _e, keyTail: _t, hasKey: _h, ...rest } = providerState;
+      await deps.host.setSettings({
+        ...current,
+        models: {
+          ...models,
+          providers: {
+            ...models.providers,
+            [providerId]: { ...rest, enabled: false, hasKey: false },
+          },
+        },
+      });
+      return { ok: true };
+    }
     case 'models:setProviderEnabled': {
       const { providerId, enabled } = z.object({
         providerId: z.string().min(1),
@@ -5160,8 +5216,8 @@ OUTPUT RULES — non-negotiable:
     }
     case 'agent:walkSkill': {
       // Execute a planned skill walk step-by-step against the chosen
-      // models. Ollama dispatches for real; paid providers report a
-      // clear "needs configuration" error per step. Each step writes a
+      // models. Ollama + configured BYOK cloud providers dispatch for real;
+      // unconfigured paid providers report a clear error per step. Each step writes a
       // routing-savings entry as it lands; the walk's final result
       // carries the per-step outputs + captures for the UI to render.
       const { walkSkillPlan } = await import('./agent-walker.js');

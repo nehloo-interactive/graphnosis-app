@@ -1,12 +1,10 @@
 // Skill walker — drives a SkillWalkPlan to actual execution by dispatching
 // each step to its chosen model and capturing the result.
 //
-// Phase 1 scope:
-//   - Ollama provider works for real (HTTP to localhost:11434).
-//   - Paid providers (Anthropic, OpenAI, etc.) error with a clear
-//     `provider-not-configured` reason — the routing plan still
-//     selects them, the walker just can't execute them yet. Lets us
-//     prove the architecture end-to-end on a local-only setup.
+// Providers:
+//   - Ollama: local HTTP to localhost:11434
+//   - Anthropic / OpenAI-compatible: BYOK cloud adapters (Settings → Models)
+//   - Other catalog providers: clear error until an adapter ships
 //   - Each step's output is captured against `captureAs` if the step
 //     declares one. Captures flow forward into subsequent step prompts.
 //   - Savings tracker records every step (routing-savings event).
@@ -18,10 +16,11 @@
 //   - Multi-model voting for critical steps.
 
 import { OllamaLlm } from './local-llm.js';
+import { dispatchCloudModelCall, OPENAI_COMPAT_BASE_URLS } from './cloud-llm.js';
 import { recordRoutingSavings } from './savings-tracker.js';
 import type { GraphnosisHost } from './host.js';
 import type { SkillWalkPlan, PlannedStep } from './model-router.js';
-import { getKnownModel } from './model-registry.js';
+import { getKnownModel, type ModelProviderId } from './model-registry.js';
 
 export interface WalkerDeps {
   host: GraphnosisHost;
@@ -198,17 +197,10 @@ function composePrompt(step: WalkerStepInput, captures: Record<string, string>):
 }
 
 /**
- * Dispatch one model call to the right provider adapter. Phase 1 only
- * implements Ollama for real; other providers throw a clear error so
- * the walker records the failure and continues. When the rest of the
- * adapters ship, this switch grows.
+ * Dispatch one model call to the right provider adapter.
  */
 async function dispatchModelCall(provider: string, modelTag: string, prompt: string, deps: WalkerDeps): Promise<string> {
   if (provider === 'ollama') {
-    // Prefer the user's explicitly-configured active model (settings.ai.llmModel)
-    // over the registry's model tag. The registry may reference a catalog model
-    // (e.g. llama3.2:3b-instruct-q4_K_M) that isn't installed on this machine;
-    // the settings model reflects what the user actually has pulled.
     const activeModel = deps.host.getSettings().ai?.llmModel ?? modelTag;
     const client = new OllamaLlm(`ollama:${activeModel}`, activeModel);
     return client.complete({
@@ -219,7 +211,11 @@ async function dispatchModelCall(provider: string, modelTag: string, prompt: str
   if (provider === 'mlx' || provider === 'vllm') {
     throw new Error(`Provider '${provider}' adapter not yet implemented in this build. Routing picked it because it claims the right capabilities; configure Ollama as fallback or wait for the adapter to ship.`);
   }
-  // Paid providers — clear error so the walker records the failure and
-  // the UI can prompt the user to install Ollama or skip the step.
-  throw new Error(`Provider '${provider}' requires a configured API key. Open Settings → Models to connect it, or switch routing strategy to Local-only.`);
+  const pid = provider as ModelProviderId;
+  if (pid === 'anthropic' || OPENAI_COMPAT_BASE_URLS[pid]) {
+    return dispatchCloudModelCall(pid, modelTag, prompt, deps.host);
+  }
+  throw new Error(
+    `Provider '${provider}' requires a configured API key. Open Settings → Models to connect it, or switch routing strategy to Local-only.`,
+  );
 }

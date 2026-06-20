@@ -1229,8 +1229,14 @@ export interface ModelProviderState {
   /** True when the provider needs a credential and one is configured. */
   hasKey?: boolean;
   /**
-   * Last 4 chars of the API key — for display only. Full key is stored
-   * in OS keychain (not in settings.json).
+   * Plaintext API key — in-memory only after cortex unlock. Encrypted to
+   * `apiKeyEnc` on disk by the sidecar host (same pattern as bridge tokens).
+   */
+  apiKey?: string;
+  /** XChaCha20-Poly1305 ciphertext of the API key (base64). On disk only. */
+  apiKeyEnc?: string;
+  /**
+   * Last 4 chars of the API key — for display only.
    */
   keyTail?: string;
   /** True when the provider is forced off by an IT admin policy. UI shows a lock. */
@@ -1759,6 +1765,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
         providers[pid] = {
           enabled: typeof r.enabled === 'boolean' ? r.enabled : false,
           ...(typeof r.hasKey === 'boolean' ? { hasKey: r.hasKey } : {}),
+          ...(typeof r.apiKey === 'string' ? { apiKey: r.apiKey } : {}),
+          ...(typeof r.apiKeyEnc === 'string' ? { apiKeyEnc: r.apiKeyEnc } : {}),
           ...(typeof r.keyTail === 'string' ? { keyTail: r.keyTail } : {}),
           ...(typeof r.adminLocked === 'boolean' ? { adminLocked: r.adminLocked } : {}),
           ...(typeof r.poolSpentUsd === 'number' ? { poolSpentUsd: r.poolSpentUsd } : {}),
