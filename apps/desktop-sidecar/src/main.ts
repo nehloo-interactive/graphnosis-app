@@ -843,8 +843,6 @@ async function main(): Promise<void> {
   // Falls back to the catalog default when no model has been explicitly configured.
   const llm: LocalLlm = new DynamicOllamaLlm(
     () => host.getSettings().ai?.llmModel ?? defaultModelTag,
-    undefined,
-    () => settingsMod.resolveLlmTemperature(host.getSettings()),
   );
 
   const pendingDiffs = new Map<string, { graphId: string; diff: CorrectionDiff; createdAt: number }>();
