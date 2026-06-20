@@ -64,6 +64,18 @@ Centrally disable specific connectors (incoming data) and AI clients (outgoing m
 
 For per-cortex configuration, place a `policy.json` in the cortex folder with `disabledConnectors`, `disabledClients`, and `managed` fields; it merges with the variables above.
 
+## Recall latency benchmark
+
+Used by the smoke-test regression guard and the pre-release manual benchmark script. See [Performance and recall latency](/guides/performance/).
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GRAPHNOSIS_SKIP_RECALL_LATENCY` | No | — | Set to `1` to skip the `recall-latency-regression` phase in `smoketest`. |
+| `GRAPHNOSIS_RECALL_LATENCY_P50_MS` | No | `200` | Fail when warm recall P50 exceeds this many milliseconds. |
+| `GRAPHNOSIS_RECALL_LATENCY_RUNS` | No | `5` (smoke) / `10` (manual script) | Timed recall iterations after warm-up. |
+| `GRAPHNOSIS_RECALL_LATENCY_QUERY` | No | connect-AI-client query | Query string used for timed recalls. |
+| `GRAPHNOSIS_RECALL_BENCH_GRAPH` | No | `personal` | Engram id for `scripts/recall-benchmark-manual.mjs` only. |
+
 ## Internal
 
 `GRAPHNOSIS_WORKER_ROLE` is set by the sidecar on itself when it forks an embedding worker process. Do not set it manually.
@@ -85,6 +97,8 @@ Passing your passphrase as an environment variable means it may be visible in pr
 ## Related
 
 [Boot & Engram Loading](/guides/boot-and-engram-loading/) — how these variables shape startup.
+
+[Performance and recall latency](/guides/performance/) — smoke-test P50 guard and manual benchmark script.
 
 [Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — what `GRAPHNOSIS_GRAPHS` actually scopes.
 
