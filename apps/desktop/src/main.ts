@@ -67,6 +67,8 @@ import {
 } from './ui/cloud-onboarding';
 import {
   initSkills,
+  openLicenseModal,
+  closeLicenseModal,
   fetchSkillsLibrary,
   renderSkillsLibrary,
   scheduleSkillsLibraryRefresh,
@@ -22192,6 +22194,10 @@ function bindSettingsLicensePanel(): void {
   void refreshSettingsLicenseStatus();
 }
 bindSettingsLicensePanel();
+
+document.addEventListener('graphnosis:license-modal-opened', () => {
+  void refreshSettingsLicenseStatus();
+});
 
 // ── License modal launchers ────────────────────────────────────────────────
 //

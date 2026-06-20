@@ -3243,12 +3243,13 @@ function openPasteLicensePanel(): void {
 /** Show the standalone License modal and refresh its status line so the
  *  current plan/expiry are visible the moment it opens. Also focuses the
  *  paste textarea so a user with a token in clipboard can just ⌘V. */
-function openLicenseModal(): void {
+export function openLicenseModal(): void {
   const modal = document.getElementById('license-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
   setTimeout(() => {
-    void refreshSettingsLicenseStatus();
+    // License status UI lives in main.ts — notify it to refresh without a circular import.
+    document.dispatchEvent(new CustomEvent('graphnosis:license-modal-opened'));
     const emailInput = document.getElementById('settings-license-email') as HTMLInputElement | null;
     if (emailInput && !emailInput.value) {
       emailInput.value = localStorage.getItem(app().BILLING_EMAIL_KEY) ?? '';
@@ -3260,7 +3261,7 @@ function openLicenseModal(): void {
   }, 30);
 }
 
-function closeLicenseModal(): void {
+export function closeLicenseModal(): void {
   const modal = document.getElementById('license-modal');
   if (modal) modal.classList.add('hidden');
   // Reset OTP section so it doesn't linger on next open.
