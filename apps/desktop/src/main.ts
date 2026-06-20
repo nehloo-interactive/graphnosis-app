@@ -974,6 +974,8 @@ let brainVitalityReport: {
 // Cortex-wide totals cached from inspector_stats (refreshFederatedStats) so the
 // Home hero can show whole-cortex numbers, not just the active engram's.
 let cortexStats: { memories: number; sources: number; engrams: number } | null = null;
+/** Guard: renderHomeEngramBars → refreshGraphsCatalogAndStats self-heal (one in flight). */
+let _engramBarsCatalogResyncPending = false;
 // Bumped on lock / cortex switch so in-flight stats IPC can't paint the
 // previous cortex after the user unlocks a different folder.
 let cortexUiGeneration = 0;
@@ -7361,6 +7363,14 @@ function renderHomeEngramBars(): void {
   const stillBooting = isEngramPreloadInProgress();
   if (rows.length === 0 && liveGraphIds.size > 0 && !stillBooting) {
     void refreshCortexScopedStats();
+    return;
+  }
+  // Footer/hero engram count comes from inspector_stats; bars use loadedGraphs.
+  // After boot-defer the catalog can lag behind the sidecar — resync once.
+  const expectedEng = cortexStats?.engrams ?? 0;
+  if (!stillBooting && expectedEng > rows.length && !_engramBarsCatalogResyncPending) {
+    _engramBarsCatalogResyncPending = true;
+    void refreshGraphsCatalogAndStats().finally(() => { _engramBarsCatalogResyncPending = false; });
     return;
   }
   barsEl.style.display = '';
@@ -13776,6 +13786,7 @@ function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = fals
     } else if (
       newActiveCount !== prevActiveCount
       || newResidentCount !== prevResidentCount
+      || (_engramLoadProgress.total > 0 && newResidentCount < _engramLoadProgress.total)
     ) {
       scheduleDebouncedFederatedStats();
     }
@@ -13826,10 +13837,12 @@ function schedulePeriodicGreyedRefresh(): void {
     void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true })
       .then((graphs) => {
         const before = loadedGraphs.filter((g) => g.loaded === false).length;
+        const prevResident = loadedGraphs.filter((g) => g.loaded !== false).length;
         loadedGraphs = graphs;
         populateStudioEngramSelects();
         const after = graphs.filter((g) => g.loaded === false).length;
-        if (before !== after) {
+        const newResident = graphs.filter((g) => g.loaded !== false).length;
+        if (before !== after || newResident !== prevResident) {
           syncEngramPicker();
           scheduleDebouncedFederatedStats();
         }
@@ -17025,8 +17038,11 @@ function resetEngramsLoaded(): void {
 
 /** True while the sidecar's boot sweep still has unloaded engrams in the picker. */
 function isEngramPreloadInProgress(): boolean {
-  if (_bootSweepComplete) return false;
   if (loadedGraphs.length === 0) return false;
+  if (loadedGraphs.some((g) => g.loaded === false)) return true;
+  const resident = loadedGraphs.filter((g) => g.loaded !== false).length;
+  if (_engramLoadProgress.total > 0 && resident < _engramLoadProgress.total) return true;
+  if (_bootSweepComplete) return false;
   // load-before-IPC: after unlock the catalog is authoritative — metadata-only
   // rows without a .gai (e.g. graphnosis-docs) are not part of the disk sweep.
   if (loadedGraphs.every((g) => g.loaded !== false)) return false;
@@ -17038,6 +17054,8 @@ function isEngramPreloadInProgress(): boolean {
 function markBootSweepCompleteIfCatalogReady(): void {
   if (_bootSweepComplete || loadedGraphs.length === 0) return;
   if (!loadedGraphs.every((g) => g.loaded !== false)) return;
+  const resident = loadedGraphs.filter((g) => g.loaded !== false).length;
+  if (_engramLoadProgress.total > 0 && resident < _engramLoadProgress.total) return;
   _bootSweepComplete = true;
   markEngramsLoaded();
 }
@@ -19985,6 +20003,50 @@ function scrollSkillsPaneToTop(): void {
   document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+// ── License token (Graphnosis Pro) ──────────────────────────────────────────
+//
+// Three paths can hand a token to the sidecar:
+//   1. graphnosis://claim?token=... deep link from the Stripe-side magic email.
+//   2. Status-poll against PUBLIC_BILLING_BASE_URL on every cortex unlock.
+//   3. Manual paste in Settings → License (the fallback path).
+//
+// All three converge on license:setToken (sidecar IPC). The sidecar
+// re-verifies the Ed25519 signature before encrypting the token at rest.
+//
+// Declared before bindAppContext (boot IIFE below) — TDZ if referenced first.
+
+// Inject the billing base URL at build time. Vite exposes import.meta.env;
+// when unset, we fall back to graphnosis.com (the primary domain — billing,
+// /upgrade, /api/stripe/webhook all live here) so production builds with no
+// .env still work against the canonical billing site.
+const BILLING_BASE_URL: string = (() => {
+  try {
+    const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+    const v = env?.['PUBLIC_BILLING_BASE_URL'];
+    if (v && v.trim().length > 0) return v.replace(/\/$/, '');
+  } catch { /* non-Vite host */ }
+  return 'https://graphnosis.com';
+})();
+
+const BILLING_EMAIL_KEY = 'billing:email';
+const BILLING_DOMAIN_EMAIL_KEY = 'billing:domainEmail';
+// Poll secret for the personal Stripe subscription — delivered via the claim
+// deep link. Required by the server-side email poll endpoint.
+const BILLING_POLL_KEY = 'billing:pollKey';
+// Poll secret for the domain seat subscription — returned by verifyOtp.
+// Kept separate so it never clobbers the Stripe pollSecret: both slots can
+// be active simultaneously when the user has a personal sub + a domain seat.
+const BILLING_DOMAIN_POLL_KEY = 'billing:domainPollKey';
+// Timestamp of the last successful background poll. Throttles the silent
+// unlock-time poll to once per 24 hours so the server never sends a
+// spurious OTP email on every cortex unlock.
+const BILLING_LAST_POLL_TS_KEY = 'billing:lastPollTs';
+// Set when the user explicitly clicks "Activate work email" and the server
+// returns otp_required. Cleared on verify, reset, or clearing the domain field.
+// Prevents treating an abandoned domain OTP attempt as a silent refresh target.
+const BILLING_DOMAIN_OTP_PENDING_KEY = 'billing:domainOtpPending';
+const BILLING_POLL_THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 h
+
 // Initial state: ask the backend whether we're already unlocked
 // (e.g., auto-unlock from keychain in a future iteration).
 void (async () => {
@@ -21204,48 +21266,6 @@ async function loadStudioSubscriptionState(): Promise<void> {
   } catch { /* non-fatal — Studio remains gated */ }
 }
 
-// ── License token (Graphnosis Pro) ──────────────────────────────────────────
-//
-// Three paths can hand a token to the sidecar:
-//   1. graphnosis://claim?token=... deep link from the Stripe-side magic email.
-//   2. Status-poll against PUBLIC_BILLING_BASE_URL on every cortex unlock.
-//   3. Manual paste in Settings → License (the fallback path).
-//
-// All three converge on license:setToken (sidecar IPC). The sidecar
-// re-verifies the Ed25519 signature before encrypting the token at rest.
-
-// Inject the billing base URL at build time. Vite exposes import.meta.env;
-// when unset, we fall back to graphnosis.com (the primary domain — billing,
-// /upgrade, /api/stripe/webhook all live here) so production builds with no
-// .env still work against the canonical billing site.
-const BILLING_BASE_URL: string = (() => {
-  try {
-    const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
-    const v = env?.['PUBLIC_BILLING_BASE_URL'];
-    if (v && v.trim().length > 0) return v.replace(/\/$/, '');
-  } catch { /* non-Vite host */ }
-  return 'https://graphnosis.com';
-})();
-
-const BILLING_EMAIL_KEY = 'billing:email';
-const BILLING_DOMAIN_EMAIL_KEY = 'billing:domainEmail';
-// Poll secret for the personal Stripe subscription — delivered via the claim
-// deep link. Required by the server-side email poll endpoint.
-const BILLING_POLL_KEY = 'billing:pollKey';
-// Poll secret for the domain seat subscription — returned by verifyOtp.
-// Kept separate so it never clobbers the Stripe pollSecret: both slots can
-// be active simultaneously when the user has a personal sub + a domain seat.
-const BILLING_DOMAIN_POLL_KEY = 'billing:domainPollKey';
-// Timestamp of the last successful background poll. Throttles the silent
-// unlock-time poll to once per 24 hours so the server never sends a
-// spurious OTP email on every cortex unlock.
-const BILLING_LAST_POLL_TS_KEY = 'billing:lastPollTs';
-// Set when the user explicitly clicks "Activate work email" and the server
-// returns otp_required. Cleared on verify, reset, or clearing the domain field.
-// Prevents treating an abandoned domain OTP attempt as a silent refresh target.
-const BILLING_DOMAIN_OTP_PENDING_KEY = 'billing:domainOtpPending';
-const BILLING_POLL_THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 h
-
 interface LicenseTokenEntry {
   source: 'personal' | 'domain';
   plan: string;
@@ -22417,7 +22437,16 @@ async function refreshFederatedStats(): Promise<void> {
     const active = data.graphs; // includes all resident engrams (archived included)
     const totalMemories = active.reduce((s, g) => s + g.totalNodes, 0);
     const totalSources = active.reduce((s, g) => s + g.sources, 0);
-    const catalogEngrams = loadedGraphs.filter((g) => g.loaded !== false).length;
+    let catalogEngrams = loadedGraphs.filter((g) => g.loaded !== false).length;
+    if (active.length > catalogEngrams) {
+      try {
+        loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
+        syncEngramPicker();
+        populateStudioEngramSelects();
+        catalogEngrams = loadedGraphs.filter((g) => g.loaded !== false).length;
+        markBootSweepCompleteIfCatalogReady();
+      } catch { /* non-fatal — render with best-known catalog */ }
+    }
     const engrams = Math.max(active.length, catalogEngrams);
     // Cache cortex-wide totals for the Home hero + refresh it if mounted.
     cortexStats = { memories: totalMemories, sources: totalSources, engrams };
