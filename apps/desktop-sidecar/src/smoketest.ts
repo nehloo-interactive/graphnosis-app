@@ -377,8 +377,12 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     ...(tailCheckpoint.maxSeq !== undefined ? { sinceSeq: tailCheckpoint.maxSeq } : {}),
     ...readTailOpts,
   });
-  if (tailEvents.length !== 10) {
-    throw new Error(`FAIL: readEventsSince expected 10 tail events, got ${tailEvents.length}`);
+  const tailSmokeEvents = tailEvents.filter(
+    (e) => e.target?.kind === 'source' && e.target.id === '__tail-smoke'
+      && (e.after as { phase?: string } | undefined)?.phase === 'tail',
+  );
+  if (tailSmokeEvents.length !== 10) {
+    throw new Error(`FAIL: readEventsSince expected 10 tail-smoke events, got ${tailSmokeEvents.length} (${tailEvents.length} total since checkpoint)`);
   }
   await mergedHost.unloadGraph('personal');
   await mergedHost.loadGraph('personal');
@@ -396,10 +400,14 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     ...(ckAfterLoad.maxSeq !== undefined ? { sinceSeq: ckAfterLoad.maxSeq } : {}),
     ...readTailOpts,
   });
-  if (tailAfterLoad.length !== 0) {
-    throw new Error(`FAIL: expected no tail events after loadGraph checkpoint, got ${tailAfterLoad.length}`);
+  const tailSmokeAfterLoad = tailAfterLoad.filter(
+    (e) => e.target?.kind === 'source' && e.target.id === '__tail-smoke'
+      && (e.after as { phase?: string } | undefined)?.phase === 'tail',
+  );
+  if (tailSmokeAfterLoad.length !== 0) {
+    throw new Error(`FAIL: expected no unconsumed tail-smoke events after loadGraph checkpoint, got ${tailSmokeAfterLoad.length} (${tailAfterLoad.length} total since checkpoint)`);
   }
-  log('oplog-tail-checkpoint.ok', { tailCount: tailEvents.length, checkpoint: ckAfterLoad, nodes: nodesAfterTailReconcile });
+  log('oplog-tail-checkpoint.ok', { tailCount: tailSmokeEvents.length, checkpoint: ckAfterLoad, nodes: nodesAfterTailReconcile });
 
   // --- boot deferred reconcile: nodes visible after flush (3D / list_nodes) ---
   log('boot-deferred-reconcile', {});
@@ -1029,6 +1037,71 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error('FAIL: MDM bundle shape');
   }
   log('catalog-entitlements.ok', { packageId: mdm.defaultSubscriptions[0] });
+
+  log('catalog-require-sso', {});
+  const ssoCatalogEntry = sanitizeEngramCatalogEntry({
+    id: 'cat-sso-1',
+    packageId: 'finance-sensitive',
+    displayName: 'Finance Sensitive',
+    kind: 'engram-package',
+    installMode: 'merge-copy',
+    requiredIdpGroups: [],
+    itControlled: true,
+    noReshare: true,
+    requireSsoSession: true,
+  });
+  if (!ssoCatalogEntry?.requireSsoSession) {
+    throw new Error('FAIL: requireSsoSession should sanitize to true');
+  }
+  const ssoDenied = checkCatalogInstallEntitlement(ssoCatalogEntry, [], { hasSsoSession: false });
+  if (ssoDenied.entitled || ssoDenied.reason !== 'sso_required') {
+    throw new Error(`FAIL: requireSsoSession package should block without SSO, got ${ssoDenied.reason}`);
+  }
+  const ssoAllowed = checkCatalogInstallEntitlement(ssoCatalogEntry, [], { hasSsoSession: true });
+  if (!ssoAllowed.entitled) {
+    throw new Error('FAIL: requireSsoSession package should allow with SSO session');
+  }
+  const { checkRecallSsoGate, SsoRecallRequiredError } = await import('./catalog-sso-gate.js');
+  if (!host.listGraphs().includes('finance-sensitive')) {
+    await host.createGraph('finance-sensitive');
+  }
+  await host.setGraphMetadata('finance-sensitive', {
+    template: 'compliance',
+    displayName: 'Finance Sensitive',
+    createdAt: Date.now(),
+    requireSsoSession: true,
+  });
+  const federatedGate = checkRecallSsoGate(host, {}, null);
+  if (!federatedGate.autoExceptGraphIds.includes('finance-sensitive')) {
+    throw new Error('FAIL: federated recall should auto-exclude SSO-gated engram without session');
+  }
+  const explicitGateOk = checkRecallSsoGate(host, { ssoSession: { role: 'editor' } }, ['finance-sensitive']);
+  if (explicitGateOk.autoExceptGraphIds.length !== 0) {
+    throw new Error('FAIL: SSO session should allow explicit recall into SSO-gated engram');
+  }
+  let explicitBlocked = false;
+  try {
+    checkRecallSsoGate(host, {}, ['finance-sensitive']);
+  } catch (e) {
+    explicitBlocked = e instanceof SsoRecallRequiredError;
+  }
+  if (!explicitBlocked) {
+    throw new Error('FAIL: explicit recall into SSO-gated engram should throw without session');
+  }
+  const { parseMdmCatalogBundleExtras, mergeMdmCatalogIntoSettings } = await import('@graphnosis-app/core/settings');
+  const mdmExtras = parseMdmCatalogBundleExtras({
+    catalogOverrides: {
+      'finance-sensitive': { requireSsoSession: true },
+    },
+  });
+  const mergedOverride = mergeMdmCatalogIntoSettings(
+    [{ ...catalogEntry!, packageId: 'finance-sensitive', id: 'cat-2' }],
+    mdmExtras,
+  );
+  if (!mergedOverride[0]?.requireSsoSession) {
+    throw new Error('FAIL: MDM catalogOverrides should set requireSsoSession');
+  }
+  log('catalog-require-sso.ok', {});
 
   log('catalog-sharepoint-map', {});
   const { sharePointRowToCatalogEntry, parseSharePointListUrl } = await import('./catalog-sharepoint.js');

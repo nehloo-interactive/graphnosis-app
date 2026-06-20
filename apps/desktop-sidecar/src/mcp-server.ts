@@ -30,6 +30,7 @@ import { SkillTrainer, type ExportFormat } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
 import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
 import { dispatchAuditMcpTool } from './mcp/handlers-audit.js';
+import { checkRecallSsoGate, SsoRecallRequiredError } from './catalog-sso-gate.js';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
 // These caps apply per MCP connection (i.e. per AI client session). They exist
@@ -781,6 +782,12 @@ export interface McpDeps {
   cortexDir?: string;
   /** Transport label for MCP audit rows. Defaults to stdio. */
   mcpTransport?: 'stdio' | 'socket' | 'http';
+  /** Present when the desktop session was unlocked via Enterprise SSO (not owner). */
+  ssoSession?: {
+    role: import('@graphnosis-app/core/settings').SharingRole;
+    email?: string;
+    subject?: string;
+  };
 }
 
 /** Single MCP tool result — matches the MCP SDK CallToolResult shape. */
@@ -2863,9 +2870,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query);
         const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
+        const { autoExceptGraphIds: ssoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         // Merge any auto-excluded engrams (e.g. un-consented sensitive
         // tier on a federated recall) with the AI-provided exceptions.
-        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds];
+        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
         const sub = await withEmbedding(() => deps.host.recall(args.query, {
           budget,
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
@@ -2972,7 +2980,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query);
         const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
-        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds];
+        const { autoExceptGraphIds: ssoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
+        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
         const sub = await withEmbedding(() => deps.host.digDeeper(args.query, {
           budget,
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
@@ -3565,8 +3574,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query);
         const { consentFooter: rsFooter, autoExceptGraphIds: rsAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
+        const { autoExceptGraphIds: rsSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
-        const rsExcept = new Set([...(except?.resolved ?? []), ...rsAutoExcept]);
+        const rsExcept = new Set([...(except?.resolved ?? []), ...rsAutoExcept, ...rsSsoExcept]);
         const scopedIds = only ? only.resolved : allIds.filter(id => !rsExcept.has(id));
         const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
         const nodes: unknown[] = [];
@@ -3625,8 +3635,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query);
         const { consentFooter: rwcFooter, autoExceptGraphIds: rwcAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
+        const { autoExceptGraphIds: rwcSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
-        const rwcExcept = new Set([...(except?.resolved ?? []), ...rwcAutoExcept]);
+        const rwcExcept = new Set([...(except?.resolved ?? []), ...rwcAutoExcept, ...rwcSsoExcept]);
         const scopedIds = only ? only.resolved : allIds.filter(id => !rwcExcept.has(id));
         const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
         const sections: string[] = [];
@@ -3848,6 +3859,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           );
         }
         const { consentFooter: rsrcFooter } = await checkConsentOrThrow([rec.graphId]);
+        checkRecallSsoGate(deps.host, deps, [rec.graphId]);
         const meta = deps.host.getGraphMetadata(rec.graphId);
         const now = Date.now();
         const nodeMap = new Map(
@@ -4856,6 +4868,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       // JSON-RPC -32603 that clients render as "Tool execution failed",
       // hiding the actual consent instructions the user needs.
       if (e instanceof ConsentRequiredError) return mcpError(e.message);
+      if (e instanceof SsoRecallRequiredError) return mcpError(e.message);
       if (e instanceof ScopeViolationError) return mcpError(e.message);
       throw e;
     }

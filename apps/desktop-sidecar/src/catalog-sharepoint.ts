@@ -19,6 +19,7 @@
  * | ITControlled        | itControlled             | Yes/true/1 → true |
  * | NoReshare           | noReshare                | Yes/true/1 → true |
  * | Published           | published                | No/false/0 → draft; default true |
+ * | RequireSsoSession   | requireSsoSession        | Yes/true/1 → SSO unlock required |
  */
 
 import type { EngramCatalogEntry } from '@graphnosis-app/core/settings';
@@ -142,6 +143,9 @@ export function sharePointRowToCatalogEntry(
       && String(fieldValue(fields, 'MDMBundleId', 'mdmBundleId')).trim()
       ? { mdmBundleId: String(fieldValue(fields, 'MDMBundleId', 'mdmBundleId')).trim() }
       : {}),
+    ...(parseBoolField(fieldValue(fields, 'RequireSsoSession', 'requireSsoSession'), false)
+      ? { requireSsoSession: true }
+      : {}),
   });
 }
 
@@ -161,7 +165,7 @@ export async function fetchSharePointCatalogEntries(
     };
   }
 
-  const apiUrl = `${target.siteUrl}/_api/web/lists/getbytitle('${target.listTitle.replace(/'/g, "''")}')/items?$select=Id,Title,PackageId,Description,Region,Kind,InstallMode,SourceEngramId,HubRef,RequiredGroups,MDMBundleId,ITControlled,NoReshare,Published&$top=500`;
+  const apiUrl = `${target.siteUrl}/_api/web/lists/getbytitle('${target.listTitle.replace(/'/g, "''")}')/items?$select=Id,Title,PackageId,Description,Region,Kind,InstallMode,SourceEngramId,HubRef,RequiredGroups,MDMBundleId,ITControlled,NoReshare,Published,RequireSsoSession&$top=500`;
   const headers: Record<string, string> = {
     Accept: 'application/json;odata=nometadata',
   };
