@@ -2083,6 +2083,7 @@ export class GraphnosisHost {
     const hmacKey = this.key;
     let handle!: GraphHandle;
     let usedTinyLkgRestore = false;
+    let loadedGaiBytes = 0;
 
     // Auto-restore: empty .gai shell + substantial .lkg (writings-qtb9 pattern).
     const gaiPath = this.graphPath(graphId);
@@ -2091,6 +2092,7 @@ export class GraphnosisHost {
     let lkgSize = 0;
     try { gaiSize = (await fs.stat(gaiPath)).size; } catch { /* missing → legacy path below */ }
     try { lkgSize = (await fs.stat(lkgPath)).size; } catch { /* no .lkg */ }
+    loadedGaiBytes = gaiSize;
     if (gaiSize > 0 && gaiSize < EMPTY_SAVE_BLOCK_MIN_BYTES && lkgSize > EMPTY_SAVE_BLOCK_MIN_BYTES) {
       const restored = await this.tryRestoreTinyGaiFromLkg(graphId, hmacKey, gaiSize, lkgSize);
       if (restored) {
@@ -2106,10 +2108,12 @@ export class GraphnosisHost {
     let bytes: Buffer;
     try {
       bytes = await fs.readFile(this.graphPath(graphId));
+      loadedGaiBytes = bytes.length;
     } catch (e) {
       const err = e as NodeJS.ErrnoException;
       if (err.code !== 'ENOENT') throw err;
       bytes = await fs.readFile(this.legacyGraphPath(graphId));
+      loadedGaiBytes = bytes.length;
       console.error(`[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`);
     }
     const tDecrypt0 = Date.now();
@@ -2161,7 +2165,7 @@ export class GraphnosisHost {
         // cache. Deleting it is safe: it's derived data, always rebuildable.
         try { await fs.unlink(this.cachePath(graphId)); } catch { /* already gone */ }
         await this.appendRecoveryLog({
-          event: 'quarantined', graphId, error: msg, sizeBytes: bytes!.length,
+          event: 'quarantined', graphId, error: msg, sizeBytes: loadedGaiBytes,
           quarantinedAs: path.basename(quarantinedGai), lkgFallback: 'unavailable',
         });
         console.error(
@@ -2208,8 +2212,6 @@ export class GraphnosisHost {
     // a write. The cache object reference is shared with the background task
     // below, so once cache.load() completes, lookups in cached() start
     // returning hits without any further coordination.
-    const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null, reconcileBuilding: null };
     this.graphs.set(graphId, entry);
     this.everLoaded.add(graphId); // mark available even after a future LRU evict
     this.touchGraph(graphId); // boot-loaded engrams must not look idle to LRU
@@ -2219,15 +2221,15 @@ export class GraphnosisHost {
     console.error(
       `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: decrypt=${tDecrypt}ms fromBuffer=${tFromBuffer}ms bundle=${tBundle}ms earlyCommit=${tEarlyCommit}ms nodes=${committedNodes}`,
     );
-    if (committedNodes === 0 && bytes!.length > 256) {
+    if (committedNodes === 0 && loadedGaiBytes > 256) {
       const bundleSources = sourceIndex.list().length;
       if (bundleSources > 0) {
         console.error(
-          `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${bytes!.length}B .gai with ${bundleSources} bundle source(s) — check oplog reconcile`,
+          `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${loadedGaiBytes}B .gai with ${bundleSources} bundle source(s) — check oplog reconcile`,
         );
-      } else if (bytes!.length > 2048) {
+      } else if (loadedGaiBytes > 2048) {
         console.error(
-          `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${bytes!.length}B .gai — engram will appear empty until recovery`,
+          `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${loadedGaiBytes}B .gai — engram will appear empty until recovery`,
         );
       }
       // Small empty shells (~450B template engrams, never ingested) are expected — no warning.
@@ -2804,7 +2806,7 @@ export class GraphnosisHost {
     kind: SourceRecord['kind'],
     ref: string,
     input: AppendDocumentInput,
-    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean; skipSave?: boolean },
+    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean; skipSave?: boolean; skipOplogEmit?: boolean },
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
@@ -2892,19 +2894,21 @@ export class GraphnosisHost {
     }
 
     const trigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
-    this.oplogWriter.emit({
-      graphId,
-      op: 'ingestSource',
-      target: { kind: 'source', id: sourceId },
-      after: { ...record, ...trigAttr },
-    });
-    for (const nodeId of result.newNodeIds) {
+    if (!opts?.skipOplogEmit) {
       this.oplogWriter.emit({
         graphId,
-        op: 'addNode',
-        target: { kind: 'node', id: nodeId },
-        after: { sourceId, ...trigAttr },
+        op: 'ingestSource',
+        target: { kind: 'source', id: sourceId },
+        after: { ...record, ...trigAttr },
       });
+      for (const nodeId of result.newNodeIds) {
+        this.oplogWriter.emit({
+          graphId,
+          op: 'addNode',
+          target: { kind: 'node', id: nodeId },
+          after: { sourceId, ...trigAttr },
+        });
+      }
     }
 
     // Content cache — respect user settings + per-source size cap. Failures
@@ -6138,17 +6142,6 @@ export class GraphnosisHost {
       dirty = true;
     }
     return dirty;
-  }
-
-  /** Enterprise MCP audit export — encrypted at rest in mcp-audit.enc. */
-  async listMcpAuditEvents(): Promise<import('./mcp-audit.js').McpAuditEvent[]> {
-    const { listMcpAuditEvents } = await import('./mcp-audit.js');
-    return listMcpAuditEvents(this.opts.cortexDir, this.key);
-  }
-
-  async appendMcpAuditEvent(partial: Omit<import('./mcp-audit.js').McpAuditEvent, 'id' | 'ts'>): Promise<void> {
-    const { appendMcpAuditEvent } = await import('./mcp-audit.js');
-    await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
   }
 
   // ── Recovery ────────────────────────────────────────────────────────────
