@@ -127,8 +127,19 @@ function loadEnv(): CliEnv {
 // (Revisit lazy-boot only once we're off Bun's allocator — then it saves real RAM.)
 const LAZY_BOOT = false;
 
-const require = createRequire(import.meta.url);
-const SIDECAR_VERSION: string = require('../package.json').version as string;
+/** App semver for docs-ingest version checks. Bun --compile has no package.json on disk. */
+function resolveSidecarVersion(): string {
+  const fromEnv = process.env['GRAPHNOSIS_APP_VERSION']?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const req = createRequire(import.meta.url);
+    return (req('../package.json') as { version: string }).version;
+  } catch {
+    return '0.0.0-dev';
+  }
+}
+
+const SIDECAR_VERSION: string = resolveSidecarVersion();
 
 async function loadAllGraphsFromDisk(
   host: GraphnosisHost,
@@ -832,6 +843,8 @@ async function main(): Promise<void> {
   // Falls back to the catalog default when no model has been explicitly configured.
   const llm: LocalLlm = new DynamicOllamaLlm(
     () => host.getSettings().ai?.llmModel ?? defaultModelTag,
+    undefined,
+    () => settingsMod.resolveLlmTemperature(host.getSettings()),
   );
 
   const pendingDiffs = new Map<string, { graphId: string; diff: CorrectionDiff; createdAt: number }>();
