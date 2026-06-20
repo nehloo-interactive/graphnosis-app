@@ -262,7 +262,7 @@ function activityHourMinutes(val: string): number | null {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
-function applyActivityFilter(): void {
+export function applyActivityFilter(): void {
   const engram = els.activityEngramSelect.value;
   // Actor is filtered server-side (refetch on change) — not here.
   const query = els.activitySearch.value.trim().toLowerCase();
