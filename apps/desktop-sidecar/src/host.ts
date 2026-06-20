@@ -5233,6 +5233,19 @@ export class GraphnosisHost {
     return this._oplogReadPromise;
   }
 
+
+  async listMcpAuditEvents(): Promise<import('./mcp-audit.js').McpAuditEvent[]> {
+    const { listMcpAuditEvents } = await import('./mcp-audit.js');
+    return listMcpAuditEvents(this.opts.cortexDir, this.key);
+  }
+
+  async appendMcpAuditEvent(
+    partial: Omit<import('./mcp-audit.js').McpAuditEvent, 'id' | 'ts'>,
+  ): Promise<void> {
+    const { appendMcpAuditEvent } = await import('./mcp-audit.js');
+    await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
+  }
+
   /** Expire the op-log read cache so the next listOplogEvents() re-reads from disk.
    *  Call after writing a new op-log entry (correction, remember, forget) to ensure
    *  vitality and corrections counts reflect the change within 60 s. */
