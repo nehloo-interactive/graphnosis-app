@@ -804,6 +804,7 @@ export class SkillTrainer {
         .filter((s) => baseSkillName(s.ref) === baseName)
         .sort((a, b) => b.ingestedAt - a.ingestedAt);
       const existingSource = matchingSkills[0];
+      let inPlaceRenameRef: string | undefined;
 
       // Snapshot + clear before in-place mutation.
       if (existingSource) {
@@ -834,6 +835,7 @@ export class SkillTrainer {
         }
         const snapshotTs = Date.now();
         const snapshotId = SkillSnapshotStore.idFromTs(snapshotTs);
+        inPlaceRenameRef = `skill:${snapshotTs}:${baseName}`;
         await this.host.skillSnapshots.append(graphId, {
           snapshotId,
           ts: snapshotTs,
@@ -865,14 +867,10 @@ export class SkillTrainer {
           reason: 'pre-retrain clear (snapshot saved)',
         });
 
-        // Update source.ref to carry the new "(trained YYYY-MM-DD)" suffix
-        // so the Sources panel and `listSources` show the freshest train date.
-        const newRef = `skill:${snapshotTs}:${baseName}`;
-        await this.host.renameSource(graphId, existingSource.sourceId, newRef, {
-          triggeredBy: 'mcp:train_skill:in-place',
-        });
-
         skillId = existingSource.sourceId;
+        // Rename AFTER inserts succeed — renaming before insertNodeAt left
+        // hollow sources (TRAINED label, zero nodes) when an insert failed
+        // after clearSourceNodes (SDK dedup / appendText edge cases).
       } else {
         // First-time train for this skill name → create a fresh source.
         // ingestClip seeds the source with the metadata comment as the first
@@ -937,6 +935,12 @@ export class SkillTrainer {
         for (const text of recalledParagraphs) {
           await insertAtEnd(text, 'recalled-memory');
         }
+      }
+
+      if (inPlaceRenameRef && skillId) {
+        await this.host.renameSource(graphId, skillId, inPlaceRenameRef, {
+          triggeredBy: 'mcp:train_skill:in-place',
+        });
       }
 
       this.host.triggerRelink(graphId);
@@ -1157,6 +1161,66 @@ export class SkillTrainer {
 
 
   // ── Skill management ──────────────────────────────────────────────────────
+
+  /**
+   * When an in-place retrain clears a source then fails mid-insert, the
+   * source survives with zero live nodes but a fresh "(trained …)" ref.
+   * Re-play the newest snapshot that still has node content so getSkill /
+   * listNodes / export can serve the skill again without a manual retrain.
+   */
+  async repairHollowSkillSource(graphId: string, sourceId: string): Promise<boolean> {
+    const sources = this.host.listSources(graphId);
+    const src = sources.find((s) => s.sourceId === sourceId && s.kind === 'skill');
+    if (!src) return false;
+
+    const now = Date.now();
+    const wantedIds = new Set(src.nodeIds);
+    let hasLiveContent = false;
+    for (const n of this.host.listNodes(graphId)) {
+      if (!wantedIds.has(n.id)) continue;
+      if (n.confidence <= 0.2) continue;
+      if (n.validUntil !== undefined && n.validUntil <= now) continue;
+      const content = this.host.getFullNodeContent(graphId, n.id) ?? '';
+      if (content) {
+        hasLiveContent = true;
+        break;
+      }
+    }
+    if (hasLiveContent) return false;
+
+    const summaries = await this.host.skillSnapshots.list(graphId, sourceId);
+    const donorSummary = summaries.find((s) => s.nodeCount > 0);
+    if (!donorSummary) return false;
+
+    const snapshot = await this.host.skillSnapshots.read(graphId, sourceId, donorSummary.snapshotId);
+    if (!snapshot || snapshot.nodes.length === 0) return false;
+
+    if (src.nodeIds.length > 0) {
+      await this.host.clearSourceNodes(graphId, sourceId, {
+        triggeredBy: 'skill:repair-hollow',
+        reason: 'hollow skill — restoring from snapshot',
+      });
+    }
+
+    for (const node of snapshot.nodes) {
+      const len = this.host.getSourceRecord(graphId, sourceId)?.nodeIds.length ?? 0;
+      await this.host.insertNodeAt(graphId, sourceId, len, node.content, {
+        skipRelink: true,
+        ...(node.role !== undefined ? { role: node.role } : {}),
+        triggeredBy: 'skill:repair-hollow',
+      });
+    }
+
+    this.host.triggerRelink(graphId);
+    await linkSkillSequence(this.host, graphId, sourceId);
+    await linkSkillGoals(this.host, graphId, sourceId);
+    await linkSkillLoopsAndBranches(this.host, graphId, sourceId);
+    await linkSkillContextEdges(this.host, graphId, sourceId);
+    await linkSkillCalls(this.host, graphId, sourceId, graphId);
+    await linkCrossEngramCalls(this.host, this.host.skillCallLinks, graphId, sourceId, skillEngramIds(this.host));
+    await refreshIncomingCallsToSkill(this.host, graphId, sourceId);
+    return true;
+  }
 
   listSkills(graphId?: string): SkillListEntry[] {
     const graphIds = graphId ? [graphId] : this.host.listGraphs();

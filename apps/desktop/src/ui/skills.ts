@@ -356,6 +356,10 @@ let skillsOutputView: 'output' | 'diff' = 'output';
 // Set while a skill-card DOM drag is in progress — prevents the Tauri
 // file-drop overlay from showing when the user reorders Trained Output blocks.
 let isSkillCardDragging = false;
+// Bumped on every paintSkillsReview — stale paintTrainedOutputSourceDriven
+// completions (slow listNodes, double open after train) must not overwrite
+// the panel once a newer skill is selected.
+let skillsTrainedOutputGen = 0;
 
 // Identifies goal/constraint nodes by text prefix. Kept in sync with the
 // sidecar's GOAL_NODE_RE in skill-trainer.ts.
@@ -1422,8 +1426,19 @@ function paintTrainedOutputPlain(el: HTMLElement, text: string, skillId?: string
   if (app().presActive()) app().applyPresentationMasking();
 }
 
-function trainedOutputPlainFallback(el: HTMLElement, skillId: string, graphId: string): boolean {
-  const raw = skillsActiveResult?.trained?.trim() ?? '';
+function isStaleTrainedOutputRender(gen?: number): boolean {
+  return gen !== undefined && gen !== skillsTrainedOutputGen;
+}
+
+function trainedOutputPlainFallback(
+  el: HTMLElement,
+  skillId: string,
+  graphId: string,
+  trainedFallback: string,
+  gen?: number,
+): boolean {
+  if (isStaleTrainedOutputRender(gen)) return true;
+  const raw = trainedFallback.trim();
   if (!raw) return false;
   const stripped = stripSkillMetadataHeader(raw);
   const text = stripped || raw;
@@ -1431,11 +1446,34 @@ function trainedOutputPlainFallback(el: HTMLElement, skillId: string, graphId: s
   return true;
 }
 
+async function fetchTrainedExportFallback(graphId: string, skillId: string): Promise<string> {
+  try {
+    const exported = await ipcCall<string | { ok?: boolean }>('skill:export', {
+      graphId,
+      sourceId: skillId,
+      format: 'raw',
+    });
+    return typeof exported === 'string' ? exported.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function rerenderTrainedOutputSourceDriven(el: HTMLElement, skillId: string, graphId: string): void {
+  void paintTrainedOutputSourceDriven(el, skillId, graphId, {
+    trainedFallback: skillsActiveResult?.trained ?? '',
+    gen: skillsTrainedOutputGen,
+  });
+}
+
 async function paintTrainedOutputSourceDriven(
   el: HTMLElement,
   skillId: string,
   graphId: string,
+  opts: { trainedFallback?: string; gen?: number } = {},
 ): Promise<void> {
+  const gen = opts.gen;
+  const trainedFallback = opts.trainedFallback ?? skillsActiveResult?.trained ?? '';
   type ListNodesResult = { ok: boolean; nodes: Array<{ id: string; content: string; role?: string }> };
   let result: ListNodesResult | null = null;
   try {
@@ -1444,12 +1482,14 @@ async function paintTrainedOutputSourceDriven(
     // row just loaded.
     result = await ipcCall<ListNodesResult>('source.listNodes', { graphId, sourceId: skillId });
   } catch (e) {
-    if (trainedOutputPlainFallback(el, skillId, graphId)) return;
+    if (isStaleTrainedOutputRender(gen)) return;
+    if (trainedOutputPlainFallback(el, skillId, graphId, trainedFallback, gen)) return;
     el.textContent = `Could not load skill chunks: ${(e as Error).message}`;
     return;
   }
+  if (isStaleTrainedOutputRender(gen)) return;
   if (!result?.ok) {
-    if (trainedOutputPlainFallback(el, skillId, graphId)) return;
+    if (trainedOutputPlainFallback(el, skillId, graphId, trainedFallback, gen)) return;
     el.textContent = 'Could not load skill chunks.';
     return;
   }
@@ -1465,7 +1505,15 @@ async function paintTrainedOutputSourceDriven(
   });
 
   if (visible.length === 0) {
-    if (trainedOutputPlainFallback(el, skillId, graphId)) return;
+    if (trainedOutputPlainFallback(el, skillId, graphId, trainedFallback, gen)) return;
+    // skill:get runs hollow-source repair — re-fetch when the caller's
+    // trainedFallback is empty (interrupted in-place retrain left 0 nodes).
+    if (!trainedFallback.trim()) {
+      try {
+        const detail = await ipcCall<{ text?: string } | null>('skill:get', { graphId, sourceId: skillId });
+        if (detail?.text?.trim() && trainedOutputPlainFallback(el, skillId, graphId, detail.text, gen)) return;
+      } catch { /* fall through */ }
+    }
     // Last resort: join any non-metadata node text (includes title-only skills).
     const joined = result.nodes
       .filter((n) => (n.role ?? '') !== 'metadata' && !n.content.trim().startsWith('<!--'))
@@ -1473,10 +1521,19 @@ async function paintTrainedOutputSourceDriven(
       .filter(Boolean)
       .join('\n\n');
     if (joined) {
+      if (isStaleTrainedOutputRender(gen)) return;
       paintTrainedOutputPlain(el, joined, skillId, graphId);
       return;
     }
-    el.textContent = 'No trained content found for this skill.';
+    const exported = await fetchTrainedExportFallback(graphId, skillId);
+    if (isStaleTrainedOutputRender(gen)) return;
+    if (exported) {
+      const text = stripSkillMetadataHeader(exported) || exported;
+      paintTrainedOutputPlain(el, text, skillId, graphId);
+      return;
+    }
+    el.textContent =
+      'No trained content found for this skill. Training may have been interrupted — use Retrain to rebuild it.';
     return;
   }
 
@@ -1502,6 +1559,7 @@ async function paintTrainedOutputSourceDriven(
     parts.push(renderCardHtml(node, i, label, isGoal));
     parts.push(renderInsertSlotHtml(i + 1, node.id));
   }
+  if (isStaleTrainedOutputRender(gen)) return;
   el.innerHTML = parts.join('');
   // Presentation Mode: redact this skill's trained output (and its title)
   // unless the skill is allowlisted (or its engram is). Tagging the container
@@ -1621,7 +1679,7 @@ function bindCardInteractions(root: HTMLElement, skillId: string, graphId: strin
       } catch (e) {
         console.warn('[skills] source_remove_node failed:', e);
         // Re-render to recover (cheap, single IPC).
-        void paintTrainedOutputSourceDriven(root, skillId, graphId);
+        rerenderTrainedOutputSourceDriven(root, skillId, graphId);
       }
     });
   });
@@ -1691,7 +1749,7 @@ function bindCardInteractions(root: HTMLElement, skillId: string, graphId: strin
         try {
           await invoke('source_reorder_nodes', { graphId, sourceId: skillId, newOrder });
         } catch {
-          void paintTrainedOutputSourceDriven(root, skillId, graphId);
+          rerenderTrainedOutputSourceDriven(root, skillId, graphId);
         }
       };
 
@@ -1814,10 +1872,10 @@ function bindCardInteractions(root: HTMLElement, skillId: string, graphId: strin
             content,
           });
           if (!res?.ok) throw new Error('insert failed');
-          void paintTrainedOutputSourceDriven(root, skillId, graphId);
+          rerenderTrainedOutputSourceDriven(root, skillId, graphId);
         } catch (e) {
           console.warn('[skills] source_insert_node failed:', e);
-          void paintTrainedOutputSourceDriven(root, skillId, graphId);
+          rerenderTrainedOutputSourceDriven(root, skillId, graphId);
         }
       };
       // Wire the green-check Save button. Same mousedown.preventDefault
@@ -1955,6 +2013,7 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
   baselineText?: string;
   baselineLabel?: string;
 } = {}): void {
+  const trainedOutputGen = ++skillsTrainedOutputGen;
   skillsActiveResult = {
     trained: result.trained,
     ...(result.diffNotes !== undefined ? { diffNotes: result.diffNotes } : {}),
@@ -1999,7 +2058,10 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
     const sourceForRender = result.skillId ?? opts.sourceId;
     const graphForRender = opts.graphId;
     if (sourceForRender && graphForRender) {
-      void paintTrainedOutputSourceDriven(out, sourceForRender, graphForRender);
+      void paintTrainedOutputSourceDriven(out, sourceForRender, graphForRender, {
+        trainedFallback: result.trained,
+        gen: trainedOutputGen,
+      });
     } else {
       paintTrainedOutput(out, result.trained, result.mode ?? '', result.influentialNodes ?? []);
     }
@@ -2404,7 +2466,11 @@ async function openSkillInTrainer(
   // never changes the current tab on its own, so the user stays in the
   // Skills view.
   if (graphId && app().getAtlasActiveGraph() !== graphId) {
-    void app().switchActiveEngram(graphId).catch((e) => console.warn('[skills] switchActiveEngram failed', e));
+    try {
+      await app().switchActiveEngram(graphId);
+    } catch (e) {
+      console.warn('[skills] switchActiveEngram failed', e);
+    }
   }
   // Clear the 🆕 notification when the user actually opens the skill —
   // this is the "acknowledge" moment for `notify` autonomy.
@@ -3083,10 +3149,12 @@ async function runSkillTraining(): Promise<void> {
     if (params.save && result.skillId) {
       await fetchSkillsLibrary();
       renderSkillsLibrary();
+      skillsActiveSourceId = result.skillId;
       skillsVitalityCache.delete(result.skillId);
       void warmVitalityCache();
-      // Open in review mode (no opts) to show the freshly stored trained text.
-      void openSkillInTrainer(result.skillId, params.graphId);
+      // Review panel already painted from `result` above — do not re-open via
+      // skill:get here; a second listNodes pass can race the sidecar flush and
+      // overwrite Trained Output with "No trained content found".
     } else if (params.save) {
       await fetchSkillsLibrary();
       renderSkillsLibrary();
@@ -3203,11 +3271,11 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
         });
         if (saved?.ok && saved.skillId) {
           savedSkillId = saved.skillId;
+          skillsActiveSourceId = saved.skillId;
           await fetchSkillsLibrary();
           renderSkillsLibrary();
           if (savedSkillId) skillsVitalityCache.delete(savedSkillId);
           void warmVitalityCache();
-          void openSkillInTrainer(saved.skillId, params.graphId);
         }
       } catch (e) {
         console.warn('[skills] skill:saveFallback failed', e);
