@@ -12,6 +12,8 @@ export function initGhampus(): void {
   wireGhampusChat();
   wireGhampusControls();
   wireSkillMaintenanceSettings();
+  wireProactiveSettings();
+  wireSavingsBaselineSettings();
 }
 
 export function isGhampusEnabled(): boolean { return ghampusEnabled; }
@@ -47,12 +49,73 @@ export async function refreshGhampusState(): Promise<void> {
       enabled: boolean;
       plan: 'free' | 'pro' | 'teams' | 'enterprise';
       skillMaintenance?: { enabled: boolean; idleOnly: boolean };
+      proactive?: { startupDelayMs: number };
     }>('agent:status', {});
     ghampusEnabled = s.enabled;
     ghampusPlan = s.plan;
     updateGhampusVisibility();
     paintSkillMaintenanceSettings(s.skillMaintenance);
+    paintProactiveSettings(s.proactive);
   } catch { /* non-fatal — keep last known state */ }
+}
+
+function paintProactiveSettings(proactive?: { startupDelayMs: number }): void {
+  const minEl = document.getElementById('ghampus-proactive-startup-delay-min') as HTMLInputElement | null;
+  if (minEl && proactive) {
+    minEl.value = String(Math.round(proactive.startupDelayMs / 60_000));
+  }
+}
+
+export function wireProactiveSettings(): void {
+  const minEl = document.getElementById('ghampus-proactive-startup-delay-min') as HTMLInputElement | null;
+  const saveBtn = document.getElementById('btn-ghampus-proactive-delay-save');
+  saveBtn?.addEventListener('click', () => {
+    const mins = Math.max(0, parseInt(minEl?.value ?? '5', 10) || 0);
+    void ipcCall('agent:setProactive', { startupDelayMs: mins * 60_000 }).catch(() => {});
+  });
+}
+
+const SAVINGS_BASELINE_PRESETS: Record<string, { modelDisplayName: string; inputUsdPer1M: number; outputUsdPer1M: number }> = {
+  sonnet: { modelDisplayName: 'Claude Sonnet 4.6 baseline', inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
+  gpt4o: { modelDisplayName: 'GPT-4o baseline', inputUsdPer1M: 2.5, outputUsdPer1M: 10.0 },
+  opus: { modelDisplayName: 'Claude Opus 4.6 baseline', inputUsdPer1M: 15.0, outputUsdPer1M: 75.0 },
+  haiku: { modelDisplayName: 'Claude Haiku 4.5 baseline', inputUsdPer1M: 0.8, outputUsdPer1M: 4.0 },
+};
+
+function savingsBaselinePresetKey(b: { modelDisplayName: string; inputUsdPer1M: number; outputUsdPer1M: number }): string {
+  for (const [key, preset] of Object.entries(SAVINGS_BASELINE_PRESETS)) {
+    if (preset.modelDisplayName === b.modelDisplayName
+      && preset.inputUsdPer1M === b.inputUsdPer1M
+      && preset.outputUsdPer1M === b.outputUsdPer1M) return key;
+  }
+  return 'sonnet';
+}
+
+function paintSavingsBaselineSettings(baseline?: { modelDisplayName: string; inputUsdPer1M: number; outputUsdPer1M: number } | null): void {
+  const select = document.getElementById('models-savings-baseline') as HTMLSelectElement | null;
+  const label = document.getElementById('models-savings-baseline-label');
+  const b = baseline ?? SAVINGS_BASELINE_PRESETS.sonnet;
+  if (select) select.value = savingsBaselinePresetKey(b);
+  if (label) {
+    label.textContent = `Active: ${b.modelDisplayName} ($${b.inputUsdPer1M}/M in · $${b.outputUsdPer1M}/M out)`;
+  }
+}
+
+export function wireSavingsBaselineSettings(): void {
+  const select = document.getElementById('models-savings-baseline') as HTMLSelectElement | null;
+  const saveBtn = document.getElementById('btn-models-save-savings-baseline');
+  saveBtn?.addEventListener('click', () => {
+    const key = select?.value ?? 'sonnet';
+    const preset = SAVINGS_BASELINE_PRESETS[key] ?? SAVINGS_BASELINE_PRESETS.sonnet;
+    void (async () => {
+      try {
+        await ipcCall('models:setSavingsBaseline', { savingsBaseline: preset });
+        paintSavingsBaselineSettings(preset);
+      } catch (e) {
+        await gAlert('Could not save savings baseline', e instanceof Error ? e.message : String(e));
+      }
+    })();
+  });
 }
 
 function paintSkillMaintenanceSettings(sm?: { enabled: boolean; idleOnly: boolean }): void {
@@ -100,6 +163,10 @@ interface ProviderRow {
   adminLocked?: boolean;
   poolSpentUsd?: number;
   needsKey?: boolean;
+  /** Loopback server reachability for local providers (ollama, mlx, vllm). */
+  reachable?: boolean;
+  /** Custom base URL override for OpenAI-compatible local providers. */
+  baseUrl?: string;
 }
 
 interface ModelsCatalogResponse {
@@ -110,6 +177,7 @@ interface ModelsCatalogResponse {
   strategy: 'adaptive' | 'local-only' | 'always-best';
   monthlyBudgetUsd: number | null;
   spentThisCycleUsd: number;
+  savingsBaseline?: { modelDisplayName: string; inputUsdPer1M: number; outputUsdPer1M: number };
 }
 
 async function promptProviderApiKey(provider: ProviderRow): Promise<void> {
@@ -153,6 +221,7 @@ export async function refreshModelsPanel(): Promise<void> {
         ? `spent: $${data.spentThisCycleUsd.toFixed(2)} of $${data.monthlyBudgetUsd.toFixed(2)} this cycle`
         : `spent: $${data.spentThisCycleUsd.toFixed(2)} this cycle · no cap`;
     }
+    paintSavingsBaselineSettings(data.savingsBaseline ?? null);
     const saveBtn = document.getElementById('btn-models-save-budget');
     if (saveBtn) {
       saveBtn.onclick = () => {
@@ -173,6 +242,16 @@ export async function refreshModelsPanel(): Promise<void> {
       list.innerHTML = data.providers.map((p) => {
         const lockBadge = p.adminLocked ? '<span style="font-size: 11px; background: #fee2e2; color: #991b1b; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">🔒 admin</span>' : '';
         const localBadge = p.local ? '<span style="font-size: 11px; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">local · free</span>' : '';
+        const reachBadge = p.local && p.reachable !== undefined
+          ? (p.reachable
+            ? '<span style="font-size: 11px; background: #dbeafe; color: #1e40af; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">reachable</span>'
+            : '<span style="font-size: 11px; background: #f3f4f6; color: #6b7280; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">offline</span>')
+          : '';
+        const baseUrlHint = p.baseUrl
+          ? `<span class="subtitle" style="font-size: 11px;">${escapeHtml(p.baseUrl)}</span>`
+          : (p.id === 'mlx' || p.id === 'vllm')
+            ? `<span class="subtitle" style="font-size: 11px;">default loopback</span>`
+            : '';
         const needsKeyBadge = p.needsKey && !p.hasKey
           ? '<span style="font-size: 11px; background: #fef3c7; color: #92400e; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">needs key</span>'
           : '';
@@ -188,9 +267,10 @@ export async function refreshModelsPanel(): Promise<void> {
         return `<li style="display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border, rgba(0,0,0,.06));">
           <label style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: ${toggleDisabled ? 'not-allowed' : 'pointer'};">
             <input type="checkbox" ${p.enabled && !toggleDisabled ? 'checked' : ''} ${toggleDisabled ? 'disabled' : ''} data-provider-toggle="${escapeHtml(p.id)}">
-            <span><strong>${escapeHtml(p.displayName)}</strong>${lockBadge}${localBadge}${needsKeyBadge}</span>
+            <span><strong>${escapeHtml(p.displayName)}</strong>${lockBadge}${localBadge}${reachBadge}${needsKeyBadge}</span>
           </label>
           <span class="subtitle" style="font-size: 12px;">${escapeHtml(p.tagline)}</span>
+          ${baseUrlHint}
           <span class="subtitle" style="font-size: 11px;">${modelCount} model${modelCount === 1 ? '' : 's'}</span>
           ${keyChip}
           ${keyBtn}
@@ -649,6 +729,8 @@ export async function refreshGhampusSavings(): Promise<void> {
       windowDays: number;
       totalEvents: number;
       totalSavedUsd: number;
+      baselineModel?: string;
+      weekly?: Array<{ weekStartMs: number; eventCount: number; savedUsd: number }>;
       byKind: {
         'recall-only': { events: number; savedUsd: number };
         routing: { events: number; savedUsd: number };
@@ -662,6 +744,27 @@ export async function refreshGhampusSavings(): Promise<void> {
     if (total) total.textContent = `$${res.totalSavedUsd.toFixed(2)}`;
     if (recall) recall.textContent = String(res.byKind['recall-only'].events);
     if (routing) routing.textContent = String(res.byKind.routing.events);
+
+    const sparkEl = document.getElementById('ghampus-savings-sparkline');
+    if (sparkEl) {
+      const weeks = (res.weekly ?? []).slice(0, 8).reverse();
+      if (weeks.length === 0 || res.totalEvents === 0) {
+        sparkEl.classList.add('hidden');
+        sparkEl.innerHTML = '';
+      } else {
+        const max = Math.max(...weeks.map((w) => w.savedUsd), 0.001);
+        const bars = weeks.map((w) => {
+          const pctH = w.savedUsd > 0 ? Math.max(8, Math.round((w.savedUsd / max) * 100)) : 2;
+          const label = new Date(w.weekStartMs).toLocaleDateString([], { month: 'short', day: 'numeric' });
+          return `<span class="home-spark-bar${w.savedUsd > 0 ? '' : ' empty'}" style="height:${pctH}%" title="${label}: $${w.savedUsd.toFixed(2)}"></span>`;
+        }).join('');
+        sparkEl.innerHTML = bars;
+        sparkEl.classList.remove('hidden');
+        if (res.baselineModel) {
+          sparkEl.setAttribute('title', `Weekly savings vs ${res.baselineModel}`);
+        }
+      }
+    }
   } catch { /* non-fatal */ }
 }
 
@@ -710,6 +813,22 @@ export async function refreshGhampusNotifications(): Promise<void> {
           <div style="margin: 4px 0 0 24px;">${previewLine}</div>
         </li>`;
       }).join('');
+    }
+  } catch { /* non-fatal */ }
+  try {
+    const runs = await ipcCall<{ ok: boolean; runs: Array<{ status: string }> }>(
+      'skill:listRuns',
+      { status: 'blocked-on-human', limit: 5 },
+    );
+    const banner = document.getElementById('ghampus-blocked-runs-banner');
+    const blocked = runs.runs ?? [];
+    if (banner) {
+      if (blocked.length) {
+        banner.classList.remove('hidden');
+        banner.textContent = `${blocked.length} playbook${blocked.length > 1 ? 's' : ''} blocked on human approval — see Activity → Skill runs.`;
+      } else {
+        banner.classList.add('hidden');
+      }
     }
   } catch { /* non-fatal */ }
   // Record the visit AFTER the read so the next refresh shows what arrives

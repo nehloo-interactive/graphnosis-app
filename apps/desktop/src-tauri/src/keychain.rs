@@ -240,10 +240,6 @@ pub struct SsoKeychainSecrets {
     pub client_secret: Option<String>,
 }
 
-fn sso_account(cortex_dir: &str) -> String {
-    format!("sso:{}", account_for(&normalize_cortex_dir(cortex_dir)))
-}
-
 #[cfg(any(target_os = "windows", feature = "keychain"))]
 mod sso_kc {
     use super::{account_for, normalize_cortex_dir, SsoKeychainSecrets};
@@ -251,8 +247,12 @@ mod sso_kc {
 
     const SERVICE: &str = "app.graphnosis.sso";
 
+    fn sso_account(cortex_dir: &str) -> String {
+        format!("sso:{}", account_for(&normalize_cortex_dir(cortex_dir)))
+    }
+
     fn entry(cortex_dir: &str) -> Result<keyring::Entry> {
-        keyring::Entry::new(SERVICE, &super::sso_account(cortex_dir))
+        keyring::Entry::new(SERVICE, &sso_account(cortex_dir))
             .context("create SSO keyring entry")
     }
 

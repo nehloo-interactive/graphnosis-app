@@ -38,12 +38,16 @@ import { ipcCall, ipcCallTimeout, withTimeout, invokeRetry } from './ui/ipc';
 import { initDialogs, gConfirm, gAlert } from './ui/dialogs';
 import { bindAppContext } from './ui/app-context';
 import {
-  initActivity, refreshActivityView, refreshActivityCompliancePanel, loadMoreActivity, setActivityCat, resetActivityWindow,
+  initActivity, refreshActivityView, refreshActivityCompliancePanel, loadMoreActivity, setActivityCat, setActivityActor,
+  clearActivityDateFilters, resetActivityWindow,
   applyActivityFilter, notifyOplogCompaction,
 } from './ui/activity';
 import {
   initMcpActivity, refreshMcpActivitySegment,
 } from './ui/mcp-activity';
+import {
+  initSkillRunsActivity, refreshSkillRunsSegment,
+} from './ui/skill-runs-activity';
 import {
   initConnectors, refreshConnectorsList, openConnectorSetupModal,
   installedConnectorKinds, connectorPullingGraphIds, lastConnectorList, updateConnectorPullSnapshot,
@@ -321,6 +325,10 @@ interface NodeRecord {
    *  in the typed-relationship suggestion panel. Empty/undefined if the
    *  node never went through entity extraction. */
   entities?: string[];
+  /** Temporal Job Memory — separate from validUntil soft-delete. */
+  obligationType?: 'deadline' | 'renewal' | 'review-by';
+  effectiveDate?: number;
+  expiresAt?: number;
   /** Client-side tag: which engram this node was loaded from. Filled in
    *  by the global search loader so result rows can show an engram chip
    *  and the per-engram filter can narrow results without re-querying. */
@@ -825,6 +833,9 @@ const els = {
   mcpActivityHourFrom: $<HTMLInputElement>('mcp-activity-hour-from'),
   mcpActivityHourTo: $<HTMLInputElement>('mcp-activity-hour-to'),
   mcpActivityDateClear: $<HTMLButtonElement>('mcp-activity-date-clear'),
+  skillRunsToolbar: $<HTMLElement>('skill-runs-toolbar'),
+  skillRunsList: $<HTMLDivElement>('skill-runs-list'),
+  skillRunsStats: $<HTMLSpanElement>('skill-runs-stats'),
   // Snapshot offer (pre-ingest prompt)
   snapshotOfferModal: $<HTMLDivElement>('snapshot-offer-modal'),
   snapshotOfferNote: $<HTMLSpanElement>('snapshot-offer-note'),
@@ -2923,15 +2934,17 @@ function isAtlasPaneMode(mode: Mode = currentMode): boolean {
   return paneForMode(mode) === 'atlas';
 }
 
-type ActivitySegment = 'memory' | 'mcp';
+type ActivitySegment = 'memory' | 'mcp' | 'skill-runs';
 let activitySegment: ActivitySegment = 'memory';
 
 function applyActivitySegment(seg: ActivitySegment): void {
   activitySegment = seg;
   els.activityMemoryToolbar.classList.toggle('hidden', seg !== 'memory');
   els.activityMcpToolbar.classList.toggle('hidden', seg !== 'mcp');
+  els.skillRunsToolbar.classList.toggle('hidden', seg !== 'skill-runs');
   els.activityList.classList.toggle('hidden', seg !== 'memory');
   els.mcpActivityList.classList.toggle('hidden', seg !== 'mcp');
+  els.skillRunsList.classList.toggle('hidden', seg !== 'skill-runs');
   document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {
     const active = btn.dataset.activitySegment === seg;
     btn.classList.toggle('active', active);
@@ -2941,7 +2954,8 @@ function applyActivitySegment(seg: ActivitySegment): void {
 
 function refreshActiveActivitySegment(): void {
   if (activitySegment === 'memory') void refreshActivityView();
-  else void refreshMcpActivitySegment();
+  else if (activitySegment === 'mcp') void refreshMcpActivitySegment();
+  else void refreshSkillRunsSegment();
 }
 
 function activateMode(mode: Mode): void {
@@ -7960,14 +7974,21 @@ function renderHomeSelfHealing(): void {
     body.innerHTML = `<p class="home-stranded-zero">No duplicates have needed merging yet — your memory is clean. ✓</p>`;
     return;
   }
+  const recheckLabel = rechecked === merged ? 'all re-checked ✓' : 're-checked by local AI';
   body.innerHTML =
     `<div class="home-sh-stats">` +
       `<div class="home-sh-stat"><span class="home-sh-val">${merged.toLocaleString()}</span><span class="home-sh-label">merged automatically</span></div>` +
-      `<div class="home-sh-stat"><span class="home-sh-val">${rechecked.toLocaleString()}</span><span class="home-sh-label">re-checked by local AI</span></div>` +
+      `<div class="home-sh-stat"><span class="home-sh-val">${rechecked.toLocaleString()}</span><span class="home-sh-label">${recheckLabel}</span></div>` +
     `</div>` +
     `<p class="home-sh-note">Nothing is ever lost — every merge is a soft-delete you can undo from Recovery.</p>` +
-    `<button type="button" class="home-digest-link" id="home-sh-activity">See merges in Activity →</button>`;
-  body.querySelector<HTMLButtonElement>('#home-sh-activity')?.addEventListener('click', () => { setActivityCat('merged'); resetActivityWindow(); activateMode('activity'); });
+    `<button type="button" class="home-digest-link" id="home-sh-activity">See self-healing in Activity →</button>`;
+  body.querySelector<HTMLButtonElement>('#home-sh-activity')?.addEventListener('click', () => {
+    setActivityCat('nodes');
+    setActivityActor('Autonomous brain');
+    clearActivityDateFilters();
+    resetActivityWindow();
+    activateMode('activity');
+  });
 }
 
 function renderHomeBrainActivity(): void {
@@ -10335,11 +10356,14 @@ function renderDetailPane(): void {
   const typeChip = node.nodeType ? `<span class="g-detail-chip">type: <code>${escape(node.nodeType)}</code></span>` : '';
   const trustChip = `<span class="g-detail-chip">trust: <code>${node.confidence.toFixed(2)}</code></span>`;
   const validUntilChip = node.validUntil ? `<span class="g-detail-chip">valid until: ${new Date(node.validUntil).toLocaleString()}</span>` : '';
+  const obligationChip = node.obligationType && node.expiresAt
+    ? `<span class="g-detail-chip">${escape(node.obligationType)}: ${new Date(node.expiresAt).toLocaleDateString()}</span>`
+    : '';
 
   els.gDetailBody.innerHTML = `
     <div class="g-detail-header">
       <div class="g-detail-conf">${confidenceDot} memory trace${isActive ? '' : ' · forgotten'}</div>
-      <div class="g-detail-chips" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${typeChip}${trustChip}${validUntilChip}</div>
+      <div class="g-detail-chips" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${typeChip}${obligationChip}${trustChip}${validUntilChip}</div>
       ${breadcrumbHtml ? `<div class="g-detail-breadcrumb" title="${escape(renderBreadcrumbPlain(node))}" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${breadcrumbHtml}</div>` : ''}
       ${contentBlock}
       ${actionRow}
@@ -20090,6 +20114,8 @@ interface CatalogEntryView {
   defaultRole?: string;
   sourceEngramId?: string;
   hubRef?: string;
+  packId?: string;
+  catalogVersion?: string;
   itControlled: boolean;
   noReshare: boolean;
   mdmBundleId?: string;
@@ -20102,6 +20128,15 @@ interface CatalogListResult {
   entries: CatalogEntryView[];
   subscribedCatalogIds: string[];
   installedPackageIds?: string[];
+  drift?: Array<{
+    catalogId: string;
+    packageId: string;
+    displayName: string;
+    installedVersion?: string;
+    catalogVersion?: string;
+    versionDrift: boolean;
+    packIdMismatch: boolean;
+  }>;
 }
 
 interface CatalogEntitlementsResult {
@@ -20185,6 +20220,51 @@ function fillCatalogEntryForm(entry: CatalogEntryView): void {
   document.getElementById('catalog-entry-form-wrap')?.setAttribute('open', '');
 }
 
+async function refreshPlaybooksSupervisorDashboard(): Promise<void> {
+  const summary = document.getElementById('playbooks-supervisor-summary');
+  const activeEl = document.getElementById('playbooks-supervisor-active');
+  const driftEl = document.getElementById('playbooks-supervisor-drift');
+  if (!summary || !activeEl || !driftEl) return;
+  try {
+    const dash = await ipcCall<{
+      ok: boolean;
+      activePlaybooks: Array<{ planTitle?: string; skillSourceId: string; status: string; actorLabel?: string }>;
+      blockedRuns: Array<{ planTitle?: string; skillSourceId: string }>;
+      completionRate: number;
+      totals: { runs: number; complete: number; failed: number; active: number };
+      catalogDrift: CatalogListResult['drift'];
+      staleSkills: Array<{ label?: string; sourceId: string; score: number }>;
+    }>('playbooks:supervisorDashboard', {});
+    const pct = Math.round((dash.completionRate ?? 0) * 100);
+    summary.textContent = `${dash.totals?.runs ?? 0} total runs · ${dash.totals?.active ?? 0} active · ${pct}% completion · ${dash.totals?.failed ?? 0} failed`;
+    if ((dash.activePlaybooks ?? []).length === 0) {
+      activeEl.innerHTML = '<span class="subtitle">No active playbook runs.</span>';
+    } else {
+      activeEl.innerHTML = '<strong>Active:</strong> ' + dash.activePlaybooks.slice(0, 5).map((r) =>
+        `${escape(r.planTitle ?? r.skillSourceId)} (${r.status}${r.actorLabel ? ` · ${escape(r.actorLabel)}` : ''})`,
+      ).join(' · ');
+    }
+    const drift = dash.catalogDrift ?? [];
+    const stale = dash.staleSkills ?? [];
+    const parts: string[] = [];
+    if (drift.length) {
+      parts.push(`<strong>Catalog drift (${drift.length}):</strong> ${drift.slice(0, 3).map((d) =>
+        `${escape(d.displayName)} ${d.installedVersion ?? '?'} → ${d.catalogVersion ?? '?'}`,
+      ).join(' · ')}`);
+    }
+    if (stale.length) {
+      parts.push(`<strong>Low vitality SOPs:</strong> ${stale.slice(0, 3).map((s) =>
+        `${escape(s.label ?? s.sourceId)} (${s.score})`,
+      ).join(' · ')}`);
+    }
+    driftEl.innerHTML = parts.length ? parts.join('<br>') : '<span class="subtitle">Catalog and SOP versions are current.</span>';
+  } catch {
+    summary.textContent = 'Supervisor dashboard unavailable.';
+    activeEl.innerHTML = '';
+    driftEl.innerHTML = '';
+  }
+}
+
 async function refreshCatalogGetConnectedPanel(): Promise<void> {
   const section = document.getElementById('gc-section-org-catalog');
   const adminWrap = document.getElementById('gc-catalog-admin');
@@ -20203,6 +20283,7 @@ async function refreshCatalogGetConnectedPanel(): Promise<void> {
     } else {
       upsell?.classList.add('hidden');
       config?.classList.remove('hidden');
+      void refreshPlaybooksSupervisorDashboard();
       const data = await ipcCall<CatalogListResult>('catalog:list', { includeUnpublished: true });
       const entries = data.entries ?? [];
       if (empty) empty.classList.toggle('hidden', entries.length > 0);
@@ -20286,11 +20367,13 @@ async function refreshEmployeeCatalogPanel(): Promise<void> {
     const installed = new Set(data.installedPackageIds ?? []);
     const ent = await ipcCall<CatalogEntitlementsResult>('catalog:entitlements', { requireSubscription: false });
     const entMap = new Map((ent.entitlements ?? []).map((e) => [e.catalogId, e]));
+    const driftMap = new Map((data.drift ?? []).map((d) => [d.catalogId, d]));
     list.innerHTML = entries.map((e) => {
       const row = entMap.get(e.id);
       const entitled = row?.entitled ?? false;
       const isSub = subs.has(e.id);
       const isInstalled = installed.has(e.packageId);
+      const drift = driftMap.get(e.id);
       const status = isInstalled ? 'Installed in your cortex'
         : isSub ? 'Subscribed — install pending'
           : entitled ? 'Available'
@@ -20299,13 +20382,34 @@ async function refreshEmployeeCatalogPanel(): Promise<void> {
               : row?.reason === 'sso_required'
                 ? 'Requires Enterprise SSO sign-in'
                 : 'Not available';
+      const driftBanner = drift
+        ? `<p class="subtitle" style="margin:4px 0 8px;font-size:12px;color:var(--accent);">IT updated this package (${drift.installedVersion ?? '?'} → ${drift.catalogVersion ?? '?'}). `
+          + `<button type="button" class="g-btn employee-catalog-remerge" data-id="${escape(e.id)}" style="font-size:11px;padding:2px 8px;">Re-merge now</button></p>`
+        : '';
       return `<div class="panel" style="padding:10px;margin:0;">`
         + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escape(e.displayName)}</strong></p>`
         + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.description ?? e.packageId)} · ${escape(status)}</p>`
+        + driftBanner
         + `<button type="button" class="g-btn employee-catalog-subscribe" data-id="${escape(e.id)}" data-entitled="${entitled ? '1' : '0'}" data-installed="${isInstalled ? '1' : '0'}" ${!entitled || isInstalled ? 'disabled' : ''}>`
         + (isInstalled ? 'Added ✓' : isSub ? 'Install…' : 'Add to my cortex')
         + '</button></div>';
     }).join('');
+    list.querySelectorAll<HTMLButtonElement>('.employee-catalog-remerge').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        void (async () => {
+          const id = btn.dataset.id;
+          if (!id) return;
+          btn.disabled = true;
+          try {
+            await ipcCall('catalog:remergePackage', { catalogId: id });
+            void refreshEmployeeCatalogPanel();
+          } catch (e) {
+            void gAlert('Re-merge failed', e instanceof Error ? e.message : String(e));
+            btn.disabled = false;
+          }
+        })();
+      });
+    });
     list.querySelectorAll<HTMLButtonElement>('.employee-catalog-subscribe').forEach((btn) => {
       btn.addEventListener('click', () => {
         void (async () => {
@@ -20970,6 +21074,10 @@ initMcpActivity({
   mcpActivityDateFrom: els.mcpActivityDateFrom, mcpActivityDateTo: els.mcpActivityDateTo,
   mcpActivityHourFrom: els.mcpActivityHourFrom, mcpActivityHourTo: els.mcpActivityHourTo,
   mcpActivityDateClear: els.mcpActivityDateClear,
+});
+initSkillRunsActivity({
+  skillRunsList: els.skillRunsList,
+  skillRunsStats: els.skillRunsStats,
 });
 
 document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {

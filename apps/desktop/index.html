@@ -6426,6 +6426,17 @@
       .ghampus-savings-stat-label { font-size: 10.5px; opacity: .55; }
       .ghampus-savings-stat-val { font-size: 16px; font-weight: 600; color: #10b981; }
       .ghampus-savings-stat-val.dim { font-size: 13px; color: var(--fg, #fff); }
+      .ghampus-savings-sparkline {
+        display: flex; align-items: flex-end; gap: 3px;
+        height: 36px; margin-top: 12px;
+      }
+      .ghampus-savings-sparkline .home-spark-bar {
+        flex: 1; min-width: 4px; border-radius: 2px 2px 0 0;
+        background: #10b981; opacity: .85;
+      }
+      .ghampus-savings-sparkline .home-spark-bar.empty {
+        opacity: .15; background: var(--fg, #fff);
+      }
 
       /* Chat messages container */
       #ghampus-chat-messages {
@@ -6914,6 +6925,13 @@
         color: var(--fg-dim); padding: 10px 0 4px 34px;
         border-bottom: 1px solid color-mix(in oklab, var(--fg-dim) 15%, transparent);
         margin-bottom: 2px;
+      }
+      /* Static title line at the top of source-driven Trained Output — mirrors
+         the detail header without duplicating the slug as an editable card. */
+      .skills-output-title-heading {
+        font-size: 13px; font-weight: 700; color: var(--fg);
+        padding: 2px 0 6px 34px;
+        word-break: break-word;
       }
       /* Draft card with chips: stack chips ABOVE the textarea (column layout)
          so the textarea gets its own full-width row. Without this the chips
@@ -13061,6 +13079,7 @@ ollama list</code></pre>
 
                       <div class="ghampus-section-panel" data-panel="notifications">
                         <div class="ghampus-section-panel-inner">
+                          <p id="ghampus-blocked-runs-banner" class="subtitle hidden" style="font-size:12px;margin:0 0 8px;color:var(--accent);"></p>
                           <ul id="ghampus-notifications-list" class="ghampus-panel-list">
                             <li class="ghampus-panel-empty">No new updates.</li>
                           </ul>
@@ -13114,6 +13133,7 @@ ollama list</code></pre>
                               <span id="ghampus-savings-routing" class="ghampus-savings-stat-val dim">0</span>
                             </div>
                           </div>
+                          <div id="ghampus-savings-sparkline" class="ghampus-savings-sparkline hidden" aria-hidden="true"></div>
                         </div>
                       </div>
 
@@ -13238,6 +13258,7 @@ ollama list</code></pre>
               <div class="activity-segment" role="tablist" aria-label="Activity view">
                 <button type="button" class="activity-segment-btn active" data-activity-segment="memory" role="tab" aria-selected="true">Memory changes</button>
                 <button type="button" class="activity-segment-btn" data-activity-segment="mcp" role="tab" aria-selected="false">AI access log</button>
+                <button type="button" class="activity-segment-btn" data-activity-segment="skill-runs" role="tab" aria-selected="false">Skill runs</button>
               </div>
               <div id="activity-memory-toolbar" class="activity-toolbar">
                 <div class="activity-controls-row">
@@ -13333,6 +13354,23 @@ ollama list</code></pre>
                 <p class="subtitle">Loading…</p>
               </div>
               <div id="mcp-activity-list" class="activity-list hidden">
+                <p class="subtitle">Loading…</p>
+              </div>
+              <div id="skill-runs-toolbar" class="activity-toolbar hidden">
+                <div class="activity-controls-row">
+                  <select id="skill-runs-status-filter" class="activity-engram-select" aria-label="Filter by run status">
+                    <option value="">All statuses</option>
+                    <option value="running">Running</option>
+                    <option value="paused">Paused</option>
+                    <option value="blocked-on-human">Blocked on human</option>
+                    <option value="complete">Complete</option>
+                    <option value="failed">Failed</option>
+                  </select>
+                  <button id="btn-skill-runs-refresh" class="btn-sm" title="Reload skill run ledger">↻ Refresh</button>
+                </div>
+                <span id="skill-runs-stats" class="subtitle"></span>
+              </div>
+              <div id="skill-runs-list" class="activity-list hidden">
                 <p class="subtitle">Loading…</p>
               </div>
             </section>
@@ -13458,6 +13496,12 @@ ollama list</code></pre>
                     </div>
                   </div>
                   <div id="gc-catalog-admin-config" class="hidden">
+                    <div id="gc-playbooks-supervisor" class="panel" style="margin-bottom:12px;padding:12px;">
+                      <p style="margin:0 0 6px;font-size:14px;font-weight:600;">Team Playbooks — supervisor dashboard</p>
+                      <p id="playbooks-supervisor-summary" class="subtitle" style="margin:0 0 8px;font-size:12px;">Loading…</p>
+                      <div id="playbooks-supervisor-active" style="font-size:13px;margin-bottom:6px;"></div>
+                      <div id="playbooks-supervisor-drift" style="font-size:13px;"></div>
+                    </div>
                     <p class="gc-section-hint" style="margin-top:0;">
                       Each row is one engram package. SharePoint list columns map 1:1 (Title, PackageId, RequiredGroups, SourceEngramId, etc.).
                     </p>
@@ -13795,6 +13839,37 @@ ollama list</code></pre>
                     <input type="checkbox" id="ghampus-skill-maintenance-idle" checked>
                     <span>Ask before retraining (proactive card)</span>
                   </label>
+                </div>
+
+                <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border, rgba(255,255,255,.08));">
+                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Proactive scan delay</p>
+                  <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
+                    How long Ghampus waits after the sidecar starts before the first proactive skill-card scan.
+                  </p>
+                  <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <input type="number" id="ghampus-proactive-startup-delay-min" min="0" step="1" value="5"
+                           style="width: 72px; padding: 6px 10px; border: 1px solid var(--border, #ccc); border-radius: 6px; background: transparent; color: inherit;">
+                    <span style="font-size: 14px;">minutes</span>
+                    <button id="btn-ghampus-proactive-delay-save" class="g-btn" type="button">Save</button>
+                    <span class="subtitle" style="font-size: 12px;">Set 0 for an immediate first scan.</span>
+                  </div>
+                </div>
+
+                <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border, rgba(255,255,255,.08));">
+                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Savings baseline</p>
+                  <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
+                    Counterfactual model for the Ghampus savings dashboard — what you would have paid without local recall and routing.
+                  </p>
+                  <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <select id="models-savings-baseline" style="padding: 6px 10px; border: 1px solid var(--border, #ccc); border-radius: 6px; background: transparent; color: inherit; font-size: 14px;">
+                      <option value="sonnet">Claude Sonnet 4.6 (default)</option>
+                      <option value="gpt4o">GPT-4o</option>
+                      <option value="opus">Claude Opus 4.6</option>
+                      <option value="haiku">Claude Haiku 4.5</option>
+                    </select>
+                    <button id="btn-models-save-savings-baseline" class="g-btn" type="button">Save</button>
+                    <span id="models-savings-baseline-label" class="subtitle" style="font-size: 12px;">—</span>
+                  </div>
                 </div>
               </div>
 
