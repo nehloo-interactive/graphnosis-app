@@ -56,6 +56,13 @@ Don't fire off `git commit && git push` mechanically. Do this instead:
    means it's already in sync. (Do the same sanity check for
    `skill-demos.generated.ts`, though that one needs the GSK signing key to
    rebuild.)
+   **Download fallbacks:** bump `apps/desktop/src-tauri/tauri.conf.json`
+   version, then run `pnpm --filter @graphnosis-app/docs prebuild` (or
+   `pnpm release:sync-downloads`) — `sync-graphnosis-md.mjs` syncs
+   `apps/docs/public/_redirects` and `FALLBACK_VERSION` in both download
+   handlers from that file. Primary `/download/*` redirects still auto-update
+   via `CURRENT_VERSION` set in Cloudflare by `release.yml` after tag push; no
+   manual redirect editing needed for normal releases.
 
 ### What you can do without asking
 

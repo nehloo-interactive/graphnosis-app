@@ -60,9 +60,10 @@ Centrally disable specific connectors (incoming data) and AI clients (outgoing m
 |----------|----------|---------|-------------|
 | `GRAPHNOSIS_DISABLED_CONNECTORS` | No | — | Comma-separated connector kinds that must not mount (e.g. `slack,github`). A disabled connector is skipped on startup and won't start even if configured. |
 | `GRAPHNOSIS_DISABLED_CLIENTS` | No | — | Comma-separated AI client names whose MCP tool calls are rejected. Matching is case-insensitive. |
+| `GRAPHNOSIS_DISABLED_PROVIDERS` | No | — | Comma-separated model provider ids blocked from Ghampus routing (e.g. `anthropic,openai`). Blocked providers show a lock badge in Settings → Models and cannot be enabled locally when policy is managed. |
 | `GRAPHNOSIS_MANAGED_POLICY` | No | — | Set to `1` to mark the policy as centrally managed — `policy.set` from the app is rejected, so a local user can't loosen an IT-pushed policy. |
 
-For per-cortex configuration, place a `policy.json` in the cortex folder with `disabledConnectors`, `disabledClients`, and `managed` fields; it merges with the variables above.
+For per-cortex configuration, place a `policy.json` in the cortex folder with `disabledConnectors`, `disabledClients`, `disabledProviders`, `pinnedRates`, and `managed` fields; it merges with the variables above.
 
 ## Recall latency benchmark
 

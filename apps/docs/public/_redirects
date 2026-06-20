@@ -6,7 +6,7 @@
 # route a Function matches, so the lines below are LAST-RESORT FALLBACKS only
 # (used if the Function is ever removed). All four fallbacks are regenerated
 # from tauri.conf.json on every docs prebuild via sync-graphnosis-md.mjs.
-/download/win        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.18.0/Graphnosis_1.18.0_x64_en-US.msi   302
-/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.18.0/Graphnosis_1.18.0_amd64.AppImage  302
-/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.18.0/Graphnosis_1.18.0_amd64.deb        302
-/download/mac        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.18.0/Graphnosis_1.18.0_aarch64.dmg  302
+/download/win        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.19.0/Graphnosis_1.19.0_x64_en-US.msi   302
+/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.19.0/Graphnosis_1.19.0_amd64.AppImage  302
+/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.19.0/Graphnosis_1.19.0_amd64.deb        302
+/download/mac        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.19.0/Graphnosis_1.19.0_aarch64.dmg  302

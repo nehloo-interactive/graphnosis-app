@@ -15,7 +15,7 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 |---|---|
 | **Core memory** (8) | [`recall`](#recall) · [`remind`](#remind) · [`dig_deeper`](#dig_deeper) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
 | **Engram discovery** (5) | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
-| **Structured recall** (4) | [`recall_structured`](#recall_structured) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
+| **Structured recall** (5) | [`recall_structured`](#recall_structured) · [`recall_obligations`](#recall_obligations) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
 | **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
 | **Brain maintenance** (5) | [`duplicate_pairs`](#duplicate_pairs) ★ · [`contradiction_pairs`](#contradiction_pairs) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
@@ -247,6 +247,7 @@ Store a new memory directly from a conversation so it persists across sessions.
 | `graphId` | string | No | An exact engram slug (e.g. `book-notes`). Skips name resolution. An unknown slug routes through the same banner flow as `target_engram` rather than dead-ending. |
 | `label` | string | No | Short label shown alongside the source in the Sources list. Defaults to a sensible placeholder. |
 | `kind` | string | No | `"clip"` (default) — a discrete fact, note, or extracted text. `"ai-conversation"` — a turn or summary of the current AI ↔ user conversation. The Sources list shows these distinctly. |
+| `obligation` | object | No | **Temporal Job Memory.** Attach a due date separate from soft-delete `validUntil`. Requires `obligationType` (`deadline`, `renewal`, or `review-by`) and `expiresAt` (Unix ms). Optional `effectiveDate` (Unix ms) when the obligation becomes actionable. Retention purge skips sources with active obligations. |
 
 ### Return
 
@@ -286,6 +287,22 @@ When `target_engram` (or an unknown `graphId`) is set, the sidecar runs a three-
     "target_engram": "Work decisions",
     "label": "DB choice",
     "kind": "clip"
+  }
+}
+```
+
+Obligation example (contract renewal due in 90 days):
+
+```json
+{
+  "tool": "remember",
+  "arguments": {
+    "text": "Acme SaaS contract renews — legal wants 30-day notice before auto-renew.",
+    "target_engram": "Vendor contracts",
+    "obligation": {
+      "obligationType": "renewal",
+      "expiresAt": 1759276800000
+    }
   }
 }
 ```
@@ -699,7 +716,7 @@ Returns the metadata for one engram — display name, sensitivity tier, template
 
 ## Structured recall
 
-Four variants on `recall` for when the AI needs more than the standard prose context block.
+Five variants on `recall` for when the AI needs more than the standard prose context block.
 
 ### `recall_structured`
 
@@ -707,6 +724,42 @@ Like `recall`, but results come back as a JSON array of node objects (`nodeId`, 
 
 - **Parameters:** `query` (required) · `maxTokens` (default 2000) · `maxNodes` per graph (default 20) · `only_engrams` / `except_engrams` (optional scope filters).
 - **Try saying:** *"Recall my Q4 roadmap notes as JSON so I can sort them by score."*
+
+### `recall_obligations`
+
+**Determinism: deterministic.** Reads the local obligation index sorted by `expiresAt` — no LLM, no randomness.
+
+Lists temporal obligations attached to memory nodes via `remember` or `ingest_batch` — contract renewals, compliance review-by dates, hard deadlines. Respects the same consent gates as `recall` on sensitive engrams.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `due_within_days` | number | No | Include obligations expiring within this many days (and overdue). Omit for all active obligations. Range 1–365. |
+| `obligation_type` | string | No | Filter to `deadline`, `renewal`, or `review-by`. |
+| `only_engrams` | string[] | No | Restrict to these engram slugs or display names. |
+| `max_results` | number | No | Cap on rows returned. Default 20, max 50. |
+
+### Return
+
+JSON string:
+
+```json
+{
+  "obligations": [
+    {
+      "nodeId": "abc123",
+      "graphId": "vendor-contracts",
+      "text": "Acme SaaS contract renews…",
+      "obligationType": "renewal",
+      "expiresAt": 1759276800000,
+      "effectiveDate": null,
+      "overdue": false
+    }
+  ],
+  "count": 1
+}
+```
+
+- **Try saying:** *"What contract renewals are due in the next 30 days?"*
 
 ### `recall_with_citations`
 
@@ -774,9 +827,9 @@ Merging an entire engram into another is done from **Settings → Engrams** in t
 
 ### `ingest_batch`
 
-Saves multiple notes in a single call — up to 20 items per batch, each with its own `target_engram`. For bulk-importing a list of facts without one `remember` per item.
+Saves multiple notes in a single call — up to 20 items per batch, each with its own `target_engram`. For bulk-importing a list of facts without one `remember` per item. Each item accepts the same optional `obligation` object as [`remember`](#remember) for Temporal Job Memory workflows.
 
-- **Parameters:** `items` (array, max 20).
+- **Parameters:** `items` (array, max 20) — each item: `text`, optional `target_engram` / `graphId`, optional `obligation`.
 - **Returns:** JSON per-item success/error summary.
 - **Try saying:** *"Save these 5 facts about the project in one go: …"*
 
@@ -943,10 +996,10 @@ Reverts a skill to a prior snapshot. Writes a new snapshot of the rollback itsel
 
 **Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
-Persists a multi-skill orchestration's captured variables (`@skill: x -> $var`) and progress to an encrypted per-run file, so a run can be paused and resumed in a later session. Call it as you walk the steps.
+Persists a multi-skill orchestration's captured variables (`@skill: x -> $var`) and progress to an encrypted per-run file under `<cortex>/skill-runs/`, so a run can be paused and resumed in a later session. Call it as you walk the steps. Activity → **Skill runs** lists saved runs for owner oversight; Enterprise Evidence Pack export includes a redacted `skillRuns` slice.
 
-- **Parameters:** `capturedVars` (object) · `completedStepIndex` (number) · `skillRef` (the skill being run) · `runId` (optional — omit to start a new run, pass it back to update an existing one).
-- **Returns:** The `runId` (newly minted, or the one you passed).
+- **Parameters:** `skillGraphId` (engram slug) · `skillSourceId` (sourceId from `list_skills`) · `capturedVars` (object map without `$` prefixes) · `completedStepIndex` (1-based last completed step; `0` = none yet) · optional `planTitle` · optional `runId` (omit to start a new run; pass back to update).
+- **Returns:** JSON `{ runId }` — newly minted or the one you passed.
 - **Try saying:** *"Save my progress on the Safe Deploy run so I can pick it up tomorrow."*
 
 ### `resume_skill_run` *(Pro)*
