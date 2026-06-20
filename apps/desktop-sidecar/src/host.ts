@@ -161,6 +161,9 @@ interface LoadedGraph {
    *  Callers that need deterministic recall after loadGraph (tests, scripted
    *  flows) `await host.waitForEmbeddings(graphId)` to gate on this. */
   embeddingsBuilding: Promise<void> | null;
+  /** In-flight oplog reconcile (fire-and-forget in prod; tests await via
+   *  waitForReconcile). Null when idle or queued for post-boot flush. */
+  reconcileBuilding: Promise<void> | null;
 }
 
 /** Payload emitted on every successful graph mutation. Consumers (the IPC
@@ -1769,10 +1772,90 @@ export class GraphnosisHost {
     return [...this.graphs.keys()];
   }
 
-  /** True while loadAllGraphsFromDisk is running — brain passes and auto-relink
-   *  defer so the sweep owns the event loop. */
+  /** True while the sidecar is still in its boot window (default load + sweep +
+   *  deferred housekeeping). Brain passes, connector pulls, and auto-relink defer. */
   isBootSweepActive(): boolean {
-    return this.bootSweepActive;
+    return this.bootPhaseActive || this.bootSweepActive;
+  }
+
+  /** Mark the sidecar boot window — defer oplog reconcile until flushBootDeferredWork. */
+  setBootPhaseActive(active: boolean): void {
+    this.bootPhaseActive = active;
+  }
+
+  /** Drain deferred reconcile + sourceRef sweeps sequentially after boot. */
+  flushBootDeferredWork(): Promise<void> {
+    if (this.bootDeferredFlushPromise) return this.bootDeferredFlushPromise;
+    this.bootDeferredFlushPromise = this.runBootDeferredWork();
+    return this.bootDeferredFlushPromise;
+  }
+
+  private async runBootDeferredWork(): Promise<void> {
+    const reconciles = this.bootReconcileQueue.splice(0);
+    const sourceRefs = [...new Set(this.bootSourceRefQueue.splice(0))];
+    if (reconciles.length > 0 || sourceRefs.length > 0) {
+      console.error(
+        `[graphnosis-host] boot deferred work: ${reconciles.length} oplog reconcile(s), ${sourceRefs.length} sourceRef sweep(s)`,
+      );
+    }
+    for (const { graphId, entry } of reconciles) {
+      const t0 = Date.now();
+      try {
+        await this.reconcileGraphFromOplog(graphId, entry);
+        console.error(
+          `[graphnosis-host] boot reconcile engram[${redactId(graphId)}]: ${Date.now() - t0}ms`,
+        );
+      } catch (e: unknown) {
+        console.error(
+          `[graphnosis-host] boot reconcile failed engram[${redactId(graphId)}] after ${Date.now() - t0}ms: ${(e as Error).message}`,
+        );
+      }
+      await this.yieldToLoop();
+    }
+    for (const graphId of sourceRefs) {
+      const t0 = Date.now();
+      try {
+        await this.sweepSourceRefArtifacts(graphId);
+        console.error(
+          `[graphnosis-host] boot sourceRef sweep engram[${redactId(graphId)}]: ${Date.now() - t0}ms`,
+        );
+      } catch (e: unknown) {
+        console.error(
+          `[graphnosis-host] boot sourceRef sweep failed engram[${redactId(graphId)}]: ${(e as Error).message}`,
+        );
+      }
+      await this.yieldToLoop();
+    }
+    this.bootPhaseActive = false;
+    this.bootDeferredFlushPromise = null;
+  }
+
+  private scheduleReconcile(graphId: GraphId, entry: LoadedGraph): void {
+    if (this.bootPhaseActive || this.bootSweepActive) {
+      this.bootReconcileQueue.push({ graphId, entry });
+      return;
+    }
+    entry.reconcileBuilding = this.reconcileGraphFromOplog(graphId, entry)
+      .catch((e: unknown) => {
+        console.error(
+          `[graphnosis-host] op-log reconcile failed for engram[${redactId(graphId)}]: ${(e as Error).message} — continuing with on-disk .gai`,
+        );
+      })
+      .finally(() => {
+        if (this.graphs.get(graphId) === entry) entry.reconcileBuilding = null;
+      });
+  }
+
+  private scheduleSourceRefSweep(graphId: GraphId): void {
+    if (this.bootPhaseActive || this.bootSweepActive) {
+      this.bootSourceRefQueue.push(graphId);
+      return;
+    }
+    void this.sweepSourceRefArtifacts(graphId).catch((e: unknown) => {
+      console.error(
+        `[graphnosis-host] sourceRef-artifact sweep failed for engram[${redactId(graphId)}]: ${(e as Error).message}`,
+      );
+    });
   }
 
   /** Called by the sidecar boot sweep — gates concurrent embedding rebuilds. */
@@ -1864,6 +1947,7 @@ export class GraphnosisHost {
       cache,
       dirty: true,
       embeddingsBuilding: null,
+      reconcileBuilding: null,
     });
     this.correctionsCount.set(graphId, 0);
     await this.save(graphId);
@@ -1871,6 +1955,10 @@ export class GraphnosisHost {
 
   async loadGraph(graphId: GraphId): Promise<void> {
     if (this.graphs.has(graphId)) return;
+    const tLoad = Date.now();
+    let tDecrypt = 0;
+    let tFromBuffer = 0;
+    let tBundle = 0;
     // Recover from an interrupted purge before we try to read .gai. There
     // are two possible leftover states:
     //   .gai exists AND .gai.bak exists  → purge committed but didn't clean
@@ -1911,11 +1999,15 @@ export class GraphnosisHost {
       bytes = await fs.readFile(this.legacyGraphPath(graphId));
       console.error(`[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`);
     }
+    const tDecrypt0 = Date.now();
     const aikgPlain = await decrypt(new Uint8Array(bytes!), this.key);
+    tDecrypt = Date.now() - tDecrypt0;
     await this.yieldToLoop();
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
     try {
+      const tFromBuffer0 = Date.now();
       handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
+      tFromBuffer = Date.now() - tFromBuffer0;
       await this.yieldToLoop();
     } catch (e) {
       // ── Auto-quarantine on integrity failure ──────────────────────────
@@ -1976,8 +2068,11 @@ export class GraphnosisHost {
       }
     }
     } // !usedTinyLkgRestore
+    const tBundle0 = Date.now();
     const sourceIndex = await this.loadBundle(graphId);
+    tBundle = Date.now() - tBundle0;
     await this.yieldToLoop();
+
 
     // ── Early commit: make the engram available in the picker immediately ──
     //
@@ -1995,20 +2090,19 @@ export class GraphnosisHost {
     // below, so once cache.load() completes, lookups in cached() start
     // returning hits without any further coordination.
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null };
+    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null, reconcileBuilding: null };
     this.graphs.set(graphId, entry);
     this.everLoaded.add(graphId); // mark available even after a future LRU evict
     this.correctionsCount.set(graphId, 0);
+    const tEarlyCommit = Date.now() - tLoad;
+    console.error(
+      `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: decrypt=${tDecrypt}ms fromBuffer=${tFromBuffer}ms bundle=${tBundle}ms earlyCommit=${tEarlyCommit}ms`,
+    );
 
     // Converge .gai + source bundle with the merged multi-device op-log.
-    // Deferred to background so decrypt + SDK parse don't block IPC for
-    // seconds per engram (adapter.build + full oplog replay on first load).
-    void this.reconcileGraphFromOplog(graphId, entry)
-      .catch((e: unknown) => {
-        console.error(
-          `[graphnosis-host] op-log reconcile failed for engram[${redactId(graphId)}]: ${(e as Error).message} — continuing with on-disk .gai`,
-        );
-      });
+    // Queued during boot — each reconcile calls sync adapter.build() and
+    // replaying N of them concurrently starves IPC mid-sweep.
+    this.scheduleReconcile(graphId, entry);
 
     // ── Background: load the embedding cache, then kick off rebuild ────────
     //
@@ -2055,13 +2149,8 @@ export class GraphnosisHost {
         }
       });
     entry.embeddingsBuilding = buildPromise;
-    // Fire-and-forget orphan sweep — see sweepSourceRefArtifacts for the
-    // why. Runs on the background lane, never blocks the unlock path.
-    void this.sweepSourceRefArtifacts(graphId).catch((e: unknown) => {
-      console.error(
-        `[graphnosis-host] sourceRef-artifact sweep failed for engram[${redactId(graphId)}]: ${(e as Error).message}`,
-      );
-    });
+    // Orphan sourceRef cleanup — queued during boot like oplog reconcile.
+    this.scheduleSourceRefSweep(graphId);
   }
 
   /**
@@ -2156,6 +2245,21 @@ export class GraphnosisHost {
     const g = this.graphs.get(graphId);
     if (!g || !g.embeddingsBuilding) return;
     await g.embeddingsBuilding;
+  }
+
+  /** Resolve when the background oplog reconcile for `graphId` finishes. Also
+   *  waits on a queued boot reconcile if flushBootDeferredWork has not run yet
+   *  (smoke tests and headless scripts only — prod never calls this). */
+  async waitForReconcile(graphId: GraphId): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (g?.reconcileBuilding) {
+      await g.reconcileBuilding;
+      return;
+    }
+    const queued = this.bootReconcileQueue.find((q) => q.graphId === graphId);
+    if (queued && (this.bootPhaseActive || this.bootSweepActive)) {
+      await this.flushBootDeferredWork();
+    }
   }
 
   private async loadBundle(graphId: GraphId): Promise<sources.SourceIndex> {

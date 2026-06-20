@@ -231,6 +231,9 @@ async function loadAllGraphsFromDisk(
         ),
       ]);
       loaded++;
+      console.error(
+        `[graphnosis-sidecar] engram '${graphId}' loaded (${loaded + failed}/${total}) in ${Date.now() - tLoad}ms`,
+      );
     } catch (e) {
       const err = e as Error;
       const isTimeout = err.message.includes('timed out after');
@@ -644,6 +647,8 @@ async function main(): Promise<void> {
     ...(policyCfg ? { policy: policyCfg } : {}),
     ...(env.recoveryPhrase ? { recoveryPhrase: env.recoveryPhrase } : {}),
   });
+
+  host.setBootPhaseActive(true);
 
   // First-run: stash the recovery phrase in a temp file so Tauri can read
   // it immediately after the sidecar's IPC socket appears. Tauri reads +
@@ -1235,6 +1240,7 @@ async function main(): Promise<void> {
   // bar. Metadata backfill runs when the sweep finishes.
   void loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw)
     .then(async () => {
+      await host.flushBootDeferredWork();
       await backfillGraphMetadata(host);
       (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
     })

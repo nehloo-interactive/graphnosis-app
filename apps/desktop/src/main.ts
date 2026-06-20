@@ -7579,6 +7579,20 @@ function computeHealth(): HealthSummary {
 }
 
 function renderHealth(): void {
+  const activeLoading =
+    !!atlasActiveGraph
+    && atlasActiveGraph !== FULL_CORTEX
+    && (atlasLoadedForGraph !== atlasActiveGraph
+      || (graphnosisAllNodes.length === 0 && isEngramPreloadInProgress()));
+  if (activeLoading) {
+    els.gHealthGrade.textContent = '…';
+    els.gHealthGrade.className = 'g-health-grade';
+    els.gHealthFill.style.width = '0%';
+    els.gHealthPhrase.textContent = 'Loading this engram…';
+    els.gHealthDetail.textContent = '';
+    renderHomeDashboard();
+    return;
+  }
   const h = computeHealth();
   els.gHealthGrade.textContent = h.grade;
   els.gHealthGrade.className = `g-health-grade ${h.grade.toLowerCase()}`;
