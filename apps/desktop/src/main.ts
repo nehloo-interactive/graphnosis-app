@@ -1702,14 +1702,15 @@ function render(status: StatusSnapshot): void {
       els.brainVitality.style.display = '';
       els.brainVitality.textContent = '🧠 Vitality…';
       els.brainVitality.style.opacity = '0.5';
-      if (isEngramPreloadInProgress()) {
-        scheduleDebouncedFederatedStats();
-      } else {
-        void refreshStats();
-      }
+      // Sidecar awaits loadAllGraphsFromDisk before IPC — every on-disk engram
+      // is resident at unlock. Seed hero/per-engram counts from the catalog
+      // synchronously, then fetch inspector_stats + vitality without debounce.
+      markBootSweepCompleteIfCatalogReady();
+      seedCortexStatsFromCatalog();
+      cancelDebouncedFederatedStats();
+      void refreshCortexScopedStats();
       void refreshConnectorsList();
       startMcpPolling();
-      void refreshBrainState();
       scheduleHomePrefetch(); // warm home-card cache in background after boot
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
       void loadStudioSubscriptionState().then(() => showWhatsNewModal());
@@ -6893,6 +6894,8 @@ els.passphrase.addEventListener('keydown', (e) => {
 async function fetchGraphsMetadata(): Promise<void> {
   try {
     loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
+    markBootSweepCompleteIfCatalogReady();
+    seedCortexStatsFromCatalog();
     // Always keep the topbar picker in sync regardless of active pane.
     syncEngramPicker();
     // At unlock, render() fires fetchGraphsMetadata + activateMode in
@@ -7664,15 +7667,21 @@ function renderHomeDashboard(): void {
   const cortexVit = vit?.overall ?? null;
   const totalMem = cortexStats?.memories ?? null;
   const totalEng = cortexStats?.engrams ?? null;
+  const archivedEng = loadedGraphs.filter((g) => g.loaded !== false && g.metadata.archived).length;
   const lastGrew = loadedGraphs.reduce((m, g) => Math.max(m, g.lastMutationAt ?? 0), 0);
 
   // ── Cortex-wide hero pulse ──
-  if (totalMem === 0) {
+  if (totalMem === 0 && (totalEng == null || totalEng === 0)) {
     pulseEl.textContent = 'Your memory is empty — drop a file or have your AI remember something to begin.';
   } else {
     const parts: string[] = [];
     if (totalMem != null) parts.push(`<strong>${totalMem.toLocaleString()}</strong> ${totalMem === 1 ? 'memory' : 'memories'}`);
-    if (totalEng != null) parts.push(`<strong>${totalEng}</strong> engram${totalEng === 1 ? '' : 's'}`);
+    if (totalEng != null) {
+      parts.push(`<strong>${totalEng}</strong> engram${totalEng === 1 ? '' : 's'}`);
+      if (archivedEng > 0) {
+        parts.push(`<span class="home-pulse-archived">${archivedEng} archived</span>`);
+      }
+    }
     if (cortexVit != null) {
       const g = gradeFromScore(cortexVit);
       parts.push(`vitality <strong>${cortexVit}</strong> <span class="home-pulse-grade ${g.toLowerCase()}">${gradeWord(g)}</span>`);
@@ -7772,20 +7781,28 @@ function annotateHomeHelp(): void {
 function renderHomeEngramBars(): void {
   const barsEl = document.getElementById('home-engram-bars');
   if (!barsEl) return;
-  // Vitality not fetched yet → leave the loading skeleton in place (no flash).
-  if (!brainVitalityReport) return;
-  const liveGraphIds = new Set(
-    loadedGraphs.filter((g) => !g.metadata.archived).map((g) => g.graphId),
-  );
-  const rows = Object.entries(brainVitalityReport.byGraph ?? {})
-    .filter(([gid]) => liveGraphIds.has(gid))
-    .map(([gid, score]) => {
-      const g = loadedGraphs.find((x) => x.graphId === gid);
-      return { gid, name: g?.metadata.displayName ?? gid, score: score as number };
+  // Whole-cortex count includes archived engrams (loaded at boot, hidden from pickers).
+  const resident = loadedGraphs.filter((g) => g.loaded !== false);
+  const liveGraphIds = new Set(resident.map((g) => g.graphId));
+  const vitalityByGraph = brainVitalityReport?.byGraph ?? {};
+  const rows = resident
+    .map((g) => {
+      const score = vitalityByGraph[g.graphId];
+      const archived = g.metadata.archived ? ' (archived)' : '';
+      return {
+        gid: g.graphId,
+        name: `${g.metadata.displayName ?? g.graphId}${archived}`,
+        score: typeof score === 'number' ? score : -1,
+      };
     })
-    .sort((a, b) => b.score - a.score);
-  // Stale vitality from a prior cortex (byGraph keys not in this picker) — refetch.
-  const stillBooting = loadedGraphs.some((g) => !g.metadata.archived && g.loaded === false);
+    .sort((a, b) => {
+      if (a.score < 0 && b.score < 0) return a.name.localeCompare(b.name);
+      if (a.score < 0) return 1;
+      if (b.score < 0) return -1;
+      return b.score - a.score;
+    });
+  // Stale vitality from a prior cortex — refetch when catalog has rows but none rendered.
+  const stillBooting = isEngramPreloadInProgress();
   if (rows.length === 0 && liveGraphIds.size > 0 && !stillBooting) {
     void refreshCortexScopedStats();
     return;
@@ -7802,7 +7819,11 @@ function renderHomeEngramBars(): void {
   const shown = rows.length > CAP ? rows.slice(0, CAP) : rows;
   const bar = (r: { gid: string; name: string; score: number }): string => {
     const nameSpan = `<span class="home-bar-name" data-pres="engram:${escapeHtml(r.gid)}">${escapeHtml(r.name)}</span>`;
-    if (r.score <= 0) {
+    if (r.score < 0) {
+      return `<div class="home-bar-row home-bar-row-pending">${nameSpan}` +
+        `<span class="home-bar-track"></span><span class="home-bar-val">…</span></div>`;
+    }
+    if (r.score === 0) {
       return `<div class="home-bar-row home-bar-row-empty">${nameSpan}` +
         `<span class="home-bar-track"></span><span class="home-bar-val">empty</span></div>`;
     }
@@ -13784,7 +13805,10 @@ void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', 
   // Catch up picker + hero stats if boot broadcasts landed before subscribe.
   else if (isEngramPreloadInProgress()) {
     schedulePeriodicGreyedRefresh();
-    scheduleDebouncedFederatedStats();
+    markBootSweepCompleteIfCatalogReady();
+    seedCortexStatsFromCatalog();
+    cancelDebouncedFederatedStats();
+    void refreshCortexScopedStats();
   }
 });
 
@@ -17446,7 +17470,34 @@ function resetEngramsLoaded(): void {
 /** True while the sidecar's boot sweep still has unloaded engrams in the picker. */
 function isEngramPreloadInProgress(): boolean {
   if (_bootSweepComplete) return false;
-  return loadedGraphs.length > 0 && loadedGraphs.some((g) => g.loaded === false);
+  if (loadedGraphs.length === 0) return false;
+  // load-before-IPC: after unlock the catalog is authoritative — metadata-only
+  // rows without a .gai (e.g. graphnosis-docs) are not part of the disk sweep.
+  if (loadedGraphs.every((g) => g.loaded !== false)) return false;
+  return loadedGraphs.some((g) => g.loaded === false);
+}
+
+/** Sidecar finishes loadAllGraphsFromDisk before IPC; engrams-loading events
+ *  often fire before the UI subscribes. Treat a fully-resident catalog as done. */
+function markBootSweepCompleteIfCatalogReady(): void {
+  if (_bootSweepComplete || loadedGraphs.length === 0) return;
+  if (!loadedGraphs.every((g) => g.loaded !== false)) return;
+  _bootSweepComplete = true;
+  markEngramsLoaded();
+}
+
+/** Hero + federated strip engram count from the catalog — no inspector_stats wait. */
+function seedCortexStatsFromCatalog(): void {
+  const resident = loadedGraphs.filter((g) => g.loaded !== false);
+  if (resident.length === 0) return;
+  const engrams = resident.length;
+  if (cortexStats) {
+    cortexStats.engrams = Math.max(cortexStats.engrams, engrams);
+  } else {
+    cortexStats = { memories: 0, sources: 0, engrams };
+  }
+  const eng = document.getElementById('stat-total-engrams');
+  if (eng) eng.textContent = `${engrams} engram${engrams === 1 ? '' : 's'}`;
 }
 
 /** True when the picker shows no greyed engrams — sidecar sweep is done. */
@@ -27097,10 +27148,11 @@ async function refreshFederatedStats(): Promise<void> {
   try {
     const data = (await invoke('inspector_stats')) as { graphs: Array<{ totalNodes: number; sources: number; graphId: string }>; sources: unknown[] };
     if (gen !== cortexUiGeneration) return;
-    const active = data.graphs; // includes all engrams
+    const active = data.graphs; // includes all resident engrams (archived included)
     const totalMemories = active.reduce((s, g) => s + g.totalNodes, 0);
     const totalSources = active.reduce((s, g) => s + g.sources, 0);
-    const engrams = active.length;
+    const catalogEngrams = loadedGraphs.filter((g) => g.loaded !== false).length;
+    const engrams = Math.max(active.length, catalogEngrams);
     // Cache cortex-wide totals for the Home hero + refresh it if mounted.
     cortexStats = { memories: totalMemories, sources: totalSources, engrams };
     renderHomeDashboard();
