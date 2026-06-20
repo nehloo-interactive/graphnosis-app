@@ -6148,17 +6148,6 @@ export class GraphnosisHost {
     return dirty;
   }
 
-  /** Enterprise MCP audit export — encrypted at rest in mcp-audit.enc. */
-  async listMcpAuditEvents(): Promise<import('./mcp-audit.js').McpAuditEvent[]> {
-    const { listMcpAuditEvents } = await import('./mcp-audit.js');
-    return listMcpAuditEvents(this.opts.cortexDir, this.key);
-  }
-
-  async appendMcpAuditEvent(partial: Omit<import('./mcp-audit.js').McpAuditEvent, 'id' | 'ts'>): Promise<void> {
-    const { appendMcpAuditEvent } = await import('./mcp-audit.js');
-    await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
-  }
-
   // ── Recovery ────────────────────────────────────────────────────────────
   //
   // Replay the encrypted op-log to reconstruct sources that were lost from

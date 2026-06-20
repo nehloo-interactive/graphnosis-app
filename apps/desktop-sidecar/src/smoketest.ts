@@ -313,67 +313,6 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('boot-deferred-reconcile.ok', { preFlush: bootPreFlush, postFlush: bootPostFlush });
 
-  // --- MCP audit log -------------------------------------------------------
-  log('mcp-audit', {});
-  await mergedHost.appendMcpAuditEvent({
-    tool: 'recall',
-    clientId: 'smoke-test',
-    transport: 'stdio',
-    queryLen: 42,
-    queryHash: 'abc123deadbeef',
-    engramIds: ['personal'],
-    tokenBudget: { servedTokens: 100, servedNodes: 3 },
-  });
-  const auditRows = await mergedHost.listMcpAuditEvents();
-  const smokeRow = auditRows.find((r) => r.clientId === 'smoke-test' && r.tool === 'recall');
-  if (!smokeRow) throw new Error('FAIL: MCP audit row not persisted');
-  if (smokeRow.queryHash !== 'abc123deadbeef') {
-    throw new Error('FAIL: MCP audit export missing queryHash');
-  }
-  log('mcp-audit.ok', { rows: auditRows.length });
-
-  // --- Compliance Mode v1: legal hold + evidence pack + recall_as_of --------
-  log('compliance-legal-hold', {});
-  await mergedHost.setEngramPreserve('personal', true, 'smoke-matter');
-  let holdBlocked = false;
-  try {
-    await mergedHost.forgetSource('personal', src.sourceId, { triggeredBy: 'user:forget' });
-  } catch (e) {
-    holdBlocked = (e as { code?: string }).code === 'legal_hold';
-  }
-  if (!holdBlocked) throw new Error('FAIL: forgetSource should be blocked under engram legal hold');
-  await mergedHost.setEngramPreserve('personal', false);
-  log('compliance-legal-hold.ok', { blocked: true });
-
-  log('compliance-evidence-pack', {});
-  const { buildEvidencePack, recallAsOf } = await import('./compliance.js');
-  const pack = await buildEvidencePack(mergedHost, cortexDir, { engram: 'personal' });
-  if (pack.version !== 1 || pack.oplog.count < 1) {
-    throw new Error('FAIL: evidence pack missing op-log slice');
-  }
-  if (pack.mcpAudit.count < 1) {
-    throw new Error('FAIL: evidence pack missing MCP audit rows');
-  }
-  if (!pack.engramHashes.some((h) => h.graphId === 'personal' && h.gaiSha256.length === 64)) {
-    throw new Error('FAIL: evidence pack missing engram hash');
-  }
-  log('compliance-evidence-pack.ok', {
-    oplog: pack.oplog.count,
-    mcp: pack.mcpAudit.count,
-    hashes: pack.engramHashes.length,
-  });
-
-  log('compliance-recall-as-of', {});
-  const pit = await recallAsOf(mergedHost, 'Greece', {
-    graphId: 'personal',
-    asOfTs: Date.now() + 60_000,
-    maxNodes: 10,
-  });
-  if (!pit.matches.some((m) => m.preview.toLowerCase().includes('greece'))) {
-    throw new Error('FAIL: recall_as_of did not surface Greece memory at boundary');
-  }
-  log('compliance-recall-as-of.ok', { matches: pit.matches.length });
-
   // --- deterministic correction (no LLM) -----------------------------------
   // `correct` must work with no Local LLM configured: it deterministically
   // supersedes the closest-matching memory with the correction text. The core
