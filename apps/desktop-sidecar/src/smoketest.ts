@@ -701,6 +701,53 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('sso-group-role.ok', { resolved, fallback });
 
+  // --- OIDC ID token verification (mock JWKS — no live IdP) ----------------
+  log('sso-oidc-verify', {});
+  const http = await import('node:http');
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { signTestIdToken, verifyIdToken, extractGroupsFromClaims } = await import('@graphnosis-app/core/sso');
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const privatePem = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
+  const pubJwk = publicKey.export({ format: 'jwk' }) as { n: string; e: string };
+  const jwksBody = JSON.stringify({
+    keys: [{ kty: 'RSA', kid: 'smoke-key', n: pubJwk.n, e: pubJwk.e, alg: 'RS256', use: 'sig' }],
+  });
+  const jwksServer = http.createServer((req, res) => {
+    if (req.url === '/jwks') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(jwksBody);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => jwksServer.listen(0, '127.0.0.1', () => resolve()));
+  const addr = jwksServer.address();
+  if (!addr || typeof addr === 'string') throw new Error('smoke: jwks server address missing');
+  const now = Math.floor(Date.now() / 1000);
+  const nonce = 'smoke-nonce-abc';
+  const idToken = await signTestIdToken({
+    iss: 'https://smoke-idp.test',
+    aud: 'smoke-client-id',
+    sub: 'smoke-user-1',
+    email: 'smoke@test.corp',
+    nonce,
+    groups: ['graphnosis-editors'],
+    exp: now + 600,
+    iat: now,
+  }, privatePem, 'smoke-key');
+  const claims = await verifyIdToken(idToken, {
+    issuer: 'https://smoke-idp.test',
+    clientId: 'smoke-client-id',
+    nonce,
+    jwksUri: `http://127.0.0.1:${addr.port}/jwks`,
+  });
+  const groups = extractGroupsFromClaims(claims, 'groups');
+  if (!groups.includes('graphnosis-editors')) {
+    throw new Error(`FAIL: expected groups claim in ID token, got ${JSON.stringify(groups)}`);
+  }
+  jwksServer.close();
+  log('sso-oidc-verify.ok', { sub: claims['sub'], groups });
+
   // --- session heartbeat lease ---------------------------------------------
   log('session-lease', {});
   await writeSessionLease(cortexDir, {

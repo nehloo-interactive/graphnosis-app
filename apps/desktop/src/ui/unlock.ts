@@ -80,6 +80,86 @@ export function initUnlock(unlockEls: Record<string, HTMLElement>): void {
   wireCortexLockHandlers();
   wireLockHandler();
   void configureBiometricButton();
+  void configureSsoUnlockButton();
+}
+
+/** Show/hide Enterprise SSO unlock affordance from pre-unlock Tauri probe. */
+export async function configureSsoUnlockButton(): Promise<void> {
+  if (!IS_TAURI) return;
+  const btn = document.getElementById('btn-sso-unlock') as HTMLButtonElement | null;
+  const passphraseRow = document.querySelector('#unlock-form-card .row:has(#passphrase)') as HTMLElement | null;
+  const warning = document.querySelector('.passphrase-warning') as HTMLElement | null;
+  if (!btn) return;
+  const cortexDir = getCortexDir();
+  if (!cortexDir) {
+    btn.classList.add('hidden');
+    return;
+  }
+  try {
+    const offer = await invoke<{
+      available: boolean;
+      break_glass_passphrase: boolean;
+    }>('read_sso_unlock_offer', { cortex_dir: cortexDir });
+    if (offer.available) {
+      btn.classList.remove('hidden');
+      if (!offer.break_glass_passphrase) {
+        if (passphraseRow) passphraseRow.classList.add('hidden');
+        if (warning) warning.classList.add('hidden');
+      } else {
+        if (passphraseRow) passphraseRow.classList.remove('hidden');
+        if (warning) warning.classList.remove('hidden');
+      }
+    } else {
+      btn.classList.add('hidden');
+      if (passphraseRow) passphraseRow.classList.remove('hidden');
+      if (warning) warning.classList.remove('hidden');
+    }
+  } catch {
+    btn.classList.add('hidden');
+  }
+}
+
+/** Federated OIDC unlock — system browser + loopback callback via Tauri. */
+export async function runSsoUnlock(): Promise<void> {
+  if (!IS_TAURI) return;
+  const cortexDir = getCortexDir();
+  if (!cortexDir) {
+    app().showError('Choose a Graphnosis cortex folder first.');
+    return;
+  }
+  app().showError(null);
+  hideCortexLockCard();
+  await tryPreUnlockHeal(cortexDir);
+  if (await checkPreUnlockBusy(cortexDir)) return;
+  const proceed = await maybeShowCloudOnboarding(cortexDir);
+  if (!proceed) return;
+
+  const btn = document.getElementById('btn-sso-unlock') as HTMLButtonElement | null;
+  els.btnUnlock.disabled = true;
+  if (btn) btn.disabled = true;
+  const progressBar = document.getElementById('unlock-progress');
+  progressBar?.classList.remove('hidden');
+  els.unlockStatus.classList.remove('hidden');
+  els.bootStatusText.textContent = 'Opening company sign-in…';
+  try {
+    const status = await invoke<StatusSnapshot>('sso_unlock_cortex', {
+      cortex_dir: cortexDir,
+      preferred_default_graph: localStorage.getItem(app().LAST_ENGRAM_KEY) ?? null,
+    });
+    app().rememberCortexDir(cortexDir);
+    (els.passphrase as HTMLInputElement).value = '';
+    els.bootStatusText.textContent = '';
+    hideCortexLockCard();
+    app().render(status);
+  } catch (e) {
+    handleUnlockFailure(String(e));
+    els.bootStatusText.textContent = '';
+  } finally {
+    if (btn) btn.disabled = false;
+    if (!app().getUnlockPending()) els.btnUnlock.disabled = false;
+    progressBar?.classList.add('hidden');
+    if (!app().getUnlockPending()) els.unlockStatus.classList.add('hidden');
+  }
 }
 
 /** Lock cortex — transition UI immediately, finish shutdown in the background. */
@@ -311,8 +391,10 @@ export async function runBiometricUnlock(): Promise<void> {
 function wireUnlockHandlers(): void {
   const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
   const hint = document.getElementById('touchid-hint') as HTMLElement | null;
+  const ssoBtn = document.getElementById('btn-sso-unlock') as HTMLButtonElement | null;
   inlineBtn?.addEventListener('click', () => void runBiometricUnlock());
   hint?.addEventListener('click', () => void runBiometricUnlock());
+  ssoBtn?.addEventListener('click', () => void runSsoUnlock());
 
   (els.btnUnlock as HTMLButtonElement).addEventListener('click', async () => {
     app().showError(null);

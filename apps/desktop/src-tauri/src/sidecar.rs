@@ -165,17 +165,50 @@ fn alloc_local_port() -> Result<u16> {
 }
 
 pub async fn start(app: &AppHandle, cortex_dir: &Path, passphrase: &str, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
-    start_inner(app, cortex_dir, passphrase, None, preferred_default_graph).await
+    start_inner(app, cortex_dir, passphrase, None, None, None, preferred_default_graph).await
 }
 
 /// Start the sidecar in recovery mode: the user has their 24-word BIP-39
 /// phrase but has forgotten the passphrase. The sidecar reads `recovery.enc`
 /// from the cortex dir and decrypts it with this phrase to recover the data key.
 pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_phrase: &str, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
-    start_inner(app, cortex_dir, "", Some(recovery_phrase), preferred_default_graph).await
+    start_inner(app, cortex_dir, "", Some(recovery_phrase), None, None, preferred_default_graph).await
 }
 
-async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
+/// Enterprise SSO unlock — federated org key + resolved IdP role.
+pub async fn start_with_federated_sso(
+    app: &AppHandle,
+    cortex_dir: &Path,
+    federated_unlock_key: &str,
+    sso_role: &str,
+    sso_email: Option<&str>,
+    sso_subject: Option<&str>,
+    sso_groups_json: Option<&str>,
+    preferred_default_graph: Option<&str>,
+) -> Result<SidecarHandle> {
+    start_inner(
+        app,
+        cortex_dir,
+        "",
+        None,
+        Some(federated_unlock_key),
+        Some((sso_role, sso_email, sso_subject, sso_groups_json)),
+        preferred_default_graph,
+    )
+    .await
+}
+
+type SsoEnv<'a> = (&'a str, Option<&'a str>, Option<&'a str>, Option<&'a str>);
+
+async fn start_inner(
+    app: &AppHandle,
+    cortex_dir: &Path,
+    passphrase: &str,
+    recovery_phrase: Option<&str>,
+    federated_unlock_key: Option<&str>,
+    sso_env: Option<SsoEnv<'_>>,
+    preferred_default_graph: Option<&str>,
+) -> Result<SidecarHandle> {
     // ── Evict orphaned sidecars ───────────────────────────────────────────────
     // Orphans accumulate when the Tauri shell exits without running Drop
     // (tokio runtime-shutdown race). An orphaned sidecar keeps refreshing the
@@ -316,8 +349,23 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
     // GRAPHNOSIS_PASSPHRASE. The sidecar reads whichever is present.
     if let Some(rp) = recovery_phrase {
         cmd.env("GRAPHNOSIS_RECOVERY_PHRASE", rp);
+    } else if let Some(fk) = federated_unlock_key {
+        cmd.env("GRAPHNOSIS_FEDERATED_UNLOCK_KEY", fk);
+        cmd.env("GRAPHNOSIS_PASSPHRASE", "");
     } else {
         cmd.env("GRAPHNOSIS_PASSPHRASE", passphrase);
+    }
+    if let Some((role, email, subject, groups_json)) = sso_env {
+        cmd.env("GRAPHNOSIS_SSO_ROLE", role);
+        if let Some(e) = email {
+            cmd.env("GRAPHNOSIS_SSO_EMAIL", e);
+        }
+        if let Some(s) = subject {
+            cmd.env("GRAPHNOSIS_SSO_SUBJECT", s);
+        }
+        if let Some(g) = groups_json {
+            cmd.env("GRAPHNOSIS_SSO_GROUPS", g);
+        }
     }
 
     let mut child = cmd
@@ -799,4 +847,113 @@ const fn host_target_triple() -> &'static str {
 // to a standalone binary (`graphnosis-mcp-relay-<triple>`), Claude Desktop
 // no longer needs system Node — the helper was deleted alongside the
 // `resolve_node_and_relay()` function that used it.
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct SsoListenerSuccess {
+    pub email: Option<String>,
+    pub subject: Option<String>,
+    pub groups: Vec<String>,
+    pub resolved_role: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SsoListenerOutcome {
+    ok: bool,
+    reason: Option<String>,
+    message: Option<String>,
+    email: Option<String>,
+    subject: Option<String>,
+    groups: Option<Vec<String>>,
+    resolved_role: Option<String>,
+}
+
+/// Run the pre-unlock OIDC listener (no cortex lock). Opens the system browser
+/// when the auth URL is ready and returns the parsed outcome after IdP login.
+pub async fn run_sso_listener(
+    cortex_dir: &Path,
+    client_secret: Option<&str>,
+) -> Result<SsoListenerSuccess> {
+    let binary = resolve_sidecar_path()?;
+    let mut cmd = Command::new(&binary);
+    cmd.env("GRAPHNOSIS_SSO_LISTENER", "1")
+        .env("GRAPHNOSIS_CORTEX", cortex_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(secret) = client_secret {
+        cmd.env("GRAPHNOSIS_SSO_CLIENT_SECRET", secret);
+    }
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd.spawn().context("spawn SSO listener")?;
+    let stderr = child.stderr.take().context("SSO listener stderr")?;
+    let mut lines = BufReader::new(stderr).lines();
+
+    let mut result_line: Option<String> = None;
+    let mut browser_opened = false;
+
+    while let Some(line) = lines.next_line().await.context("read SSO listener stderr")? {
+        eprintln!("{}", line);
+        if let Some(url) = line.strip_prefix("GRAPHNOSIS_SSO_AUTH_URL:") {
+            if !browser_opened {
+                browser_opened = true;
+                open_system_url(url)?;
+            }
+        }
+        if let Some(json) = line.strip_prefix("GRAPHNOSIS_SSO_RESULT:") {
+            result_line = Some(json.to_string());
+            break;
+        }
+    }
+
+    let status = child.wait().await.context("wait for SSO listener")?;
+    let json = result_line.ok_or_else(|| anyhow!("SSO listener did not emit result"))?;
+    let outcome: SsoListenerOutcome =
+        serde_json::from_str(&json).context("parse SSO listener result")?;
+    if !outcome.ok {
+        let message = outcome
+            .message
+            .or(outcome.reason)
+            .unwrap_or_else(|| "SSO sign-in failed".to_string());
+        bail!("{message}");
+    }
+    if !status.success() {
+        bail!("SSO listener exited with status {}", status);
+    }
+    let role = outcome
+        .resolved_role
+        .ok_or_else(|| anyhow!("SSO result missing resolved_role"))?;
+    Ok(SsoListenerSuccess {
+        email: outcome.email,
+        subject: outcome.subject,
+        groups: outcome.groups.unwrap_or_default(),
+        resolved_role: role,
+    })
+}
+
+fn open_system_url(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .context("open auth URL in browser")?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .context("open auth URL in browser")?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .context("open auth URL in browser")?;
+    }
+    Ok(())
+}
 

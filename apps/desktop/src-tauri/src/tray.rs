@@ -27,6 +27,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         unlocked: false,
         cortex_dir: None,
         sidecar_running: false,
+        sso_session: None,
     }, None, launch_at_login)?;
 
     // Use the dedicated menu-bar icon (18×18, designed as a template image)
@@ -233,6 +234,7 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                     unlocked: false,
                     cortex_dir: None,
                     sidecar_running: false,
+                    sso_session: None,
                 };
                 use tauri::Emitter;
                 let _ = app_clone.emit("graphnosis://status", &snapshot);
@@ -261,6 +263,7 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                         unlocked: inner.sidecar.is_some(),
                         cortex_dir: inner.cortex_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
                         sidecar_running: inner.sidecar.is_some(),
+                        sso_session: inner.sso_session.clone(),
                     }
                 };
                 if let Some(tray) = app_clone.tray_by_id("graphnosis-tray") {

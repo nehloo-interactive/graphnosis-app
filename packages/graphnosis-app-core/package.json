@@ -12,7 +12,8 @@
     "./sources": "./dist/sources/index.js",
     "./embeddings": "./dist/embeddings/index.js",
     "./settings": "./dist/settings/index.js",
-    "./cortex": "./dist/cortex/index.js"
+    "./cortex": "./dist/cortex/index.js",
+    "./sso": "./dist/sso/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

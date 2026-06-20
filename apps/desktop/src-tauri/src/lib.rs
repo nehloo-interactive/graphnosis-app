@@ -53,6 +53,8 @@ struct AppInner {
     /// Bumped on lock / sidecar replacement so the exit watchdog ignores
     /// intentional shutdowns and stale tasks from prior unlock attempts.
     sidecar_watch_generation: u64,
+    /// Set when unlocked via Enterprise SSO (IdP + federated org key).
+    sso_session: Option<SsoSessionSnapshot>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,10 +78,47 @@ pub struct RecoveryUnlockArgs {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct SsoSessionSnapshot {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SsoUnlockOffer {
+    pub available: bool,
+    pub enabled: bool,
+    pub configured: bool,
+    pub protocol: String,
+    pub break_glass_passphrase: bool,
+    pub federated_unlock_ready: bool,
+    pub group_mapping_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SsoUnlockArgs {
+    pub cortex_dir: String,
+    #[serde(default)]
+    pub preferred_default_graph: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SsoKeychainSyncArgs {
+    pub cortex_dir: String,
+    pub federated_unlock_key: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct StatusSnapshot {
     pub unlocked: bool,
     pub cortex_dir: Option<String>,
     pub sidecar_running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sso_session: Option<SsoSessionSnapshot>,
 }
 
 /// Touch ID readiness for a cortex path — returned by `biometric_available`.
@@ -119,6 +158,7 @@ async fn emit_locked_status(app: &AppHandle) {
             unlocked: false,
             cortex_dir: None,
             sidecar_running: false,
+            sso_session: None,
         },
     )
     .await;
@@ -163,6 +203,7 @@ fn spawn_sidecar_watchdog(app: AppHandle, inner: Arc<AsyncMutex<AppInner>>, pid:
                 }
                 guard.cortex_dir = None;
                 guard.unlocked_via_recovery = false;
+                guard.sso_session = None;
                 stop_sidecar_session(&mut guard).await;
                 true
             };
@@ -181,6 +222,7 @@ async fn adopt_sidecar_session(
     cortex_dir: PathBuf,
     handle: sidecar::SidecarHandle,
     via_recovery: bool,
+    sso_session: Option<SsoSessionSnapshot>,
 ) -> StatusSnapshot {
     let pid = handle.pid();
     let events_path = handle.events_socket_path.clone();
@@ -189,6 +231,7 @@ async fn adopt_sidecar_session(
         inner.cortex_dir = Some(cortex_dir);
         inner.sidecar = Some(handle);
         inner.unlocked_via_recovery = via_recovery;
+        inner.sso_session = sso_session;
         inner.event_stream = Some(event_stream::spawn(app.clone(), events_path));
         inner.sidecar_watch_generation = inner.sidecar_watch_generation.wrapping_add(1);
         inner.sidecar_watch_generation
@@ -200,6 +243,140 @@ async fn adopt_sidecar_session(
 }
 
 // ---------- commands -----------------------------------------------------
+
+#[tauri::command]
+fn read_sso_unlock_offer(cortex_dir: String) -> Result<SsoUnlockOffer, String> {
+    let path = PathBuf::from(&cortex_dir).join("settings.json");
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("could not read settings.json: {e}"))?;
+    let settings: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid settings.json: {e}"))?;
+    let sso = settings.get("sso");
+    let enabled = sso.and_then(|v| v.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let protocol = sso
+        .and_then(|v| v.get("protocol"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("oidc")
+        .to_string();
+    let break_glass = sso
+        .and_then(|v| v.get("breakGlassPassphrase"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let federated_ready = sso
+        .and_then(|v| v.get("federatedUnlockReady"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let issuer = sso.and_then(|v| v.get("oidc")).and_then(|o| o.get("issuer")).and_then(|v| v.as_str()).unwrap_or("");
+    let client_id = sso.and_then(|v| v.get("oidc")).and_then(|o| o.get("clientId")).and_then(|v| v.as_str()).unwrap_or("");
+    let configured = !issuer.is_empty() && !client_id.is_empty();
+    let group_mapping_count = sso
+        .and_then(|v| v.get("groupRoleMappings"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.len() as u32)
+        .unwrap_or(0);
+    let mut reason: Option<String> = None;
+    if !configured {
+        reason = Some("not_configured".to_string());
+    } else if !enabled {
+        reason = Some("disabled".to_string());
+    } else if !federated_ready {
+        reason = Some("federated_key_not_provisioned".to_string());
+    } else if protocol != "oidc" {
+        reason = Some("saml_not_supported_yet".to_string());
+    }
+    let available = configured && enabled && federated_ready && protocol == "oidc";
+    Ok(SsoUnlockOffer {
+        available,
+        enabled,
+        configured,
+        protocol,
+        break_glass_passphrase: break_glass,
+        federated_unlock_ready: federated_ready,
+        group_mapping_count,
+        reason,
+    })
+}
+
+#[tauri::command]
+fn sso_store_keychain(args: SsoKeychainSyncArgs) -> Result<(), String> {
+    let secrets = keychain::SsoKeychainSecrets {
+        federated_unlock_key: args.federated_unlock_key,
+        client_secret: args.client_secret,
+    };
+    keychain::store_sso_secrets(&args.cortex_dir, &secrets).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn sso_unlock_cortex(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    args: SsoUnlockArgs,
+) -> Result<StatusSnapshot, String> {
+    let cortex_dir = PathBuf::from(&args.cortex_dir);
+    if !cortex_dir.is_dir() {
+        return Err(format!("cortex folder does not exist: {}", args.cortex_dir));
+    }
+    let offer = read_sso_unlock_offer(args.cortex_dir.clone())?;
+    if !offer.available {
+        return Err(
+            offer
+                .reason
+                .map(|r| format!("SSO unlock unavailable: {r}"))
+                .unwrap_or_else(|| "SSO unlock is not available for this cortex".to_string()),
+        );
+    }
+    let secrets = keychain::load_sso_secrets(&args.cortex_dir)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            "SSO credentials are not stored on this Mac. Ask your admin to save Enterprise SSO \
+             settings once while unlocked on this device."
+                .to_string()
+        })?;
+
+    {
+        let mut inner = state.inner.lock().await;
+        stop_sidecar_session(&mut inner).await;
+    }
+
+    let listener_result = sidecar::run_sso_listener(
+        &cortex_dir,
+        secrets.client_secret.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let groups_json = serde_json::to_string(&listener_result.groups)
+        .map_err(|e| format!("serialize SSO groups: {e}"))?;
+
+    let handle = sidecar::start_with_federated_sso(
+        &app,
+        &cortex_dir,
+        &secrets.federated_unlock_key,
+        &listener_result.resolved_role,
+        listener_result.email.as_deref(),
+        listener_result.subject.as_deref(),
+        Some(&groups_json),
+        args.preferred_default_graph.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let sso_session = Some(SsoSessionSnapshot {
+        role: listener_result.resolved_role,
+        email: listener_result.email,
+    });
+
+    Ok(
+        adopt_sidecar_session(
+            &app,
+            &state,
+            cortex_dir,
+            handle,
+            false,
+            sso_session,
+        )
+        .await,
+    )
+}
 
 #[tauri::command]
 async fn pick_cortex_folder(app: AppHandle) -> Result<Option<String>, String> {
@@ -254,6 +431,7 @@ async fn unlock_cortex(
         cortex_dir.clone(),
         handle,
         false,
+        None,
     )
     .await;
 
@@ -346,6 +524,7 @@ async fn unlock_cortex_with_recovery(
         cortex_dir.clone(),
         handle,
         true,
+        None,
     )
     .await;
 
@@ -724,6 +903,7 @@ async fn lock_cortex(app: AppHandle, state: State<'_, AppState>) -> Result<Statu
         unlocked: false,
         cortex_dir: None,
         sidecar_running: false,
+        sso_session: None,
     };
     emit_status_snapshot(&app, &snapshot).await;
     Ok(snapshot)
@@ -2752,6 +2932,7 @@ fn install_app_menu(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                             unlocked: inner.sidecar.is_some(),
                             cortex_dir: inner.cortex_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
                             sidecar_running: inner.sidecar.is_some(),
+                            sso_session: inner.sso_session.clone(),
                         }
                     };
                     tray::refresh_status_with_autostart(&app_inner, &snapshot, new_state);
@@ -3306,6 +3487,7 @@ async fn current_status(state: &State<'_, AppState>) -> StatusSnapshot {
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned()),
         sidecar_running: inner.sidecar.is_some(),
+        sso_session: inner.sso_session.clone(),
     }
 }
 
@@ -3362,6 +3544,9 @@ pub fn run() {
             create_cortex_dir,
             unlock_cortex,
             unlock_cortex_with_recovery,
+            read_sso_unlock_offer,
+            sso_store_keychain,
+            sso_unlock_cortex,
             biometric_available,
             biometric_unlock,
             change_passphrase,

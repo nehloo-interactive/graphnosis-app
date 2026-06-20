@@ -4,6 +4,7 @@ export interface StatusSnapshot {
   unlocked: boolean;
   cortex_dir: string | null;
   sidecar_running: boolean;
+  sso_session?: { role: string; email?: string | null } | null;
 }
 
 /** Result of probing Touch ID readiness for a cortex path (Tauri desktop). */

@@ -45,6 +45,13 @@ interface CliEnv {
   llmId?: string;
   /** Set when Tauri starts the sidecar in recovery mode (forgot passphrase). */
   recoveryPhrase?: string;
+  /** Federated org unlock key (Enterprise SSO Phase 2). */
+  federatedUnlockKey?: string;
+  /** Resolved sharing role when unlocked via IdP. */
+  ssoRole?: string;
+  ssoEmail?: string;
+  ssoSubject?: string;
+  ssoGroups?: string[];
 }
 
 function loadEnv(): CliEnv {
@@ -56,15 +63,31 @@ function loadEnv(): CliEnv {
   // Recovery mode: user provided 24-word phrase instead of passphrase.
   // GRAPHNOSIS_PASSPHRASE is not set (or ignored) in this case.
   const recoveryPhrase = process.env.GRAPHNOSIS_RECOVERY_PHRASE;
+  const federatedUnlockKey = process.env.GRAPHNOSIS_FEDERATED_UNLOCK_KEY?.trim() || undefined;
+  const ssoGroupsRaw = process.env.GRAPHNOSIS_SSO_GROUPS;
+  let ssoGroups: string[] | undefined;
+  if (ssoGroupsRaw) {
+    try {
+      const parsed = JSON.parse(ssoGroupsRaw) as unknown;
+      if (Array.isArray(parsed)) {
+        ssoGroups = parsed.filter((g): g is string => typeof g === 'string');
+      }
+    } catch { /* ignore malformed */ }
+  }
   return {
     cortexDir: required('GRAPHNOSIS_CORTEX'),
-    passphrase: recoveryPhrase
+    passphrase: recoveryPhrase || federatedUnlockKey
       ? (process.env.GRAPHNOSIS_PASSPHRASE ?? '')
       : required('GRAPHNOSIS_PASSPHRASE'),
     deviceId: process.env.GRAPHNOSIS_DEVICE_ID ?? `${os.hostname()}-${process.pid}`,
     defaultGraph: process.env.GRAPHNOSIS_DEFAULT_GRAPH ?? 'personal',
     ...(process.env.GRAPHNOSIS_LLM ? { llmId: process.env.GRAPHNOSIS_LLM } : {}),
     ...(recoveryPhrase ? { recoveryPhrase } : {}),
+    ...(federatedUnlockKey ? { federatedUnlockKey } : {}),
+    ...(process.env.GRAPHNOSIS_SSO_ROLE ? { ssoRole: process.env.GRAPHNOSIS_SSO_ROLE } : {}),
+    ...(process.env.GRAPHNOSIS_SSO_EMAIL ? { ssoEmail: process.env.GRAPHNOSIS_SSO_EMAIL } : {}),
+    ...(process.env.GRAPHNOSIS_SSO_SUBJECT ? { ssoSubject: process.env.GRAPHNOSIS_SSO_SUBJECT } : {}),
+    ...(ssoGroups ? { ssoGroups } : {}),
   };
 }
 
@@ -624,7 +647,25 @@ async function main(): Promise<void> {
     embedDimensions,
     ...(policyCfg ? { policy: policyCfg } : {}),
     ...(env.recoveryPhrase ? { recoveryPhrase: env.recoveryPhrase } : {}),
+    ...(env.federatedUnlockKey ? { federatedUnlockKey: env.federatedUnlockKey } : {}),
   });
+
+  if (env.ssoRole) {
+    const mappings = host.getSettings().sso?.groupRoleMappings ?? [];
+    await host.setSettings({
+      sso: {
+        ...(host.getSettings().sso ?? { enabled: true, protocol: 'oidc', breakGlassPassphrase: true, groupRoleMappings: mappings }),
+        lastLogin: {
+          at: Date.now(),
+          ...(env.ssoEmail ? { email: env.ssoEmail } : {}),
+          ...(env.ssoSubject ? { subject: env.ssoSubject } : {}),
+          ...(env.ssoGroups ? { groups: env.ssoGroups } : {}),
+          resolvedRole: env.ssoRole as import('@graphnosis-app/core/settings').SharingRole,
+        },
+      },
+    });
+    console.error(`[graphnosis-sidecar] SSO unlock session — role=${env.ssoRole}`);
+  }
 
   host.setBootPhaseActive(true);
 
@@ -1008,6 +1049,14 @@ async function main(): Promise<void> {
     brainEngine,
     skillTrainer,
     licenseValidator,
+    ...(env.ssoRole
+      ? {
+          sharingScope: {
+            role: env.ssoRole as import('@graphnosis-app/core/settings').SharingRole,
+            engrams: '*' as const,
+          },
+        }
+      : {}),
   };
 
   // MCP server over Unix socket. Lets multiple clients (Claude Desktop via
@@ -1129,6 +1178,15 @@ async function main(): Promise<void> {
     licenseValidator,
     proactiveWatcher,
     callMcpTool,
+    ...(env.ssoRole
+      ? {
+          ssoSession: {
+            role: env.ssoRole as import('@graphnosis-app/core/settings').SharingRole,
+            ...(env.ssoEmail ? { email: env.ssoEmail } : {}),
+            ...(env.ssoSubject ? { subject: env.ssoSubject } : {}),
+          },
+        }
+      : {}),
   };
 
   // Unlock soon after the default engram — Tauri waits on the IPC socket, not

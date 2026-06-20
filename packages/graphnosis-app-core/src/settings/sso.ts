@@ -68,6 +68,18 @@ export interface EnterpriseSsoSettings {
   saml?: SamlSsoConfig;
   groupRoleMappings: IdpGroupRoleMapping[];
   lastLogin?: SsoLastLogin;
+  /**
+   * True once `federated.master.enc` has been provisioned for IdP unlock.
+   * Written when an owner enables SSO while unlocked.
+   */
+  federatedUnlockReady?: boolean;
+  /**
+   * Org federated unlock key (in-memory during save). On disk: `federatedUnlockKeyEnc`
+   * encrypted with the cortex data key. Also mirrored to the OS credential store
+   * on each Mac where SSO settings are saved (required for pre-unlock IdP flow).
+   */
+  federatedUnlockKey?: string;
+  federatedUnlockKeyEnc?: string;
 }
 
 export const DEFAULT_OIDC_SCOPES = ['openid', 'profile', 'email'] as const;
@@ -149,6 +161,7 @@ export interface EnterpriseSsoPublicView {
   groupRoleMappings: IdpGroupRoleMapping[];
   lastLogin?: SsoLastLogin;
   configured: boolean;
+  federatedUnlockReady: boolean;
 }
 
 export function enterpriseSsoPublicView(
@@ -176,6 +189,7 @@ export function enterpriseSsoPublicView(
     groupRoleMappings: [...base.groupRoleMappings],
     ...(base.lastLogin ? { lastLogin: { ...base.lastLogin } } : {}),
     configured: isEnterpriseSsoConfigured(base),
+    federatedUnlockReady: base.federatedUnlockReady === true,
   };
 }
 
@@ -254,6 +268,18 @@ export function sanitizeEnterpriseSsoSettings(
     }
   }
 
+  let federatedUnlockReady: boolean | undefined;
+  if (raw.federatedUnlockReady === true) federatedUnlockReady = true;
+
+  let federatedUnlockKey: string | undefined;
+  let federatedUnlockKeyEnc: string | undefined;
+  if (typeof raw.federatedUnlockKey === 'string' && raw.federatedUnlockKey.length > 0) {
+    federatedUnlockKey = raw.federatedUnlockKey;
+  }
+  if (typeof raw.federatedUnlockKeyEnc === 'string' && raw.federatedUnlockKeyEnc.length > 0) {
+    federatedUnlockKeyEnc = raw.federatedUnlockKeyEnc;
+  }
+
   return {
     enabled: raw.enabled === true,
     protocol,
@@ -262,5 +288,8 @@ export function sanitizeEnterpriseSsoSettings(
     ...(saml ? { saml } : {}),
     groupRoleMappings: mappings,
     ...(lastLogin ? { lastLogin } : {}),
+    ...(federatedUnlockReady ? { federatedUnlockReady } : {}),
+    ...(federatedUnlockKey ? { federatedUnlockKey } : {}),
+    ...(federatedUnlockKeyEnc ? { federatedUnlockKeyEnc } : {}),
   };
 }
