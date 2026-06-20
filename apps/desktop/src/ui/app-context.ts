@@ -73,6 +73,7 @@ export interface AppContext {
   clearAtlasGraphData: () => void;
   switchActiveEngram: (graphId: string) => Promise<void>;
   getIngestJobCount: () => number;
+  renderStatusProcess: () => void;
 }
 
 export interface QuarantineConfirmOptions {
