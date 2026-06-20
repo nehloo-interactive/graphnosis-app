@@ -6679,6 +6679,61 @@ OUTPUT RULES — non-negotiable:
       return { ok: true, count: events.length, events, mcpCount: mcpEvents.length, mcpEvents };
     }
 
+    case 'compliance.setEngramPreserve': {
+      const args = z.object({
+        graphId: z.string(),
+        preserved: z.boolean(),
+        matter: z.string().optional(),
+      }).parse(params);
+      await deps.host.setEngramPreserve(args.graphId, args.preserved, args.matter);
+      return { ok: true };
+    }
+
+    case 'compliance.setSourceLegalHold': {
+      const args = z.object({
+        graphId: z.string(),
+        sourceId: z.string(),
+        held: z.boolean(),
+        matter: z.string().optional(),
+      }).parse(params);
+      await deps.host.setSourceLegalHold(args.graphId, args.sourceId, args.held, args.matter);
+      return { ok: true };
+    }
+
+    case 'compliance.exportEvidencePack': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return { ok: false, reason: 'not_licensed', message: 'Evidence Pack export requires an Enterprise license.' };
+      }
+      if (!deps.cortexDir) return { ok: false, reason: 'no_cortex_dir' };
+      const args = z.object({
+        since: z.number().optional(),
+        until: z.number().optional(),
+        engram: z.string().optional(),
+      }).parse(params ?? {});
+      const { buildEvidencePack } = await import('./compliance.js');
+      const pack = await buildEvidencePack(deps.host, deps.cortexDir, {
+        ...(args.since !== undefined ? { since: args.since } : {}),
+        ...(args.until !== undefined ? { until: args.until } : {}),
+        ...(args.engram !== undefined ? { engram: args.engram } : {}),
+      });
+      return { ok: true, pack };
+    }
+
+    case 'compliance.runRetention': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return { ok: false, reason: 'not_licensed', message: 'Retention purge requires an Enterprise license.' };
+      }
+      if (!deps.cortexDir) return { ok: false, reason: 'no_cortex_dir' };
+      const args = z.object({ dryRun: z.boolean().optional() }).parse(params ?? {});
+      const { runRetentionPurge } = await import('./compliance.js');
+      const result = await runRetentionPurge(deps.host, deps.cortexDir, args.dryRun === true);
+      return { ok: true, ...result };
+    }
+
     default:
       throw new Error(`Unknown IPC method: ${method}`);
   }

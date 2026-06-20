@@ -13165,6 +13165,17 @@ ollama list</code></pre>
                   <button id="activity-date-clear" class="btn-sm activity-date-clear hidden" title="Clear the date and hour filters">Clear</button>
                 </div>
                 <span id="activity-stats" class="subtitle"></span>
+                <!-- Enterprise-only: compliance Evidence Pack (op-log + consent + MCP audit + hashes) -->
+                <div id="activity-compliance-section" class="panel activity-compliance-section" style="display: none; margin-bottom: 0;">
+                  <p class="panel-title" style="margin: 0 0 4px;">Compliance export</p>
+                  <p class="subtitle activity-compliance-hint" style="font-size: 13px; margin: 0 0 10px;">
+                    Structured Evidence Pack for auditors — op-log, consent records, MCP audit trail, and engram file hashes.
+                    Respects the date range and engram scope filters above.
+                  </p>
+                  <button id="btn-activity-evidence-export" type="button" title="Download a JSON Evidence Pack for compliance review or SIEM ingestion">
+                    Export Evidence Pack (.json)
+                  </button>
+                </div>
               </div>
               <div id="activity-mcp-toolbar" class="activity-toolbar hidden">
                 <div id="mcp-activity-rollup" class="mcp-activity-rollup" aria-live="polite"></div>
