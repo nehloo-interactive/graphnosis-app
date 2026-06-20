@@ -9,8 +9,8 @@
  *   1. Parse and chunk the authored skill source (deterministic). Train-time
  *      recall is scoped to an **empty engram** — no federated pull from coding,
  *      notes, or other personal engrams (see ENABLE_CORTEX_RECALL_AT_TRAIN).
- *   2. Optional Pro path: local LLM rewrite when useLlmRewrite=true and a
- *      reachable LLM is available — still with empty train-time recall context.
+ *   2. Optional Pro path: SOP-preserving local LLM rewrite when useLlmRewrite=true
+ *      and a reachable LLM is available — polishes prose without cortex recall.
  *   3. Save the trained version into the Skills engram (in-place rewrite).
  *      Personal context belongs at walk/runtime via recallRecipes, not here.
  *
@@ -27,6 +27,11 @@ import { ingestClip } from './ingest.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { SkillCallLinkStore, SkillCallLink } from './skill-call-links.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
+import {
+  SKILL_SOP_REWRITE_SYSTEM_PROMPT,
+  buildSopRewriteUserPrompt,
+  validateSopPreservation,
+} from './skill-sop-rewrite.js';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -63,13 +68,9 @@ export interface TrainSkillInput {
   /** Structured goals — drives goal-aligned recall to surface targeted memories. */
   goals?: import('./gsk-format.js').SkillGoals;
   /**
-   * Opt-in: when true, attempt the local-LLM rewrite path for inline memory
-   * attribution. Default false — the trainer chunks the user's pasted text
-   * into paragraph nodes as-is (same path as .gsk import). Fast,
-   * deterministic, never hangs on a large input. The LLM rewrite is only
-   * helpful when the user wants their skill PERSONALIZED against recalled
-   * memories with `(from memory: ...)` markers woven inline — most SOP-style
-   * skills don't need that.
+   * Opt-in: when true, run the SOP-preserving local-LLM rewrite path — clarity
+   * polish only, no personal memory woven in (empty-engram contract). Default
+   * false — the trainer chunks the user's pasted text into paragraph nodes as-is.
    */
   useLlmRewrite?: boolean;
 }
@@ -610,47 +611,49 @@ export class SkillTrainer {
     // paragraph becomes its own `role: 'recalled-memory'` chunk on save.
     let recalledParagraphs: string[] = [];
 
-    // OPT-IN: the LLM rewrite is now off by default. The frontend's compose
-    // form ships useLlmRewrite=false unless the user explicitly checks
-    // "Personalize with local LLM". MCP callers (no UI) get the same default,
-    // so external clients don't accidentally trigger a slow rewrite on a
-    // huge skill text. They can opt in by passing useLlmRewrite=true.
+    // OPT-IN: SOP-preserving LLM rewrite — off by default. Desktop UI exposes
+    // an advanced checkbox; MCP callers pass useLlmRewrite=true explicitly.
     const wantsLlmRewrite = input.useLlmRewrite === true;
     const llmReady = wantsLlmRewrite && this.llm !== null && await this.pingLlm();
 
-    if (llmReady && hasRelevantMemories) {
-      // LLM path — full rewrite with memory attribution. When the caller
-      // wired an onChunk callback AND the underlying LLM supports streaming,
-      // we pipe each token through onChunk so the UI can render a live
-      // progressive diff. Otherwise fall back to the single-shot complete().
-      onStatus?.('Personalizing with the local LLM…');
+    if (llmReady) {
+      // SOP-preserving rewrite — no memory context (empty-engram contract).
+      onStatus?.('Polishing skill structure with local LLM…');
       try {
         const raw = await this.llmCompleteWithTimeout(
           {
-            system: SKILL_TRAINING_SYSTEM_PROMPT,
-            user: buildTrainingUserPrompt(skill, context.subgraph, skillName, modelTarget, input.goals),
+            system: SKILL_SOP_REWRITE_SYSTEM_PROMPT,
+            user: buildSopRewriteUserPrompt(skill, skillName, modelTarget, input.goals),
           },
-          // Stream timeout is generous (5min) since the user can watch
-          // it work and cancel manually. Non-streaming keeps the
-          // original 20s cap to avoid hanging Brain background loops.
           onChunk && this.llm?.completeStream ? 5 * 60 * 1000 : 20_000,
           onChunk,
         );
         const parsed = parseTrainingResult(skill, raw);
-        trained = parsed.trained;
-        diffNotes = parsed.diffNotes;
-        mode = 'llm';
+        const preservation = validateSopPreservation(skill, parsed.trained);
+        if (!preservation.ok) {
+          trained = skill;
+          diffNotes = undefined;
+          mode = 'memory-augmented';
+          degradedNote =
+            `LLM rewrite dropped SOP markers (${preservation.missing.slice(0, 3).join('; ')}` +
+            `${preservation.missing.length > 3 ? '…' : ''}). Kept original text.`;
+        } else {
+          trained = parsed.trained;
+          diffNotes = parsed.diffNotes;
+          mode = 'llm';
+        }
       } catch (err) {
-        // LLM timeout or error — degrade gracefully
-        recalledParagraphs = buildMemoryAugmented(context.subgraph);
-        trained = recalledParagraphs.length > 0
-          ? `${skill}\n\n${recalledParagraphs.join('\n\n')}`
-          : skill;
+        trained = skill;
         mode = 'memory-augmented';
         degradedNote =
-          `Local LLM was available but timed out (${(err as Error).message}). ` +
-          `Fell back to memory-augmented mode — relevant memories are appended below the skill.`;
+          `Local LLM rewrite failed (${(err as Error).message}). Kept original skill text.`;
       }
+    } else if (wantsLlmRewrite && !llmReady) {
+      trained = skill;
+      mode = 'memory-augmented';
+      degradedNote =
+        'Local LLM is not enabled or unreachable. Enable distillation in Settings → Local LLM, ' +
+        'or leave "Polish with local LLM" unchecked for fast chunk-and-save.';
     } else if (!llmReady && hasRelevantMemories) {
       // No LLM — append memories as context paragraphs (saved as separate
       // 'recalled-memory' chunks below; the joined `trained` string is just

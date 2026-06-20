@@ -2637,13 +2637,8 @@ function readSkillsComposeForm(): {
   if (modelTarget !== undefined) (result as { modelTarget?: string }).modelTarget = modelTarget;
   (result as { save?: boolean }).save = save;
   (result as { recallBreadth?: number | null }).recallBreadth = Number.isFinite(breadth as number) ? breadth : null;
-  // useLlmRewrite is INTENTIONALLY NOT SET from the desktop. The trainer's
-  // default (chunk-and-save) is the only path the desktop UI exposes — fast,
-  // deterministic, and structurally compatible with the SOP architecture
-  // (preserves @skill: / @loop: / Trigger: / Requires: etc. that the LLM
-  // would silently rephrase). MCP callers can still opt in by passing
-  // useLlmRewrite=true directly. See Graphnosis memory:
-  // "TODO: SOP-preserving LLM rewrite" for what's needed to re-introduce.
+  const useLlmRewrite = (document.getElementById('skills-input-llm-rewrite') as HTMLInputElement | null)?.checked === true;
+  if (useLlmRewrite) (result as { useLlmRewrite?: boolean }).useLlmRewrite = true;
   (result as { goals?: typeof goals }).goals = goals;
   return result;
 }

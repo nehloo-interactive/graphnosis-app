@@ -11931,10 +11931,21 @@
                                   <ol id="skills-chunk-preview-list" class="skills-chunk-preview-list"></ol>
                                   <span id="skills-chunk-preview-more" class="skills-chunk-preview-more"></span>
                                 </div>
-                                <!-- Training uses deterministic paragraph chunking (no LLM rewrite
-                                     toggle in the desktop UI). MCP callers may pass
-                                     useLlmRewrite=true; the desktop always uses the fast,
-                                     SOP-structure-preserving chunk-and-save path. -->
+                                <!-- Default: deterministic chunk-and-save. Advanced opt-in runs
+                                     SOP-preserving local LLM polish (keeps @skill:, @loop:, etc.). -->
+                                <label class="skills-field skills-advanced-opt" id="skills-llm-rewrite-wrap">
+                                  <span class="skills-field-label">
+                                    Advanced
+                                    <span class="skills-field-label-opt">(optional)</span>
+                                  </span>
+                                  <label class="skills-checkbox-row">
+                                    <input id="skills-input-llm-rewrite" type="checkbox" />
+                                    <span>Polish with local LLM — preserves SOP structure (@skill:, @loop:, Trigger:, …)</span>
+                                  </label>
+                                  <span class="subtitle" style="font-size: 11px; margin-top: 4px;">
+                                    Requires Local LLM with distillation enabled. No personal memory is woven in at train time.
+                                  </span>
+                                </label>
 
                                 <label class="skills-field">
                                   <span class="skills-field-label">Skill name</span>
