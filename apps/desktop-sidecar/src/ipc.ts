@@ -43,10 +43,22 @@ import {
   isEnterpriseSsoConfigured,
   resolveRoleFromIdpGroups,
   sanitizeEnterpriseSsoSettings,
+  sanitizeCortexCatalogEntry,
+  sanitizeCortexCatalogSettings,
+  cortexCatalogPublicEntry,
+  resolveCatalogEntitlements,
+  buildMdmCatalogBundle,
+  generateCatalogEntryId,
   type SharingRole,
   type EnterpriseSsoSettings,
   type IdpGroupRoleMapping,
+  type CortexCatalogEntry,
 } from '@graphnosis-app/core/settings';
+import {
+  readCatalogSubscriptions,
+  subscribeCatalogEntry,
+  unsubscribeCatalogEntry,
+} from './catalog-subscriptions.js';
 import { readSsoUnlockOffer, discoverSsoUnlock, idpUiHints, probeIdpReachability } from '@graphnosis-app/core/sso';
 import {
   isCortexSessionBusy,
@@ -588,6 +600,19 @@ async function getEffectiveLicenseToken(deps: IpcDeps): Promise<string | null> {
     return 1;
   };
   return tier(domain) >= tier(primary) ? domain : primary;
+}
+
+async function hasEnterpriseAccess(deps: IpcDeps): Promise<boolean> {
+  const licenseToken = await getEffectiveLicenseToken(deps);
+  const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+  const settings = deps.host.getSettings();
+  const domainSeat = (settings.domainSeatLicenseToken ?? null) !== null
+    && deps.licenseValidator?.verifyToken(settings.domainSeatLicenseToken ?? '') !== null;
+  return hasEnterprise || domainSeat;
+}
+
+function catalogEntriesFromSettings(deps: IpcDeps): CortexCatalogEntry[] {
+  return deps.host.getSettings().cortexCatalog?.entries ?? [];
 }
 
 export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
@@ -6797,6 +6822,183 @@ OUTPUT RULES — non-negotiable:
         role,
         label: SHARING_ROLE_LABELS[role] ?? role,
       };
+    }
+
+    case 'catalog:list': {
+      const entries = catalogEntriesFromSettings(deps);
+      const args = z.object({
+        includeUnpublished: z.boolean().optional(),
+      }).parse(params ?? {});
+      const includeUnpublished = args.includeUnpublished === true
+        && await hasEnterpriseAccess(deps);
+      const visible = includeUnpublished
+        ? entries
+        : entries.filter((e) => e.published !== false);
+      const subs = await readCatalogSubscriptions();
+      return {
+        ok: true,
+        entries: visible.map(cortexCatalogPublicEntry),
+        subscribedCatalogIds: subs.subscribedCatalogIds,
+      };
+    }
+
+    case 'catalog:upsert': {
+      if (!await hasEnterpriseAccess(deps)) {
+        return {
+          ok: false,
+          reason: 'enterprise_required',
+          message: 'Organization Cortex Catalog requires an Enterprise license.',
+        };
+      }
+      const args = z.object({
+        entry: z.object({
+          id: z.string().max(64).optional(),
+          cortexId: z.string().min(1).max(128),
+          displayName: z.string().min(1).max(256),
+          region: z.string().max(128).optional(),
+          kind: z.enum(['org', 'hub-package', 'personal']),
+          requiredIdpGroups: z.array(z.string().max(256)).max(64).optional(),
+          defaultRole: z.enum(SHARING_TOKEN_ROLES as unknown as [SharingRole, ...SharingRole[]]).optional(),
+          mdmBundleId: z.string().max(128).optional(),
+          hubPackageEngramIds: z.array(z.string().max(128)).max(256).optional(),
+          ssoProfileRef: z.string().max(64).optional(),
+          cortexPath: z.string().max(512).optional(),
+          published: z.boolean().optional(),
+        }),
+      }).parse(params ?? {});
+      const e = args.entry;
+      const sanitized = sanitizeCortexCatalogEntry({
+        id: e.id?.trim() || generateCatalogEntryId(),
+        cortexId: e.cortexId,
+        displayName: e.displayName,
+        kind: e.kind,
+        requiredIdpGroups: e.requiredIdpGroups ?? [],
+        hubPackageEngramIds: e.hubPackageEngramIds ?? [],
+        ...(e.region !== undefined ? { region: e.region } : {}),
+        ...(e.defaultRole !== undefined ? { defaultRole: e.defaultRole } : {}),
+        ...(e.mdmBundleId !== undefined ? { mdmBundleId: e.mdmBundleId } : {}),
+        ...(e.ssoProfileRef !== undefined ? { ssoProfileRef: e.ssoProfileRef } : {}),
+        ...(e.cortexPath !== undefined ? { cortexPath: e.cortexPath } : {}),
+        ...(e.published !== undefined ? { published: e.published } : {}),
+      });
+      if (!sanitized) {
+        return { ok: false, reason: 'invalid_entry', message: 'Catalog entry failed validation.' };
+      }
+      const current = deps.host.getSettings();
+      const prev = current.cortexCatalog?.entries ?? [];
+      const idx = prev.findIndex((e) => e.id === sanitized.id);
+      const nextEntries = idx >= 0
+        ? prev.map((e, i) => (i === idx ? sanitized : e))
+        : [...prev, sanitized];
+      await deps.host.setSettings({
+        ...current,
+        cortexCatalog: sanitizeCortexCatalogSettings({ entries: nextEntries, version: 1 })
+          ?? { entries: nextEntries, version: 1 },
+      });
+      return { ok: true, entry: cortexCatalogPublicEntry(sanitized) };
+    }
+
+    case 'catalog:delete': {
+      if (!await hasEnterpriseAccess(deps)) {
+        return {
+          ok: false,
+          reason: 'enterprise_required',
+          message: 'Organization Cortex Catalog requires an Enterprise license.',
+        };
+      }
+      const args = z.object({ catalogId: z.string().min(1).max(64) }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prev = current.cortexCatalog?.entries ?? [];
+      const nextEntries = prev.filter((e) => e.id !== args.catalogId);
+      if (nextEntries.length === prev.length) {
+        return { ok: false, reason: 'not_found', message: 'Catalog entry not found.' };
+      }
+      await deps.host.setSettings({
+        ...current,
+        cortexCatalog: { entries: nextEntries, version: 1 },
+      });
+      return { ok: true };
+    }
+
+    case 'catalog:subscribe': {
+      const args = z.object({ catalogId: z.string().min(1).max(64) }).parse(params ?? {});
+      const entry = catalogEntriesFromSettings(deps).find((e) => e.id === args.catalogId);
+      if (!entry || entry.published === false) {
+        return { ok: false, reason: 'not_found', message: 'Catalog entry not found or not published.' };
+      }
+      const store = await subscribeCatalogEntry(args.catalogId);
+      return { ok: true, subscribedCatalogIds: store.subscribedCatalogIds };
+    }
+
+    case 'catalog:unsubscribe': {
+      const args = z.object({ catalogId: z.string().min(1).max(64) }).parse(params ?? {});
+      const store = await unsubscribeCatalogEntry(args.catalogId);
+      return { ok: true, subscribedCatalogIds: store.subscribedCatalogIds };
+    }
+
+    case 'catalog:subscriptions': {
+      const store = await readCatalogSubscriptions();
+      return { ok: true, subscribedCatalogIds: store.subscribedCatalogIds };
+    }
+
+    case 'catalog:entitlements': {
+      const args = z.object({
+        groups: z.array(z.string()).optional(),
+        requireSubscription: z.boolean().optional(),
+      }).parse(params ?? {});
+      const settings = deps.host.getSettings();
+      const groups = args.groups
+        ?? settings.sso?.lastLogin?.groups
+        ?? [];
+      const entries = catalogEntriesFromSettings(deps).filter((e) => e.published !== false);
+      const subs = await readCatalogSubscriptions();
+      const requireSub = args.requireSubscription !== false;
+      const entitlements = resolveCatalogEntitlements(
+        entries,
+        groups,
+        requireSub ? subs.subscribedCatalogIds : undefined,
+      );
+      return {
+        ok: true,
+        groups,
+        entitlements: entitlements.map((e) => ({
+          catalogId: e.catalogId,
+          entitled: e.entitled,
+          reason: e.reason,
+          entry: cortexCatalogPublicEntry(e.entry),
+          ...(e.missingGroups ? { missingGroups: e.missingGroups } : {}),
+        })),
+        subscribedCatalogIds: subs.subscribedCatalogIds,
+      };
+    }
+
+    case 'catalog:exportMdm': {
+      if (!await hasEnterpriseAccess(deps)) {
+        return {
+          ok: false,
+          reason: 'enterprise_required',
+          message: 'MDM export requires an Enterprise license.',
+        };
+      }
+      const args = z.object({
+        catalogId: z.string().min(1).max(64),
+        subscriptions: z.array(z.string().max(64)).max(64).optional(),
+      }).parse(params ?? {});
+      const entry = catalogEntriesFromSettings(deps).find((e) => e.id === args.catalogId);
+      if (!entry) {
+        return { ok: false, reason: 'not_found', message: 'Catalog entry not found.' };
+      }
+      const settings = deps.host.getSettings();
+      const subs = args.subscriptions ?? [entry.id];
+      const bundle = buildMdmCatalogBundle(entry, settings.sso, subs);
+      if (!bundle) {
+        return {
+          ok: false,
+          reason: 'sso_not_configured',
+          message: 'Configure Enterprise SSO (OIDC issuer + client ID) before exporting an MDM bundle.',
+        };
+      }
+      return { ok: true, bundle };
     }
 
     case 'sharing:list': {

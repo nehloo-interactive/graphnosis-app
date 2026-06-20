@@ -6,7 +6,11 @@
  * GRAPHNOSIS_SSO_PROBE=1 — reachability + lock-screen discover only (no browser).
  */
 
-import { loadSettings } from '@graphnosis-app/core/settings';
+import {
+  loadSettings,
+  findCatalogEntryForCortex,
+  checkCatalogUnlockEntitlement,
+} from '@graphnosis-app/core/settings';
 import {
   discoverSsoUnlock,
   oidcConfigFromSettings,
@@ -53,6 +57,23 @@ async function main(): Promise<void> {
   if (secretFromEnv) config.clientSecret = secretFromEnv;
 
   const outcome = await runOidcUnlockFlow({ config });
+  if (outcome.ok) {
+    const catalogEntries = settings.cortexCatalog?.entries ?? [];
+    const catalogMatch = findCatalogEntryForCortex(catalogEntries, cortexDir);
+    if (catalogMatch && catalogMatch.kind === 'org') {
+      const ent = checkCatalogUnlockEntitlement(catalogMatch, outcome.groups);
+      if (!ent.entitled) {
+        const missing = ent.missingGroups?.join(', ') ?? 'required IdP groups';
+        emitResult({
+          ok: false,
+          reason: 'catalog_not_entitled',
+          message: ent.reason === 'missing_groups'
+            ? `You are not in the IdP groups required for "${catalogMatch.displayName}" (${missing}). Contact IT to request access.`
+            : `You are not entitled to unlock "${catalogMatch.displayName}".`,
+        });
+      }
+    }
+  }
   emitResult(outcome);
 }
 
