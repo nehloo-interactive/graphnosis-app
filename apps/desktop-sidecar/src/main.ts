@@ -1131,7 +1131,7 @@ async function main(): Promise<void> {
   };
 
   // Full engram sweep BEFORE IPC. Tauri unlock waits for the sidecar IPC
-  // socket, so the lock screen stays up until every non-archived engram is
+  // socket, so the lock screen stays up until every on-disk engram is
   // resident — no partial Home with consolidation running mid-sweep. Oplog
   // reconcile stays deferred (flushBootDeferredWork) so boot doesn't replay
   // 23× checkpoints synchronously.
