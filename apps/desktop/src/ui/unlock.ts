@@ -64,6 +64,152 @@ let els!: Record<string, HTMLElement>;
 
 const UI_ERROR_PREFIX = 'GRAPHNOSIS_UI_ERROR:';
 
+const CATALOG_SUBS_LS_KEY = 'graphnosis_catalog_subscriptions';
+
+interface CatalogEntryLite {
+  id: string;
+  cortexId: string;
+  displayName: string;
+  region?: string;
+  kind: string;
+  cortexPath?: string;
+  requiredIdpGroups?: string[];
+}
+
+export function getLocalCatalogSubscriptions(): string[] {
+  try {
+    const raw = localStorage.getItem(CATALOG_SUBS_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { subscribedCatalogIds?: string[] };
+    return Array.isArray(parsed.subscribedCatalogIds)
+      ? parsed.subscribedCatalogIds.filter((id) => typeof id === 'string' && id.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setLocalCatalogSubscriptions(ids: string[]): void {
+  try {
+    localStorage.setItem(CATALOG_SUBS_LS_KEY, JSON.stringify({ subscribedCatalogIds: [...new Set(ids)] }));
+  } catch { /* quota / private mode */ }
+}
+
+function toggleLocalCatalogSubscription(catalogId: string, subscribe: boolean): void {
+  const subs = getLocalCatalogSubscriptions();
+  const next = subscribe
+    ? [...new Set([...subs, catalogId])]
+    : subs.filter((id) => id !== catalogId);
+  setLocalCatalogSubscriptions(next);
+}
+
+async function readPreUnlockCatalog(cortexDir: string): Promise<CatalogEntryLite[]> {
+  if (!IS_TAURI || !cortexDir) return [];
+  try {
+    const snap = await invoke<{ entries: CatalogEntryLite[] }>('read_cortex_catalog', { cortex_dir: cortexDir });
+    return (snap.entries ?? []).map((e) => ({
+      id: String(e.id ?? ''),
+      cortexId: String(e.cortexId ?? ''),
+      displayName: String(e.displayName ?? e.cortexId ?? 'Catalog entry'),
+      kind: String(e.kind ?? 'org'),
+      ...(e.region ? { region: String(e.region) } : {}),
+      ...(e.cortexPath ? { cortexPath: String(e.cortexPath) } : {}),
+      ...(Array.isArray(e.requiredIdpGroups) ? { requiredIdpGroups: e.requiredIdpGroups } : {}),
+    })).filter((e) => e.id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** Show subscribed org cortices on the lock screen + browse affordance. */
+export async function refreshLockScreenCatalog(): Promise<void> {
+  const section = document.getElementById('cortex-catalog-lock-section');
+  const list = document.getElementById('cortex-catalog-lock-list');
+  if (!section || !list) return;
+  const cortexDir = getCortexDir();
+  if (!cortexDir) {
+    section.classList.add('hidden');
+    return;
+  }
+  const entries = await readPreUnlockCatalog(cortexDir);
+  if (entries.length === 0) {
+    section.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+  const subs = new Set(getLocalCatalogSubscriptions());
+  const subscribed = entries.filter((e) => subs.has(e.id));
+  list.innerHTML = subscribed.length === 0
+    ? '<p class="subtitle" style="margin:0;font-size:12px;">No subscriptions yet — browse the catalog to add an organization cortex.</p>'
+    : subscribed.map((e) => {
+      const path = e.cortexPath ?? cortexDir;
+      const region = e.region ? ` · ${e.region}` : '';
+      return `<button type="button" class="g-btn cortex-catalog-pick" data-cortex-path="${escapeAttr(path)}" style="text-align:left;font-size:13px;">`
+        + `${escapeHtml(e.displayName)}${escapeHtml(region)}`
+        + '</button>';
+    }).join('');
+  list.querySelectorAll<HTMLButtonElement>('.cortex-catalog-pick').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const path = btn.dataset.cortexPath;
+      if (path) {
+        els.cortexDir.value = path;
+        els.cortexDir.dispatchEvent(new Event('input', { bubbles: true }));
+        void configureSsoUnlockButton();
+        void refreshLockScreenCatalog();
+      }
+    });
+  });
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeAttr(s: string): string {
+  return escapeHtml(s).replace(/"/g, '&quot;');
+}
+
+async function openLockScreenCatalogModal(): Promise<void> {
+  const modal = document.getElementById('cortex-catalog-modal');
+  const list = document.getElementById('cortex-catalog-modal-list');
+  const empty = document.getElementById('cortex-catalog-modal-empty');
+  if (!modal || !list) return;
+  const cortexDir = getCortexDir();
+  const entries = await readPreUnlockCatalog(cortexDir);
+  const subs = new Set(getLocalCatalogSubscriptions());
+  modal.classList.remove('hidden');
+  if (entries.length === 0) {
+    list.innerHTML = '';
+    empty?.classList.remove('hidden');
+    return;
+  }
+  empty?.classList.add('hidden');
+  list.innerHTML = entries.map((e) => {
+    const subscribed = subs.has(e.id);
+    const groups = (e.requiredIdpGroups ?? []).length > 0
+      ? `Groups: ${(e.requiredIdpGroups ?? []).join(', ')}`
+      : 'Any authenticated org user';
+    const region = e.region ? ` · ${e.region}` : '';
+    return `<div class="panel" style="padding:10px;margin:0;">`
+      + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escapeHtml(e.displayName)}</strong>${escapeHtml(region)}</p>`
+      + `<p class="subtitle" style="margin:0 0 8px;font-size:11px;">${escapeHtml(e.kind)} · ${escapeHtml(groups)}</p>`
+      + `<button type="button" class="g-btn catalog-sub-toggle" data-catalog-id="${escapeAttr(e.id)}" data-subscribed="${subscribed ? '1' : '0'}">`
+      + (subscribed ? 'Subscribed ✓' : 'Subscribe')
+      + '</button></div>';
+  }).join('');
+  list.querySelectorAll<HTMLButtonElement>('.catalog-sub-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.catalogId;
+      if (!id) return;
+      const isSub = btn.dataset.subscribed === '1';
+      toggleLocalCatalogSubscription(id, !isSub);
+      btn.dataset.subscribed = isSub ? '0' : '1';
+      btn.textContent = isSub ? 'Subscribe' : 'Subscribed ✓';
+      void refreshLockScreenCatalog();
+    });
+  });
+}
+
 interface CortexLockUiError {
   type: 'cortex_lock';
   variant: 'local' | 'icloud' | 'compromised';
@@ -81,6 +227,13 @@ export function initUnlock(unlockEls: Record<string, HTMLElement>): void {
   wireLockHandler();
   void configureBiometricButton();
   void configureSsoUnlockButton();
+  void refreshLockScreenCatalog();
+  document.getElementById('btn-cortex-catalog-browse')?.addEventListener('click', () => {
+    void openLockScreenCatalogModal();
+  });
+  document.getElementById('btn-cortex-catalog-modal-close')?.addEventListener('click', () => {
+    document.getElementById('cortex-catalog-modal')?.classList.add('hidden');
+  });
 }
 
 /** Show/hide Enterprise SSO unlock affordance from pre-unlock Tauri probe. */

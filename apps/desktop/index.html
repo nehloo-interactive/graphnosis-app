@@ -11110,6 +11110,13 @@
               <p id="cortex-cloud-hint" class="subtitle" style="margin:8px 0 0; font-size:12px; text-align:left; line-height:1.5; color:var(--fg-dim);">
                 Tip: place your cortex inside iCloud Drive, Dropbox, Google Drive, or OneDrive to sync across devices — or keep it local on this Mac.
               </p>
+              <!-- Organization Cortex Catalog — employee subscribe (Phase 4) -->
+              <div id="cortex-catalog-lock-section" class="hidden" style="margin-top:12px;text-align:left;">
+                <p style="margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;">Organization cortices</p>
+                <p class="subtitle" style="font-size:12px;margin:0 0 8px;line-height:1.45;">Subscribe to cortices your IT published. SSO unlock checks your IdP groups before opening.</p>
+                <div id="cortex-catalog-lock-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;"></div>
+                <button id="btn-cortex-catalog-browse" type="button" class="g-btn" style="font-size:13px;">Browse catalog…</button>
+              </div>
             </div>
             <div class="row">
               <div class="passphrase-label-row">
@@ -13706,6 +13713,64 @@ ollama list</code></pre>
                 </div>
                 </div><!-- /settings-panel-sso-config -->
               </div>
+
+              <!-- Organization Cortex Catalog — Enterprise IT admin (Phase 4) -->
+              <div class="panel" id="settings-panel-catalog" style="display:none;">
+                <p class="panel-title">Organization Cortex Catalog</p>
+                <div id="settings-panel-catalog-upsell" class="hidden">
+                  <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                    Publish org cortices and hub packages for employees to subscribe. Gate access with IdP groups and export MDM bundles for division rollout.
+                  </p>
+                  <div class="pro-upgrade-card" style="margin-top: 0;">
+                    <h3>Enterprise plan required</h3>
+                    <p class="subtitle">
+                      IT publishes catalog entries; employees subscribe and unlock with SSO. Explicit share only — org data stays under IT policy.
+                    </p>
+                    <div class="pro-upgrade-actions">
+                      <button class="primary" data-pro-upgrade-btn>View Premium Plans</button>
+                      <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                    </div>
+                  </div>
+                </div>
+                <div id="settings-panel-catalog-config" class="hidden">
+                  <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                    Publish division or facility cortices for employee subscribe + SSO unlock. Hub packages (read-only engram bundles) record subscribe intent in v1 — full engram pull follows.
+                    <strong>Data controller:</strong> IT on <code>org</code> entries; employees on personal cortices.
+                  </p>
+                  <div id="catalog-entry-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
+                  <p id="catalog-empty-hint" class="subtitle hidden" style="margin:0 0 12px;">No catalog entries yet.</p>
+                  <details id="catalog-entry-form-wrap" style="margin-bottom:12px;">
+                    <summary style="cursor:pointer;font-size:14px;margin-bottom:8px;">Add or edit entry…</summary>
+                    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+                      <input type="hidden" id="catalog-edit-id" value="" />
+                      <label style="font-size:13px;">Display name<input id="catalog-display-name" type="text" placeholder="Acme EU — Finance" style="display:block;width:100%;margin-top:4px;" /></label>
+                      <label style="font-size:13px;">Cortex ID<input id="catalog-cortex-id" type="text" placeholder="acme-eu-finance" style="display:block;width:100%;margin-top:4px;" /></label>
+                      <label style="font-size:13px;">Region / facility<input id="catalog-region" type="text" placeholder="EU-West" style="display:block;width:100%;margin-top:4px;" /></label>
+                      <label style="font-size:13px;">Kind
+                        <select id="catalog-kind" style="display:block;width:100%;margin-top:4px;">
+                          <option value="org">Org cortex (IT data controller)</option>
+                          <option value="hub-package">Hub package (read-only bundle)</option>
+                          <option value="personal">Personal (employee data controller)</option>
+                        </select>
+                      </label>
+                      <label style="font-size:13px;">Cortex folder path<input id="catalog-cortex-path" type="text" placeholder="/Users/shared/AcmeOrgCortex" style="display:block;width:100%;margin-top:4px;" /></label>
+                      <label style="font-size:13px;">Required IdP groups <span class="subtitle" style="font-size:11px;">(comma-separated; empty = any authenticated user)</span>
+                        <input id="catalog-required-groups" type="text" placeholder="graphnosis-finance, graphnosis-eu" style="display:block;width:100%;margin-top:4px;" />
+                      </label>
+                      <label style="font-size:13px;">MDM bundle ID<input id="catalog-mdm-bundle-id" type="text" placeholder="com.acme.graphnosis.finance" style="display:block;width:100%;margin-top:4px;" /></label>
+                      <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                        <input type="checkbox" id="catalog-published" checked />
+                        <span>Published to employee catalog</span>
+                      </label>
+                      <div style="display:flex;gap:8px;">
+                        <button id="btn-catalog-save" type="button" class="primary">Save entry</button>
+                        <button id="btn-catalog-clear" type="button" class="g-btn">Clear form</button>
+                      </div>
+                    </div>
+                  </details>
+                  <span id="catalog-save-status" class="subtitle" style="font-size:12px;"></span>
+                </div>
+              </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
@@ -15046,6 +15111,7 @@ ollama list</code></pre>
         <div class="modal-header">
           <h2 id="sharing-modal-title">Engram Sharing</h2>
           <p class="subtitle">Create shares so collaborators can access specific engrams via your MCP server. Requires Mobile &amp; Remote Access.</p>
+          <p id="sharing-policy-notice" class="subtitle" style="margin:8px 0 0;font-size:12px;line-height:1.5;color:var(--fg-muted);"></p>
           <p id="sharing-plan-badge" style="display:none;margin:6px 0 0;font-size:12px;color:var(--fg-muted);"></p>
         </div>
         <div class="modal-body" id="sharing-modal-body">
@@ -15202,6 +15268,23 @@ ollama list</code></pre>
         <div class="modal-footer">
           <button id="btn-gez-export-cancel" class="btn-ghost">Cancel</button>
           <button id="btn-gez-export-go" class="primary">Export &amp; save…</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lock-screen Organization Cortex Catalog browse -->
+    <div id="cortex-catalog-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="cortex-catalog-modal-title">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2 id="cortex-catalog-modal-title">Organization Cortex Catalog</h2>
+          <p class="subtitle">Subscribe to cortices your IT published. Unlock with SSO — IdP group membership is checked at sign-in.</p>
+        </div>
+        <div class="modal-body">
+          <div id="cortex-catalog-modal-list" style="display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto;"></div>
+          <p id="cortex-catalog-modal-empty" class="subtitle hidden" style="margin:12px 0 0;">No published catalog entries for this cortex folder.</p>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-cortex-catalog-modal-close" class="btn-ghost" type="button">Close</button>
         </div>
       </div>
     </div>

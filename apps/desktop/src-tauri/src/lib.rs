@@ -347,6 +347,32 @@ fn read_sso_unlock_offer(cortex_dir: String) -> Result<SsoUnlockOffer, String> {
     })
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct CortexCatalogSnapshot {
+    pub entries: Vec<serde_json::Value>,
+}
+
+/// Pre-unlock read of IT-published catalog entries from plaintext settings.json.
+#[tauri::command]
+fn read_cortex_catalog(cortex_dir: String) -> Result<CortexCatalogSnapshot, String> {
+    let path = PathBuf::from(&cortex_dir).join("settings.json");
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("could not read settings.json: {e}"))?;
+    let settings: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid settings.json: {e}"))?;
+    let entries = settings
+        .get("cortexCatalog")
+        .and_then(|c| c.get("entries"))
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|v| v.get("published").and_then(|p| p.as_bool()).unwrap_or(true))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(CortexCatalogSnapshot { entries })
+}
+
 #[tauri::command]
 async fn discover_sso_unlock(cortex_dir: String) -> Result<sidecar::SsoDiscoverSnapshot, String> {
     let path = PathBuf::from(&cortex_dir);
@@ -3605,6 +3631,7 @@ pub fn run() {
             unlock_cortex,
             unlock_cortex_with_recovery,
             read_sso_unlock_offer,
+            read_cortex_catalog,
             discover_sso_unlock,
             sso_store_keychain,
             sso_unlock_cortex,
