@@ -278,7 +278,7 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   slotP2.release();
   // P0 home-card bursts defer new Ghampus slots but must not abort an in-flight
   // user chat when the user navigates away from the Ghampus tab.
-  const { incrementGhampusBusy, decrementGhampusBusy, resetGhampusBusyForTest } = await import('./ghampus-busy.js');
+  const { incrementGhampusBusy, decrementGhampusBusy } = await import('./ghampus-busy.js');
   resetGhampusBusyForTest();
   const slotP2User = wp.tryAcquireLlmSlot(wp.WorkPriority.P2_GHAMPUS);
   if (!slotP2User) throw new Error('FAIL: P2 LLM slot should acquire when idle');
