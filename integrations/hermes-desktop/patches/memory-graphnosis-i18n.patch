@@ -1,7 +1,8 @@
+diff --git a/src/shared/i18n/locales/en/memory.ts b/src/shared/i18n/locales/en/memory.ts
+index da0221c..07a676c 100644
 --- a/src/shared/i18n/locales/en/memory.ts
 +++ b/src/shared/i18n/locales/en/memory.ts
-@@ -56,5 +56,7 @@
-       "Local SQLite fact store with FTS5 search and trust scoring (no API key needed)",
+@@ -57,5 +57,7 @@ export default {
      openviking:
        "Session-managed memory with tiered retrieval and knowledge browsing",
      byterover: "Persistent knowledge tree with tiered retrieval via brv CLI",

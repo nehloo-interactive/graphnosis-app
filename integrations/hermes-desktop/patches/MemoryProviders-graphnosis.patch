@@ -1,6 +1,8 @@
+diff --git a/src/renderer/src/screens/Memory/MemoryProviders.tsx b/src/renderer/src/screens/Memory/MemoryProviders.tsx
+index be42d41..65ac862 100644
 --- a/src/renderer/src/screens/Memory/MemoryProviders.tsx
 +++ b/src/renderer/src/screens/Memory/MemoryProviders.tsx
-@@ -10,6 +10,7 @@
+@@ -10,6 +10,7 @@ const PROVIDER_URLS: Record<string, string> = {
    retaindb: "https://retaindb.com",
    supermemory: "https://supermemory.ai",
    byterover: "https://app.byterover.dev",
