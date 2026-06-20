@@ -13365,6 +13365,111 @@ ollama list</code></pre>
                 <div id="sharing-token-summary" style="margin-top:8px; font-size:13px; color:var(--fg-muted);"></div>
               </section>
 
+              <!-- Organization Engram Catalog — IT publish + employee subscribe -->
+              <section class="gc-section" id="gc-section-org-catalog">
+                <h3 class="gc-section-title">Organization engram catalog</h3>
+                <p class="gc-section-hint">IT publishes engram packages (DevOps Skills, compliance baselines, etc.); employees add entitled packages to their cortex. IdP groups gate subscribe — not unlock. Org packages use explicit share only.</p>
+
+                <!-- IT admin CRUD -->
+                <div id="gc-catalog-admin" style="display:none;">
+                  <div id="gc-catalog-admin-upsell" class="hidden">
+                    <div class="pro-upgrade-card" style="margin-top: 0;">
+                      <h3>Teams or Enterprise plan required</h3>
+                      <p class="subtitle">
+                        Publish catalog packages, sync from SharePoint, export MDM bundles, and gate install with IdP groups. Employees subscribe in the section below.
+                      </p>
+                      <div class="pro-upgrade-actions">
+                        <button class="primary" data-pro-upgrade-btn>View Premium Plans</button>
+                        <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="gc-catalog-admin-config" class="hidden">
+                    <p class="gc-section-hint" style="margin-top:0;">
+                      Each row is one engram package. SharePoint list columns map 1:1 (Title, PackageId, RequiredGroups, SourceEngramId, etc.).
+                    </p>
+                    <div id="catalog-entry-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
+                    <p id="catalog-empty-hint" class="subtitle hidden" style="margin:0 0 12px;">No catalog entries yet. Example: DevOps Skills (<code>devops-skills</code>).</p>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:flex-end;">
+                      <button id="btn-catalog-export-mdm" type="button" class="g-btn">Export MDM JSON</button>
+                      <button id="btn-catalog-import-mdm" type="button" class="g-btn">Import MDM bundle…</button>
+                      <input id="catalog-mdm-import-file" type="file" accept="application/json,.json" style="display:none;" />
+                    </div>
+                    <div class="panel" style="padding:10px;margin-bottom:12px;">
+                      <p style="margin:0 0 8px;font-size:13px;font-weight:600;">SharePoint catalog sync</p>
+                      <label style="font-size:13px;display:block;margin-bottom:8px;">List URL
+                        <input id="catalog-sharepoint-url" type="url" placeholder="https://contoso.sharepoint.com/sites/IT/Lists/EngramCatalog/AllItems.aspx" style="display:block;width:100%;margin-top:4px;" />
+                      </label>
+                      <label style="font-size:13px;display:block;margin-bottom:8px;">Access token <span class="subtitle" style="font-size:11px;">(optional bearer for REST)</span>
+                        <input id="catalog-sharepoint-token" type="password" placeholder="Leave blank to use cached token" style="display:block;width:100%;margin-top:4px;" autocomplete="off" />
+                      </label>
+                      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+                        <button id="btn-catalog-sharepoint-sync" type="button" class="g-btn">Sync from SharePoint</button>
+                        <span id="catalog-sharepoint-status" class="subtitle" style="font-size:12px;"></span>
+                      </div>
+                    </div>
+                    <details id="catalog-entry-form-wrap" style="margin-bottom:12px;">
+                      <summary style="cursor:pointer;font-size:14px;margin-bottom:8px;">Add or edit package…</summary>
+                      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+                        <input type="hidden" id="catalog-edit-id" value="" />
+                        <label style="font-size:13px;">Display name<input id="catalog-display-name" type="text" placeholder="DevOps Skills" style="display:block;width:100%;margin-top:4px;" /></label>
+                        <label style="font-size:13px;">Package ID <span class="subtitle" style="font-size:11px;">(engram slug after install)</span>
+                          <input id="catalog-package-id" type="text" placeholder="devops-skills" style="display:block;width:100%;margin-top:4px;" />
+                        </label>
+                        <label style="font-size:13px;">Description<textarea id="catalog-description" rows="2" placeholder="IT-published SOP and skill bundle" style="display:block;width:100%;margin-top:4px;"></textarea></label>
+                        <label style="font-size:13px;">Region / facility<input id="catalog-region" type="text" placeholder="EU-West" style="display:block;width:100%;margin-top:4px;" /></label>
+                        <label style="font-size:13px;">Kind
+                          <select id="catalog-kind" style="display:block;width:100%;margin-top:4px;">
+                            <option value="engram-package">Engram package (merge into cortex)</option>
+                            <option value="hub-slice">Hub slice (federated read-only)</option>
+                          </select>
+                        </label>
+                        <label style="font-size:13px;">Install mode
+                          <select id="catalog-install-mode" style="display:block;width:100%;margin-top:4px;">
+                            <option value="merge-copy">Merge-copy</option>
+                            <option value="federate-readonly">Federate read-only</option>
+                          </select>
+                        </label>
+                        <label style="font-size:13px;">Source engram ID <span class="subtitle" style="font-size:11px;">(org hub, merge-copy)</span>
+                          <input id="catalog-source-engram-id" type="text" placeholder="org-devops-skills" style="display:block;width:100%;margin-top:4px;" />
+                        </label>
+                        <label style="font-size:13px;">Hub reference <span class="subtitle" style="font-size:11px;">(hub-slice only)</span>
+                          <input id="catalog-hub-ref" type="text" placeholder="hub://acme/devops" style="display:block;width:100%;margin-top:4px;" />
+                        </label>
+                        <label style="font-size:13px;">Required IdP groups <span class="subtitle" style="font-size:11px;">(comma-separated; empty = any authenticated user)</span>
+                          <input id="catalog-required-groups" type="text" placeholder="graphnosis-devops, graphnosis-eu" style="display:block;width:100%;margin-top:4px;" />
+                        </label>
+                        <label style="font-size:13px;">MDM bundle ID<input id="catalog-mdm-bundle-id" type="text" placeholder="com.acme.graphnosis.devops" style="display:block;width:100%;margin-top:4px;" /></label>
+                        <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                          <input type="checkbox" id="catalog-it-controlled" checked />
+                          <span>IT data controller (org package)</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                          <input type="checkbox" id="catalog-no-reshare" checked />
+                          <span>No ad-hoc re-share (subscribe only)</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                          <input type="checkbox" id="catalog-published" checked />
+                          <span>Published to employee catalog</span>
+                        </label>
+                        <div style="display:flex;gap:8px;">
+                          <button id="btn-catalog-save" type="button" class="primary">Save entry</button>
+                          <button id="btn-catalog-clear" type="button" class="g-btn">Clear form</button>
+                        </div>
+                      </div>
+                    </details>
+                    <span id="catalog-save-status" class="subtitle" style="font-size:12px;"></span>
+                  </div>
+                </div>
+
+                <!-- Employee subscribe -->
+                <div id="gc-catalog-employee" style="display:none;margin-top:12px;">
+                  <h4 class="gc-subsection-title" style="margin-top:0;">Add organization packages</h4>
+                  <div id="employee-catalog-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px;"></div>
+                  <p id="employee-catalog-empty" class="subtitle hidden" style="margin:0;">No organization packages published yet.</p>
+                </div>
+              </section>
+
               <!-- AI clients READ from the cortex -->
               <section class="gc-section">
                 <h3 class="gc-section-title">AI clients <span class="gc-section-tag">read your memory</span></h3>
@@ -13715,98 +13820,6 @@ ollama list</code></pre>
                 </div><!-- /settings-panel-sso-config -->
               </div>
 
-              <!-- Organization Engram Catalog — Enterprise IT admin (Phase 4) -->
-              <div class="panel" id="settings-panel-catalog" style="display:none;">
-                <p class="panel-title">Organization Engram Catalog</p>
-                <div id="settings-panel-catalog-upsell" class="hidden">
-                  <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                    Publish engram packages (DevOps Skills, Compliance baseline, etc.) for employees to add to their cortex. Gate install with IdP groups and export MDM bundles for division rollout.
-                  </p>
-                  <div class="pro-upgrade-card" style="margin-top: 0;">
-                    <h3>Enterprise plan required</h3>
-                    <p class="subtitle">
-                      IT publishes catalog packages; employees subscribe to add engrams to their personal cortex. Explicit share only — org packages cannot be ad-hoc re-shared.
-                    </p>
-                    <div class="pro-upgrade-actions">
-                      <button class="primary" data-pro-upgrade-btn>View Premium Plans</button>
-                      <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
-                    </div>
-                  </div>
-                </div>
-                <div id="settings-panel-catalog-config" class="hidden">
-                  <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                    Each row is one engram package (SharePoint list row type = engram package). Employees install into their single cortex after unlock; IdP groups gate subscribe/install, not unlock.
-                    <strong>Data controller:</strong> IT on org packages (<code>itControlled</code>); employee on personal engrams.
-                  </p>
-                  <div id="catalog-entry-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
-                  <p id="catalog-empty-hint" class="subtitle hidden" style="margin:0 0 12px;">No catalog entries yet. Example: DevOps Skills (<code>devops-skills</code>).</p>
-                  <div style="margin-bottom:12px;">
-                    <button id="btn-catalog-export-mdm" type="button" class="g-btn">Export MDM JSON</button>
-                  </div>
-                  <details id="catalog-entry-form-wrap" style="margin-bottom:12px;">
-                    <summary style="cursor:pointer;font-size:14px;margin-bottom:8px;">Add or edit package…</summary>
-                    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
-                      <input type="hidden" id="catalog-edit-id" value="" />
-                      <label style="font-size:13px;">Display name<input id="catalog-display-name" type="text" placeholder="DevOps Skills" style="display:block;width:100%;margin-top:4px;" /></label>
-                      <label style="font-size:13px;">Package ID <span class="subtitle" style="font-size:11px;">(engram slug after install)</span>
-                        <input id="catalog-package-id" type="text" placeholder="devops-skills" style="display:block;width:100%;margin-top:4px;" />
-                      </label>
-                      <label style="font-size:13px;">Description<textarea id="catalog-description" rows="2" placeholder="IT-published SOP and skill bundle" style="display:block;width:100%;margin-top:4px;"></textarea></label>
-                      <label style="font-size:13px;">Region / facility<input id="catalog-region" type="text" placeholder="EU-West" style="display:block;width:100%;margin-top:4px;" /></label>
-                      <label style="font-size:13px;">Kind
-                        <select id="catalog-kind" style="display:block;width:100%;margin-top:4px;">
-                          <option value="engram-package">Engram package (merge into cortex)</option>
-                          <option value="hub-slice">Hub slice (federated read-only)</option>
-                        </select>
-                      </label>
-                      <label style="font-size:13px;">Install mode
-                        <select id="catalog-install-mode" style="display:block;width:100%;margin-top:4px;">
-                          <option value="merge-copy">Merge-copy</option>
-                          <option value="federate-readonly">Federate read-only</option>
-                        </select>
-                      </label>
-                      <label style="font-size:13px;">Source engram ID <span class="subtitle" style="font-size:11px;">(org hub, merge-copy)</span>
-                        <input id="catalog-source-engram-id" type="text" placeholder="org-devops-skills" style="display:block;width:100%;margin-top:4px;" />
-                      </label>
-                      <label style="font-size:13px;">Hub reference <span class="subtitle" style="font-size:11px;">(hub-slice only)</span>
-                        <input id="catalog-hub-ref" type="text" placeholder="hub://acme/devops" style="display:block;width:100%;margin-top:4px;" />
-                      </label>
-                      <label style="font-size:13px;">Required IdP groups <span class="subtitle" style="font-size:11px;">(comma-separated; empty = any authenticated user)</span>
-                        <input id="catalog-required-groups" type="text" placeholder="graphnosis-devops, graphnosis-eu" style="display:block;width:100%;margin-top:4px;" />
-                      </label>
-                      <label style="font-size:13px;">MDM bundle ID<input id="catalog-mdm-bundle-id" type="text" placeholder="com.acme.graphnosis.devops" style="display:block;width:100%;margin-top:4px;" /></label>
-                      <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
-                        <input type="checkbox" id="catalog-it-controlled" checked />
-                        <span>IT data controller (org package)</span>
-                      </label>
-                      <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
-                        <input type="checkbox" id="catalog-no-reshare" checked />
-                        <span>No ad-hoc re-share (subscribe only)</span>
-                      </label>
-                      <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
-                        <input type="checkbox" id="catalog-published" checked />
-                        <span>Published to employee catalog</span>
-                      </label>
-                      <div style="display:flex;gap:8px;">
-                        <button id="btn-catalog-save" type="button" class="primary">Save entry</button>
-                        <button id="btn-catalog-clear" type="button" class="g-btn">Clear form</button>
-                      </div>
-                    </div>
-                  </details>
-                  <span id="catalog-save-status" class="subtitle" style="font-size:12px;"></span>
-                </div>
-              </div>
-
-              <!-- Employee: browse + subscribe org engram packages -->
-              <div class="panel" id="settings-panel-engram-catalog-employee" style="display:none;">
-                <p class="panel-title">Organization engrams</p>
-                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Add IT-published engram packages to your cortex. IdP group membership is checked when you subscribe — not at unlock.
-                  Org catalog engrams use explicit share only; do not re-share outside subscribe flow.
-                </p>
-                <div id="employee-catalog-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px;"></div>
-                <p id="employee-catalog-empty" class="subtitle hidden" style="margin:0;">No organization packages published yet.</p>
-              </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">

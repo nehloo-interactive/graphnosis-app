@@ -1733,6 +1733,7 @@ function render(status: StatusSnapshot): void {
       cancelDebouncedFederatedStats();
       void refreshCortexScopedStats();
       void refreshConnectorsList();
+      void applyMdmCatalogAutoInstall();
       void maybeOfferCatalogPackages();
       void refreshEmployeeCatalogPanel();
       startMcpPolling();
@@ -3055,6 +3056,8 @@ function activateMode(mode: Mode): void {
     refreshGetConnectedStatus();
     renderGcRecipes((document.getElementById('gc-recipe-filter') as HTMLInputElement | null)?.value ?? '');
     void refreshConnectorsList();
+    void refreshCatalogGetConnectedPanel();
+    void refreshEmployeeCatalogPanel();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
   if (mode === 'status') {
@@ -3074,11 +3077,6 @@ function activateMode(mode: Mode): void {
     renderSettingsTab();
     void refreshModelsPanel();
     void refreshSsoSettingsPanel();
-    void refreshCatalogSettingsPanel();
-    void refreshEmployeeCatalogPanel();
-    // Refresh the license launcher's status line on the pane (Free /
-    // Pro active · expires X). Calls the same helper the Settings modal
-    // uses; both DOM targets are updated in one pass.
     refreshLicenseLauncherStatus();
     // Always scroll to top so the user lands at the beginning of the page.
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
@@ -20104,63 +20102,89 @@ function fillCatalogEntryForm(entry: CatalogEntryView): void {
   document.getElementById('catalog-entry-form-wrap')?.setAttribute('open', '');
 }
 
-async function refreshCatalogSettingsPanel(): Promise<void> {
-  const panel = document.getElementById('settings-panel-catalog');
-  const upsell = document.getElementById('settings-panel-catalog-upsell');
-  const config = document.getElementById('settings-panel-catalog-config');
+async function refreshCatalogGetConnectedPanel(): Promise<void> {
+  const section = document.getElementById('gc-section-org-catalog');
+  const adminWrap = document.getElementById('gc-catalog-admin');
+  const upsell = document.getElementById('gc-catalog-admin-upsell');
+  const config = document.getElementById('gc-catalog-admin-config');
   const list = document.getElementById('catalog-entry-list');
   const empty = document.getElementById('catalog-empty-hint');
-  if (!panel) return;
+  if (!section || !adminWrap) return;
   try {
-    const sso = await ipcCall<SsoGetResult>('sso:get', {});
-    panel.style.display = '';
-    if (!sso.enterprise) {
+    const access = await ipcCall<{ ok: boolean; licensed: boolean }>('catalog:adminAccess', {});
+    adminWrap.style.display = '';
+    section.style.display = '';
+    if (!access.licensed) {
       upsell?.classList.remove('hidden');
       config?.classList.add('hidden');
-      return;
+    } else {
+      upsell?.classList.add('hidden');
+      config?.classList.remove('hidden');
+      const data = await ipcCall<CatalogListResult>('catalog:list', { includeUnpublished: true });
+      const entries = data.entries ?? [];
+      if (empty) empty.classList.toggle('hidden', entries.length > 0);
+      if (list) {
+        list.innerHTML = entries.map((e) => {
+          const groups = e.requiredIdpGroups.length ? e.requiredIdpGroups.join(', ') : 'any authenticated user';
+          const pub = e.published === false ? ' · draft' : '';
+          return `<div class="panel" style="padding:10px;margin:0;" data-catalog-row="${escape(e.id)}">`
+            + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escape(e.displayName)}</strong> <span class="subtitle" style="font-size:11px;">${escape(e.kind)}${escape(pub)}</span></p>`
+            + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.packageId)}${e.region ? ` · ${escape(e.region)}` : ''} · Groups: ${escape(groups)}</p>`
+            + `<div style="display:flex;flex-wrap:wrap;gap:6px;">`
+            + `<button type="button" class="g-btn catalog-edit-btn" data-id="${escape(e.id)}">Edit</button>`
+            + `<button type="button" class="g-btn catalog-delete-btn" data-id="${escape(e.id)}">Delete</button>`
+            + `</div></div>`;
+        }).join('');
+        list.querySelectorAll<HTMLButtonElement>('.catalog-edit-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const id = btn.dataset.id;
+            const entry = entries.find((x) => x.id === id);
+            if (entry) fillCatalogEntryForm(entry);
+          });
+        });
+        list.querySelectorAll<HTMLButtonElement>('.catalog-delete-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            void (async () => {
+              const id = btn.dataset.id;
+              if (!id || !await gConfirm('Delete catalog entry?', 'Employees will no longer see this package in the catalog.')) return;
+              await ipcCall('catalog:delete', { catalogId: id });
+              void refreshCatalogGetConnectedPanel();
+              void refreshEmployeeCatalogPanel();
+            })();
+          });
+        });
+      }
+      try {
+        const settings = await invoke<AppSettings>('get_settings');
+        const sp = settings.engramCatalog?.sharePoint;
+        const urlInput = document.getElementById('catalog-sharepoint-url') as HTMLInputElement | null;
+        if (urlInput && sp?.listUrl && !urlInput.value) urlInput.value = sp.listUrl;
+        const status = document.getElementById('catalog-sharepoint-status');
+        if (status) {
+          if (sp?.lastSyncedAt) {
+            const when = new Date(sp.lastSyncedAt).toLocaleString();
+            status.textContent = sp.lastSyncError
+              ? `Last sync ${when} — offline cache (${sp.lastSyncError})`
+              : `Last synced ${when}${sp.lastSyncEntryCount != null ? ` · ${sp.lastSyncEntryCount} entries` : ''}`;
+          } else {
+            status.textContent = '';
+          }
+        }
+      } catch { /* optional */ }
     }
-    upsell?.classList.add('hidden');
-    config?.classList.remove('hidden');
-    const data = await ipcCall<CatalogListResult>('catalog:list', { includeUnpublished: true });
-    const entries = data.entries ?? [];
-    if (empty) empty.classList.toggle('hidden', entries.length > 0);
-    if (!list) return;
-    list.innerHTML = entries.map((e) => {
-      const groups = e.requiredIdpGroups.length ? e.requiredIdpGroups.join(', ') : 'any authenticated user';
-      const pub = e.published === false ? ' · draft' : '';
-      return `<div class="panel" style="padding:10px;margin:0;" data-catalog-row="${escape(e.id)}">`
-        + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escape(e.displayName)}</strong> <span class="subtitle" style="font-size:11px;">${escape(e.kind)}${escape(pub)}</span></p>`
-        + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.packageId)}${e.region ? ` · ${escape(e.region)}` : ''} · Groups: ${escape(groups)}</p>`
-        + `<div style="display:flex;flex-wrap:wrap;gap:6px;">`
-        + `<button type="button" class="g-btn catalog-edit-btn" data-id="${escape(e.id)}">Edit</button>`
-        + `<button type="button" class="g-btn catalog-delete-btn" data-id="${escape(e.id)}">Delete</button>`
-        + `</div></div>`;
-    }).join('');
-    list.querySelectorAll<HTMLButtonElement>('.catalog-edit-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.dataset.id;
-        const entry = entries.find((x) => x.id === id);
-        if (entry) fillCatalogEntryForm(entry);
-      });
-    });
-    list.querySelectorAll<HTMLButtonElement>('.catalog-delete-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        void (async () => {
-          const id = btn.dataset.id;
-          if (!id || !await gConfirm('Delete catalog entry?', 'Employees will no longer see this package in the catalog.')) return;
-          await ipcCall('catalog:delete', { catalogId: id });
-          void refreshCatalogSettingsPanel();
-          void refreshEmployeeCatalogPanel();
-        })();
-      });
-    });
   } catch {
-    panel.style.display = 'none';
+    section.style.display = 'none';
   }
 }
 
+/** @deprecated Settings location removed — use refreshCatalogGetConnectedPanel. */
+async function refreshCatalogSettingsPanel(): Promise<void> {
+  await refreshCatalogGetConnectedPanel();
+}
+
 async function refreshEmployeeCatalogPanel(): Promise<void> {
-  const panel = document.getElementById('settings-panel-engram-catalog-employee');
+  const section = document.getElementById('gc-section-org-catalog');
+  const panel = document.getElementById('gc-catalog-employee');
   const list = document.getElementById('employee-catalog-list');
   const empty = document.getElementById('employee-catalog-empty');
   if (!panel || !list) return;
@@ -20169,8 +20193,10 @@ async function refreshEmployeeCatalogPanel(): Promise<void> {
     const entries = data.entries ?? [];
     if (entries.length === 0) {
       panel.style.display = 'none';
+      section?.classList.toggle('hidden', false);
       return;
     }
+    section?.style.removeProperty('display');
     panel.style.display = '';
     empty?.classList.toggle('hidden', entries.length > 0);
     const subs = new Set(data.subscribedCatalogIds ?? []);
@@ -20231,7 +20257,7 @@ async function maybeOfferCatalogPackages(): Promise<void> {
     const suffix = available.length > 3 ? ` (+${available.length - 3} more)` : '';
     const go = await gConfirm(
       `${available.length} organization package${available.length === 1 ? '' : 's'} available`,
-      `${names}${suffix}\n\nAdd to your cortex now? You can also browse in Settings → Organization engrams.`,
+      `${names}${suffix}\n\nAdd to your cortex now? You can also browse in Get Connected → Organization engram catalog.`,
     );
     if (!go) return;
     for (const row of available) {
@@ -20241,6 +20267,20 @@ async function maybeOfferCatalogPackages(): Promise<void> {
     }
     void refreshEmployeeCatalogPanel();
   } catch { /* catalog optional */ }
+}
+
+let mdmAutoInstallDoneThisSession = false;
+
+/** Apply MDM-pushed defaultSubscriptions after unlock (env path or imported bundle). */
+async function applyMdmCatalogAutoInstall(): Promise<void> {
+  if (mdmAutoInstallDoneThisSession) return;
+  mdmAutoInstallDoneThisSession = true;
+  try {
+    const result = await ipcCall<{ ok: boolean; applied: number; message?: string }>('catalog:applyMdmAutoInstall', {});
+    if (result.applied > 0) {
+      void refreshEmployeeCatalogPanel();
+    }
+  } catch { /* optional */ }
 }
 
 function wireCatalogSettingsPanel(): void {
@@ -20261,6 +20301,63 @@ function wireCatalogSettingsPanel(): void {
       URL.revokeObjectURL(url);
     })();
   });
+  document.getElementById('btn-catalog-import-mdm')?.addEventListener('click', () => {
+    document.getElementById('catalog-mdm-import-file')?.click();
+  });
+  document.getElementById('catalog-mdm-import-file')?.addEventListener('change', () => {
+    void (async () => {
+      const input = document.getElementById('catalog-mdm-import-file') as HTMLInputElement | null;
+      const file = input?.files?.[0];
+      if (!file) return;
+      try {
+        const bundle = JSON.parse(await file.text()) as unknown;
+        const result = await ipcCall<{ ok: boolean; message?: string }>('catalog:importMdmBundle', {
+          bundle,
+          mergeSsoHints: true,
+        });
+        if (!result.ok) {
+          void gAlert('MDM import failed', result.message ?? 'Could not import MDM bundle.');
+          return;
+        }
+        void gAlert('MDM bundle imported', result.message ?? 'Default subscriptions saved for auto-install on unlock.');
+        mdmAutoInstallDoneThisSession = false;
+        void applyMdmCatalogAutoInstall();
+      } catch (e) {
+        void gAlert('MDM import failed', e instanceof Error ? e.message : String(e));
+      } finally {
+        if (input) input.value = '';
+      }
+    })();
+  });
+  document.getElementById('btn-catalog-sharepoint-sync')?.addEventListener('click', () => {
+    void (async () => {
+      const status = document.getElementById('catalog-sharepoint-status');
+      const btn = document.getElementById('btn-catalog-sharepoint-sync') as HTMLButtonElement | null;
+      const listUrl = (document.getElementById('catalog-sharepoint-url') as HTMLInputElement | null)?.value.trim();
+      const accessToken = (document.getElementById('catalog-sharepoint-token') as HTMLInputElement | null)?.value.trim();
+      if (!listUrl) {
+        if (status) status.textContent = 'Enter a SharePoint list URL first.';
+        return;
+      }
+      if (btn) btn.disabled = true;
+      if (status) status.textContent = 'Syncing…';
+      try {
+        const result = await ipcCall<{ ok: boolean; message?: string; usedCache?: boolean }>('catalog:syncFromSharePoint', {
+          listUrl,
+          ...(accessToken ? { accessToken } : {}),
+        });
+        if (status) {
+          status.textContent = result.message ?? (result.ok ? 'Synced.' : 'Sync failed — using cached entries.');
+        }
+        void refreshCatalogGetConnectedPanel();
+        void refreshEmployeeCatalogPanel();
+      } catch (e) {
+        if (status) status.textContent = e instanceof Error ? e.message : String(e);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    })();
+  });
   document.getElementById('btn-catalog-save')?.addEventListener('click', () => {
     void (async () => {
       const status = document.getElementById('catalog-save-status');
@@ -20276,7 +20373,7 @@ function wireCatalogSettingsPanel(): void {
         await ipcCall('catalog:upsert', { entry });
         if (status) status.textContent = 'Saved.';
         clearCatalogEntryForm();
-        void refreshCatalogSettingsPanel();
+        void refreshCatalogGetConnectedPanel();
         void refreshEmployeeCatalogPanel();
       } catch (e) {
         if (status) status.textContent = e instanceof Error ? e.message : String(e);
