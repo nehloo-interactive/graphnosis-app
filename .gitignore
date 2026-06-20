@@ -13,6 +13,10 @@ target/
 # non-shipping notes. Always ignored — never committed.
 sandbox/
 
+# Shallow clones used while developing Hermes integration PRs (artifacts live in integrations/).
+integrations/hermes-agent-upstream/
+integrations/hermes-desktop-upstream/
+
 # Cursor IDE local state (plans, caches). Agent rules live in CLAUDE.md + the plugin.
 .cursor/
 
