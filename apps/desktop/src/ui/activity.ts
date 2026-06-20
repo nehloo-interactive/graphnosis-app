@@ -7,6 +7,16 @@ import { ipcCall, ipcCallTimeout } from './ipc';
 import { escape, presSourceAttr } from './util';
 import type { OpLogEvent, GraphWithMetadata } from './types';
 
+/** Persisted audit record for the most recent op-log compaction (from sidecar). */
+export interface OplogCompactionRecord {
+  at: number;
+  eventsRemoved: number;
+  eventsBefore: number;
+  eventsAfter: number;
+  bytesBefore?: number;
+  bytesAfter?: number;
+}
+
 /** Populated by initActivity() from main.ts `els`. */
 let els!: Record<string, HTMLElement>;
 
@@ -211,10 +221,16 @@ export async function refreshActivityView(opts?: { showLoading?: boolean }): Pro
     // outside the recent window.
     const actorSel = els.activityActorSelect.value;
     if (actorSel) params.actor = actorSel;
-    const r = await activityIpcCall<{ events: OpLogEvent[]; actors?: string[]; warnings?: string[] }>('activity.list', params, ACTIVITY_IPC_TIMEOUT_MS);
+    const r = await activityIpcCall<{
+      events: OpLogEvent[];
+      actors?: string[];
+      warnings?: string[];
+      lastCompaction?: OplogCompactionRecord | null;
+    }>('activity.list', params, ACTIVITY_IPC_TIMEOUT_MS);
     activityEvents = r.events ?? [];
     activityServerActors = r.actors ?? []; // complete distinct-actor set for the dropdown
     activityWarnings = r.warnings ?? [];
+    setLastCompactionFromServer(r.lastCompaction);
     // Date-scoped fetches pull the whole range (no recent-window paging), so
     // "more" only means we hit the hard cap; otherwise it's window-relative.
     activityHasMore = dateScoped
@@ -295,6 +311,19 @@ function populateActivityEngramSelect(): void {
 // dependence on which events happen to be in the recent-N window.
 let activityServerActors: string[] = [];
 let activityWarnings: string[] = [];
+/** Last successful op-log compaction — from activity.list or live event. */
+let lastCompactionRecord: OplogCompactionRecord | null = null;
+
+export function notifyOplogCompaction(record: OplogCompactionRecord): void {
+  lastCompactionRecord = record;
+  if (activityCat === 'all' && !activityDateRangeActive()) {
+    applyActivityFilter();
+  }
+}
+
+function setLastCompactionFromServer(record: OplogCompactionRecord | null | undefined): void {
+  if (record) lastCompactionRecord = record;
+}
 function populateActivityActorSelect(): void {
   const prev = els.activityActorSelect.value;
   els.activityActorSelect.innerHTML =
@@ -437,12 +466,61 @@ function nodePreview(id: string): string | null {
   return p && p.trim() ? p.trim() : null;
 }
 
+function maintenanceRowVisible(record: OplogCompactionRecord): boolean {
+  if (activityCat !== 'all') return false;
+  if (els.activityEngramSelect.value) return false;
+  if (els.activitySearch.value.trim()) return false;
+  if (els.activityActorSelect.value && els.activityActorSelect.value !== 'System') return false;
+  const bounds = activityDateBounds();
+  if (bounds.since !== undefined && record.at <= bounds.since) return false;
+  if (bounds.until !== undefined && record.at > bounds.until) return false;
+  const hourFrom = activityHourMinutes(els.activityHourFrom.value);
+  const hourTo = activityHourMinutes(els.activityHourTo.value);
+  if (hourFrom !== null || hourTo !== null) {
+    const d = new Date(record.at);
+    const mins = d.getHours() * 60 + d.getMinutes();
+    const lo = hourFrom ?? 0;
+    const hi = hourTo ?? 24 * 60 - 1;
+    const inHour = lo <= hi ? (mins >= lo && mins <= hi) : (mins >= lo || mins <= hi);
+    if (!inHour) return false;
+  }
+  return true;
+}
+
+function renderMaintenanceRow(record: OplogCompactionRecord): string {
+  const n = record.eventsRemoved;
+  const eventWord = n === 1 ? 'event' : 'events';
+  const sizeNote = record.bytesBefore && record.bytesAfter && record.bytesBefore > record.bytesAfter
+    ? ` · ${formatCompactionBytes(record.bytesBefore)} → ${formatCompactionBytes(record.bytesAfter)}`
+    : '';
+  const detail = `Archived ${n.toLocaleString()} older ${eventWord} from the encrypted audit log${sizeNote}`;
+  return `<div class="activity-row activity-row-maintenance">
+    <span class="ar-when">${escape(activityTime(record.at))}</span>
+    <span class="ar-dot maintenance"></span>
+    <div>
+      <div>Cortex maintenance: compacted audit log ${actorBadge({ label: 'System', cls: 'app' })}</div>
+      <div class="ar-detail">${escape(detail)}</div>
+    </div>
+  </div>`;
+}
+
+function formatCompactionBytes(n: number): string {
+  if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
 function renderActivity(): void {
   rebuildActivityNodePreviews(); // for resolving node ids → content in rows
   const total = activityEvents.length;
   const all = activityFiltered;
 
   if (all.length === 0) {
+    const maintenanceHtml = lastCompactionRecord && maintenanceRowVisible(lastCompactionRecord)
+      ? `<p class="activity-day-divider">${escape(activityDayLabel(lastCompactionRecord.at))}</p>` +
+        renderMaintenanceRow(lastCompactionRecord)
+      : '';
     if (els.activityStats) els.activityStats.textContent = `0 of ${total} loaded event${total === 1 ? '' : 's'}`;
     const notice = activityWarnings.length > 0
       ? `<p class="subtitle activity-sync-notice">${escape(activityWarnings[0])}</p>`
@@ -450,7 +528,7 @@ function renderActivity(): void {
     const empty = total === 0 && activityWarnings.length > 0
       ? '<p class="subtitle">No activity loaded yet.</p>'
       : '<p class="subtitle">No events match these filters.</p>';
-    els.activityList.innerHTML = notice + empty;
+    els.activityList.innerHTML = notice + maintenanceHtml + empty;
     return;
   }
 
@@ -465,6 +543,11 @@ function renderActivity(): void {
 
   let html = '';
   let topLevelItems = 0;
+  if (lastCompactionRecord && maintenanceRowVisible(lastCompactionRecord)) {
+    html += `<p class="activity-day-divider">${escape(activityDayLabel(lastCompactionRecord.at))}</p>`;
+    html += renderMaintenanceRow(lastCompactionRecord);
+    topLevelItems++;
+  }
   for (const [day, dayEvents] of byDay) {
     html += `<p class="activity-day-divider">${escape(day)}</p>`;
     const groups = new Map<string, OpLogEvent[]>();

@@ -5,13 +5,37 @@
  * not conversational agent work. No proactive cards — optional dbg() / Activity
  * status only. Ghampus skill maintenance (SkillMaintenanceScheduler) is separate.
  */
-import type { GraphnosisHost } from './host.js';
+import type { GraphnosisHost, OplogCompactionResult } from './host.js';
+import type { BroadcastRawFn } from './events.js';
 import { isGhampusBusy } from './ghampus-busy.js';
 import { clientActiveWithin, CLIENT_QUIET_MS, isIngestActive } from './client-activity.js';
 import { dbg } from './log-redact.js';
 
 export interface SidecarIdleMaintenanceDeps {
   host: GraphnosisHost;
+  broadcastRaw?: BroadcastRawFn;
+}
+
+export function broadcastOplogCompacted(
+  broadcastRaw: BroadcastRawFn | undefined,
+  compaction: OplogCompactionResult,
+  at: number,
+): void {
+  if (!compaction.compacted || !broadcastRaw || compaction.eventsRemoved === undefined) return;
+  try {
+    broadcastRaw({
+      kind: 'oplog.compacted',
+      name: 'oplog.compacted',
+      payload: {
+        at,
+        eventsRemoved: compaction.eventsRemoved,
+        eventsBefore: compaction.eventsBefore,
+        eventsAfter: compaction.eventsAfter,
+        bytesBefore: compaction.bytesBefore,
+        bytesAfter: compaction.bytesAfter,
+      },
+    });
+  } catch { /* non-fatal */ }
 }
 
 const TICK_MS = 90_000;
@@ -77,9 +101,17 @@ export class SidecarIdleMaintenance {
 
     this.inFlight = true;
     try {
-      await this.deps.host.refreshAllCorrectionsFromOplog();
+      const { compaction } = await this.deps.host.refreshAllCorrectionsFromOplog();
       this.lastRunAt = Date.now();
-      dbg('[sidecar-idle-maintenance] oplog housekeeping complete');
+      if (compaction.compacted) {
+        const record = this.deps.host.getLastOplogCompaction();
+        broadcastOplogCompacted(this.deps.broadcastRaw, compaction, record?.at ?? Date.now());
+        dbg(
+          `[sidecar-idle-maintenance] oplog compacted: ${compaction.eventsRemoved?.toLocaleString() ?? '?'} events archived`,
+        );
+      } else {
+        dbg('[sidecar-idle-maintenance] oplog housekeeping complete');
+      }
       return { action: 'run' };
     } catch (e: unknown) {
       console.error(

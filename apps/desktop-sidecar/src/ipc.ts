@@ -13,6 +13,7 @@ import { BUNDLED_DOCS } from './docs-content.generated.js';
 import { ingestBundledSkillDemos } from './skill-demos-ingest.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 import type { BroadcastRawFn } from './events.js';
+import { broadcastOplogCompacted } from './sidecar-idle-maintenance.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { applyCorrection as runApplyCorrection, proposeCorrection } from './correction.js';
 import {
@@ -1386,12 +1387,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Sidecar housekeeping (not Ghampus): corrections sweep + maybe compact
       // the op-log after Activity/Audit pulls audit data. Fire-and-forget so
       // the IPC response is not blocked on compaction I/O.
-      void deps.host.refreshAllCorrectionsFromOplog().catch((e: unknown) => {
+      void deps.host.refreshAllCorrectionsFromOplog().then(({ compaction }) => {
+        const record = deps.host.getLastOplogCompaction();
+        broadcastOplogCompacted(deps.broadcastRaw, compaction, record?.at ?? Date.now());
+      }).catch((e: unknown) => {
         console.error(
           `[graphnosis-ipc] activity.list oplog housekeeping failed: ${(e as Error).message}`,
         );
       });
-      return { events: enriched, actors };
+      return { events: enriched, actors, lastCompaction: deps.host.getLastOplogCompaction() };
     }
     case 'activity.log': {
       const args = z.object({
@@ -1553,7 +1557,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const total = filtered.length;
       const page = filtered.slice(offset, offset + limit);
 
-      void deps.host.refreshAllCorrectionsFromOplog().catch((e: unknown) => {
+      void deps.host.refreshAllCorrectionsFromOplog().then(({ compaction }) => {
+        const record = deps.host.getLastOplogCompaction();
+        broadcastOplogCompacted(deps.broadcastRaw, compaction, record?.at ?? Date.now());
+      }).catch((e: unknown) => {
         console.error(
           `[graphnosis-ipc] activity.log oplog housekeeping failed: ${(e as Error).message}`,
         );
@@ -1562,6 +1569,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         entries: page,
         total,
         hasMore: offset + limit < total,
+        lastCompaction: deps.host.getLastOplogCompaction(),
       };
     }
     case 'snapshots.list': {

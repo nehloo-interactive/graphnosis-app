@@ -126,6 +126,25 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   });
   log('ingest.done', { sourceId: src.sourceId, nodeIds: src.nodeIds.length });
 
+  // Query entity extraction cache: same query twice → second call hits cache.
+  {
+    const { cachedExtractQueryEntities, invalidateQueryEnrichmentCache, queryEnrichmentCacheStats } =
+      await import('./query-enrichment-cache.js');
+    invalidateQueryEnrichmentCache();
+    const q = 'When did Nelu visit Romania?';
+    cachedExtractQueryEntities(q);
+    const afterFirst = queryEnrichmentCacheStats();
+    cachedExtractQueryEntities(q);
+    const afterSecond = queryEnrichmentCacheStats();
+    if (afterFirst.misses !== 1 || afterFirst.hits !== 0) {
+      throw new Error(`FAIL: query cache expected 1 miss on first call, got ${JSON.stringify(afterFirst)}`);
+    }
+    if (afterSecond.hits !== 1 || afterSecond.misses !== 1) {
+      throw new Error(`FAIL: query cache expected 1 hit on second call, got ${JSON.stringify(afterSecond)}`);
+    }
+    log('query-enrichment-cache', { hits: afterSecond.hits, misses: afterSecond.misses, size: afterSecond.size });
+  }
+
   const recall = await host.recall('When did the user go to Greece?', { budget: { maxTokens: 800, maxNodes: 5 } });
   log('recall', {
     tokensUsed: recall.tokensUsed,
@@ -405,8 +424,11 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   // Smoketest corpus is far below the 500k compaction threshold; this verifies
   // the wired path completes without error. Real compaction needs a mature cortex.
   log('oplog-housekeeping', {});
-  await mergedHost.refreshAllCorrectionsFromOplog();
-  log('oplog-housekeeping.ok', {});
+  const housekeeping = await mergedHost.refreshAllCorrectionsFromOplog();
+  if (typeof housekeeping.compaction?.compacted !== 'boolean') {
+    throw new Error('FAIL: refreshAllCorrectionsFromOplog must return compaction result');
+  }
+  log('oplog-housekeeping.ok', { compacted: housekeeping.compaction.compacted });
 
   // --- deterministic correction (no LLM) -----------------------------------
   // `correct` must work with no Local LLM configured: it deterministically

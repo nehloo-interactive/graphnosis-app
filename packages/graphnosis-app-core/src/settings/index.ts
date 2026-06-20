@@ -900,6 +900,16 @@ export interface VsCodeBridgeSettings {
   localBridgePort: number;
 }
 
+/** Persisted audit record for the most recent op-log compaction on this device. */
+export interface OplogCompactionRecord {
+  at: number;
+  eventsRemoved: number;
+  eventsBefore: number;
+  eventsAfter: number;
+  bytesBefore?: number;
+  bytesAfter?: number;
+}
+
 /** Cortex-wide boot and memory policy. */
 export interface CortexSettings {
   /**
@@ -907,6 +917,10 @@ export interface CortexSettings {
    * Lazy-boot (default engram only at startup) is opt-in via GRAPHNOSIS_LAZY_BOOT=1.
    */
   preloadAllEngramsAtUnlock?: boolean;
+  /** Sidecar housekeeping — last successful op-log compaction (IT audit trail). */
+  oplogMaintenance?: {
+    lastCompaction?: OplogCompactionRecord;
+  };
 }
 
 export interface AppSettings {
