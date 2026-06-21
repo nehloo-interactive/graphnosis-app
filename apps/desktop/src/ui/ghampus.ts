@@ -18,6 +18,7 @@ export function initGhampus(): void {
   wireGhampusAttachButtons();
   wireAnnotationModalControls();
   wireGhampusThreadTimestamps();
+  wireGhampusThreadScrollPin();
 }
 
 export function isGhampusEnabled(): boolean { return ghampusEnabled; }
@@ -974,8 +975,8 @@ export async function refreshGhampusSharingPanel(): Promise<void> {
 // ── Ghampus chat surface ──────────────────────────────────────────────────
 
 type GhampusChatMessage =
-  | { kind: 'user'; text: string; ts: number }
-  | { kind: 'ghampus'; text: string; ts: number }
+  | { kind: 'user'; text: string; ts: number; turnId?: string }
+  | { kind: 'ghampus'; text: string; ts: number; turnId?: string; trace?: GhampusTurnTrace }
   | { kind: 'skill-match'; skill: SkillMatchPayload; ts: number }
   | { kind: 'walk-plan'; plan: WalkPlan; ts: number }
   | { kind: 'walk-progress'; steps: WalkStep[]; ts: number }
@@ -1010,6 +1011,212 @@ interface RefineProposal {
   captureVars: string[]; footnote: string;
 }
 interface TierContext { pro: string; free: string; teams: string; }
+
+type GhampusTraceStatus = 'running' | 'ok' | 'error' | 'skip';
+
+type GhampusTraceStep = {
+  stepId: string;
+  status: GhampusTraceStatus;
+  label: string;
+  tool?: string;
+  preview?: string;
+  ms?: number;
+};
+
+type GhampusTurnTrace = {
+  turnId: string;
+  startedAt: number;
+  endedAt?: number;
+  steps: GhampusTraceStep[];
+};
+
+type GhampusTracePayload = {
+  turnId: string;
+  stepId: string;
+  status: GhampusTraceStatus;
+  label: string;
+  tool?: string;
+  preview?: string;
+  ms?: number;
+  ts: number;
+  elapsedMs?: number;
+};
+
+const tracesByTurn = new Map<string, GhampusTurnTrace>();
+let liveTraceTurnId: string | null = null;
+let liveTraceElapsedTimer: ReturnType<typeof setInterval> | null = null;
+let liveTraceScrollPinned = true;
+const THREAD_SCROLL_BOTTOM_THRESHOLD = 40;
+let threadScrollPinned = true;
+
+function isGhampusThreadAtBottom(
+  thread: HTMLElement,
+  threshold = THREAD_SCROLL_BOTTOM_THRESHOLD,
+): boolean {
+  return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= threshold;
+}
+
+function scrollGhampusThreadToBottomIfPinned(): void {
+  if (!threadScrollPinned) return;
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread) return;
+  requestAnimationFrame(() => {
+    thread.scrollTop = thread.scrollHeight;
+  });
+}
+
+function resetGhampusThreadScrollPin(): void {
+  threadScrollPinned = true;
+}
+
+function newGhampusTurnId(): string {
+  return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function traceElapsedSec(trace: GhampusTurnTrace): number {
+  const end = trace.endedAt ?? Date.now();
+  return Math.max(0, Math.round((end - trace.startedAt) / 1000));
+}
+
+function formatTraceMetaText(trace: GhampusTurnTrace): string {
+  return `(${trace.steps.length} step${trace.steps.length === 1 ? '' : 's'} · ${traceElapsedSec(trace)}s)`;
+}
+
+function updateLiveTraceSummary(turnId: string): void {
+  const trace = tracesByTurn.get(turnId);
+  const summaryEl = document.getElementById('ghampus-live-trace-summary');
+  if (!trace || !summaryEl) return;
+  summaryEl.textContent = formatTraceMetaText(trace);
+}
+
+function startLiveTraceElapsedTimer(): void {
+  if (liveTraceElapsedTimer || !liveTraceTurnId) return;
+  liveTraceElapsedTimer = setInterval(() => {
+    if (!liveTraceTurnId) {
+      stopLiveTraceElapsedTimer();
+      return;
+    }
+    updateLiveTraceSummary(liveTraceTurnId);
+  }, 1000);
+}
+
+function stopLiveTraceElapsedTimer(): void {
+  if (!liveTraceElapsedTimer) return;
+  clearInterval(liveTraceElapsedTimer);
+  liveTraceElapsedTimer = null;
+}
+
+function ensureTurnTrace(turnId: string, startedAt = Date.now()): GhampusTurnTrace {
+  let trace = tracesByTurn.get(turnId);
+  if (!trace) {
+    trace = { turnId, startedAt, steps: [] };
+    tracesByTurn.set(turnId, trace);
+  }
+  return trace;
+}
+
+function upsertTraceStep(payload: GhampusTracePayload): GhampusTurnTrace {
+  const trace = ensureTurnTrace(payload.turnId, payload.ts - (payload.elapsedMs ?? 0));
+  const idx = trace.steps.findIndex((s) => s.stepId === payload.stepId);
+  const step: GhampusTraceStep = {
+    stepId: payload.stepId,
+    status: payload.status,
+    label: payload.label,
+    ...(payload.tool ? { tool: payload.tool } : {}),
+    ...(payload.preview ? { preview: payload.preview } : {}),
+    ...(payload.ms !== undefined ? { ms: payload.ms } : {}),
+  };
+  if (idx >= 0) trace.steps[idx] = step;
+  else trace.steps.push(step);
+  return trace;
+}
+
+function renderTraceStepHtml(step: GhampusTraceStep): string {
+  const statusCls = `ghampus-trace-step--${step.status}`;
+  const previewText = step.preview && step.preview !== step.label ? step.preview : '';
+  const preview = previewText
+    ? `<span class="ghampus-trace-step-preview">${escapeHtml(previewText)}</span>` : '';
+  const ms = step.ms !== undefined ? `<span class="ghampus-trace-step-ms">${step.ms}ms</span>` : '';
+  return `<div class="ghampus-trace-step ${statusCls}">
+    <span class="ghampus-trace-step-label">${escapeHtml(step.label)}</span>
+    ${preview}${ms}
+  </div>`;
+}
+
+function renderTraceMetaSummary(trace: GhampusTurnTrace, opts?: { live?: boolean }): string {
+  const meta = formatTraceMetaText(trace);
+  if (opts?.live) {
+    return `<span class="ghampus-trace-summary-inline ghampus-trace-summary-inline--live" id="ghampus-live-trace-summary">${escapeHtml(meta)}</span>`;
+  }
+  return `<button type="button" class="ghampus-trace-toggle" aria-expanded="false" title="Show steps">
+    <span class="ghampus-trace-chevron" aria-hidden="true">▸</span>
+    <span class="ghampus-trace-summary-inline">${escapeHtml(meta)}</span>
+  </button>`;
+}
+
+function renderTraceStepsOnly(trace: GhampusTurnTrace, opts?: { live?: boolean }): string {
+  const steps = trace.steps.map(renderTraceStepHtml).join('');
+  const idAttr = opts?.live ? ' id="ghampus-live-trace-steps"' : '';
+  return `<div class="ghampus-trace-steps${opts?.live ? ' ghampus-trace-steps--live' : ''}"${idAttr} data-turn-id="${escapeHtml(trace.turnId)}">${steps}</div>`;
+}
+
+function wireTracePanel(node: HTMLElement): void {
+  node.querySelector<HTMLButtonElement>('.ghampus-trace-toggle')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const entry = btn.closest('.ghampus-thread-entry');
+    const expanded = entry?.classList.toggle('trace-open') ?? false;
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    btn.querySelector('.ghampus-trace-chevron')?.classList.toggle('open', expanded);
+  });
+  const steps = node.querySelector<HTMLElement>('.ghampus-trace-steps');
+  if (!steps) return;
+  steps.addEventListener('scroll', () => {
+    const atBottom = steps.scrollHeight - steps.scrollTop - steps.clientHeight < 10;
+    if (liveTraceTurnId && steps.id === 'ghampus-live-trace-steps') {
+      liveTraceScrollPinned = atBottom;
+    }
+  });
+}
+
+function mergeTraceFromPayload(turnId: string, trace?: GhampusTurnTrace): GhampusTurnTrace | undefined {
+  if (trace) {
+    const merged = {
+      ...trace,
+      steps: [...trace.steps],
+      endedAt: trace.endedAt ?? Date.now(),
+    };
+    tracesByTurn.set(turnId, merged);
+    return merged;
+  }
+  const existing = tracesByTurn.get(turnId);
+  if (!existing) return undefined;
+  existing.endedAt = Date.now();
+  return { ...existing, steps: [...existing.steps] };
+}
+
+function renderLiveTrace(turnId: string): void {
+  const trace = tracesByTurn.get(turnId);
+  const stepsHost = document.getElementById('ghampus-live-trace-steps');
+  if (!trace || !stepsHost) return;
+  const pinned = liveTraceScrollPinned;
+  stepsHost.innerHTML = trace.steps.map(renderTraceStepHtml).join('');
+  updateLiveTraceSummary(turnId);
+  const wrap = stepsHost.closest('.chat-msg-wrap');
+  if (wrap) wireTracePanel(wrap);
+  if (pinned) stepsHost.scrollTop = stepsHost.scrollHeight;
+  scrollGhampusThreadToBottomIfPinned();
+}
+
+function clearLiveTraceSteps(): void {
+  stopLiveTraceElapsedTimer();
+  document.getElementById('ghampus-live-trace-steps')?.replaceChildren();
+  const summaryEl = document.getElementById('ghampus-live-trace-summary');
+  if (summaryEl) summaryEl.textContent = '';
+  liveTraceTurnId = null;
+  liveTraceScrollPinned = true;
+}
 
 const AWAY_DIGEST_PREFIX = '**While you were away**';
 const QUIET_AWAY_DIGEST_RE = /all quiet/i;
@@ -1096,6 +1303,15 @@ function wireGhampusThreadTimestamps(): void {
   });
 }
 
+function wireGhampusThreadScrollPin(): void {
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread || thread.dataset.scrollPinWired === '1') return;
+  thread.dataset.scrollPinWired = '1';
+  thread.addEventListener('scroll', () => {
+    threadScrollPinned = isGhampusThreadAtBottom(thread);
+  }, { passive: true });
+}
+
 const COPY_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
   <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
   <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H3.5A1.5 1.5 0 0 0 2 3.5V9.5A1.5 1.5 0 0 0 3.5 11H5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -1117,8 +1333,11 @@ function renderChatMessage(msg: GhampusChatMessage): string {
           </div>
         </div>
       </div>`;
-    case 'ghampus':
-      return `<div class="chat-msg ghampus">
+    case 'ghampus': {
+      const turnAttr = msg.turnId ? ` data-turn-id="${escapeHtml(msg.turnId)}"` : '';
+      const traceMeta = msg.trace ? renderTraceMetaSummary(msg.trace) : '';
+      const traceSteps = msg.trace ? renderTraceStepsOnly(msg.trace) : '';
+      return `<div class="chat-msg ghampus"${turnAttr}>
         <div class="chat-msg-avatar">
           <img src="/graphnosis-logo-transparent-bg.png" alt="" />
         </div>
@@ -1127,9 +1346,12 @@ function renderChatMessage(msg: GhampusChatMessage): string {
           <div class="chat-msg-meta">
             <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
             ${copyBtn(msg.text)}
+            ${traceMeta}
           </div>
+          ${traceSteps}
         </div>
       </div>`;
+    }
     case 'skill-match':
       return renderSkillMatchCard(msg.skill, msg.ts);
     case 'walk-plan':
@@ -1273,26 +1495,47 @@ function showThinkingBubble(): void {
   setGhampusRunning(true);
   if (_thinkingClearTimer) { clearTimeout(_thinkingClearTimer); _thinkingClearTimer = null; }
 
-  if (document.getElementById('ghampus-thinking')) return;
+  if (document.getElementById('ghampus-thinking')) {
+    if (liveTraceTurnId) {
+      renderLiveTrace(liveTraceTurnId);
+      startLiveTraceElapsedTimer();
+    }
+    return;
+  }
 
   const thread = document.getElementById('ghampus-thread');
   if (!thread) return;
 
+  resetGhampusThreadScrollPin();
   document.getElementById('ghampus-thread-empty')?.remove();
 
   const entry = document.createElement('div');
   entry.id = 'ghampus-thinking';
   entry.className = 'ghampus-thread-entry';
-  entry.innerHTML = `<div class="ghampus-thinking-bubble">
+  const startedAt = liveTraceTurnId
+    ? (tracesByTurn.get(liveTraceTurnId)?.startedAt ?? Date.now())
+    : Date.now();
+  entry.innerHTML = `<div class="chat-msg ghampus ghampus--working">
     <div class="chat-msg-avatar">
       <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
     </div>
-    <div class="ghampus-thinking-dots">
-      <span></span><span></span><span></span>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-thinking-dots">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(startedAt)}</div>
+        <span class="ghampus-trace-summary-inline ghampus-trace-summary-inline--live" id="ghampus-live-trace-summary"></span>
+      </div>
+      <div id="ghampus-live-trace-steps" class="ghampus-trace-steps ghampus-trace-steps--live"></div>
     </div>
   </div>`;
   thread.appendChild(entry);
-  thread.scrollTop = thread.scrollHeight;
+  scrollGhampusThreadToBottomIfPinned();
+  if (liveTraceTurnId) {
+    renderLiveTrace(liveTraceTurnId);
+    startLiveTraceElapsedTimer();
+  }
 }
 
 function clearThinkingBubble(): void {
@@ -1301,6 +1544,7 @@ function clearThinkingBubble(): void {
   if (_thinkingClearTimer) return;
   _thinkingClearTimer = setTimeout(() => {
     document.getElementById('ghampus-thinking')?.remove();
+    clearLiveTraceSteps();
     _thinkingClearTimer = null;
     setGhampusRunning(false);
   }, 400);
@@ -1312,24 +1556,48 @@ function wireGhampusSidecarEvents(): void {
     'graphnosis://ghampus-message',
     (ev) => {
       if (!ev.payload) return;
+      let msg = ev.payload;
+      if (msg.kind === 'ghampus' && msg.turnId) {
+        const trace = mergeTraceFromPayload(msg.turnId, msg.trace);
+        if (trace) msg = { ...msg, trace };
+        if (msg.turnId === liveTraceTurnId) clearLiveTraceSteps();
+      }
       clearThinkingBubble();
       clearSkillRunning();
       const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
       const away = !pane || pane.classList.contains('hidden');
-      appendToThread(ev.payload);
-      if (away && ev.payload.kind === 'ghampus') {
-        const preview = ev.payload.text.length > 72
-          ? `${ev.payload.text.slice(0, 69)}…`
-          : ev.payload.text;
+      appendToThread(msg);
+      if (away && msg.kind === 'ghampus') {
+        const preview = msg.text.length > 72
+          ? `${msg.text.slice(0, 69)}…`
+          : msg.text;
         const id = app().addIngestToast('Ghampus replied', preview);
         app().finishIngestToast(id, 'success');
       }
     },
   );
 
-  void listen<{ thinking: boolean; ts: number }>(
+  void listen<{ thinking: boolean; ts: number; turnId?: string }>(
     'graphnosis://ghampus-thinking',
-    () => { showThinkingBubble(); },
+    (ev) => {
+      const turnId = ev.payload?.turnId;
+      if (turnId) {
+        liveTraceTurnId = turnId;
+        liveTraceScrollPinned = true;
+        resetGhampusThreadScrollPin();
+        ensureTurnTrace(turnId, ev.payload?.ts ?? Date.now());
+      }
+      showThinkingBubble();
+    },
+  );
+
+  void listen<GhampusTracePayload>(
+    'graphnosis://ghampus-trace',
+    (ev) => {
+      if (!ev.payload?.turnId) return;
+      upsertTraceStep(ev.payload);
+      if (ev.payload.turnId === liveTraceTurnId) renderLiveTrace(ev.payload.turnId);
+    },
   );
 
   void listen<ProactiveCardPayload>(
@@ -1495,9 +1763,10 @@ function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean })
   node.innerHTML = renderChatMessage(msg);
   container.appendChild(node);
   wireThreadNodeActions(node, msg);
+  const wrap = node.querySelector<HTMLElement>('.chat-msg-wrap');
+  if (wrap) wireTracePanel(wrap);
   node.querySelectorAll<HTMLTimeElement>('.chat-msg-time time').forEach(updateLiveTimeEl);
-  const thread = document.getElementById('ghampus-thread');
-  if (thread) thread.scrollTop = thread.scrollHeight;
+  scrollGhampusThreadToBottomIfPinned();
 }
 
 function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void {
@@ -1727,7 +1996,8 @@ function showSkillRunning(skillLabel: string, signalLabel?: string): void {
   </div>`;
 
   thread.appendChild(entry);
-  thread.scrollTop = thread.scrollHeight;
+  resetGhampusThreadScrollPin();
+  scrollGhampusThreadToBottomIfPinned();
 
   let phraseIdx = 0;
   _skillRunningTimer = setInterval(() => {
@@ -1738,7 +2008,7 @@ function showSkillRunning(skillLabel: string, signalLabel?: string): void {
       phraseIdx = (phraseIdx + 1) % SKILL_RUNNING_PHRASES.length;
       statusEl.textContent = SKILL_RUNNING_PHRASES[phraseIdx];
       statusEl.classList.remove('fade');
-      thread.scrollTop = thread.scrollHeight;
+      scrollGhampusThreadToBottomIfPinned();
     }, 300);
   }, 2800);
 }
@@ -2236,12 +2506,18 @@ function wireGhampusChat(): void {
     input!.value = '';
     input!.style.height = 'auto';
     const ts = Date.now();
-    appendToThread({ kind: 'user', text, ts });
+    const turnId = newGhampusTurnId();
+    liveTraceTurnId = turnId;
+    liveTraceScrollPinned = true;
+    resetGhampusThreadScrollPin();
+    ensureTurnTrace(turnId, ts);
+    appendToThread({ kind: 'user', text, ts, turnId });
     showThinkingBubble();
     try {
-      await ipcCall('ghampus:send', { text });
+      await ipcCall('ghampus:send', { text, turnId });
     } catch {
       clearThinkingBubble();
+      clearLiveTraceSteps();
     }
   }
 

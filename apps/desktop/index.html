@@ -4733,7 +4733,7 @@
       .home-engram-bars {
         margin-top: 16px;
         display: grid;
-        grid-template-columns: max-content minmax(0, 1fr) auto;
+        grid-template-columns: var(--home-engram-label-col-width, max-content) minmax(0, 1fr) auto;
         column-gap: 10px;
         row-gap: 6px;
         align-items: center;
@@ -4743,8 +4743,7 @@
       .home-bar-row {
         display: grid;
         grid-column: 1 / -1;
-        grid-template-columns: max-content minmax(0, 1fr) auto;
-        column-gap: 10px;
+        grid-template-columns: subgrid;
         align-items: center;
       }
       .home-bar-name {
@@ -4754,10 +4753,16 @@
         color: var(--fg);
       }
       .home-bar-track { grid-column: 2; height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow: hidden; min-width: 0; }
-      .home-bar-fill { display: block; height: 100%; border-radius: 4px; background: var(--bar-color-light, #15803d); }
-      :root[data-theme="dark"] .home-bar-fill { background: var(--bar-color-dark, #4ade80); }
-      @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .home-bar-fill { background: var(--bar-color-dark, #4ade80); } }
+      .home-bar-fill { display: block; height: 100%; border-radius: 4px; transition: width 0.2s; }
+      .home-bar-fill.grade-a { background: var(--ok); }
+      .home-bar-fill.grade-b { background: var(--accent); }
+      .home-bar-fill.grade-c { background: var(--color-status-warn-gold); }
+      .home-bar-fill.grade-d { background: var(--error); }
       .home-bar-val { grid-column: 3; font-size: 12px; font-weight: 700; min-width: 28px; text-align: right; color: var(--fg-dim); }
+      .home-bar-val.grade-a { color: var(--ok); }
+      .home-bar-val.grade-b { color: var(--accent); }
+      .home-bar-val.grade-c { color: var(--color-status-warn-gold); }
+      .home-bar-val.grade-d { color: var(--error); }
       .home-bar-row-empty { opacity: 0.5; }
       .home-bar-row-empty .home-bar-name { font-style: italic; }
       .home-bar-row-empty .home-bar-val { font-weight: 500; font-size: 11px; min-width: 44px; }
@@ -6120,12 +6125,8 @@
       .chat-msg-copy:hover { background: var(--bg-elev2, rgba(255,255,255,.12)); color: var(--fg, #fff); }
       .chat-msg-copy.copied { color: #10b981; border-color: rgba(16,185,129,.4); }
 
-      /* Thinking indicator */
-      .ghampus-thinking-bubble {
-        display: flex; align-items: center; gap: 10px;
-        align-self: flex-start;
-      }
-      .ghampus-thinking-dots {
+      /* Thinking indicator — dots inside ghampus--working chat-msg-wrap */
+      .chat-msg.ghampus--working .ghampus-thinking-dots {
         display: flex; gap: 5px; align-items: center;
         background: var(--bg-elev, rgba(255,255,255,.07));
         border: 1px solid var(--g-border, rgba(255,255,255,.1));
@@ -6143,6 +6144,109 @@
       @keyframes ghampus-dot-pulse {
         0%, 80%, 100% { opacity: .2; transform: scale(.85); }
         40% { opacity: 1; transform: scale(1); }
+      }
+
+      /* Ghampus turn trace — steps live in chat-msg-wrap beside meta row */
+      .chat-msg.ghampus--working .chat-msg-meta { opacity: 1; }
+      .chat-msg.ghampus--working .ghampus-trace-steps { display: flex; }
+
+      .ghampus-trace-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        font-size: 11px;
+        color: var(--fg-dim, rgba(255,255,255,.5));
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .ghampus-trace-toggle:hover { color: var(--fg, #fff); }
+
+      .ghampus-trace-summary-inline {
+        white-space: nowrap;
+        opacity: .75;
+        font-size: 11px;
+      }
+      .ghampus-trace-summary-inline--live { opacity: .55; }
+
+      .ghampus-trace-chevron {
+        display: inline-block;
+        transition: transform .15s;
+        opacity: .6;
+        font-size: 10px;
+      }
+      .ghampus-trace-chevron.open,
+      .ghampus-thread-entry.trace-open .ghampus-trace-chevron {
+        transform: rotate(90deg);
+      }
+
+      .ghampus-trace-steps {
+        max-height: 160px;
+        overflow-y: auto;
+        margin-top: 4px;
+        padding-left: 4px;
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--fg-dim, rgba(255,255,255,.55));
+      }
+      .ghampus-thread-entry.trace-open .ghampus-trace-steps,
+      .ghampus-trace-steps--live {
+        display: flex;
+      }
+      .ghampus-trace-step {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: baseline;
+        line-height: 1.35;
+      }
+      .ghampus-trace-step-preview { opacity: .75; }
+      .ghampus-trace-step-ms { opacity: .45; font-size: 11px; }
+      .ghampus-trace-step--running .ghampus-trace-step-label {
+        background: linear-gradient(90deg,
+          var(--fg-dim, rgba(255,255,255,.45)) 0%,
+          var(--fg, rgba(255,255,255,.95)) 50%,
+          var(--fg-dim, rgba(255,255,255,.45)) 100%);
+        background-size: 200% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: ghampus-trace-shimmer 1.4s ease-in-out infinite;
+      }
+      @keyframes ghampus-trace-shimmer {
+        0% { background-position: 100% 0; }
+        100% { background-position: -100% 0; }
+      }
+
+      /* Selection follow-up chip above Ghampus input */
+      .ghampus-selection-chip {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 14px 6px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        background: var(--bg-elev, rgba(255,255,255,.07));
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        font-size: 12px;
+      }
+      .ghampus-selection-chip.hidden { display: none; }
+      .ghampus-selection-chip-label { opacity: .65; white-space: nowrap; }
+      .ghampus-selection-chip-text { opacity: .9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ghampus-selection-chip-clear {
+        margin-left: auto;
+        border: none;
+        background: transparent;
+        color: var(--fg-dim, rgba(255,255,255,.5));
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        padding: 0 4px;
       }
 
       .chat-msg-avatar {
