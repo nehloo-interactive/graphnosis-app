@@ -67,6 +67,8 @@ export type LlmCompleteInput = {
   system: string;
   user: string;
   jsonSchema?: unknown;
+  /** Explicit override — rare; normally preset comes from settings. */
+  temperature?: number;
   /** When aborted (e.g. work-priority preemption), implementations must cancel in-flight HTTP. */
   signal?: AbortSignal;
 };

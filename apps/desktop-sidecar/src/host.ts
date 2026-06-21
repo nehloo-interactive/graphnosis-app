@@ -42,6 +42,8 @@ import { hostRecall, hostDigDeeper, type RecallHost } from './host/recall-method
 import { extractQueryEntities } from './host/recall.js';
 import { invalidateQueryEnrichmentCache } from './query-enrichment-cache.js';
 import { bundledDocForRef } from './docs-ingest.js';
+import { actorOf } from './activity-actors.js';
+import { queryOplogForActivity, sliceOplogCacheForActivity } from './oplog-activity-query.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -5663,6 +5665,43 @@ export class GraphnosisHost {
       throw e;
     });
     return this._oplogReadPromise;
+  }
+
+  /** Bounded Activity query — tail-first reverse scan; empty range returns instantly. */
+  async listOplogEventsForActivity(params: {
+    since?: number;
+    until?: number;
+    limit?: number;
+    cursor?: { ts: number; id: string };
+    ops?: string[];
+    actor?: string;
+  }): Promise<{
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>;
+    actors: string[];
+    hasMore: boolean;
+    nextCursor?: { ts: number; id: string };
+  }> {
+    const base: Omit<import('./oplog-activity-query.js').ActivityOplogQuery, 'oplogDir' | 'key' | 'readOpts'> = {
+      actorOf,
+    };
+    if (params.since !== undefined) base.since = params.since;
+    if (params.until !== undefined) base.until = params.until;
+    if (params.limit !== undefined) base.limit = params.limit;
+    if (params.cursor !== undefined) base.cursor = params.cursor;
+    if (params.ops !== undefined) base.ops = params.ops;
+    if (params.actor !== undefined) base.actor = params.actor;
+    if (params.since !== undefined && params.until !== undefined && params.until <= params.since) {
+      return { events: [], actors: [], hasMore: false };
+    }
+    if (this._oplogReadCache && this._oplogReadCache.seq === this._oplogWriteSeq) {
+      return sliceOplogCacheForActivity(this._oplogReadCache.events, base);
+    }
+    return queryOplogForActivity({
+      oplogDir: path.join(this.opts.cortexDir, 'oplog'),
+      key: this.key,
+      readOpts: this.oplogReadOptions(),
+      ...base,
+    });
   }
 
 

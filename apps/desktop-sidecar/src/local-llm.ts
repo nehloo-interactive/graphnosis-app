@@ -132,9 +132,21 @@ export class OllamaLlm implements LocalLlm {
     readonly name: string,
     private readonly model: string,
     private readonly baseUrl = 'http://127.0.0.1:11434',
+    /** Default temperature when the call does not pass an explicit override. */
+    private readonly getDefaultTemperature: () => number = () => 0.2,
   ) {}
 
-  async complete(input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal }): Promise<string> {
+  private ollamaTemperature(input: {
+    jsonSchema?: unknown;
+    temperature?: number;
+  }): number {
+    if (process.env.GRAPHNOSIS_EVAL_MODE === '1') return 0;
+    if (input.jsonSchema) return 0;
+    if (typeof input.temperature === 'number') return input.temperature;
+    return this.getDefaultTemperature();
+  }
+
+  async complete(input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; signal?: AbortSignal }): Promise<string> {
     if (input.signal?.aborted) {
       throw new DOMException('LLM request aborted', 'AbortError');
     }
@@ -146,6 +158,7 @@ export class OllamaLlm implements LocalLlm {
         model: this.model,
         stream: false,
         format: input.jsonSchema ? 'json' : undefined,
+        options: { temperature: this.ollamaTemperature(input) },
         messages: [
           { role: 'system', content: input.system },
           { role: 'user', content: input.user },
@@ -163,7 +176,7 @@ export class OllamaLlm implements LocalLlm {
    *  Format=json is incompatible with streaming, so callers that want a
    *  structured response should use complete() instead. */
   async completeStream(
-    input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal },
+    input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; signal?: AbortSignal },
     onChunk: (chunk: string) => void,
   ): Promise<string> {
     if (input.signal?.aborted) {
@@ -181,6 +194,7 @@ export class OllamaLlm implements LocalLlm {
       body: JSON.stringify({
         model: this.model,
         stream: true,
+        options: { temperature: this.ollamaTemperature(input) },
         messages: [
           { role: 'system', content: input.system },
           { role: 'user', content: input.user },
@@ -270,6 +284,7 @@ export class DynamicOllamaLlm implements LocalLlm {
   constructor(
     private readonly getModelTag: () => string,
     private readonly baseUrl = 'http://127.0.0.1:11434',
+    private readonly getDefaultTemperature: () => number = () => 0.2,
   ) {}
 
   get name(): string {
@@ -278,15 +293,15 @@ export class DynamicOllamaLlm implements LocalLlm {
 
   private client(): OllamaLlm {
     const tag = this.getModelTag();
-    return new OllamaLlm(`Ollama/${tag}`, tag, this.baseUrl);
+    return new OllamaLlm(`Ollama/${tag}`, tag, this.baseUrl, this.getDefaultTemperature);
   }
 
-  complete(input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal }): Promise<string> {
+  complete(input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; signal?: AbortSignal }): Promise<string> {
     return this.client().complete(input);
   }
 
   completeStream(
-    input: { system: string; user: string; jsonSchema?: unknown; signal?: AbortSignal },
+    input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; signal?: AbortSignal },
     onChunk: (chunk: string) => void,
   ): Promise<string> {
     return this.client().completeStream(input, onChunk);

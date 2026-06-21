@@ -185,6 +185,8 @@ export interface SkillListEntry {
   trainedAt?: string;
   mode?: string;
   recallBreadth?: number;
+  /** Concatenated node previews for keyword search (title/trigger/body). */
+  searchPreview?: string;
   /** Present only for skills imported from a .gsk pack (parsed from the
    *  imported-provenance node written by skill:importGsk). Locally-trained
    *  skills have no provenance entry. */
@@ -1379,6 +1381,11 @@ export class SkillTrainer {
           .join('\n');
         const parsed = parseSkillMetadata(nodeText);
         const provenance = parseSkillProvenance(nodeText);
+        const searchPreview = nodeText
+          .replace(/<!--[\s\S]*?-->/gu, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 4000);
         entries.push({
           sourceId: src.sourceId,
           graphId: gid,
@@ -1386,6 +1393,7 @@ export class SkillTrainer {
           label: src.ref,
           ingestedAt: src.ingestedAt,
           nodeCount: activeBySource.get(src.sourceId) ?? 0,
+          ...(searchPreview ? { searchPreview } : {}),
           ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
           ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
           ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),

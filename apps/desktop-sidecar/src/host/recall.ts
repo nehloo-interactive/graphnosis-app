@@ -196,8 +196,8 @@ export function buildOverlaySection(
 //
 // A pre-ranking pass that force-includes any node whose extracted entities or
 // content literally contains an entity from the query. This is the cheap
-// deterministic answer to the failure mode "query mentions 'Nelu', node
-// content is 'Nelu a locuit pe Aleea Plaiului', and yet recall returns
+// deterministic answer to the failure mode "query mentions 'Alex Rivera', node
+// content is 'Alex Rivera lived on Example Street', and yet recall returns
 // nothing because TF-IDF scored the node low and the embedding model is
 // English-first."
 //
@@ -234,8 +234,8 @@ export const ANCHOR_SCORE = 99;
 //      added as additional candidates. Catches the "obviously related but
 //      not directly mentioned" memories the deterministic match missed.
 //   2. Anchor extension: each entity-anchor node's recall-grade GNN
-//      neighbors also become anchors. Extends "Nelu" anchoring to include
-//      nodes the GNN learned are tightly related to Nelu-mentioning nodes.
+//      neighbors also become anchors. Extends "Alex Rivera" anchoring to include
+//      nodes the GNN learned are tightly related to Alex Rivera-mentioning nodes.
 //
 // Tightly-bounded by a recall-grade confidence threshold (stricter than
 // the broader display/persistence threshold) so low-confidence predictions
@@ -387,7 +387,7 @@ export function extractQueryEntities(query: string): string[] {
   for (const m of query.matchAll(/\b[A-ZĂÂÎȘȚĂÄÖÜß][\p{L}'-]+(?:\s+[A-ZĂÂÎȘȚĂÄÖÜß][\p{L}'-]+)+\b/gu)) {
     add(m[0]);
   }
-  // 3. Single capitalized tokens ≥ 3 chars (Nelu, London, OpenAI).
+  // 3. Single capitalized tokens ≥ 3 chars (Alex, London, OpenAI).
   for (const m of query.matchAll(/\b[A-ZĂÂÎȘȚĂÄÖÜß][\p{L}'-]{2,}\b/gu)) {
     add(m[0]);
   }
@@ -462,10 +462,10 @@ export function selectAnchorNodes(
 
 // ── Source-filename match detection ─────────────────────────────────────────
 //
-// "Why did Virginia return 3 nodes from an engram of 1,362 chunks from the
-// 'Virginia Linul thesis'?" → because TF-IDF indexes chunk CONTENT, not
-// source FILENAMES. The engram's source ref is `/.../Virginia Linul/
-// Teza doctorat Virginia Linul DIN ISTORICUL...pdf` — every chunk shares
+// "Why did ExampleAuthor return 3 nodes from an engram of 1,362 chunks from the
+// 'ExampleAuthor thesis'?" → because TF-IDF indexes chunk CONTENT, not
+// source FILENAMES. The engram's source ref is `/.../ExampleAuthor/
+// thesis ExampleAuthor history...pdf` — every chunk shares
 // that ref — but only the chunks where her name appears literally in the
 // body text get content-matched.
 //
@@ -569,11 +569,11 @@ Rules:
 6. Output ONLY the rewritten query string. No preamble, no explanation, no quotes, no markdown. 3-12 content words, space-separated.
 
 Examples:
-Input: "remind me where Nelu lived"
-Output: Nelu lived where home location locuit unde
+Input: "remind me where Alex Rivera lived"
+Output: Alex Rivera lived where home location locuit unde
 
 Input: "aminteste-mi unde a locuit nelu"
-Output: Nelu unde locuit trait casa locuinta lived home
+Output: Alex Rivera unde locuit trait casa locuinta lived home
 
 Input: "what did I say about the marketing project?"
 Output: marketing project campaign proiect marketing campanie`;

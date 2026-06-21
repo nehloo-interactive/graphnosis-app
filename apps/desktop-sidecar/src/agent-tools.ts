@@ -107,6 +107,8 @@ export interface ListSkillsToolResult {
     trainedAt?: string;
     /** Recall breadth 0-100 — drives the runtime recall budget for the skill. */
     recallBreadth?: number;
+    /** Title/trigger/body preview for Ghampus keyword filtering. */
+    searchPreview?: string;
   }>;
 }
 
@@ -313,6 +315,7 @@ function runListSkills(deps: AgentToolDeps, args: ListSkillsToolArgs): ListSkill
       origin: s.provenance ? 'pack' : 'local',
       ...(s.trainedAt !== undefined ? { trainedAt: s.trainedAt } : {}),
       ...(s.recallBreadth !== undefined ? { recallBreadth: s.recallBreadth } : {}),
+      ...(s.searchPreview !== undefined ? { searchPreview: s.searchPreview } : {}),
     })),
   };
 }

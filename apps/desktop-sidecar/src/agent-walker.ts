@@ -9,6 +9,7 @@
 //   - Failure handlers: one recovery sub-skill + one step retry
 
 import { OllamaLlm } from './local-llm.js';
+import { settings as settingsMod } from '@graphnosis-app/core';
 import { dispatchCloudModelCall, dispatchLocalOpenAiModelCall, OPENAI_COMPAT_BASE_URLS } from './cloud-llm.js';
 import { recordRoutingSavings, resolveSavingsBaseline } from './savings-tracker.js';
 import type { GraphnosisHost } from './host.js';
@@ -370,7 +371,12 @@ function composePrompt(step: WalkerStepInput, captures: Record<string, string>):
 async function dispatchModelCall(provider: string, modelTag: string, prompt: string, deps: WalkerDeps): Promise<string> {
   if (provider === 'ollama') {
     const activeModel = deps.host.getSettings().ai?.llmModel ?? modelTag;
-    const client = new OllamaLlm(`ollama:${activeModel}`, activeModel);
+    const client = new OllamaLlm(
+      `ollama:${activeModel}`,
+      activeModel,
+      undefined,
+      () => settingsMod.resolveLlmTemperature(deps.host.getSettings()),
+    );
     return client.complete({
       system: 'You are Ghampus, a local AI agent working with the user\'s memory. Answer the step concisely and concretely.',
       user: prompt,
