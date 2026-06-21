@@ -14231,6 +14231,12 @@ type ConsentPromptPayload = {
   suggestedDurations: Array<{ tier: string; durationMs: number }>;
   privacyUrl: string | null;
 };
+// In-app Ghampus (local Ollama) shares the IPC trust boundary — not external MCP.
+const LOCAL_GHAMPUS_CLIENT_ID = 'ghampus';
+function isLocalGhampusClient(name: string): boolean {
+  return name.toLowerCase() === LOCAL_GHAMPUS_CLIENT_ID;
+}
+const CONSENT_BODY_EXTERNAL = `Your selected memories will be sent <strong>from your Mac directly to the AI provider</strong>. Graphnosis itself receives, logs, and retains nothing.`;
 // ── In-app update modal ───────────────────────────────────────────────────
 // Rust emits `graphnosis://update-available` with the new version string
 // immediately after updating the tray and posting the OS notification.
@@ -14271,12 +14277,21 @@ type ConsentPromptPayload = {
 let activeConsentPromptId: string | null = null;
 void listen<ConsentPromptPayload>('graphnosis://consent-prompt', (evt) => {
   const p = evt.payload;
+  // Belt-and-suspenders: sidecar should not emit this for Ghampus, but if it
+  // does, auto-approve silently — cortex unlock is the trust boundary.
+  if (isLocalGhampusClient(p.clientName)) {
+    activeConsentPromptId = p.promptId;
+    void resolveConsentPrompt('allow', Number.MAX_SAFE_INTEGER - 1);
+    return;
+  }
   activeConsentPromptId = p.promptId;
   const titleEl = document.getElementById('consent-prompt-title');
   const subEl = document.getElementById('consent-prompt-subtitle');
   const tiersEl = document.getElementById('consent-prompt-tiers');
+  const bodyEl = document.getElementById('consent-prompt-body');
   const privEl = document.getElementById('consent-prompt-privacy') as HTMLAnchorElement | null;
   if (titleEl) titleEl.textContent = `${friendlyClient(p.clientName)} wants to read your memories`;
+  if (bodyEl) bodyEl.innerHTML = CONSENT_BODY_EXTERNAL;
   const engrams = p.engrams ?? [];
   if (subEl) {
     // Name the specific engram(s) so the user authorises exactly these, not the
@@ -14337,9 +14352,10 @@ document.getElementById('consent-prompt-privacy')?.addEventListener('click', (e)
 });
 
 // ── First-connect policy chooser (Option 3) ─────────────────────────────────
-// Pops once per never-before-seen AI client. The sidecar seeds a default
-// policy at first contact; this modal lets the user override it before
+// Pops once per never-before-seen external AI client. The sidecar seeds a
+// default policy at first contact; this modal lets the user override it before
 // the next recall. Saving the form writes back via `ai.setClientPolicy`.
+// In-app Ghampus is local-only — same trust boundary as IPC, not MCP onboarding.
 type FirstConnectPayload = {
   clientName: string;
   policy: { personalTier: string; sensitiveTier: string; firstSeenAt: number };
@@ -14347,6 +14363,14 @@ type FirstConnectPayload = {
 let activeFirstConnectClient: string | null = null;
 void listen<FirstConnectPayload>('graphnosis://first-connect-policy', (evt) => {
   const p = evt.payload;
+  if (isLocalGhampusClient(p.clientName)) {
+    void ipcCall('ai.setClientPolicy', {
+      clientName: p.clientName,
+      personalTier: 'always-allow',
+      sensitiveTier: 'always-allow',
+    }).catch((e) => console.error('ghampus policy seed failed', e));
+    return;
+  }
   activeFirstConnectClient = p.clientName;
   const titleEl = document.getElementById('first-connect-title');
   if (titleEl) titleEl.textContent = `${p.clientName} is connecting for the first time`;
@@ -22808,6 +22832,7 @@ const FIRST_CONNECT_SKIP = new Set([
   'Graphnosis',
   'Unknown client',
   'Claude Skills agent', // background per-server agent — not user-facing
+  'ghampus', // in-app local assistant — not an external MCP client
 ]);
 
 function checkFirstConnectClients(clients: string[]): void {

@@ -37,10 +37,14 @@ export function setGhampusRunning(running: boolean): void {
   // "Stop all" only shows while something is actually in flight.
   document.getElementById('btn-ghampus-kill')
     ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
+  document.getElementById('btn-ghampus-cancel')
+    ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
 }
 
 export function updateGhampusVisibility(): void {
   document.getElementById('btn-ghampus-kill')
+    ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
+  document.getElementById('btn-ghampus-cancel')
     ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
   document.getElementById('btn-ghampus-resume')?.classList.toggle('hidden', ghampusEnabled);
   document.getElementById('ghampus-kill-banner')?.classList.toggle('hidden', ghampusEnabled);
@@ -1073,13 +1077,36 @@ function newGhampusTurnId(): string {
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function traceElapsedSec(trace: GhampusTurnTrace): number {
+function traceElapsedMs(trace: GhampusTurnTrace): number {
   const end = trace.endedAt ?? Date.now();
-  return Math.max(0, Math.round((end - trace.startedAt) / 1000));
+  return Math.max(0, end - trace.startedAt);
+}
+
+function formatTraceElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (secs === 0) return `${minutes}m`;
+    return `${minutes}m${secs}s`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  let out = `${hours}h`;
+  if (minutes > 0) out += `${minutes}m`;
+  if (secs > 0) out += `${secs}s`;
+  return out;
+}
+
+function formatTraceElapsedMs(ms: number): string {
+  const clamped = Math.max(0, Math.round(ms));
+  if (clamped < 1000) return `${clamped}ms`;
+  return formatTraceElapsed(Math.floor(clamped / 1000));
 }
 
 function formatTraceMetaText(trace: GhampusTurnTrace): string {
-  return `(${trace.steps.length} step${trace.steps.length === 1 ? '' : 's'} · ${traceElapsedSec(trace)}s)`;
+  return `(${trace.steps.length} step${trace.steps.length === 1 ? '' : 's'} · ${formatTraceElapsedMs(traceElapsedMs(trace))})`;
 }
 
 function updateLiveTraceSummary(turnId: string): void {
@@ -1136,7 +1163,9 @@ function renderTraceStepHtml(step: GhampusTraceStep): string {
   const previewText = step.preview && step.preview !== step.label ? step.preview : '';
   const preview = previewText
     ? `<span class="ghampus-trace-step-preview">${escapeHtml(previewText)}</span>` : '';
-  const ms = step.ms !== undefined ? `<span class="ghampus-trace-step-ms">${step.ms}ms</span>` : '';
+  const ms = step.ms !== undefined
+    ? `<span class="ghampus-trace-step-ms">${formatTraceElapsedMs(step.ms)}</span>`
+    : '';
   return `<div class="ghampus-trace-step ${statusCls}">
     <span class="ghampus-trace-step-label">${escapeHtml(step.label)}</span>
     ${preview}${ms}
@@ -1166,7 +1195,9 @@ function wireTracePanel(node: HTMLElement): void {
     e.stopPropagation();
     const btn = e.currentTarget as HTMLButtonElement;
     const entry = btn.closest('.ghampus-thread-entry');
+    const chatMsg = btn.closest('.chat-msg');
     const expanded = entry?.classList.toggle('trace-open') ?? false;
+    chatMsg?.classList.toggle('trace-expanded', expanded);
     btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     btn.querySelector('.ghampus-trace-chevron')?.classList.toggle('open', expanded);
   });
@@ -1520,8 +1551,10 @@ function showThinkingBubble(): void {
       <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
     </div>
     <div class="chat-msg-wrap">
-      <div class="ghampus-thinking-dots">
-        <span></span><span></span><span></span>
+      <div class="ghampus-thinking-row">
+        <div class="ghampus-thinking-dots">
+          <span></span><span></span><span></span>
+        </div>
       </div>
       <div class="chat-msg-meta">
         <div class="chat-msg-time">${fmtTime(startedAt)}</div>
@@ -1543,11 +1576,26 @@ function clearThinkingBubble(): void {
   // doesn't make it flash imperceptibly.
   if (_thinkingClearTimer) return;
   _thinkingClearTimer = setTimeout(() => {
-    document.getElementById('ghampus-thinking')?.remove();
-    clearLiveTraceSteps();
-    _thinkingClearTimer = null;
-    setGhampusRunning(false);
+    forceClearThinkingBubble();
   }, 400);
+}
+
+function forceClearThinkingBubble(): void {
+  if (_thinkingClearTimer) {
+    clearTimeout(_thinkingClearTimer);
+    _thinkingClearTimer = null;
+  }
+  document.getElementById('ghampus-thinking')?.remove();
+  clearLiveTraceSteps();
+  setGhampusRunning(false);
+}
+
+async function cancelGhampusTurn(): Promise<void> {
+  const turnId = liveTraceTurnId ?? undefined;
+  try {
+    await ipcCall('ghampus:cancel', turnId ? { turnId } : {});
+  } catch { /* non-fatal */ }
+  forceClearThinkingBubble();
 }
 
 /** Sidecar → UI events (message stream, thinking indicator, proactive cards). */
@@ -1562,7 +1610,11 @@ function wireGhampusSidecarEvents(): void {
         if (trace) msg = { ...msg, trace };
         if (msg.turnId === liveTraceTurnId) clearLiveTraceSteps();
       }
-      clearThinkingBubble();
+      if (msg.kind === 'ghampus') {
+        forceClearThinkingBubble();
+      } else {
+        clearThinkingBubble();
+      }
       clearSkillRunning();
       const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
       const away = !pane || pane.classList.contains('hidden');
@@ -1770,6 +1822,15 @@ function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean })
 }
 
 function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void {
+  const chatMsg = node.querySelector<HTMLElement>('.chat-msg');
+  if (chatMsg) {
+    chatMsg.addEventListener('mouseenter', () => { chatMsg.classList.add('is-hover'); });
+    chatMsg.addEventListener('mouseleave', () => {
+      chatMsg.classList.remove('is-hover');
+      chatMsg.querySelector<HTMLButtonElement>('.chat-msg-copy')?.blur();
+    });
+  }
+
   // Copy button — present on user + ghampus messages.
   node.querySelector<HTMLButtonElement>('.chat-msg-copy')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1778,6 +1839,7 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
     void navigator.clipboard.writeText(text).then(() => {
       btn.classList.add('copied');
       btn.title = 'Copied!';
+      btn.blur();
       setTimeout(() => { btn.classList.remove('copied'); btn.title = 'Copy'; }, 1500);
     });
   });
@@ -2516,8 +2578,7 @@ function wireGhampusChat(): void {
     try {
       await ipcCall('ghampus:send', { text, turnId });
     } catch {
-      clearThinkingBubble();
-      clearLiveTraceSteps();
+      forceClearThinkingBubble();
     }
   }
 
@@ -2569,6 +2630,10 @@ function wireGhampusChat(): void {
   sendBtn.addEventListener('click', () => {
     trackGhampusActivity();
     void sendMessage();
+  });
+
+  document.getElementById('btn-ghampus-cancel')?.addEventListener('click', () => {
+    void cancelGhampusTurn();
   });
 
   // Wire pill-based section accordion — one panel open at a time

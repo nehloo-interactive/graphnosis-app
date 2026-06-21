@@ -6103,7 +6103,11 @@
         transition: opacity .15s;
         height: 20px; /* reserve space so layout doesn't shift */
       }
-      .chat-msg:hover .chat-msg-meta { opacity: 1; }
+      /* Pointer-driven class — :hover sticks on clicked buttons and keeps meta visible. */
+      .chat-msg.is-hover .chat-msg-meta,
+      .chat-msg.trace-expanded .chat-msg-meta,
+      .chat-msg-meta:has(.chat-msg-copy:focus-visible),
+      .chat-msg-meta:has(.ghampus-trace-toggle:focus-visible) { opacity: 1; }
       /* User: reverse so copy is on the left, time on the right */
       .chat-msg.user .chat-msg-meta { flex-direction: row-reverse; justify-content: flex-start; }
 
@@ -6123,6 +6127,8 @@
         white-space: nowrap; flex-shrink: 0;
       }
       .chat-msg-copy:hover { background: var(--bg-elev2, rgba(255,255,255,.12)); color: var(--fg, #fff); }
+      .chat-msg-copy:focus { outline: none; }
+      .chat-msg-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       .chat-msg-copy.copied { color: #10b981; border-color: rgba(16,185,129,.4); }
 
       /* Thinking indicator — dots inside ghampus--working chat-msg-wrap */
@@ -6141,6 +6147,9 @@
       }
       .ghampus-thinking-dots span:nth-child(2) { animation-delay: .2s; }
       .ghampus-thinking-dots span:nth-child(3) { animation-delay: .4s; }
+      .ghampus-thinking-row {
+        display: flex; align-items: center; gap: 10px;
+      }
       @keyframes ghampus-dot-pulse {
         0%, 80%, 100% { opacity: .2; transform: scale(.85); }
         40% { opacity: 1; transform: scale(1); }
@@ -6563,6 +6572,40 @@
       }
       .ghampus-send-btn:hover { background: color-mix(in oklab, var(--accent) 85%, white); }
       .ghampus-send-btn:disabled { opacity: .4; cursor: not-allowed; }
+      .ghampus-cancel-btn {
+        height: 36px; padding: 0 12px; border-radius: 10px; flex-shrink: 0;
+        border: 1px solid color-mix(
+          in oklab,
+          var(--g-border, rgba(255,255,255,.12)) 88%,
+          var(--color-status-error-border, rgba(239,68,68,.35))
+        );
+        background: var(--bg-elev, var(--color-bg-elev, #232327));
+        color: color-mix(
+          in oklab,
+          var(--fg-dim, var(--color-fg-dim, #9a9a9c)) 90%,
+          var(--color-status-destructive, #e05555)
+        );
+        font-size: 12px; font-family: inherit;
+        cursor: pointer;
+        transition: background .15s, border-color .15s, color .15s;
+      }
+      .ghampus-cancel-btn:hover {
+        background: color-mix(
+          in oklab,
+          var(--bg-elev, var(--color-bg-elev, #232327)) 88%,
+          var(--color-status-destructive-soft, rgba(255,91,91,.12))
+        );
+        border-color: color-mix(
+          in oklab,
+          var(--g-border, rgba(255,255,255,.12)) 72%,
+          var(--color-status-error-border, rgba(239,68,68,.35))
+        );
+        color: color-mix(
+          in oklab,
+          var(--fg-dim, var(--color-fg-dim, #9a9a9c)) 78%,
+          var(--color-status-destructive, #e05555)
+        );
+      }
 
       /* ── Sections strip ─────────────────────────────────────────────────── */
       /* Pinned above the scrollable thread — does NOT scroll with messages   */
@@ -13347,7 +13390,7 @@ ollama list</code></pre>
                         </span>
                         <button id="btn-ghampus-kill" class="g-btn hidden" type="button"
                                 style="font-size: 11px; padding: 2px 9px;"
-                                title="Stop all active Ghampus tool calls and skill walks">Stop all</button>
+                                title="Disable Ghampus entirely (stops all tool calls and skill walks)">Stop all</button>
                         <button id="btn-ghampus-resume" class="g-btn hidden" type="button"
                                 style="font-size: 11px; padding: 2px 9px;">Resume</button>
                         <span id="ghampus-plan-chip" class="ghampus-plan-chip">—</span>
@@ -13511,6 +13554,8 @@ ollama list</code></pre>
                       <textarea id="ghampus-input" class="ghampus-input"
                                 placeholder="Ask anything — type / to save, recall, or run a skill"
                                 rows="1"></textarea>
+                      <button id="btn-ghampus-cancel" class="ghampus-cancel-btn hidden" type="button"
+                              title="Stop the current reply">Stop</button>
                       <button id="btn-ghampus-send" class="ghampus-send-btn" type="button"
                               title="Send (Enter · Cmd+Enter for new line)">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -16000,7 +16045,7 @@ ollama list</code></pre>
           <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9; flex-shrink:0;" />
         </div>
         <div class="modal-body">
-          <p style="font-size:13px; line-height:1.5; margin:0 0 12px; color:var(--fg-dim);">
+          <p id="consent-prompt-body" style="font-size:13px; line-height:1.5; margin:0 0 12px; color:var(--fg-dim);">
             Your selected memories will be sent <strong>from your Mac directly to the AI provider</strong>.
             Graphnosis itself receives, logs, and retains nothing.
           </p>
