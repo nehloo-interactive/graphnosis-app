@@ -13,6 +13,7 @@ import { detectDirectAnswerKind, type DirectAnswerKind } from './ghampus-direct-
 import {
   isHowToQuestionText,
   isMultilingualListVerbFirstWord,
+  isMultilingualSearchVerbFirstWord,
   isRemindMeRecallQuery,
   isScopedTaskListQuery,
   isTemporalTodoQuery,
@@ -53,6 +54,7 @@ export type GhampusIntent =
   | { action: 'remember'; content: string; engram: string | null }
   | { action: 'edit'; correction: string; engram: string | null }
   | { action: 'create_engram'; name: string }
+  | { action: 'train_skill'; skillName: string; targetEngram: string | null; emptyRecall: boolean }
   | { action: 'ui_only'; reason: string }
   | { action: 'recall' };
 
@@ -82,6 +84,8 @@ export interface GhampusQueryHints {
   wantsCrossEngramSearch: boolean;
   /** User explicitly asked to run/walk/execute a skill SOP — not recall over cortex. */
   wantsExplicitSkillWalk: boolean;
+  /** User asked to train/retrain a skill SOP — not create_engram or remember. */
+  wantsSkillTrain: boolean;
   wantsExhaustive: boolean;
   wantsGrouped: boolean;
   wantsTeamRoster: boolean;
@@ -246,6 +250,14 @@ export function extractEngramScopeFromQuery(text: string, engramIds: string[]): 
     salientTokens.add('unpublishedconnect');
     salientTokens.add('unpublished');
   }
+  const scopedInEngram = text.match(/\b(?:in|în|inside|within)\s+([a-z0-9][\w\s-]{0,40}?)\s+engram\b/i);
+  if (scopedInEngram?.[1]) {
+    const hint = scopedInEngram[1].trim().toLowerCase().replace(/\s+/g, '');
+    if (hint.length >= 2) salientTokens.add(hint);
+    for (const tok of scopedInEngram[1].trim().split(/\s+/)) {
+      if (tok.length >= 3) salientTokens.add(tok.toLowerCase());
+    }
+  }
   const matched = engramIds.filter((id) => {
     const slug = id.toLowerCase();
     if (lower.includes(slug)) return true;
@@ -380,6 +392,71 @@ export function extractSkillFilterKeyword(text: string): string | null {
     if (kw.length >= 2) return kw;
   }
   return null;
+}
+
+/** Train/retrain a skill SOP — not create engram, not save to memory. */
+export function detectWantsSkillTrain(text: string): boolean {
+  return (
+    /\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\b/i.test(text)
+    || /\bretrain\s+(?:the\s+)?skill\b/i.test(text)
+    || /\b(?:re)?train\s+skill\b/i.test(text)
+    || /\b(?:re)?antren(?:eaz[aă]|ez)\s+(?:skill(?:ul)?|procedur)/i.test(text)
+  );
+}
+
+export interface ParsedSkillTrainIntent {
+  skillName: string;
+  targetEngram: string | null;
+  /** User asked for empty recall scope at compile time (against empty engram). */
+  emptyRecall: boolean;
+}
+
+/** Skill name + optional engram target from "train skill X against …". */
+export function parseSkillTrainIntent(msg: string): ParsedSkillTrainIntent | null {
+  const m = msg.trim();
+  if (!detectWantsSkillTrain(m)) return null;
+
+  const emptyRecall = /\bagainst\s+(?:an\s+)?empty\s+engram\b/i.test(m);
+
+  let targetEngram: string | null = null;
+  if (!emptyRecall) {
+    const quotedTarget = m.match(
+      /\b(?:against|in|into|on|with)\s+(?:engram\s+)?["']([^"']+)["']/i,
+    );
+    if (quotedTarget?.[1]) {
+      const t = trimGreedyEngramHint(quotedTarget[1].trim());
+      if (t && !/^empty$/i.test(t)) targetEngram = t;
+    } else {
+      const bareTarget = m.match(
+        /\b(?:against|in|into|on|with)\s+engram\s+([A-Za-z][\w\s.-]{1,50}?)(?:\s*$|\s*[?.!])/i,
+      );
+      if (bareTarget?.[1]) {
+        const t = trimGreedyEngramHint(bareTarget[1].trim());
+        if (t && !/^empty$/i.test(t)) targetEngram = t;
+      }
+    }
+  }
+
+  const patterns: RegExp[] = [
+    /\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\s+["']([^"']+)["']/i,
+    /\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\s+(.+?)(?:\s+against\b|\s+in\b|\s+into\b|\s+on\b|\s+with\b|\s*$)/i,
+    /\bretrain\s+(?:the\s+)?skill\s+["']([^"']+)["']/i,
+    /\bretrain\s+(?:the\s+)?skill\s+(.+?)(?:\s+against\b|\s+in\b|\s+into\b|\s+on\b|\s+with\b|\s*$)/i,
+    /\bretrain\s+["']([^"']+)["']/i,
+  ];
+  for (const re of patterns) {
+    const hit = m.match(re);
+    let skillName = hit?.[1]?.trim() ?? '';
+    skillName = skillName
+      .replace(/\s+against\s+(?:an\s+)?empty\s+engram\s*$/i, '')
+      .replace(/\s+(?:against|in|into|on|with)\s+(?:engram\s+)?.+$/i, '')
+      .trim();
+    if (skillName.length >= 2 && !/^(the|a|an|skill)$/i.test(skillName)) {
+      return { skillName, targetEngram, emptyRecall };
+    }
+  }
+
+  return { skillName: '', targetEngram, emptyRecall };
 }
 
 /** Multilingual — run/walk/execute skill (not how-to product questions). */
@@ -523,13 +600,29 @@ function detectWantsSkillList(text: string): boolean {
   );
 }
 
+/** Short roster follow-ups after a prior team/member answer — "name them all", "list them". */
+function isRosterContinuationFollowUp(text: string, history: GhampusHistTurn[]): boolean {
+  const t = text.trim();
+  if (!/^(?:name|list|give|show)\s+(?:them|everyone|all(?:\s+of\s+them)?|the\s+rest)\.?$/i.test(t)
+      && !/\bname them all\b/i.test(t)
+      && !/^list them all\.?$/i.test(t)) {
+    return false;
+  }
+  const prior = history
+    .filter((h) => (h.kind === 'user' || h.kind === 'ghampus') && (h.text ?? '').trim())
+    .slice(-6);
+  const combined = prior.map((h) => h.text ?? '').join(' ');
+  return /\b(team|echipei|echipa|member|membri|roster|unpublished)\b/i.test(combined);
+}
+
 export function detectGhampusQueryHints(
   text: string,
   scopedEngramIds: string[] = [],
   opts?: DetectGhampusQueryHintsOpts,
 ): GhampusQueryHints {
   const wantsRecent = /recent|latest|last|new|today|added|ingested|saved recently/i.test(text);
-  const wantsExplicitSkillWalk = detectWantsExplicitSkillWalk(text);
+  const wantsSkillTrain = detectWantsSkillTrain(text);
+  const wantsExplicitSkillWalk = !wantsSkillTrain && detectWantsExplicitSkillWalk(text);
   const wantsMcpNotSkillsCorrection = detectMcpNotSkillsCategoryCorrection(text);
   const wantsMcpToolList = detectWantsMcpToolList(text);
   const mcpToolFilterKeyword = wantsMcpToolList ? extractMcpToolFilterKeyword(text) : null;
@@ -537,6 +630,7 @@ export function detectGhampusQueryHints(
   const skillFilterKeyword = wantsSkillList ? extractSkillFilterKeyword(text) : null;
   const wantsSkills = !wantsMcpToolList && (
     wantsSkillList
+    || wantsSkillTrain
     || wantsExplicitSkillWalk
     || /\b(skill|procedure|sop|workflow|step\.by\.step)\b/i.test(text)
     || (/\bwalk\b/i.test(text) && /\b(skill|sop|procedur)/i.test(text))
@@ -571,7 +665,10 @@ export function detectGhampusQueryHints(
     || /\b(cine sunt|qui sont|quienes son)\b/i.test(text)
     || membriWord.test(text) && /\b(echipei|echipa|team)\b/i.test(text)
     || /\b(echipei|echipa|team)\b/i.test(text) && membriWord.test(text);
-  const wantsTeamRoster = wantsMembershipList && !asksForTasksOrDeadlines;
+  let wantsTeamRoster = wantsMembershipList && !asksForTasksOrDeadlines;
+  if (!wantsTeamRoster && !asksForTasksOrDeadlines && isRosterContinuationFollowUp(text, opts?.history ?? [])) {
+    wantsTeamRoster = true;
+  }
   const personInContext = extractPersonInContextFromQuery(text);
   const wantsPersonInContext = personInContext !== null;
   const wantsPersonRole =
@@ -643,6 +740,7 @@ export function detectGhampusQueryHints(
     wantsDocSource,
     wantsCrossEngramSearch,
     wantsExplicitSkillWalk,
+    wantsSkillTrain,
     wantsExhaustive: wantsExhaustive || wantsTeamRoster || (hasQuotedSearch && !skipMemoryTools),
     wantsGrouped,
     wantsTeamRoster,
@@ -892,18 +990,60 @@ export function isTaskListQuery(msg: string): boolean {
 /** First words that must never fuzzy-match save verbs (todo ≈ store, liste ≈ save). */
 export const FUZZY_SAVE_BLOCKLIST = new Set([
   'todo', 'todos', 'task', 'tasks', 'taskuri', 'taskurile', 'list', 'lists', 'listing',
-  'show', 'shows', 'find', 'search', 'give', 'get', 'tell', 'look', 'any', 'all',
+  'show', 'shows', 'find', 'search', 'give', 'get', 'tell', 'look', 'lookup', 'any', 'all',
+  'cauta', 'caută', 'caut', 'gaseste', 'găsește', 'gasese', 'gasește',
   'sarcini', 'sarcinile', 'sarcina', 'tâches', 'taches', 'tareas', 'aufgaben',
   'membri', 'membru', 'echipa', 'echipei', 'roluri', 'rolurile', 'rol',
   'skills', 'skill', 'skilluri', 'skillurile',
   ...MULTILINGUAL_QUESTION_OPENERS,
 ]);
 
+/** Explicit create-engram commands only — no fuzzy verb match (cauta ≠ create). */
+export function isExplicitCreateEngramCommand(msg: string): boolean {
+  const m = msg.trim();
+  if (/^\/create\b/i.test(m)) return true;
+  return /^(?:create|creat|make|new|build|creeaz[aă]|cre[eé]r|erstell(?:e|en)?|crea)\s+(?:an?\s+)?(?:new\s+)?engram\b/i.test(m);
+}
+
+/** Engram name from an explicit create command; null when pattern does not match. */
+export function parseCreateEngramName(msg: string): string | null {
+  const m = msg.trim();
+  const patterns: RegExp[] = [
+    /^\/create\s+(?:engram\s+)?(?:called|named)?\s*["']?([^"'\n]+?)["']?\s*$/i,
+    /^(?:create|creat|make|new|build|creeaz[aă]|cre[eé]r|erstell(?:e|en)?|crea)\s+(?:an?\s+)?(?:new\s+)?engram\s+(?:called|named)?\s*["']?([^"'\n]+?)["']?\s*$/i,
+  ];
+  for (const re of patterns) {
+    const hit = m.match(re);
+    const name = hit?.[1]?.trim() ?? '';
+    if (name.length >= 1 && !/^engram$/i.test(name)) {
+      return trimGreedyEngramHint(name);
+    }
+  }
+  return null;
+}
+
+/** Search/find scoped to an engram — recall, not create (e.g. "cauta X in writings engram"). */
+export function isScopedSearchInEngramQuery(msg: string): boolean {
+  const m = msg.trim();
+  if (!/\bengram\b/i.test(m)) return false;
+  if (isExplicitCreateEngramCommand(m)) return false;
+  if (detectWantsSkillTrain(m)) return false;
+  const lower = m.toLowerCase();
+  const firstWord = (lower.split(/\s+/)[0] ?? '').replace(/[?.!,]+$/, '');
+  if (isMultilingualSearchVerbFirstWord(firstWord)) return true;
+  if (/\b(?:search|find|look(?:\s+(?:up|for))?|caut[aă]?|g[aă]se[sș]te)\b/i.test(lower)) return true;
+  if (/\b(?:in|în|inside|within)\s+\S.+?\s+engram\b/i.test(m)) return true;
+  return false;
+}
+
 /** @deprecated use FUZZY_SAVE_BLOCKLIST */
 const RECALL_FIRST_WORDS = FUZZY_SAVE_BLOCKLIST;
 
 /** If classified as remember but the message is a lookup/question, force recall. */
 export function coerceRecallIfTaskListQuery(intent: GhampusIntent, msg: string): GhampusIntent {
+  if (intent.action === 'create_engram' && isScopedSearchInEngramQuery(msg)) {
+    return { action: 'recall' };
+  }
   if (intent.action !== 'remember' && intent.action !== 'edit') return intent;
   if (intent.action === 'edit') return intent;
   if (isSaveConfirmationQuestion(msg)) return { action: 'recall' };
@@ -913,6 +1053,7 @@ export function coerceRecallIfTaskListQuery(intent: GhampusIntent, msg: string):
   if (FUZZY_SAVE_BLOCKLIST.has(firstWord) || isMultilingualListVerbFirstWord(firstWord)) {
     return { action: 'recall' };
   }
+  if (isMultilingualSearchVerbFirstWord(firstWord)) return { action: 'recall' };
   if (isTaskListQuery(msg)) return { action: 'recall' };
   if (questionIntent(msg)?.action === 'recall') return { action: 'recall' };
   if (isDefinitionalQuery(msg) || extractTopicAboutFromQuery(msg)) return { action: 'recall' };
@@ -932,13 +1073,24 @@ export function keywordIntent(msg: string): GhampusIntent | null {
   const editParsed = parseEditIntent(m);
   if (editParsed) return { action: 'edit', ...editParsed };
 
+  const trainParsed = parseSkillTrainIntent(m);
+  if (trainParsed) {
+    return {
+      action: 'train_skill',
+      skillName: trainParsed.skillName,
+      targetEngram: trainParsed.targetEngram,
+      emptyRecall: trainParsed.emptyRecall,
+    };
+  }
+
   const correctionSave = parseCorrectionSavePattern(m);
   if (correctionSave) {
     return { action: 'remember', content: correctionSave.content, engram: correctionSave.engram };
   }
 
-  // Recall/list verbs must not fuzzy-match save verbs (todos ≈ store, listează ≈ salvează).
+  // Recall/list/search verbs must not fuzzy-match save or create verbs.
   if (FUZZY_SAVE_BLOCKLIST.has(firstWord) || isMultilingualListVerbFirstWord(firstWord)) return null;
+  if (isMultilingualSearchVerbFirstWord(firstWord)) return null;
   if (/^list\b/i.test(firstWord)) return null;
   const verbScores: Record<string, string[]> = {
     remember: ['remember', 'remeber', 'remmber', 'remmeber', 'remmbr', 'remb', 'recuerda', 'noter', 'запомни', 'merkt', 'amintește', 'aminteste', 'aminti'],
@@ -959,10 +1111,9 @@ export function keywordIntent(msg: string): GhampusIntent | null {
   const lower = m.toLowerCase();
   const hasEngramWord = /\bengram\b/.test(lower);
 
-  if (isVerb('create') && hasEngramWord) {
-    const nameM = m.match(/(?:engram\s+)?(?:called|named|:)?\s*["']?([^"'\n]{1,60})["']?\s*$/i);
-    const name = nameM?.[1]?.trim() ?? '';
-    if (name && !/^engram$/i.test(name)) return { action: 'create_engram', name };
+  if (isExplicitCreateEngramCommand(m) && hasEngramWord && !detectWantsSkillTrain(m)) {
+    const name = parseCreateEngramName(m);
+    if (name) return { action: 'create_engram', name };
   }
   if (isVerb('delete') && hasEngramWord) {
     return { action: 'ui_only', reason: 'engram deletion requires Memory Studio' };
@@ -1001,6 +1152,7 @@ export function questionIntent(msg: string): GhampusIntent | null {
   // "Remind me …" / "amintește-mi …" — recall, not save
   if (isRemindMeRecallQuery(m)) return { action: 'recall' };
   if (isSaveConfirmationQuestion(m)) return { action: 'recall' };
+  if (isScopedSearchInEngramQuery(m)) return { action: 'recall' };
   if (/^ce (știi|stii) despre\b/i.test(m)) return { action: 'recall' };
   if (/^(?:qu[e']?\s+sais-tu|qu[eé]\s+sabes|was\s+wei[sß]t\s+du)\s+/i.test(m)) return { action: 'recall' };
   const hasSaveVerb = hasExplicitSaveVerb(m);
@@ -1017,6 +1169,7 @@ export function questionIntent(msg: string): GhampusIntent | null {
   if (extractTopicAboutFromQuery(m)) return { action: 'recall' };
   // Multilingual question openers (first word)
   const firstWord = (lower.split(/\s+/)[0] ?? '').replace(/[?.!,]+$/, '');
+  if (isMultilingualSearchVerbFirstWord(firstWord)) return { action: 'recall' };
   if (MULTILINGUAL_QUESTION_OPENERS.has(firstWord)) return { action: 'recall' };
   if (/^(spune-mi|dis-moi|dime|erz[aä]hl)\b/i.test(lower)) return { action: 'recall' };
   if (m.endsWith('?') && m.split(/\s+/).length <= 5) return { action: 'recall' };
@@ -1029,7 +1182,7 @@ export function detectKeywordIntent(msg: string): GhampusIntent {
   return coerceRecallIfTaskListQuery(intent, msg);
 }
 
-const VALID_ACTIONS = new Set(['remember', 'edit', 'create_engram', 'ui_only', 'recall']);
+const VALID_ACTIONS = new Set(['remember', 'edit', 'create_engram', 'train_skill', 'ui_only', 'recall']);
 
 export function parseClassifyIntent(rawJson: string): (GhampusIntent & { confidence?: number }) | null {
   const jsonMatch = rawJson.match(/\{[\s\S]*\}/);
@@ -1053,6 +1206,7 @@ export function buildClassifySystemPrompt(engramList: string, recentContext = ''
     '{"action":"remember","content":"TEXT_TO_SAVE","engram":"ENGRAM_NAME_OR_NULL","confidence":0.95}\n' +
     '{"action":"edit","correction":"CORRECTION_TEXT","engram":"ENGRAM_NAME_OR_NULL","confidence":0.9}\n' +
     '{"action":"create_engram","name":"ENGRAM_NAME","confidence":0.9}\n' +
+    '{"action":"train_skill","skillName":"SKILL_NAME","targetEngram":"ENGRAM_OR_NULL","emptyRecall":false,"confidence":0.95}\n' +
     '{"action":"ui_only","reason":"engram deletion requires UI"|"rename requires UI"|"merge requires UI","confidence":0.9}\n' +
     '{"action":"recall","confidence":0.85}\n\n' +
     'Rules — apply even with heavy spelling errors or any language:\n' +
@@ -1061,7 +1215,9 @@ export function buildClassifySystemPrompt(engramList: string, recentContext = ''
     '• edit/correct/fix/update memory or role/fact → action=edit with correction=full user text.\n' +
     '• NEVER action=remember for task/todo LIST queries: "todos for X", "tasks for Y", "sarcini pentru Z", "list todos", "show tasks" — these are recall.\n' +
     '• "todo"/"todos" is NOT a save verb — it means task list lookup.\n' +
-    '• create/make/new/creat/créer/erstell + engram → action=create_engram\n' +
+    '• create/make/new/creat/créer/erstell + engram → action=create_engram (explicit create verb only — NOT search/find/caută/găsește)\n' +
+    '• search/find/caută/găsește/look for + "in X engram" → action=recall (scope to engram X, never create_engram)\n' +
+    '• train/retrain + skill → action=train_skill (NOT create_engram). "train skill X against empty engram" = compile skill X with empty recall.\n' +
     '• delete/remove/rename/merge + engram → action=ui_only\n' +
     '• QUESTION RULE: Any message shaped as a question → action=recall, even if it mentions a known engram name.\n' +
     '• CONTEXT RULE: If history shows a recall exchange immediately before, a short follow-up continues recall — do NOT classify as remember.\n' +

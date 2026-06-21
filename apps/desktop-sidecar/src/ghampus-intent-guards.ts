@@ -12,6 +12,7 @@ import {
   FUZZY_SAVE_BLOCKLIST,
   hasExplicitSaveVerb,
   isSaveConfirmationQuestion,
+  isScopedSearchInEngramQuery,
   isTaskListQuery,
   questionIntent,
   wouldSaveQuestionTextAsContent,
@@ -20,6 +21,7 @@ import {
 } from './ghampus-intent.js';
 import {
   isMultilingualListVerbFirstWord,
+  isMultilingualSearchVerbFirstWord,
   MULTILINGUAL_RECALL_QUESTION_RE,
   TASK_NOUN_RE,
 } from './ghampus-language.js';
@@ -55,6 +57,7 @@ export function isBlocklistedFirstWord(text: string): boolean {
   if (!first) return false;
   if (FUZZY_SAVE_BLOCKLIST.has(first)) return true;
   if (isMultilingualListVerbFirstWord(first)) return true;
+  if (isMultilingualSearchVerbFirstWord(first)) return true;
   return false;
 }
 
@@ -108,6 +111,9 @@ export function finalizeGhampusIntent(
   hints?: GhampusQueryHints,
 ): GhampusIntent {
   if (isSaveConfirmationQuestion(text)) return { action: 'recall' };
+  if (intent.action === 'create_engram' && isScopedSearchInEngramQuery(text)) {
+    return { action: 'recall' };
+  }
   const h = hints ?? detectGhampusQueryHints(text);
   const coerced = coerceRecallGuards(intent, text, h);
   if (coerced.action === 'remember') {

@@ -20,6 +20,7 @@ import {
   keywordIntent,
   LLM_PLACEHOLDERS,
   parseClassifyIntent,
+  parseSkillTrainIntent,
   questionIntent,
   recallContextMatchesQuery,
   type GhampusHistTurn,
@@ -66,6 +67,7 @@ import {
   formatSkillList,
   filterSkillsByKeyword,
   looksGroupedResponse,
+  normalizeSkillDisplayLabel,
   stripRecallAuditTrail,
   type StructuredRecallNode,
 } from './ghampus-recall-format.js';
@@ -88,7 +90,25 @@ import {
   type GhampusTurnTraceSnapshot,
 } from './ghampus-trace.js';
 import { resolveEngramFromUserHint } from './ghampus-engram-resolve.js';
+import {
+  extractSkillBodyFromGetSkill,
+  findGhampusSkillMatch,
+  formatSkillTrainStartMessage,
+  resolveSkillTrainGraphId,
+  type GhampusListedSkill,
+} from './ghampus-skill-train.js';
 import { recallDbg } from './log-redact.js';
+import {
+  clearGhampusTurn,
+  isGhampusTurnCancelled,
+  registerGhampusTurn,
+} from './ghampus-turn-cancel.js';
+import {
+  GHAMPUS_TURN_TIMEOUT_MS,
+  ghampusTimeoutUserMessage,
+  isGhampusTimeoutError,
+  llmCompleteBounded,
+} from './ghampus-timeout.js';
 
 export type GhampusPendingClarification = {
   originalText: string;
@@ -202,6 +222,116 @@ function sanitizeResponse(t: string): string {
   );
 }
 
+type SkillTrainRunnerDeps = {
+  ghampusTool: (name: string, toolArgs?: Record<string, unknown>) => Promise<unknown>;
+  emitGhampusMsg: (text: string) => Promise<void>;
+  emitTrace: (step: GhampusTraceStep) => void;
+};
+
+async function runGhampusSkillTrain(
+  parsed: import('./ghampus-intent.js').ParsedSkillTrainIntent,
+  skillNameOverride: string | undefined,
+  runner: SkillTrainRunnerDeps,
+): Promise<void> {
+  const skillName = (skillNameOverride ?? parsed.skillName).trim();
+  if (!skillName) {
+    await runner.emitGhampusMsg(
+      'Which skill should I train? Example: `train skill enterprise-compliance-lens` or `/train ship-workflow`',
+    );
+    return;
+  }
+
+  const listRes = await runner.ghampusTool('list_skills', {}) as { skills?: GhampusListedSkill[] };
+  const skills = listRes.skills ?? [];
+  const match = findGhampusSkillMatch(skills, skillName);
+  if (!match?.sourceId) {
+    await runner.emitGhampusMsg(
+      `No trained skill matching **${skillName}**. Try \`/skills\` to see what's available, or train one in the Skills page first.`,
+    );
+    return;
+  }
+
+  const engList = await runner.ghampusTool('list_engrams', {}) as {
+    engrams?: Array<{ graphId: string; displayName: string; tier: string }>;
+  };
+  const graphId = resolveSkillTrainGraphId(match, engList.engrams ?? [], parsed.targetEngram);
+  if (!graphId) {
+    await runner.emitGhampusMsg(
+      'No Skills engram found. Create one from **New Engram → Skill template**, then retry.',
+    );
+    return;
+  }
+
+  const displayLabel = normalizeSkillDisplayLabel(match.label);
+  await runner.emitGhampusMsg(formatSkillTrainStartMessage(parsed, displayLabel));
+
+  const stepId = ghampusTraceStepId('train_skill');
+  runner.emitTrace({ stepId, status: 'running', label: 'train skill', tool: 'train_skill' });
+
+  try {
+    const got = await runner.ghampusTool('get_skill', { graphId, sourceId: match.sourceId }) as { rawText?: string };
+    const skillBody = extractSkillBodyFromGetSkill(got.rawText ?? '');
+    if (!skillBody.trim()) {
+      await runner.emitGhampusMsg(
+        `Could not read skill text for **${displayLabel}**. Open it in the Skills page and retry.`,
+      );
+      runner.emitTrace({
+        stepId,
+        status: 'error',
+        label: 'train skill',
+        tool: 'train_skill',
+        preview: 'empty skill body',
+      });
+      return;
+    }
+
+    const trainArgs: Record<string, unknown> = {
+      skill: skillBody,
+      skill_name: displayLabel,
+      save: true,
+    };
+    if (parsed.targetEngram) trainArgs.target_engram = parsed.targetEngram;
+
+    const trained = await runner.ghampusTool('train_skill', trainArgs) as { rawText?: string };
+    const out = trained.rawText ?? '';
+    if (/upgrade_required|"upgrade_required"\s*:\s*true/i.test(out)) {
+      await runner.emitGhampusMsg(
+        'Skill training requires **Graphnosis Pro**. Subscribe at [graphnosis.com/upgrade](https://graphnosis.com/upgrade) or use the Skills page.',
+      );
+      runner.emitTrace({
+        stepId,
+        status: 'error',
+        label: 'train skill',
+        tool: 'train_skill',
+        preview: 'Pro required',
+      });
+      return;
+    }
+
+    runner.emitTrace({
+      stepId,
+      status: 'ok',
+      label: 'train skill',
+      tool: 'train_skill',
+      preview: displayLabel,
+    });
+    const summary = out.includes('## Skill Training Complete')
+      ? (out.split('### Trained Skill')[0]?.trim() ?? out.slice(0, 1200))
+      : out.slice(0, 1200);
+    await runner.emitGhampusMsg(summary.trim() || `Finished training **${displayLabel}**.`);
+  } catch (e) {
+    const errText = e instanceof Error ? e.message : String(e);
+    runner.emitTrace({
+      stepId,
+      status: 'error',
+      label: 'train skill',
+      tool: 'train_skill',
+      preview: formatGhampusToolErrorPreview(errText),
+    });
+    await runner.emitGhampusMsg(`Skill training failed: ${errText}`);
+  }
+}
+
 export async function runGhampusSend(
   deps: GhampusSendDeps,
   params: unknown,
@@ -244,6 +374,16 @@ export async function runGhampusSend(
   void (async () => {
     const { incrementGhampusBusy, decrementGhampusBusy } = await import('./ghampus-busy.js');
     incrementGhampusBusy();
+    const turnSignal = registerGhampusTurn(traceTurnId);
+    const turnDeadline = Date.now() + GHAMPUS_TURN_TIMEOUT_MS;
+    const throwIfCancelled = (): void => {
+      if (isGhampusTurnCancelled(traceTurnId, turnSignal)) {
+        throw new DOMException('cancelled by user', 'AbortError');
+      }
+      if (Date.now() > turnDeadline) {
+        throw new Error(`Ghampus turn timed out after ${Math.round(GHAMPUS_TURN_TIMEOUT_MS / 1000)}s`);
+      }
+    };
     deps.broadcastRaw({
       kind: 'ghampus.thinking',
       name: 'ghampus.thinking',
@@ -279,6 +419,22 @@ export async function runGhampusSend(
       deps.broadcastRaw({ kind: 'ghampus.trace', name: 'ghampus.trace', payload });
     };
 
+    const planningStepId = stableTraceStepId('planning');
+    let planningDone = false;
+    const finishPlanning = (status: 'ok' | 'error' = 'ok', preview?: string): void => {
+      if (planningDone) return;
+      planningDone = true;
+      emitTrace({
+        stepId: planningStepId,
+        status,
+        label: 'Planning…',
+        ...(preview ? { preview } : {}),
+      });
+    };
+    emitTrace({ stepId: planningStepId, status: 'running', label: 'Planning…' });
+
+    let finishSearching: (status?: 'ok' | 'error') => void = () => {};
+
     const buildTraceSnapshot = (): GhampusTurnTraceSnapshot | undefined => {
       if (traceSteps.size === 0) return undefined;
       return {
@@ -303,6 +459,7 @@ export async function runGhampusSend(
     };
 
     const emitGhampusMsg = async (responseText: string) => {
+      finishPlanning();
       const trace = buildTraceSnapshot();
       const responseMsg = {
         kind: 'ghampus',
@@ -372,13 +529,23 @@ export async function runGhampusSend(
           }
           case 'list_skills': {
             if (!rawText || rawText.startsWith('No trained')) return { skills: [] };
-            const skills: Array<{ label: string; trainedAt?: string; vitality?: number; searchText?: string }> = [];
+            const skills: GhampusListedSkill[] = [];
             const blocks = rawText.split('\n\n').filter((b: string) => b.startsWith('**'));
             for (const block of blocks) {
               const lines = block.split('\n');
               const label = lines[0]?.replace(/^\*\*|\*\*$/g, '') ?? '';
               const trainedAt = lines.find((l: string) => l.includes('Trained:'))?.match(/Trained:\s+(\S+)/)?.[1];
-              if (label) skills.push({ label, ...(trainedAt ? { trainedAt } : {}), searchText: block });
+              const sourceId = lines.find((l: string) => l.trim().startsWith('sourceId:'))?.match(/sourceId:\s+(\S+)/)?.[1];
+              const engramName = lines.find((l: string) => l.includes('Engram:'))?.match(/Engram:\s+([^|]+)/)?.[1]?.trim();
+              if (label) {
+                skills.push({
+                  label,
+                  ...(sourceId ? { sourceId } : {}),
+                  ...(engramName ? { engramName } : {}),
+                  ...(trainedAt ? { trainedAt } : {}),
+                  searchText: block,
+                });
+              }
             }
             return { skills };
           }
@@ -426,6 +593,9 @@ export async function runGhampusSend(
             return { ok: true };
           case 'walk_skill':
             return { rawText };
+          case 'get_skill':
+          case 'train_skill':
+            return { rawText };
           case 'recall_structured': {
             try {
               const jsonText = rawText.slice(0, rawText.lastIndexOf('}') + 1).trim();
@@ -465,6 +635,7 @@ export async function runGhampusSend(
       };
 
       const histLines = await loadHistLines();
+      throwIfCancelled();
       const histForHints = histLines.filter((t) => t.kind === 'user' || t.kind === 'ghampus');
 
       // ── Pending clarification ───────────────────────────────────────────
@@ -518,6 +689,7 @@ export async function runGhampusSend(
             '- `/create [engram name]` — create a new engram\n' +
             '- `/engrams` — list all your engrams\n' +
             '- `/skills` — list all your skills\n' +
+            '- `/train [skill name]` — retrain a skill (Pro)\n' +
             '- `/forget` — manage / delete memories (opens Memory Studio)\n' +
             '- `/help` — show this list',
           );
@@ -537,6 +709,21 @@ export async function runGhampusSend(
           await emitGhampusMsg(skills.length
             ? `**Your skills (${skills.length}):**\n\n${skills.map((s) => `- **${s.label.replace(/^skill:\d+:/, '').replace(/-/g, ' ')}**${s.vitality != null ? ` · vitality ${s.vitality}` : ''}`).join('\n')}`
             : 'No skills found. Train one in the Skills page.');
+          return;
+        }
+        if (cmd === 'train') {
+          const trainParsed = argsStr
+            ? (parseSkillTrainIntent(`train skill ${argsStr}`) ?? {
+                skillName: argsStr.replace(/\s+against\s+(?:an\s+)?empty\s+engram\s*$/i, '').trim(),
+                targetEngram: null,
+                emptyRecall: /\bagainst\s+(?:an\s+)?empty\s+engram\b/i.test(argsStr),
+              })
+            : null;
+          if (!trainParsed?.skillName) {
+            await emitGhampusMsg('Usage: `/train [skill name]` — e.g. `/train enterprise-compliance-lens`');
+            return;
+          }
+          await runGhampusSkillTrain(trainParsed, undefined, { ghampusTool, emitGhampusMsg, emitTrace });
           return;
         }
         if (cmd === 'forget') {
@@ -587,7 +774,8 @@ export async function runGhampusSend(
         const userPrompt = buildSelectionFollowUpUserPrompt(text, selectionContext, recentHistory, recallSnippet);
         const selectionSynthId = stableTraceStepId('selection-synth');
         emitTrace({ stepId: selectionSynthId, status: 'running', label: 'Synthesizing answer with local LLM' });
-        let answer = await llm.complete({ system, user: userPrompt }).catch(() => null);
+        let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
+        throwIfCancelled();
         answer = sanitizeResponse(answer ?? '');
         if (!answer.trim()) answer = "I couldn't answer about that selection — try rephrasing.";
         emitTrace({ stepId: selectionSynthId, status: 'ok', label: 'Synthesizing answer with local LLM' });
@@ -614,11 +802,12 @@ export async function runGhampusSend(
                 : '';
               const engList = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string }> };
               const engramList = (engList.engrams ?? []).map((e) => `${e.graphId}="${e.displayName}"`).join(', ');
-              const classifyRaw = await llm.complete({
+              const classifyRaw = await llmCompleteBounded(llm, {
                 system: buildClassifySystemPrompt(engramList, recentContext),
                 user: text,
-                signal: classifySlot.signal,
+                signal: turnSignal,
               });
+              throwIfCancelled();
               const parsed = parseClassifyIntent(classifyRaw);
               if (parsed) {
                 intent = parsed;
@@ -670,6 +859,20 @@ export async function runGhampusSend(
         return;
       }
 
+      if (intent.action === 'train_skill') {
+        const trainParsed = parseSkillTrainIntent(text) ?? {
+          skillName: intent.skillName,
+          targetEngram: intent.targetEngram,
+          emptyRecall: intent.emptyRecall,
+        };
+        await runGhampusSkillTrain(trainParsed, intent.skillName || undefined, {
+          ghampusTool,
+          emitGhampusMsg,
+          emitTrace,
+        });
+        return;
+      }
+
       if (intent.action === 'ui_only') {
         await emitGhampusMsg(`That requires **Memory Studio** — I can't do it from here (${intent.reason}).`);
         return;
@@ -712,7 +915,9 @@ export async function runGhampusSend(
         engramList: engramListStr,
         ...(priorUserQuestion ? { priorUserQuestion } : {}),
         ...(priorGhampusSnippet ? { priorGhampusSnippet } : {}),
-      });
+      }, turnSignal);
+      throwIfCancelled();
+      finishPlanning();
 
       // ── Early routes (skipMemoryTools / formatters) ─────────────────────
       if (plan.earlyRoute === 'direct-answer' && hints.directAnswerKind) {
@@ -730,7 +935,8 @@ export async function runGhampusSend(
         emitTrace({ stepId: directStepId, status: 'running', label: traceLabel });
         const system = buildDirectAnswerSystemPrompt(kind, text);
         const userPrompt = buildDirectAnswerUserPrompt(text, recentHistory, kind);
-        let answer = await llm.complete({ system, user: userPrompt }).catch(() => null);
+        let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
+        throwIfCancelled();
         answer = sanitizeResponse(answer ?? '');
         emitTrace({ stepId: directStepId, status: 'ok', label: traceLabel });
         await emitGhampusMsg(answer.trim() || "I couldn't answer from the conversation alone.");
@@ -766,7 +972,35 @@ export async function runGhampusSend(
         return;
       }
 
+      if (plan.earlyRoute === 'skill-train') {
+        const trainParsed = parseSkillTrainIntent(text);
+        if (trainParsed) {
+          await runGhampusSkillTrain(trainParsed, undefined, { ghampusTool, emitGhampusMsg, emitTrace });
+        } else {
+          await emitGhampusMsg('Which skill should I train? Example: `train skill ship-workflow`');
+        }
+        return;
+      }
+
       let consentBlocked = false;
+
+      const recallFamilyTools = new Set([
+        'recall', 'remind', 'dig_deeper', 'recall_structured', 'cross_search', 'recall_with_citations',
+      ]);
+      const planUsesRecall = [...plan.phase1, ...plan.phase2].some((e) => recallFamilyTools.has(e.tool));
+      const searchingStepId = stableTraceStepId('searching-memories');
+      let searchingDone = false;
+      finishSearching = (status: 'ok' | 'error' = 'ok'): void => {
+        if (!searchingDone) {
+          searchingDone = true;
+          if (planUsesRecall) {
+            emitTrace({ stepId: searchingStepId, status, label: 'Searching memories…' });
+          }
+        }
+      };
+      if (planUsesRecall) {
+        emitTrace({ stepId: searchingStepId, status: 'running', label: 'Searching memories…' });
+      }
 
       const runPlannedTool = async (entry: GhampusToolPlanEntry): Promise<{ tool: string; result: unknown; ms: number }> => {
         const stepId = ghampusTraceStepId(entry.tool);
@@ -774,6 +1008,7 @@ export async function runGhampusSend(
         const t0 = Date.now();
         emitTrace({ stepId, status: 'running', label, tool: entry.tool });
         try {
+          throwIfCancelled();
           const result = await ghampusTool(entry.tool, entry.args);
           const ms = Date.now() - t0;
           const resultPreview = summarizeGhampusToolResult(entry.tool, result);
@@ -837,6 +1072,8 @@ export async function runGhampusSend(
       for (const entry of plan.phase2) {
         phase2Results.push(await runPlannedTool(entry));
       }
+
+      finishSearching();
 
       let allResults = [...phase1Results, ...phase2Results];
 
@@ -981,7 +1218,8 @@ OUTPUT: clean markdown, no node IDs or pipe-separated records.${contextBlock}${r
 
       const synthStepId = stableTraceStepId('synth');
       emitTrace({ stepId: synthStepId, status: 'running', label: 'Synthesizing answer with local LLM' });
-      let draft = await llm.complete({ system, user: text }).catch(() => null);
+      let draft = await llmCompleteBounded(llm, { system, user: text, signal: turnSignal }).catch(() => null);
+      throwIfCancelled();
       draft = sanitizeResponse(draft ?? '');
       emitTrace({ stepId: synthStepId, status: 'ok', label: 'Synthesizing answer with local LLM' });
 
@@ -1000,17 +1238,19 @@ OUTPUT: clean markdown, no node IDs or pipe-separated records.${contextBlock}${r
       }
 
       if (hasLeakedIDs(draft)) {
-        const retry = await llm.complete({
+        const retry = await llmCompleteBounded(llm, {
           system: system + '\n\nRewrite in plain English only — no IDs or pipe characters.',
           user: text,
+          signal: turnSignal,
         }).catch(() => null);
         if (retry?.trim()) draft = sanitizeResponse(retry);
       }
 
       if (hints.wantsGrouped && !looksGroupedResponse(draft)) {
-        const retry = await llm.complete({
+        const retry = await llmCompleteBounded(llm, {
           system: system + '\n\nReformat with markdown ### headings grouped as requested.',
           user: text,
+          signal: turnSignal,
         }).catch(() => null);
         if (retry?.trim()) draft = sanitizeResponse(retry);
       }
@@ -1039,11 +1279,34 @@ OUTPUT: clean markdown, no node IDs or pipe-separated records.${contextBlock}${r
 
       await emitGhampusMsg(finalAnswer.trim() || draft);
     } catch (err) {
+      if (isGhampusTurnCancelled(traceTurnId, turnSignal)
+          || (err instanceof DOMException && err.name === 'AbortError')) {
+        finishPlanning('error', 'Stopped');
+        finishSearching('error');
+        const stoppedTrace = buildTraceSnapshot();
+        const stoppedMsg = {
+          kind: 'ghampus',
+          text: 'Stopped.',
+          ts: Date.now(),
+          turnId: traceTurnId,
+          ...(stoppedTrace ? { trace: stoppedTrace } : {}),
+        };
+        if (histPath) {
+          const { appendFile } = await import('node:fs/promises');
+          await appendFile(histPath, JSON.stringify(stoppedMsg) + '\n').catch(() => {});
+        }
+        deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: stoppedMsg });
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
+      finishPlanning('error', 'Error');
+      finishSearching('error');
       const preview = formatGhampusToolErrorPreview(msg);
-      const userText = preview === msg && !msg.trim().startsWith('[') && !msg.trim().startsWith('{')
-        ? `Error: ${preview}`
-        : "Something went wrong while searching your memory. Try rephrasing your question.";
+      const userText = isGhampusTimeoutError(err)
+        ? ghampusTimeoutUserMessage(err)
+        : preview === msg && !msg.trim().startsWith('[') && !msg.trim().startsWith('{')
+          ? `Error: ${preview}`
+          : "Something went wrong while searching your memory. Try rephrasing your question.";
       const errTrace = buildTraceSnapshot();
       const errMsg = {
         kind: 'ghampus',
@@ -1058,6 +1321,7 @@ OUTPUT: clean markdown, no node IDs or pipe-separated records.${contextBlock}${r
       }
       deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: errMsg });
     } finally {
+      clearGhampusTurn(traceTurnId);
       decrementGhampusBusy();
     }
   })();

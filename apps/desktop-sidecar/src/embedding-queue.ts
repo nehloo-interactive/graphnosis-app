@@ -31,6 +31,21 @@ let _chain: Promise<void> = Promise.resolve();
  *  (a healthy chunk is sub-second), and that's where we kill+respawn the worker. */
 const EMBED_STALL_WARN_MS = 30_000;
 
+export type WithEmbeddingOpts = {
+  /** Reject if still queued behind a prior op longer than this (ms). */
+  queueTimeoutMs?: number;
+  /** Reject if queue wait + fn exceeds this (ms). Does not kill an in-flight ONNX call. */
+  timeoutMs?: number;
+  /** Abort while queued — fn is skipped if already aborted when the chain reaches it. */
+  signal?: AbortSignal;
+};
+
+function rejectIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException('aborted', 'AbortError');
+  }
+}
+
 /**
  * Run `fn` after all previously queued embedding operations have completed.
  * The returned promise resolves / rejects with fn's result.
@@ -39,11 +54,23 @@ const EMBED_STALL_WARN_MS = 30_000;
  * const sub = await withEmbedding(() => host.recall(query, { budget }));
  * ```
  */
-export function withEmbedding<T>(fn: () => Promise<T>, label?: string): Promise<T> {
-  // Attach fn to the end of the chain. The chain advances regardless of
-  // whether fn resolves or rejects — errors are NOT swallowed, they're
-  // returned to the caller via the result promise.
-  const result = _chain.then(() => {
+export function withEmbedding<T>(
+  fn: () => Promise<T>,
+  label?: string,
+  opts?: WithEmbeddingOpts,
+): Promise<T> {
+  rejectIfAborted(opts?.signal);
+  const queuedAt = Date.now();
+
+  const result = _chain.then(async () => {
+    rejectIfAborted(opts?.signal);
+    const waitMs = Date.now() - queuedAt;
+    if (opts?.queueTimeoutMs != null && waitMs > opts.queueTimeoutMs) {
+      throw new Error(
+        `Memory search waited ${Math.round(waitMs / 1000)}s for the embedding pipeline ` +
+        `(another ingest may be running). Try again in a moment.`,
+      );
+    }
     // Diagnostic warn only — a single queued op (one ingestClip) may legitimately
     // run for minutes (a whole book). The actual wedge recovery is per-embed in
     // local-embed.ts, which kills+respawns the worker for a single hung CHUNK
@@ -54,8 +81,39 @@ export function withEmbedding<T>(fn: () => Promise<T>, label?: string): Promise<
         `a large file (book/changelog) can legitimately take minutes; per-chunk wedge recovery is in local-embed.`,
       );
     }, EMBED_STALL_WARN_MS);
-    return Promise.resolve(fn()).finally(() => clearTimeout(warn));
+    try {
+      const opStarted = Date.now();
+      const run = () => Promise.resolve(fn());
+      if (opts?.timeoutMs != null) {
+        const budget = opts.timeoutMs - waitMs;
+        if (budget <= 0) {
+          throw new Error(`${label ?? 'Embedding operation'} timed out before starting`);
+        }
+        return await Promise.race([
+          run(),
+          new Promise<never>((_, reject) => {
+            setTimeout(
+              () => reject(new Error(
+                `${label ?? 'Embedding operation'} timed out after ${Math.round(opts.timeoutMs! / 1000)}s`,
+              )),
+              budget,
+            );
+          }),
+        ]);
+      }
+      void opStarted; // reserved for future queue-wait metrics
+      return await run();
+    } finally {
+      clearTimeout(warn);
+    }
   });
+
+  if (opts?.signal) {
+    opts.signal.addEventListener('abort', () => {
+      void result.catch(() => {}); // ensure rejection is observed if aborted while queued
+    }, { once: true });
+  }
+
   _chain = result.then(
     () => undefined,
     () => undefined, // don't let fn's rejection stall the chain for the next waiter

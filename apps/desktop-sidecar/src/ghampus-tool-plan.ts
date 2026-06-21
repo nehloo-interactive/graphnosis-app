@@ -5,6 +5,7 @@
 
 import type { DirectAnswerKind } from './ghampus-direct-answer.js';
 import type { LocalLlm } from './correction.js';
+import { llmCompleteBounded } from './ghampus-timeout.js';
 import {
   buildGhampusRecallQuery,
   detectGhampusQueryHints,
@@ -35,7 +36,7 @@ export type GhampusToolPlanEntry = {
 
 export type GhampusToolPlan = {
   /** Skip recall/LLM entirely — ipc handles via early route */
-  earlyRoute?: 'skill-list' | 'skill-walk' | 'mcp-tool-list' | 'slash' | 'direct-answer';
+  earlyRoute?: 'skill-list' | 'skill-walk' | 'skill-train' | 'mcp-tool-list' | 'slash' | 'direct-answer';
   phase1: GhampusToolPlanEntry[];
   phase2: GhampusToolPlanEntry[];
   userText: string;
@@ -371,6 +372,15 @@ export function planGhampusTools(
   if (hints.wantsMcpToolList) {
     return {
       earlyRoute: 'mcp-tool-list',
+      phase1: [],
+      phase2: [],
+      userText,
+    };
+  }
+
+  if (hints.wantsSkillTrain) {
+    return {
+      earlyRoute: 'skill-train',
       phase1: [],
       phase2: [],
       userText,
@@ -1338,7 +1348,9 @@ export async function planGhampusToolsWithLlm(
   hints: GhampusQueryHints,
   llm: LocalLlm,
   opts?: PlanGhampusToolsWithLlmOpts,
+  signal?: AbortSignal,
 ): Promise<GhampusToolPlan> {
+  if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
   if (hints.skipMemoryTools || hints.wantsSkillList || hints.wantsExplicitSkillWalk || hints.wantsMcpToolList) {
     return planGhampusTools(text, hints, opts);
   }
@@ -1357,16 +1369,19 @@ export async function planGhampusToolsWithLlm(
   );
 
   try {
-    const raw = await llm.complete({
+    const raw = await llmCompleteBounded(llm, {
       system,
       user: `User question:\n${text}`,
+      ...(signal ? { signal } : {}),
     });
+    if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
     const parsed = parseLlmPlanJson(raw);
     if (parsed) {
       const fromLlm = planFromLlmJson(parsed, text, hints, opts?.scopedEngrams);
       if (fromLlm) return fromLlm;
     }
-  } catch {
+  } catch (e) {
+    if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) throw e;
     /* fall through to heuristic plan */
   }
 

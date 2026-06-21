@@ -122,6 +122,15 @@ export function isMultilingualListVerbFirstWord(firstWord: string): boolean {
   return MULTILINGUAL_LIST_VERB_PREFIX_RE.test(firstWord);
 }
 
+/** First-word search/find verbs — recall, never create_engram or fuzzy save. */
+export const MULTILINGUAL_SEARCH_VERB_PREFIX_RE =
+  /^(?:search|find|lookup|look|caut|g[aă]se[sș]|gaseste|busca|cherche|suche|seek)/i;
+
+export function isMultilingualSearchVerbFirstWord(firstWord: string): boolean {
+  const bare = firstWord.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[?.!,]+$/, '');
+  return MULTILINGUAL_SEARCH_VERB_PREFIX_RE.test(bare) || MULTILINGUAL_SEARCH_VERB_PREFIX_RE.test(firstWord);
+}
+
 /** Question openers in recall guards — not save imperatives. */
 export const MULTILINGUAL_RECALL_QUESTION_RE =
   /\b(cine|ce|care|qui|que|quoi|qu[eé]|was|wer|what|who|which)\b/i;

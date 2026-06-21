@@ -4204,6 +4204,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       });
     }
 
+    case 'ghampus:cancel': {
+      const args = z.object({ turnId: z.string().optional() }).parse(params ?? {});
+      const { cancelGhampusTurn } = await import('./ghampus-turn-cancel.js');
+      return { ok: cancelGhampusTurn(args.turnId) };
+    }
+
     case 'ghampus:walkPlan': {
       const args = z.object({
         sourceId: z.string(),

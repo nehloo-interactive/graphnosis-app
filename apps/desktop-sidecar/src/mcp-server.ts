@@ -9,6 +9,10 @@ import type { LocalLlm } from './correction.js';
 import { proposeCorrection, applyCorrection, type GnnCandidateExpander } from './correction.js';
 import { ingestClip } from './ingest.js';
 import { withEmbedding } from './embedding-queue.js';
+import {
+  GHAMPUS_RECALL_OP_TIMEOUT_MS,
+  GHAMPUS_RECALL_QUEUE_TIMEOUT_MS,
+} from './ghampus-timeout.js';
 import { beginScope, WorkPriority } from './work-priority.js';
 import { dbg, recallDbg } from './log-redact.js';
 import { mcpRegistry } from './mcp-registry.js';
@@ -1131,6 +1135,56 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     return resolveActingClientName() === GHAMPUS_MCP_CLIENT_ID;
   }
 
+  /** Ghampus user turns get queue + op timeouts so a long ingest cannot wedge chat for minutes. */
+  function withRecallEmbedding<T>(fn: () => Promise<T>, label: string): Promise<T> {
+    if (!isInternalGhampusCaller()) return withEmbedding(fn, label);
+    return withEmbedding(fn, label, {
+      queueTimeoutMs: GHAMPUS_RECALL_QUEUE_TIMEOUT_MS,
+      timeoutMs: GHAMPUS_RECALL_OP_TIMEOUT_MS,
+    });
+  }
+
+  /** Local Ghampus shares the IPC trust boundary — not an external MCP client. */
+  function ensureLocalGhampusClientPolicy(): void {
+    const settings = deps.host.getSettings();
+    const existing = settings.ai.clientPolicies?.[GHAMPUS_MCP_CLIENT_ID];
+    if (existing?.personalTier === 'always-allow' && existing?.sensitiveTier === 'always-allow') return;
+    void deps.host.setSettings({
+      ai: {
+        ...settings.ai,
+        clientPolicies: {
+          ...(settings.ai.clientPolicies ?? {}),
+          [GHAMPUS_MCP_CLIENT_ID]: {
+            personalTier: 'always-allow',
+            sensitiveTier: 'always-allow',
+            firstSeenAt: existing?.firstSeenAt ?? Date.now(),
+          },
+        },
+      },
+    });
+  }
+  ensureLocalGhampusClientPolicy();
+
+  /**
+   * Host-level tier backstop excludes sensitive engrams from federated recall
+   * unless their graphId is listed here. External MCP clients populate this only
+   * after consent; in-app Ghampus treats cortex unlock as sufficient.
+   */
+  function resolveConsentedGraphIds(
+    onlyResolved: string[] | undefined,
+    exceptGraphIds: string[],
+  ): string[] | undefined {
+    if (onlyResolved?.length) return onlyResolved;
+    if (!isInternalGhampusCaller()) return undefined;
+    const exceptSet = new Set(exceptGraphIds);
+    const sensitive = deps.host.listGraphs().filter((gid) => {
+      if (exceptSet.has(gid)) return false;
+      const tier = (deps.host.getGraphMetadata(gid) as { sensitivityTier?: string } | undefined)?.sensitivityTier;
+      return tier === 'sensitive';
+    });
+    return sensitive.length ? sensitive : undefined;
+  }
+
   // Read the toggle live each time a fresh MCP server is built (per
   // session, per relay). When OFF, we leave `instructions` undefined so
   // the AI sees the tools but gets no system-prompt-level routing —
@@ -1429,6 +1483,12 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     const clientName = resolveActingClientName();
     const clientType = settings.ai.clientTypes?.[clientName] ?? 'chat';
     const isLocalGhampus = clientName === GHAMPUS_MCP_CLIENT_ID;
+    // In-app Ghampus (local Ollama, unlocked cortex) shares the IPC trust
+    // boundary — no MCP consent modal or federated auto-exclude. External MCP
+    // clients (Claude, Cursor, …) still gate sensitive tier per-engram.
+    if (isLocalGhampus) {
+      return { consentFooter: '', autoExceptGraphIds: [] };
+    }
     const consents = settings.ai.dataAccessConsents;
 
     // `isExplicit` — the AI named specific engrams via `only_engrams`. We
@@ -1516,7 +1576,12 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     // would still see the chooser pop unnecessarily. Gate on
     // extraPrecaution OR on this call needing sensitive-tier consent.
     const consentFlowRuns = extraPrecaution || missingTiers.includes('sensitive');
-    if (consentFlowRuns && missingTiers.length > 0 && !settings.ai.clientPolicies?.[clientName]) {
+    if (
+      consentFlowRuns
+      && missingTiers.length > 0
+      && !settings.ai.clientPolicies?.[clientName]
+      && clientName !== GHAMPUS_MCP_CLIENT_ID
+    ) {
       const seeded: ClientPolicy = {
         personalTier: 'ask-grant-1h',
         sensitiveTier: 'ask-every-time',
@@ -3008,19 +3073,19 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
         const endP1 = beginScope(WorkPriority.P1_USER);
         try {
-        const sub = await withEmbedding(() => deps.host.recall(args.query, {
+        const sub = await withRecallEmbedding(() => deps.host.recall(args.query, {
           budget,
           recallPriority: WorkPriority.P1_USER,
           ...(args.skip_enrichment ? { skipEnrichment: true } : {}),
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
-          // The engrams in `only` are explicitly named AND have passed the
-          // consent gate above (checkConsentOrThrow throws otherwise), so they
-          // may bypass the shareability filter — a consented sensitive engram
-          // returns data, clamped to its tier cap. Proactive recall (no `only`)
-          // passes nothing here, so sensitive stays excluded.
-          ...(only?.resolved.length ? { consentedGraphIds: only.resolved } : {}),
-        }));
+          // Explicitly-named engrams that passed consent (or all in-scope
+          // sensitive engrams for in-app Ghampus) bypass the host tier backstop.
+          ...((): { consentedGraphIds?: string[] } => {
+            const ids = resolveConsentedGraphIds(only?.resolved, mergedExcept);
+            return ids?.length ? { consentedGraphIds: ids } : {};
+          })(),
+        }), toolName);
         const scopeWarnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
         // Structured audit line for the desktop inspector. PRIVACY: the
         // user's actual query is NOT logged (it would land in dev terminals,
@@ -3115,14 +3180,17 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
         const endP1 = beginScope(WorkPriority.P1_USER);
         try {
-        const sub = await withEmbedding(() => deps.host.digDeeper(args.query, {
+        const sub = await withRecallEmbedding(() => deps.host.digDeeper(args.query, {
           budget,
           recallPriority: WorkPriority.P1_USER,
           ...(args.skip_enrichment ? { skipEnrichment: true } : {}),
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
-          ...(only?.resolved.length ? { consentedGraphIds: only.resolved } : {}),
-        }));
+          ...((): { consentedGraphIds?: string[] } => {
+            const ids = resolveConsentedGraphIds(only?.resolved, mergedExcept);
+            return ids?.length ? { consentedGraphIds: ids } : {};
+          })(),
+        }), name);
         const scopeWarnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
         // Structured log line for power-user debugging — single line per
         // dig_deeper call, no PII, redacted engram refs. Devs grep this
@@ -3734,7 +3802,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const nodes: unknown[] = [];
         for (const graphId of scopedIds) {
           const meta = deps.host.getGraphMetadata(graphId);
-          const hits = await withEmbedding(() => deps.host.searchNodes(graphId, args.query, k));
+          const hits = await withRecallEmbedding(
+            () => deps.host.searchNodes(graphId, args.query, k),
+            `recall_structured:${graphId}`,
+          );
           for (const n of hits) {
             const sourceId = deps.host.getNodeSource(graphId, n.nodeId);
             nodes.push({
@@ -3844,7 +3915,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const sections: string[] = [];
         for (const graphId of scopedIds) {
           const meta = deps.host.getGraphMetadata(graphId);
-          const hits = await withEmbedding(() => deps.host.searchNodes(graphId, args.query, k));
+          const hits = await withRecallEmbedding(
+            () => deps.host.searchNodes(graphId, args.query, k),
+            `recall_with_citations:${graphId}`,
+          );
           if (!hits.length) continue;
           const header = `### ${meta?.displayName ?? graphId}`;
           const lines = hits.map(n => {
@@ -3886,8 +3960,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const endP1 = beginScope(WorkPriority.P1_USER);
         try {
         const [subA, subB] = await Promise.all([
-          withEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: [resA.graphId], consentedGraphIds: [resA.graphId] })),
-          withEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: [resB.graphId], consentedGraphIds: [resB.graphId] })),
+          withRecallEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: [resA.graphId], consentedGraphIds: [resA.graphId] }), 'compare_engrams:a'),
+          withRecallEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: [resB.graphId], consentedGraphIds: [resB.graphId] }), 'compare_engrams:b'),
         ]);
         const metaA = deps.host.getGraphMetadata(resA.graphId);
         const metaB = deps.host.getGraphMetadata(resB.graphId);
@@ -3930,7 +4004,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const budget = { maxNodes: args.maxNodes ?? 20, maxTokens: 4000 };
         const endP1 = beginScope(WorkPriority.P1_USER);
         try {
-        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: resolved, consentedGraphIds: resolved }));
+        const sub = await withRecallEmbedding(
+          () => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: resolved, consentedGraphIds: resolved }),
+          'cross_search',
+        );
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         const csContributing = sub.audit.filter(a => a.nodesIncluded > 0).length;
         const csHeadsUp = anomalyHeadsUp({
@@ -4326,12 +4403,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { consentFooter: lqFooter, autoExceptGraphIds: lqAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const llmAvailable = !!deps.llm('insights');
         if (!llmAvailable) {
-          const sub = await withEmbedding(() => deps.host.recall(args.question, {
+          const sub = await withRecallEmbedding(() => deps.host.recall(args.question, {
             budget: { maxTokens: args.maxTokens ?? 2000, maxNodes: 20 },
             ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
             ...(lqAutoExcept.length ? { exceptGraphIds: lqAutoExcept } : {}),
-            ...(only?.resolved.length ? { consentedGraphIds: only.resolved } : {}),
-          }));
+            ...((): { consentedGraphIds?: string[] } => {
+              const ids = resolveConsentedGraphIds(only?.resolved, lqAutoExcept);
+              return ids?.length ? { consentedGraphIds: ids } : {};
+            })(),
+          }), 'llm_query-fallback');
           enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
           return { content: [{ type: 'text', text:
             '(Local LLM unavailable — returning raw recalled context. Enable the LLM in Graphnosis for synthesis.)\n\n' + sub.prompt + lqFooter

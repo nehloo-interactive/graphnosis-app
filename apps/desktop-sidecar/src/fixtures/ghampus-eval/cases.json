@@ -109,6 +109,23 @@
       "overlayProfiles": ["deterministic"]
     },
     {
+      "id": "intent-search-scoped-ro",
+      "category": "intent",
+      "lang": "ro",
+      "text": "cauta ungur sandu in writings engram",
+      "expectedIntent": "recall",
+      "tags": ["multilingual", "ro", "regression"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "intent-create-engram-explicit",
+      "category": "intent",
+      "text": "create engram my-notes",
+      "expectedIntent": "create_engram",
+      "tags": ["regression"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
       "id": "recall-team-task-ro",
       "category": "recall",
       "lang": "ro",
