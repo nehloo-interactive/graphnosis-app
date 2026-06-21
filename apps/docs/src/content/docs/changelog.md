@@ -11,6 +11,31 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.21.1 — Ghampus stop, timeouts, and skill train
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-21</p>
+
+Ghampus turns can be stopped mid-flight, long-running steps time out with a clear message, and you can start skill training from chat. Trace panel polish and safer recall on sensitive engrams.
+
+### Added
+
+- **Stop Ghampus.** Stop button cancels the in-flight turn; sidecar registers and clears turn handles cleanly.
+- **Turn timeouts.** LLM and tool steps are bounded; timeouts surface a user-facing message instead of hanging.
+- **Skill train from chat.** Routes `/train`, `train skill …`, and related intents through `list_skills` / `get_skill` / `walk_skill_structured`.
+- **Romanian recall routing.** Search phrasing like *caută* maps to recall intent alongside English patterns.
+
+### Changed
+
+- **Trace panel.** Elapsed time formatting, pinned expanded meta, copy-icon hover fix, and restyled Stop control.
+- **Sensitive engram recall.** Tighter limits and guards when recalling from high-consent engrams; embedding queue respects recall scope.
+- **In-app Ghampus MCP.** Local Ghampus tool chains bypass external MCP consent/replay guards where appropriate.
+
+### Notes
+
+- Ghampus eval fixture corpus extended for cancel, timeout, skill-train, and Romanian routing cases.
+
+---
+
 ## v1.21.0 — Ghampus routing, Touch ID, and activity
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-21</p>
