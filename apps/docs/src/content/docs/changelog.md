@@ -11,6 +11,36 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.21.0 — Ghampus routing, Touch ID, and activity
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-21</p>
+
+Major Ghampus upgrade: intent routing and tool planning moved out of a monolithic sidecar path into testable modules, with a trace panel in the UI. Touch ID unlock is more reliable after passphrase changes. Activity and audit views load faster on large cortexes.
+
+### Added
+
+- **Ghampus trace panel.** See tool steps, thinking, and cards as Ghampus works; conversation auto-scrolls with new trace events.
+- **Ghampus routing stack.** Intent classification, engram resolution, grounding, multilingual handling, and structured tool planning — orchestrated through dedicated sidecar modules instead of one IPC blob.
+- **Activity audit improvements.** Bounded op-log queries with cursor paging and actor attribution; home digest no longer times out pulling the full op-log on large cortexes.
+- **LLM temperature presets.** Settings expose preset temperature choices for local LLM capability tuning.
+- **Smoketest guardrails.** Pre-commit hook blocks re-adding gitignored `smoketest*.ts` sources; documented in project instructions.
+
+### Changed
+
+- **MCP consent UX.** Consent modal shows friendly client names (including Ghampus); in-app Ghampus multi-tool recall chains no longer trip external MCP rate/replay guards.
+- **Home vitality bars.** Engram score bars use grade-based colours that render correctly in production WebKit; label column width aligns across rows.
+
+### Fixed
+
+- **Touch ID unlock.** Passphrase is cached only after the sidecar proves decryption; stale biometric reads are cleared with a clear recovery message instead of blocking typed unlock.
+
+### Notes
+
+- Ghampus eval harness scripts and fixtures ship for local QA regression — not wired into CI yet.
+- Sidecar smoke passes all functional phases; recall latency benchmark may fail on slower machines (environment-specific threshold).
+
+---
+
 ## v1.20.3 — CI fix (re-ship cortex unlock)
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
