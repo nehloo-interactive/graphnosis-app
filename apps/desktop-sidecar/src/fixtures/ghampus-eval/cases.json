@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "defaultRepeats": 3,
+  "cases": [
+    {
+      "id": "intent-remember-explicit",
+      "category": "intent",
+      "text": "Remember that the eval standup moved to Wednesday 11am",
+      "expectedIntent": "remember",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "intent-question-not-remember",
+      "category": "intent",
+      "text": "What engrams do I have?",
+      "expectedIntent": "question",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "intent-keyword-recall",
+      "category": "intent",
+      "text": "recall alice dashboard tasks",
+      "expectedIntent": "recall",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "recall-team-task-by-person",
+      "category": "recall",
+      "text": "What is Alice working on this week and when is her deadline?",
+      "canonicalKey": "recall-team-task-by-person",
+      "overlayProfiles": ["deterministic", "gll-only", "gnn-only", "all-overlays"]
+    },
+    {
+      "id": "recall-product-version",
+      "category": "recall",
+      "text": "What is the Graphnosis Eval Product version and Seahorse codename in ghampus-tests?",
+      "canonicalKey": "recall-product-version",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "recall-list-all-tasks",
+      "category": "recall",
+      "text": "List all team members and their tasks this week",
+      "canonicalKey": "recall-list-all-tasks",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "overlay-discipline-wrong-gll",
+      "category": "overlay",
+      "text": "What is the product version? (must not hallucinate 9.9.9)",
+      "canonicalKey": "overlay-discipline-wrong-gll",
+      "overlayProfiles": ["gll-only", "gnn-only", "all-overlays"]
+    },
+    {
+      "id": "client-cursor-dig",
+      "category": "client-sim",
+      "clientPersona": "cursor",
+      "canonicalKey": "cursor-recall-then-dig",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "client-claude-recall",
+      "category": "client-sim",
+      "clientPersona": "claude-desktop",
+      "canonicalKey": "claude-desktop-recall",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "parity-ghampus-vs-mcp",
+      "category": "parity",
+      "text": "What is the eval product version and Seahorse codename?",
+      "canonicalKey": "recall-product-version",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "intent-remember-ro",
+      "category": "intent",
+      "lang": "ro",
+      "text": "Amintește că standup-ul de eval s-a mutat miercuri la 11",
+      "expectedIntent": "remember",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "intent-question-ro",
+      "category": "intent",
+      "lang": "ro",
+      "text": "Ce engrams am?",
+      "expectedIntent": "question",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "intent-recall-ro-ce",
+      "category": "intent",
+      "lang": "ro",
+      "text": "Ce sarcini are Alice săptămâna aceasta?",
+      "expectedIntent": "recall",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "intent-remind-mi-ro",
+      "category": "intent",
+      "lang": "ro",
+      "text": "Amintește-mi ce sarcini are Alice",
+      "expectedIntent": "recall",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "recall-team-task-ro",
+      "category": "recall",
+      "lang": "ro",
+      "text": "La ce lucru Alice săptămâna aceasta și când e termenul?",
+      "canonicalKey": "recall-team-task-by-person-ro",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic", "all-overlays"]
+    },
+    {
+      "id": "recall-product-version-ro",
+      "category": "recall",
+      "lang": "ro",
+      "text": "Ce versiune are produsul Graphnosis Eval și codul Seahorse în ghampus-tests?",
+      "canonicalKey": "recall-product-version-ro",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "recall-list-tasks-ro",
+      "category": "recall",
+      "lang": "ro",
+      "text": "Listează toate sarcinile echipei pe persoană săptămâna aceasta",
+      "canonicalKey": "recall-list-all-tasks-ro",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "client-ro-recall",
+      "category": "client-sim",
+      "lang": "ro",
+      "clientPersona": "ro-recall",
+      "canonicalKey": "ro-remind-alice",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    }
+  ]
+}

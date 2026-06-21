@@ -1,0 +1,46 @@
+{
+  "deterministic": {
+    "description": "Overlay off — attested facts only",
+    "llmEnabled": false,
+    "neuralNetwork": false,
+    "llmCapabilities": {
+      "recallEnrichment": false,
+      "distillation": false,
+      "edgePrediction": false,
+      "insights": false
+    }
+  },
+  "gll-only": {
+    "description": "GLL overlay only",
+    "llmEnabled": true,
+    "neuralNetwork": false,
+    "llmCapabilities": {
+      "recallEnrichment": true,
+      "distillation": true,
+      "edgePrediction": true,
+      "insights": false
+    }
+  },
+  "gnn-only": {
+    "description": "GNN overlay only",
+    "llmEnabled": false,
+    "neuralNetwork": true,
+    "llmCapabilities": {
+      "recallEnrichment": false,
+      "distillation": false,
+      "edgePrediction": false,
+      "insights": false
+    }
+  },
+  "all-overlays": {
+    "description": "GLL + GNN overlay",
+    "llmEnabled": true,
+    "neuralNetwork": true,
+    "llmCapabilities": {
+      "recallEnrichment": true,
+      "distillation": true,
+      "edgePrediction": true,
+      "insights": false
+    }
+  }
+}

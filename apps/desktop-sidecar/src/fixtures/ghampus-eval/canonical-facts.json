@@ -1,0 +1,39 @@
+{
+  "recall-team-task-by-person": {
+    "requiredFacts": ["alice", "refactor", "dashboard", "friday"]
+  },
+  "recall-product-version": {
+    "requiredFacts": ["2.4.1", "seahorse"]
+  },
+  "recall-list-all-tasks": {
+    "requiredFacts": ["alice", "bob", "carol"]
+  },
+  "overlay-discipline-wrong-gll": {
+    "requiredFacts": ["2.4.1"],
+    "forbiddenFacts": ["9.9.9"]
+  },
+  "question-not-remember-engram-name": {
+    "requiredFacts": []
+  },
+  "remember-explicit-save": {
+    "requiredFacts": []
+  },
+  "cursor-recall-then-dig": {
+    "requiredFacts": ["alice"]
+  },
+  "claude-desktop-recall": {
+    "requiredFacts": ["bob", "rate limiting"]
+  },
+  "recall-team-task-by-person-ro": {
+    "requiredFacts": ["refacere", "dashboard", "vineri"]
+  },
+  "recall-product-version-ro": {
+    "requiredFacts": ["2.4.1", "seahorse"]
+  },
+  "recall-list-all-tasks-ro": {
+    "requiredFacts": ["alice", "bob", "carol"]
+  },
+  "ro-remind-alice": {
+    "requiredFacts": ["alice", "dashboard"]
+  }
+}

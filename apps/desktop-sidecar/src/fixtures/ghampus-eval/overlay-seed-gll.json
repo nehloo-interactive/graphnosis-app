@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "contradictions": [
+    {
+      "claim": "Graphnosis Eval Product version is 9.9.9",
+      "contradicts": "2.4.1",
+      "nodeHint": "wrong-version-gll"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "cursor": {
+    "description": "Cursor-style recall then dig",
+    "steps": [
+      { "action": "ghampus:send", "text": "What tasks does Alice have this week?" },
+      { "action": "ghampus:send", "text": "When is her deadline?" }
+    ]
+  },
+  "claude-desktop": {
+    "description": "Claude Desktop single recall",
+    "steps": [
+      { "action": "mcp", "tool": "recall", "args": { "query": "Bob Martinez tasks rate limiting" } }
+    ]
+  },
+  "graphnosis-app": {
+    "description": "Graphnosis App ghampus send",
+    "steps": [
+      { "action": "ghampus:send", "text": "What is the eval product version?" }
+    ]
+  },
+  "mcp-direct": {
+    "description": "Direct MCP recall parity",
+    "steps": [
+      { "action": "mcp", "tool": "recall", "args": { "query": "eval product version Seahorse" } }
+    ]
+  },
+  "ro-recall": {
+    "description": "Romanian remind-style recall (amintește-mi)",
+    "steps": [
+      { "action": "ghampus:send", "text": "Amintește-mi ce sarcini are Alice săptămâna aceasta" }
+    ]
+  }
+}

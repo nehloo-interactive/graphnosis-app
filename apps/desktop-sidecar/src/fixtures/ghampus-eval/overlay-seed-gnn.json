@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "edges": [
+    {
+      "fromHint": "eval-product",
+      "toHint": "decoy-node",
+      "confidence": 0.92,
+      "label": "related_to"
+    }
+  ]
+}
