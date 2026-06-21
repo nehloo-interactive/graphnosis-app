@@ -162,8 +162,10 @@ export function clearActivityDateFilters(): void {
   els.activityDateTo.value = '';
   els.activityHourFrom.value = '';
   els.activityHourTo.value = '';
+  activityRangeInitialized = false;
+  activityNextCursor = undefined;
 }
-export function resetActivityWindow(): void { activityWindow = ACTIVITY_WINDOW_START; }
+export function resetActivityWindow(): void { activityNextCursor = undefined; }
 
 
 // ── Activity (op-log timeline) ────────────────────────────────────────
@@ -183,28 +185,73 @@ export function resetActivityWindow(): void { activityWindow = ACTIVITY_WINDOW_S
 // and step bigger. 2000 initial loads in well under a second and shows real depth;
 // "Load more" ramps 2000 at a time to a 20000 hard cap (a brief load at the top
 // end, on demand).
-const ACTIVITY_WINDOW_START = 2000;
-const ACTIVITY_WINDOW_STEP = 2000;
-const ACTIVITY_WINDOW_MAX = 20000;
+const ACTIVITY_PAGE_SIZE = 2000;
 /** Client-side IPC budget — op-log reads on iCloud-synced cortexes can exceed 25s. */
 const ACTIVITY_IPC_TIMEOUT_MS = 60_000;
-let activityWindow = ACTIVITY_WINDOW_START;
-let activityHasMore = false;      // fetched == window → more events may exist
-let activityLoading = false;      // guards re-entrancy + the button spinner
+let activityHasMore = false;
+let activityLoading = false;
+let activityNextCursor: { ts: number; id: string } | undefined;
+let activityRangeInitialized = false;
 
-/** Read the date-range inputs → an absolute ms window for the op-log fetch.
- *  `since` is exclusive (IPC uses `ts > since`), so we subtract 1ms from the
- *  start-of-day; `until` is inclusive end-of-day. Returns {} when no dates set. */
+function toIsoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** First open: default to the last 7 days (inclusive). */
+function ensureDefaultActivityRange(): void {
+  if (activityRangeInitialized) return;
+  activityRangeInitialized = true;
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - 6);
+  els.activityDateTo.value = toIsoDate(to);
+  els.activityDateFrom.value = toIsoDate(from);
+}
+
+/** Read date + hour inputs → absolute ms bounds for activity.list (hours are server-side). */
 function activityDateBounds(): { since?: number; until?: number } {
   const out: { since?: number; until?: number } = {};
   const from = els.activityDateFrom.value;
   const to = els.activityDateTo.value;
-  if (from) out.since = new Date(`${from}T00:00:00`).getTime() - 1;
-  if (to) out.until = new Date(`${to}T23:59:59.999`).getTime();
+  const hourFrom = els.activityHourFrom.value.trim();
+  const hourTo = els.activityHourTo.value.trim();
+
+  let sinceMs: number | undefined;
+  let untilMs: number | undefined;
+
+  if (from) {
+    const h = hourFrom || '00:00';
+    sinceMs = new Date(`${from}T${h}:00`).getTime() - 1;
+  }
+  if (to) {
+    if (hourTo) {
+      untilMs = new Date(`${to}T${hourTo}:59.999`).getTime();
+    } else {
+      untilMs = new Date(`${to}T23:59:59.999`).getTime();
+    }
+  } else if (from && hourTo) {
+    untilMs = new Date(`${from}T${hourTo}:59.999`).getTime();
+  }
+
+  if (sinceMs !== undefined && untilMs !== undefined && untilMs <= sinceMs) {
+    untilMs = sinceMs + 3_600_000 + 1;
+  }
+
+  if (sinceMs !== undefined) out.since = sinceMs;
+  if (untilMs !== undefined) out.until = untilMs;
   return out;
 }
+
+function activityRangeImpossible(): boolean {
+  const bounds = activityDateBounds();
+  return bounds.since !== undefined && bounds.until !== undefined && bounds.until <= bounds.since;
+}
+
 function activityDateRangeActive(): boolean {
-  return Boolean(els.activityDateFrom.value || els.activityDateTo.value);
+  return Boolean(
+    els.activityDateFrom.value || els.activityDateTo.value
+    || els.activityHourFrom.value || els.activityHourTo.value,
+  );
 }
 
 function showActivityLoading(detail?: string): void {
@@ -274,44 +321,64 @@ function showActivityIpcError(e: unknown): void {
     '<button id="btn-activity-retry" class="btn-sm" type="button">Retry</button></p>';
 }
 
-export async function refreshActivityView(opts?: { showLoading?: boolean }): Promise<void> {
+export async function refreshActivityView(opts?: { showLoading?: boolean; append?: boolean }): Promise<void> {
   if (activityLoading) {
     if (import.meta.env.DEV) console.warn('[activity] refresh skipped — load already in progress');
     return;
   }
+  ensureDefaultActivityRange();
+  if (!opts?.append) activityNextCursor = undefined;
   activityLoading = true;
   try {
-    if (opts?.showLoading || activityEvents.length === 0) showActivityLoading();
+    if (opts?.showLoading || (!opts?.append && activityEvents.length === 0)) showActivityLoading();
+    if (activityRangeImpossible()) {
+      activityEvents = [];
+      activityHasMore = false;
+      activityNextCursor = undefined;
+      activityServerActors = [];
+      activityWarnings = [];
+      applyActivityFilter();
+      return;
+    }
     const bounds = activityDateBounds();
-    const dateScoped = activityDateRangeActive();
-    // With an explicit date range, pull the WHOLE range from the op-log (up to
-    // the hard cap) rather than the recent-N window — old days are otherwise
-    // unreachable. Without one, keep the cheap recent-window paging.
-    const params: { limit: number; ops?: string[]; since?: number; until?: number; actor?: string } =
-      { limit: dateScoped ? ACTIVITY_WINDOW_MAX : activityWindow };
-    if (activityCat !== 'all') params.ops = ACTIVITY_CAT_OPS[activityCat]; // server-side type filter
+    const params: {
+      limit: number;
+      ops?: string[];
+      since?: number;
+      until?: number;
+      actor?: string;
+      cursor?: { ts: number; id: string };
+    } = { limit: ACTIVITY_PAGE_SIZE };
+    if (activityCat !== 'all') params.ops = ACTIVITY_CAT_OPS[activityCat];
     if (bounds.since !== undefined) params.since = bounds.since;
     if (bounds.until !== undefined) params.until = bounds.until;
-    // Actor ("who") is now a SERVER-side filter (applied across the full op-log,
-    // like categories) so picking a rare actor surfaces their events even when
-    // outside the recent window.
+    if (activityNextCursor) params.cursor = activityNextCursor;
     const actorSel = els.activityActorSelect.value;
     if (actorSel) params.actor = actorSel;
     const r = await activityIpcCall<{
       events: OpLogEvent[];
       actors?: string[];
       warnings?: string[];
+      hasMore?: boolean;
+      nextCursor?: { ts: number; id: string };
       lastCompaction?: OplogCompactionRecord | null;
     }>('activity.list', params, ACTIVITY_IPC_TIMEOUT_MS);
-    activityEvents = r.events ?? [];
-    activityServerActors = r.actors ?? []; // complete distinct-actor set for the dropdown
+    const page = r.events ?? [];
+    if (opts?.append) {
+      const seen = new Set(activityEvents.map((e) => e.id));
+      activityEvents = [...activityEvents, ...page.filter((e) => !seen.has(e.id))];
+    } else {
+      activityEvents = page;
+    }
+    if (r.actors?.length) {
+      activityServerActors = [...new Set([...activityServerActors, ...r.actors])].sort((a, b) => a.localeCompare(b));
+    } else if (!opts?.append) {
+      activityServerActors = r.actors ?? [];
+    }
     activityWarnings = r.warnings ?? [];
     setLastCompactionFromServer(r.lastCompaction);
-    // Date-scoped fetches pull the whole range (no recent-window paging), so
-    // "more" only means we hit the hard cap; otherwise it's window-relative.
-    activityHasMore = dateScoped
-      ? activityEvents.length >= ACTIVITY_WINDOW_MAX
-      : activityEvents.length >= activityWindow;
+    activityHasMore = r.hasMore === true;
+    activityNextCursor = r.nextCursor;
     try {
       populateActivityEngramSelect();
       populateActivityActorSelect();
@@ -332,11 +399,10 @@ export async function refreshActivityView(opts?: { showLoading?: boolean }): Pro
   }
 }
 
-/** Grow the fetch window by a batch and reload (the "Load more" button). */
+/** Load the next cursor page from the sidecar. */
 export function loadMoreActivity(): void {
-  if (activityLoading || activityWindow >= ACTIVITY_WINDOW_MAX) return;
-  activityWindow = Math.min(ACTIVITY_WINDOW_MAX, activityWindow + ACTIVITY_WINDOW_STEP);
-  void refreshActivityView();
+  if (activityLoading || !activityHasMore || !activityNextCursor) return;
+  void refreshActivityView({ append: true });
 }
 
 // Most-recent events from the last activity.list fetch. Chip/search/engram
@@ -415,47 +481,24 @@ function populateActivityActorSelect(): void {
   }
 }
 
-/** Category is server-filtered (via `ops`); here we only apply the engram scope
- *  + text query to the fetched set, then render. */
-/** Parse a "HH:MM" time input → minutes-since-midnight, or null if empty. */
-function activityHourMinutes(val: string): number | null {
-  const m = /^(\d{2}):(\d{2})$/.exec(val);
-  if (!m) return null;
-  return Number(m[1]) * 60 + Number(m[2]);
-}
-
+/** Category is server-filtered (via `ops`); engram + text query run client-side. */
 export function applyActivityFilter(): void {
   const engram = els.activityEngramSelect.value;
-  // Actor is filtered server-side (refetch on change) — not here.
   const query = els.activitySearch.value.trim().toLowerCase();
   const matchesText = (e: OpLogEvent): boolean => {
     if (!query) return true;
     const hay = `${e.op} ${e.graphId} ${app().engramName(e.graphId)} ${activityLabel(e).replace(/<[^>]+>/g, '')} ${activityDetail(e).replace(/<[^>]+>/g, '')}`.toLowerCase();
     return hay.includes(query);
   };
-  // Hour-of-day window (applies to every selected day). Supports wrap-around
-  // (e.g. 22:00 → 06:00 = overnight) by inverting the test when from > to.
-  const hourFrom = activityHourMinutes(els.activityHourFrom.value);
-  const hourTo = activityHourMinutes(els.activityHourTo.value);
-  const matchesHour = (e: OpLogEvent): boolean => {
-    if (hourFrom === null && hourTo === null) return true;
-    const d = new Date(e.ts);
-    const mins = d.getHours() * 60 + d.getMinutes();
-    const lo = hourFrom ?? 0;
-    const hi = hourTo ?? 24 * 60 - 1;
-    return lo <= hi ? (mins >= lo && mins <= hi) : (mins >= lo || mins <= hi);
-  };
   els.activityChips.querySelectorAll<HTMLButtonElement>('.g-activity-chip').forEach((chip) => {
     const cat = (chip.dataset.cat ?? 'all') as ActivityCat;
     chip.classList.toggle('active', cat === activityCat);
-    chip.textContent = ACTIVITY_CAT_LABELS[cat]; // no counts — category now pulls full history
+    chip.textContent = ACTIVITY_CAT_LABELS[cat];
   });
-  // Reflect whether any date/hour filter is active on the Clear button.
-  const rangeActive = activityDateRangeActive() || hourFrom !== null || hourTo !== null;
+  const rangeActive = activityDateRangeActive();
   els.activityDateClear.classList.toggle('hidden', !rangeActive);
   activityFiltered = activityEvents
-    .filter((e) => (!engram || e.graphId === engram)
-      && matchesText(e) && matchesHour(e))
+    .filter((e) => (!engram || e.graphId === engram) && matchesText(e))
     .slice().sort((a, b) => b.ts - a.ts);
   renderActivity();
 }
@@ -550,16 +593,6 @@ function maintenanceRowVisible(record: OplogCompactionRecord): boolean {
   const bounds = activityDateBounds();
   if (bounds.since !== undefined && record.at <= bounds.since) return false;
   if (bounds.until !== undefined && record.at > bounds.until) return false;
-  const hourFrom = activityHourMinutes(els.activityHourFrom.value);
-  const hourTo = activityHourMinutes(els.activityHourTo.value);
-  if (hourFrom !== null || hourTo !== null) {
-    const d = new Date(record.at);
-    const mins = d.getHours() * 60 + d.getMinutes();
-    const lo = hourFrom ?? 0;
-    const hi = hourTo ?? 24 * 60 - 1;
-    const inHour = lo <= hi ? (mins >= lo && mins <= hi) : (mins >= lo || mins <= hi);
-    if (!inHour) return false;
-  }
   return true;
 }
 
@@ -649,10 +682,8 @@ function renderActivity(): void {
     html = `<p class="subtitle activity-sync-notice">${escape(activityWarnings[0])}</p>` + html;
   }
 
-  if (activityHasMore && activityWindow < ACTIVITY_WINDOW_MAX) {
-    html += `<button id="activity-load-more" class="activity-load-more" type="button">↓ Load ${ACTIVITY_WINDOW_STEP} more…</button>`;
-  } else if (activityWindow >= ACTIVITY_WINDOW_MAX && activityHasMore) {
-    html += `<p class="subtitle" style="text-align:center; padding:10px;">Showing the most recent ${ACTIVITY_WINDOW_MAX.toLocaleString()} — filter by a category or engram to dig deeper.</p>`;
+  if (activityHasMore) {
+    html += `<button id="activity-load-more" class="activity-load-more" type="button">↓ Load more…</button>`;
   }
   els.activityList.innerHTML = html;
 
@@ -834,7 +865,7 @@ els.activityList.addEventListener('click', (e) => {
   if (retry) {
     e.preventDefault();
     if (activityLoading) return;
-    activityWindow = ACTIVITY_WINDOW_START;
+    activityNextCursor = undefined;
     retry.disabled = true;
     retry.textContent = 'Retrying…';
     void refreshActivityView({ showLoading: true });
@@ -852,9 +883,7 @@ els.activityChips.addEventListener('click', (e) => {
   const chip = (e.target as HTMLElement).closest<HTMLButtonElement>('.g-activity-chip');
   if (!chip) return;
   activityCat = (chip.dataset.cat ?? 'all') as ActivityCat;
-  // Category is now a SERVER-side filter (so a rare type pulls from the full
-  // op-log, not the recent window) — refetch with the new ops, reset paging.
-  activityWindow = ACTIVITY_WINDOW_START;
+  activityNextCursor = undefined;
   void refreshActivityView();
 });
 // Text filter + engram scope → also re-filter the cache live.
@@ -864,19 +893,19 @@ els.activitySearch.addEventListener('input', () => {
   activitySearchTimer = window.setTimeout(() => applyActivityFilter(), 120);
 });
 els.activityEngramSelect.addEventListener('change', () => applyActivityFilter());
-els.activityActorSelect.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
-// Date range changes the fetch window (since/until) → re-fetch from the op-log.
-els.activityDateFrom.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
-els.activityDateTo.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
-// Hour-of-day is a client-side narrowing of the already-fetched set.
-els.activityHourFrom.addEventListener('change', () => applyActivityFilter());
-els.activityHourTo.addEventListener('change', () => applyActivityFilter());
+els.activityActorSelect.addEventListener('change', () => { activityNextCursor = undefined; void refreshActivityView(); });
+// Date/hour range → server since/until bounds — re-fetch from the op-log.
+els.activityDateFrom.addEventListener('change', () => { activityNextCursor = undefined; void refreshActivityView(); });
+els.activityDateTo.addEventListener('change', () => { activityNextCursor = undefined; void refreshActivityView(); });
+els.activityHourFrom.addEventListener('change', () => { activityNextCursor = undefined; void refreshActivityView(); });
+els.activityHourTo.addEventListener('change', () => { activityNextCursor = undefined; void refreshActivityView(); });
 els.activityDateClear.addEventListener('click', () => {
   els.activityDateFrom.value = '';
   els.activityDateTo.value = '';
   els.activityHourFrom.value = '';
   els.activityHourTo.value = '';
-  activityWindow = ACTIVITY_WINDOW_START;
+  activityRangeInitialized = false;
+  activityNextCursor = undefined;
   void refreshActivityView();
 });
 // Refresh re-fetches from the sidecar (picks up new events).
