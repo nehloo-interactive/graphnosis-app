@@ -206,6 +206,7 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "oplog.compacted"
             | "ghampus.message"
             | "ghampus.thinking"
+            | "ghampus.trace"
             | "ghampus.card"
             | "graph.delta" => {  // per-source live-ingest delta → graphnosis://graph-delta
                 // Forward the raw payload to the frontend as-is.

@@ -190,6 +190,8 @@ export interface ConsentRecord {
   consentVersion: string;
 }
 
+export type LlmTemperaturePreset = 'precise' | 'balanced' | 'creative';
+
 /**
  * AI-routing + post-ingest behavior settings.
  */
@@ -337,6 +339,12 @@ export interface AiSettings {
    * Examples: "llama3.2:3b-instruct-q4_K_M", "qwen2.5:3b-instruct-q4_K_M"
    */
   llmModel?: string;
+  /**
+   * Local LLM sampling temperature preset. Maps to concrete values in
+   * `LLM_TEMPERATURE_PRESETS` — absent cortexes default to `balanced` (0.2).
+   * Structured / JSON paths always use 0 regardless of this preset.
+   */
+  llmTemperaturePreset?: LlmTemperaturePreset;
   /**
    * Maximum tokens the MCP server will serve to a single AI client session
    * before blocking further data reads. Prevents bulk graph exfiltration via
@@ -1617,6 +1625,12 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
   const llmModel = typeof ai.llmModel === 'string' && ai.llmModel.length > 0
     ? ai.llmModel
     : undefined;
+  const llmTemperaturePreset: LlmTemperaturePreset | undefined =
+    ai.llmTemperaturePreset === 'precise'
+    || ai.llmTemperaturePreset === 'balanced'
+    || ai.llmTemperaturePreset === 'creative'
+      ? ai.llmTemperaturePreset
+      : undefined;
   const embeddingModel: AiSettings['embeddingModel'] | undefined =
     ai.embeddingModel === 'english' || ai.embeddingModel === 'multilingual'
       ? ai.embeddingModel
@@ -1959,6 +1973,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       reingestQuietMs, chunkSize, embedBatch, llmEnabled,
       ...(llmCapabilities !== undefined ? { llmCapabilities } : {}),
       ...(llmModel !== undefined ? { llmModel } : {}),
+      ...(llmTemperaturePreset !== undefined ? { llmTemperaturePreset } : {}),
       ...(embeddingModel !== undefined ? { embeddingModel } : {}),
       ...(sessionTokenCap !== undefined ? { sessionTokenCap } : {}),
       ...(sessionNodeCap !== undefined ? { sessionNodeCap } : {}),
@@ -2120,12 +2135,57 @@ function isSharingTokenRecord(v: unknown): v is SharingToken {
  *     that runs an autonomous background loop).
  *   - Explicit `false` in the stored map always wins over the default.
  */
+export const DEFAULT_LLM_TEMPERATURE_PRESET: LlmTemperaturePreset = 'balanced';
+
+/** User-facing preset labels for Settings and Ghampus model popover. */
+export const LLM_TEMPERATURE_PRESETS: Record<
+  LlmTemperaturePreset,
+  { label: string; temperature: number; hint: string }
+> = {
+  precise: {
+    label: 'Precise',
+    temperature: 0,
+    hint: 'Factual, minimal variance — best for memory recall answers.',
+  },
+  balanced: {
+    label: 'Balanced',
+    temperature: 0.2,
+    hint: 'Recommended default for Ghampus and synthesis.',
+  },
+  creative: {
+    label: 'Creative',
+    temperature: 0.7,
+    hint: 'More varied phrasing — insights and brainstorming.',
+  },
+};
+
 export interface ResolvedLlmCapabilities {
   recallEnrichment: boolean;
   correctionParsing: boolean;
   distillation: boolean;
   insights: boolean;
   edgePrediction: boolean;
+}
+
+/** Resolved preset — always one of the three known labels. */
+export function resolveLlmTemperaturePreset(settings: AppSettings): LlmTemperaturePreset {
+  const p = settings.ai.llmTemperaturePreset;
+  if (p === 'precise' || p === 'balanced' || p === 'creative') return p;
+  return DEFAULT_LLM_TEMPERATURE_PRESET;
+}
+
+/**
+ * Concrete sampling temperature for a local LLM call. Structured outputs
+ * (jsonSchema set) always resolve to 0. Eval harness overrides live in the
+ * sidecar (`GRAPHNOSIS_EVAL_MODE`), not here.
+ */
+export function resolveLlmTemperature(
+  settings: AppSettings,
+  opts?: { structured?: boolean },
+): number {
+  if (opts?.structured) return 0;
+  const preset = resolveLlmTemperaturePreset(settings);
+  return LLM_TEMPERATURE_PRESETS[preset].temperature;
 }
 
 export function resolveLlmCapabilities(settings: AppSettings): ResolvedLlmCapabilities {

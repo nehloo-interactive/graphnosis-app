@@ -3565,6 +3565,7 @@ function friendlyClient(name?: string): string {
     'zed': 'Zed',
     'windsurf': 'Windsurf',
     'Graphnosis': 'Graphnosis',
+    'ghampus': 'Ghampus',
     'shared-engrams': 'Shared engrams',
   };
   if (map[name]) return map[name] as string;
@@ -8058,6 +8059,21 @@ function annotateHomeHelp(): void {
 
 // Per-engram vitality bars — collapsed to a top-N with a "show all" toggle so a
 // 20-engram cortex doesn't render a wall of bars (and the row count stays cheap).
+function syncHomeEngramBarLabelColumn(barsEl: HTMLElement): void {
+  const labels = barsEl.querySelectorAll<HTMLElement>('.home-bar-name');
+  if (labels.length === 0) return;
+  barsEl.style.removeProperty('--home-engram-label-col-width');
+  let maxW = 0;
+  for (const el of labels) {
+    el.style.width = 'max-content';
+    maxW = Math.max(maxW, el.getBoundingClientRect().width);
+    el.style.width = '';
+  }
+  if (maxW > 0) {
+    barsEl.style.setProperty('--home-engram-label-col-width', `${Math.ceil(maxW)}px`);
+  }
+}
+
 function renderHomeEngramBars(): void {
   const barsEl = document.getElementById('home-engram-bars');
   if (!barsEl) return;
@@ -8146,14 +8162,12 @@ function renderHomeEngramBars(): void {
       return `<div class="home-bar-row home-bar-row-empty${archivedCls}">${nameSpan}` +
         `<span class="home-bar-track"></span><span class="home-bar-val">empty</span></div>`;
     }
-    const COLOR_DARK  = r.score >= 85 ? '#4ade80' : r.score >= 70 ? '#6ab3c8' : r.score >= 50 ? '#d9a445' : '#f87171';
-    const COLOR_LIGHT = r.score >= 85 ? '#15803d' : r.score >= 70 ? '#0891b2' : r.score >= 50 ? '#d9a445' : '#b91c1c';
-    // Inline width (production WebViews may ignore var(--bar-w) on injected fills).
-    // Colors stay on CSS custom properties so dark-mode rules still apply.
-    const style = `width:${r.score}%;--bar-color-dark:${COLOR_DARK};--bar-color-light:${COLOR_LIGHT}`;
+    const grade = gradeFromScore(r.score).toLowerCase();
+    // Width inline; colour via grade-* classes (same pattern as skill-vitality bars —
+    // production WebKit ignores --bar-color-* custom props on innerHTML fills).
     return `<div class="home-bar-row${archivedCls}">${nameSpan}` +
-      `<span class="home-bar-track"><span class="home-bar-fill" style="${style}"></span></span>` +
-      `<span class="home-bar-val">${r.score}</span></div>`;
+      `<span class="home-bar-track"><span class="home-bar-fill grade-${grade}" data-score="${r.score}"></span></span>` +
+      `<span class="home-bar-val grade-${grade}">${r.score}</span></div>`;
   };
   const more = rows.length > CAP
     ? `<p class="home-bars-empty">+ ${(rows.length - CAP).toLocaleString()} more engrams</p>`
@@ -8165,6 +8179,11 @@ function renderHomeEngramBars(): void {
     ? ' <span class="home-bars-settling">· updating…</span>'
     : '';
   barsEl.innerHTML = `<div class="home-bars-title">Per engram (${titleCount.toLocaleString()})${settlingHint}</div>${shown.map(bar).join('')}${more}`;
+  for (const fill of barsEl.querySelectorAll<HTMLElement>('.home-bar-fill[data-score]')) {
+    const score = Number(fill.dataset.score);
+    if (Number.isFinite(score) && score > 0) fill.style.width = `${score}%`;
+  }
+  syncHomeEngramBarLabelColumn(barsEl);
 }
 
 // "Since you last opened" — the autonomy digest. The anchor (last app-open
@@ -14257,7 +14276,7 @@ void listen<ConsentPromptPayload>('graphnosis://consent-prompt', (evt) => {
   const subEl = document.getElementById('consent-prompt-subtitle');
   const tiersEl = document.getElementById('consent-prompt-tiers');
   const privEl = document.getElementById('consent-prompt-privacy') as HTMLAnchorElement | null;
-  if (titleEl) titleEl.textContent = `${p.clientName} wants to read your memories`;
+  if (titleEl) titleEl.textContent = `${friendlyClient(p.clientName)} wants to read your memories`;
   const engrams = p.engrams ?? [];
   if (subEl) {
     // Name the specific engram(s) so the user authorises exactly these, not the

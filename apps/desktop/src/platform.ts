@@ -210,6 +210,7 @@ const CMD: Record<string, string> = {
   // Local LLM
   llm_status:                  'llm:status',
   llm_set_model:               'llm:setModel',
+  llm_set_temperature_preset:  'llm:setTemperaturePreset',
   llm_set_enabled:             'llm:setEnabled',
   llm_set_capability:          'llm:setCapability',
   llm_pull_model:              'llm:pullModel',
@@ -475,6 +476,10 @@ const SSE_TO_TAURI: Record<string, string> = {
   'quarantine-recovered':         'graphnosis://cortex-recovered-from-quarantine',
   'oplog.compacted':              'graphnosis://oplog-compacted',
   'engram-budget-warning':        'graphnosis://mcp-session-budget-warning',
+  'ghampus.message':              'graphnosis://ghampus-message',
+  'ghampus.thinking':             'graphnosis://ghampus-thinking',
+  'ghampus.trace':                'graphnosis://ghampus-trace',
+  'ghampus.card':                 'graphnosis://ghampus-card',
 };
 
 type ListenHandler<T> = (event: { payload: T }) => void;
