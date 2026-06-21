@@ -10,7 +10,7 @@ import { proposeCorrection, applyCorrection, type GnnCandidateExpander } from '.
 import { ingestClip } from './ingest.js';
 import { withEmbedding } from './embedding-queue.js';
 import { beginScope, WorkPriority } from './work-priority.js';
-import { dbg } from './log-redact.js';
+import { dbg, recallDbg } from './log-redact.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
 import { createHmac, randomUUID } from 'node:crypto';
@@ -498,7 +498,7 @@ function mcpError(text: string) {
 // `correct` that found zero candidates for the asserted fact, a vitality
 // drop of 30 points since the previous call. Each of those is plausibly a
 // real anomaly the user should hear about, AND a feedback loop into the
-// developer (Nelu) about where the app's retrieval / scoring / scheduling
+// developer (ExampleAuthor) about where the app's retrieval / scoring / scheduling
 // is misbehaving.
 //
 // The heads-up is opt-in per signal: `anomalyHeadsUp` returns null in the
@@ -838,7 +838,19 @@ export type McpToolResult = { content: Array<{ type: string; text: string }>; is
  * internal callers can reuse the exact same implementations without going
  * through the network transport or duplicating logic.
  */
-export type McpCallTool = (name: string, args: Record<string, unknown>) => Promise<McpToolResult>;
+/** In-app Ghampus and other internal callers — not an external MCP client. */
+export const GHAMPUS_MCP_CLIENT_ID = 'ghampus';
+
+export type McpCallContext = {
+  /** Override MCP client attribution (consent gate, audit). Ghampus passes `ghampus`. */
+  actingClientName?: string;
+};
+
+export type McpCallTool = (
+  name: string,
+  args: Record<string, unknown>,
+  ctx?: McpCallContext,
+) => Promise<McpToolResult>;
 
 /**
  * Build a fresh MCP `Server` instance with all of Graphnosis' tools wired up.
@@ -1067,7 +1079,7 @@ LANGUAGE: Every tool here is language-agnostic. Trigger on the user's INTENT, no
 
 WHEN TO CALL \`recall\` or \`remind\` (proactively, BEFORE responding):
 • Any question about the user's life, work, projects, preferences, plans, relationships, or history.
-• Any reference to a person, place, project, or concept by name without explanation ("how's Stela doing?", "the DRP proposal", "my Romanian-IA project").
+• Any reference to a person, place, project, or concept by name without explanation ("how's Jamie Chen doing?", "the DRP proposal", "my Romanian-IA project").
 • Any moment you would otherwise say "I don't know" or "I don't have context" about the user. Check the graph FIRST. If the search returns nothing, then say you don't have it remembered yet.
 • Trigger phrases in English: "remind me…", "what did I say about…", "what's my…", "do I have anything on…", "what do I know about…".
 • Equivalents in other languages: e.g. Romanian "amintește-mi de…" / "ce știi despre…", Spanish "recuérdame…" / "qué sé sobre…", French "rappelle-moi…" / "qu'est-ce que je sais sur…", German "erinnere mich an…" / "was weiß ich über…", Mandarin "提醒我…" / "我知道关于…", Arabic "ذكّرني بـ…" / "ماذا أعرف عن…". These are not exhaustive — the principle is "user wants to retrieve something they previously stored," in any language.
@@ -1107,6 +1119,18 @@ NEVER supply the phrase yourself. NEVER call confirm_data_access before the user
 If the user types SKIP, acknowledge and do NOT retry the recall. No data will be returned for that turn.`;
 
 export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpCallTool } {
+  /** When set, internal callers (Ghampus IPC) override getMostRecentClientName(). */
+  let actingClientOverride: string | undefined;
+
+  function resolveActingClientName(): string {
+    return actingClientOverride ?? mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+  }
+
+  /** In-app Ghampus orchestrates recall → dig_deeper → recall_structured in one turn. */
+  function isInternalGhampusCaller(): boolean {
+    return resolveActingClientName() === GHAMPUS_MCP_CLIENT_ID;
+  }
+
   // Read the toggle live each time a fresh MCP server is built (per
   // session, per relay). When OFF, we leave `instructions` undefined so
   // the AI sees the tools but gets no system-prompt-level routing —
@@ -1174,6 +1198,8 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
   // the last RECALL_RATE_WINDOW_MS. Catches burst attacks. Always trips before
   // the replay blocker (cheap O(1) prune vs. O(N) set comparison).
   function enforceRecallRateLimit(): void {
+    // Ghampus runs multi-tool recall chains per user turn — not MCP client spam.
+    if (isInternalGhampusCaller()) return;
     const connId = mcpRegistry.getMostRecentActiveId();
     if (!connId) return;
     const now = Date.now();
@@ -1208,17 +1234,26 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
 
   // ── Session replay blocker ────────────────────────────────────────────────
   // Throws if the user's query is highly similar (Jaccard ≥ 0.85) to one issued
-  // in the last REPLAY_WINDOW_MS by the same client. Catches systematic memory
-  // scraping via repeated/near-repeated queries.
-  function enforceReplayBlocker(query: string): void {
+  // in the last REPLAY_WINDOW_MS by the same client ON THE SAME TOOL. Counting
+  // per-tool lets Ghampus (and external clients) run recall → dig_deeper →
+  // recall_structured with one query in a single turn without tripping the guard.
+  // Internal Ghampus callers (actingClientName=ghampus) are fully exempt.
+  function replayBucketKey(connId: string, tool: string): string {
+    return `${connId}:${tool}`;
+  }
+
+  function enforceReplayBlocker(query: string, tool: string): void {
+    // Internal Ghampus tool chains reuse similar queries within seconds — exempt.
+    if (isInternalGhampusCaller()) return;
     const connId = mcpRegistry.getMostRecentActiveId();
     if (!connId) return;
+    const bucket = replayBucketKey(connId, tool);
     const now = Date.now();
     const cutoff = now - REPLAY_WINDOW_MS;
-    const pruned = (recentQueries.get(connId) ?? []).filter((e) => e.ts > cutoff);
+    const pruned = (recentQueries.get(bucket) ?? []).filter((e) => e.ts > cutoff);
     const tokens = normalizeQuery(query);
     if (tokens.size === 0) {
-      recentQueries.set(connId, pruned);
+      recentQueries.set(bucket, pruned);
       return;
     }
     // Count how many recent queries are similar enough to this one.
@@ -1250,7 +1285,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
           },
         });
       }
-      console.error(`[replay] BLOCKED connId=${connId} sim=${sim.toFixed(2)} repeats=${similarCount} ageS=${ageS}`);
+      recallDbg(`[replay] BLOCKED connId=${connId} sim=${sim.toFixed(2)} repeats=${similarCount} ageS=${ageS}`);
       throw new Error(
         `Session replay detected — this is the ${similarCount + 1}th identical query in ${Math.round(REPLAY_WINDOW_MS / 1000)} seconds. ` +
         `Modify your query meaningfully or wait ${Math.round(REPLAY_WINDOW_MS / 1000)}s. ` +
@@ -1258,7 +1293,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       );
     }
     pruned.push({ ts: now, tokens, queryPreview: query.slice(0, 80) });
-    recentQueries.set(connId, pruned);
+    recentQueries.set(bucket, pruned);
   }
 
   // ── Session-cap enforcement (opt-in by user) ──────────────────────────────
@@ -1391,8 +1426,9 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     autoExceptGraphIds: string[];
   }> {
     const settings = deps.host.getSettings();
-    const clientName = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+    const clientName = resolveActingClientName();
     const clientType = settings.ai.clientTypes?.[clientName] ?? 'chat';
+    const isLocalGhampus = clientName === GHAMPUS_MCP_CLIENT_ID;
     const consents = settings.ai.dataAccessConsents;
 
     // `isExplicit` — the AI named specific engrams via `only_engrams`. We
@@ -1637,10 +1673,11 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       // looks at the modal. The AI should tell the user to approve it in
       // Graphnosis, then retry this tool call.
       const tierLabel = missingTiers.join(' and ');
+      const clientLabel = isLocalGhampus ? 'Ghampus (local assistant)' : clientName;
       throw new ConsentRequiredError(
         `⚠️ GRAPHNOSIS CONSENT NEEDED\n\n` +
         `A consent prompt has appeared in the Graphnosis app asking you to approve ` +
-        `${clientName}'s access to your ${tierLabel} memories.\n\n` +
+        `${clientLabel}'s access to your ${tierLabel} memories.\n\n` +
         `Please tell the user:\n` +
         `  → Check the Graphnosis app — an Allow / Deny dialog should be visible.\n` +
         `  → Click Allow to proceed, or Deny to block this request.\n\n` +
@@ -1656,18 +1693,23 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
 
     if (allFirstTime) {
       const tierStr = missingTiers.join(' and ');
-      const privacyUrl = PROVIDER_PRIVACY_URLS[clientName] ?? 'your AI provider\'s privacy policy';
+      const clientLabel = isLocalGhampus ? 'Ghampus (local assistant in Graphnosis)' : clientName;
+      const privacyUrl = isLocalGhampus ? null : (PROVIDER_PRIVACY_URLS[clientName] ?? 'your AI provider\'s privacy policy');
       const hasSpecialCategory = missingTiers.includes('sensitive');
       const lines = [
         `⚠️ GRAPHNOSIS CONSENT REQUIRED — DATA ACCESS AUTHORISATION`,
         ``,
-        `${clientName} is requesting access to your ${tierStr} memories.`,
+        `${clientLabel} is requesting access to your ${tierStr} memories.`,
         ``,
         `WHAT WILL HAPPEN:`,
         `• Data tier(s): ${missingTiers.join(', ')}`,
-        `• Sent from your device directly to your AI provider`,
-        `• Privacy policy: ${privacyUrl}`,
-        `• Graphnosis does not receive, log, or retain this data`,
+        ...(isLocalGhampus
+          ? [`• Recall runs locally on your device — memory stays in Graphnosis`]
+          : [
+            `• Sent from your device directly to your AI provider`,
+            `• Privacy policy: ${privacyUrl}`,
+            `• Graphnosis does not receive, log, or retain this data`,
+          ]),
         ...(hasSpecialCategory ? [
           ``,
           `⚠️ SENSITIVE tier may contain health, financial, or biometric data.`,
@@ -1690,8 +1732,9 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     } else {
       // Mixed: some first-time, some re-prompt → use short re-prompt format.
       const tierStr = missingTiers.join(' and ');
+      const clientLabel = isLocalGhampus ? 'Ghampus (local assistant)' : clientName;
       const lines = [
-        `⚠️ GRAPHNOSIS CONSENT REQUIRED — re-confirm ${tierStr} access for ${clientName}`,
+        `⚠️ GRAPHNOSIS CONSENT REQUIRED — re-confirm ${tierStr} access for ${clientLabel}`,
         ``,
         `Your authorisation window expired. Open Graphnosis → Settings → AI → Consent Phrases,`,
         `find the ${missingTiers.map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(' / ')} phrase, and type it here.`,
@@ -1772,7 +1815,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       },
       {
         name: 'dig_deeper',
-        description: 'DETERMINISM — Same as `recall`: deterministic content match + entity anchoring; the optional Graphnosis Neural Network appendix is the only non-deterministic part and is clearly labelled.\n\nThe "look harder" escalation when `recall` returns thin results or when the user\'s question is document-targeted rather than fact-targeted. Internally orchestrates THREE stages on top of regular recall:\n  1. Standard content recall (federated TF-IDF + multilingual embeddings + entity anchoring + optional GNN graph expansion)\n  2. Source-filename expansion — for any source whose filename matches a query entity (e.g. user asks about "Virginia" and there\'s a `Virginia Linul thesis.pdf` source), pulls representative chunks from that source\n  3. Cross-engram entity hop — walks the cross-engram connection store to surface related nodes from OTHER engrams via shared entities\n\nReturns a unified subgraph with a full PROVENANCE FOOTER breaking down what came from where. The footer also includes a meta-instruction to surface ANOMALIES to the user (e.g. when the indirect-expansion stages dominate over direct content match — a sign the speculative side eclipsed the deterministic one and the user should validate the result). This is the user-feedback channel: if results seem off, the AI tells the user, the user reports the failure mode, the developer learns.\n\nWHEN TO USE (vs `recall`):\n• Regular `recall` returned 0-3 nodes but the user clearly has relevant memory ("I have a whole engram about this!")\n• The user\'s question references a document by NAME (file, paper, project) rather than its content — `recall` indexes content, not filenames\n• Cross-domain queries that span multiple engrams ("everything about Năsăud across my engrams")\n• When the user explicitly asks to "dig deeper", "look harder", "search everything", "across all my notes"\n\nWHEN NOT TO USE:\n• Quick recall — `recall` is faster and predictable\n• Saving (use `remember`), editing (use `edit`), deleting (use `forget`)\n• Asking about a specific known source — use `recall_source` directly\n\nSame caps as `recall` (max 50 nodes / 8000 tokens) but the per-stage caps inside dig_deeper are individually bounded so no single stage floods the result.\n\nACT ON THE ⚠️ BLOCK: If the output includes a ⚠️ warning block at the end, indirect expansion (stage 2/3) dominated over the direct content match. Do NOT present those results as attested fact — flag to the user that the results are speculative and ask them to confirm relevance before acting on them.',
+        description: 'DETERMINISM — Same as `recall`: deterministic content match + entity anchoring; the optional Graphnosis Neural Network appendix is the only non-deterministic part and is clearly labelled.\n\nThe "look harder" escalation when `recall` returns thin results or when the user\'s question is document-targeted rather than fact-targeted. Internally orchestrates THREE stages on top of regular recall:\n  1. Standard content recall (federated TF-IDF + multilingual embeddings + entity anchoring + optional GNN graph expansion)\n  2. Source-filename expansion — for any source whose filename matches a query entity (e.g. user asks about "ExampleAuthor" and there\'s an `ExampleAuthor thesis.pdf` source), pulls representative chunks from that source\n  3. Cross-engram entity hop — walks the cross-engram connection store to surface related nodes from OTHER engrams via shared entities\n\nReturns a unified subgraph with a full PROVENANCE FOOTER breaking down what came from where. The footer also includes a meta-instruction to surface ANOMALIES to the user (e.g. when the indirect-expansion stages dominate over direct content match — a sign the speculative side eclipsed the deterministic one and the user should validate the result). This is the user-feedback channel: if results seem off, the AI tells the user, the user reports the failure mode, the developer learns.\n\nWHEN TO USE (vs `recall`):\n• Regular `recall` returned 0-3 nodes but the user clearly has relevant memory ("I have a whole engram about this!")\n• The user\'s question references a document by NAME (file, paper, project) rather than its content — `recall` indexes content, not filenames\n• Cross-domain queries that span multiple engrams ("everything about Năsăud across my engrams")\n• When the user explicitly asks to "dig deeper", "look harder", "search everything", "across all my notes"\n\nWHEN NOT TO USE:\n• Quick recall — `recall` is faster and predictable\n• Saving (use `remember`), editing (use `edit`), deleting (use `forget`)\n• Asking about a specific known source — use `recall_source` directly\n\nSame caps as `recall` (max 50 nodes / 8000 tokens) but the per-stage caps inside dig_deeper are individually bounded so no single stage floods the result.\n\nACT ON THE ⚠️ BLOCK: If the output includes a ⚠️ warning block at the end, indirect expansion (stage 2/3) dominated over the direct content match. Do NOT present those results as attested fact — flag to the user that the results are speculative and ask them to confirm relevance before acting on them.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2200,7 +2243,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       },
       {
         name: 'recall_with_citations',
-        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nLike recall, but each memory node is followed by an inline citation: the sourceId and label it was derived from (e.g. "[clip:abc123·location-notes]"). Use when you want to offer the user traceable provenance — "this came from source X" — or when a downstream tool needs source attribution per fact. Example output line: "Nelu lived in Bucharest in 2019 [clip:abc123·location-notes]." Accepts the same scope filters as recall.',
+        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nLike recall, but each memory node is followed by an inline citation: the sourceId and label it was derived from (e.g. "[clip:abc123·location-notes]"). Use when you want to offer the user traceable provenance — "this came from source X" — or when a downstream tool needs source attribution per fact. Example output line: "Alex Rivera lived in Bucharest in 2019 [clip:abc123·location-notes]." Accepts the same scope filters as recall.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2957,7 +3000,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
-        enforceReplayBlocker(args.query);
+        enforceReplayBlocker(args.query, name);
         const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: ssoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         // Merge any auto-excluded engrams (e.g. un-consented sensitive
@@ -2994,7 +3037,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           slot.n += a.nodesIncluded; slot.t += a.tokensIncluded;
           return acc;
         }, {});
-        dbg(`[${toolName}] qLen=${args.query.length} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t tiers=${JSON.stringify(tierSummary)} graphs=${sub.audit.length}`);
+        recallDbg(`[${toolName}] qLen=${args.query.length} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t tiers=${JSON.stringify(tierSummary)} graphs=${sub.audit.length}`);
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         // Audit footer — only list engrams that ACTUALLY contributed nodes
         // to this recall. The full sub.audit roster includes every engram
@@ -3014,7 +3057,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           servedNodes: sub.nodesIncluded,
         };
         const settingsForAudit = deps.host.getSettings();
-        const clientForAudit = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+        const clientForAudit = resolveActingClientName();
         const consentRec = settingsForAudit.ai.dataAccessConsents?.find(
           (r) => r.clientName === clientForAudit && !r.withdrawnAt && r.expiresAt > Date.now(),
         );
@@ -3066,7 +3109,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
-        enforceReplayBlocker(args.query);
+        enforceReplayBlocker(args.query, name);
         const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: ssoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
@@ -3085,7 +3128,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // dig_deeper call, no PII, redacted engram refs. Devs grep this
         // when investigating user reports about over-/under-expansion.
         const prov = sub.digDeeperProvenance;
-        dbg(
+        recallDbg(
           `[dig_deeper] qLen=${args.query.length} ` +
           `content=${prov.contentMatch.nodes}n@${prov.contentMatch.avgScore.toFixed(2)} ` +
           `sourceFilename=${prov.sourceFilenameExpansion.nodes}n ` +
@@ -3189,7 +3232,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
                   text: args.text,
                   preview: args.text.slice(0, 280),
                   sourceKind: args.kind ?? 'clip',
-                  requestedBy: mcpRegistry.getMostRecentClientName() ?? 'an AI client',
+                  requestedBy: resolveActingClientName(),
                   candidates: candidates.map((c) => ({
                     graphId: c.graphId,
                     displayName: c.displayName,
@@ -3235,7 +3278,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // a small "via <client>" badge for memories not added by the user
         // directly — useful for audit and for distinguishing AI-driven
         // remember/correct flows from user-driven ingest.
-        const addedBy = mcpRegistry.getMostRecentClientName();
+        const addedBy = resolveActingClientName();
         const sourceKind = args.kind ?? 'clip';
         const obligationOpt = args.obligation
           ? {
@@ -3302,7 +3345,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               diffId,
               graphId: targetGraph,
               correction: args.correction,
-              requestedBy: mcpRegistry.getMostRecentClientName() ?? 'an AI client',
+              requestedBy: resolveActingClientName(),
               // Small preview for the notification body — count of changes
               // gives the user enough signal to decide whether to switch.
               changeCount: (diff.edits?.length ?? 0) + (diff.adds?.length ?? 0),
@@ -3321,7 +3364,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = ApplyInput.parse(rawInput);
         const pending = deps.pendingDiffs.get(args.diffId);
         if (!pending) throw new Error(`No pending diff ${args.diffId}. The user must confirm in the app first.`);
-        const correctedBy = mcpRegistry.getMostRecentClientName();
+        const correctedBy = resolveActingClientName();
         await applyCorrection({
           host: deps.host,
           graphId: pending.graphId,
@@ -3681,7 +3724,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
-        enforceReplayBlocker(args.query);
+        enforceReplayBlocker(args.query, name);
         const { consentFooter: rsFooter, autoExceptGraphIds: rsAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: rsSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
@@ -3791,7 +3834,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
-        enforceReplayBlocker(args.query);
+        enforceReplayBlocker(args.query, name);
         const { consentFooter: rwcFooter, autoExceptGraphIds: rwcAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: rwcSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
@@ -3837,7 +3880,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const resB = requireEngram(deps.host, args.engram_b);
         if ('error' in resB) return resB.error;
         enforceRecallRateLimit();
-        enforceReplayBlocker(args.query);
+        enforceReplayBlocker(args.query, name);
         const { consentFooter: ceFooter } = await checkConsentOrThrow([resA.graphId, resB.graphId]);
         const budget = { maxNodes: args.maxNodes ?? 10, maxTokens: 4000 };
         const endP1 = beginScope(WorkPriority.P1_USER);
@@ -3882,7 +3925,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError(`No engrams matched. Warnings: ${warnings.join(' ')}`);
         }
         enforceRecallRateLimit();
-        enforceReplayBlocker(args.query);
+        enforceReplayBlocker(args.query, name);
         const { consentFooter: csFooter } = await checkConsentOrThrow(resolved);
         const budget = { maxNodes: args.maxNodes ?? 20, maxTokens: 4000 };
         const endP1 = beginScope(WorkPriority.P1_USER);
@@ -4099,7 +4142,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'ingest_batch': {
         const args = IngestBatchInput.parse(rawInput);
-        const mcpClientName = mcpRegistry.getMostRecentClientName();
+        const mcpClientName = resolveActingClientName();
         const results: Array<{ index: number; status: 'ok' | 'error'; detail: string }> = [];
         const totalContradictions: unknown[] = [];
         for (const [i, item] of args.items.entries()) {
@@ -4279,7 +4322,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = LlmQueryInput.parse(rawInput);
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         enforceRecallRateLimit();
-        enforceReplayBlocker(args.question);
+        enforceReplayBlocker(args.question, name);
         const { consentFooter: lqFooter, autoExceptGraphIds: lqAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const llmAvailable = !!deps.llm('insights');
         if (!llmAvailable) {
@@ -4361,7 +4404,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           engrams: z.array(z.string()).optional(),
         }).parse(rawInput);
 
-        const clientName = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+        const clientName = resolveActingClientName();
 
         // A5 — SKIP keyword: user opts out gracefully without consuming a
         // failure attempt or storing consent. The notice text already tells
@@ -4503,7 +4546,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in engramRes) {
           // Trigger the App's engram-create banner so the user can confirm
           // creating a Skills engram with one click, then retry.
-          const clientName = mcpRegistry.getMostRecentClientName() ?? 'an AI client';
+          const clientName = resolveActingClientName();
           if (deps.broadcastRaw) {
             deps.broadcastRaw({
               kind: 'engram.create-suggested',
@@ -4571,7 +4614,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           }
         }
 
-        const clientName = mcpRegistry.getMostRecentClientName() ?? undefined;
+        const clientName = resolveActingClientName();
         const trainInput: import('./skill-trainer.js').TrainSkillInput = {
           skill: args.skill,
           graphId: engramRes.graphId,
@@ -5102,9 +5145,14 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
     }
   }
 
-  async function dispatchTool(name: string, rawInput: Record<string, unknown>): Promise<McpToolResult> {
+  async function dispatchTool(
+    name: string,
+    rawInput: Record<string, unknown>,
+    ctx?: McpCallContext,
+  ): Promise<McpToolResult> {
     mcpAuditExtras = {};
-    const clientId = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+    actingClientOverride = ctx?.actingClientName;
+    const clientId = resolveActingClientName();
     const transport = deps.mcpTransport ?? 'stdio';
     const queryRaw = typeof rawInput['query'] === 'string' ? rawInput['query']
       : typeof rawInput['question'] === 'string' ? rawInput['question']
@@ -5119,6 +5167,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       isError = true;
       throw e;
     } finally {
+      actingClientOverride = undefined;
       if (deps.cortexDir) {
         const onlyRaw = rawInput['only_engrams'];
         const engramIdsFromInput = Array.isArray(onlyRaw)

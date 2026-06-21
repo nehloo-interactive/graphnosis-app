@@ -59,8 +59,18 @@ export function redactPair(a: string | null | undefined, b: string | null | unde
 const DEBUG_ENABLED = process.env['GRAPHNOSIS_DEBUG'] === '1'
   || process.env['NODE_ENV'] !== 'production';
 
+/** Per-recall/dig_deeper budget lines — opt-in even in dev (noisy on every Ghampus turn). */
+const RECALL_DEBUG_ENABLED = process.env['GRAPHNOSIS_RECALL_DEBUG'] === '1'
+  || process.env['GRAPHNOSIS_DEBUG'] === '1';
+
 export function dbg(message: string, ...rest: unknown[]): void {
   if (!DEBUG_ENABLED) return;
+  if (rest.length > 0) console.error(message, ...rest);
+  else                  console.error(message);
+}
+
+export function recallDbg(message: string, ...rest: unknown[]): void {
+  if (!RECALL_DEBUG_ENABLED) return;
   if (rest.length > 0) console.error(message, ...rest);
   else                  console.error(message);
 }
