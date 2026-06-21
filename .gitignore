@@ -118,3 +118,12 @@ apps/desktop-sidecar/src/skill-demos.generated.ts
 
 mcpb/server/
 graphnosis.mcpb
+
+# Sidecar smoke tests — local verification only (personal/business fixtures; never commit).
+# Run: pnpm --filter @graphnosis-app/desktop-sidecar smoke (after local build).
+apps/desktop-sidecar/src/smoketest.ts
+apps/desktop-sidecar/src/smoketest-brain.ts
+apps/desktop-sidecar/src/smoketest-license.ts
+apps/desktop-sidecar/dist/smoketest.js
+apps/desktop-sidecar/dist/smoketest-brain.js
+apps/desktop-sidecar/dist/smoketest-license.js

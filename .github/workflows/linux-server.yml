@@ -13,7 +13,7 @@ on:
 
 jobs:
   build-test:
-    name: Build + smoke (Linux x64)
+    name: Build (Linux x64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,7 +30,7 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      # onnxruntime links against the OpenMP runtime; the smoke test exercises
+      # onnxruntime links against the OpenMP runtime; sidecar boot exercises
       # embeddings, so the runner needs libgomp1 present.
       - name: Install native runtime libs
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
@@ -41,15 +41,15 @@ jobs:
       - name: Build workspace (core + sidecar + web UI)
         run: pnpm -r --filter '!@graphnosis-app/docs' --filter '!@graphnosis/mcp-relay' build
 
-      - name: Sidecar smoke test (no Tauri)
-        # The bundled skill-demo packs are built from gitignored content + the
-        # GSK signing key, neither of which is available here — so the bundle is
-        # legitimately empty in this server CI. Allow that one check to skip;
-        # everything else (encryption, ingest, recall, forget, docs bundle) still
-        # runs strictly. The release pipeline does NOT set this flag.
-        env:
-          GRAPHNOSIS_SMOKE_ALLOW_EMPTY_DEMOS: '1'
-        run: pnpm --filter @graphnosis-app/desktop-sidecar smoke
+      - name: Guard — no committed smoketest fixtures
+        run: |
+          set -euo pipefail
+          if git ls-files 'apps/desktop-sidecar/src/smoketest*.ts' 'apps/desktop-sidecar/dist/smoketest*.js' | grep -q .; then
+            echo 'smoketest sources must stay local-only (gitignored); remove from index'
+            git ls-files 'apps/desktop-sidecar/src/smoketest*.ts' 'apps/desktop-sidecar/dist/smoketest*.js'
+            exit 1
+          fi
+          echo 'ok (no smoketest paths tracked)'
 
       - name: HTTP UI server end-to-end
         # Boot the sidecar with the browser UI enabled against a throwaway

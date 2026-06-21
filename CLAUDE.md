@@ -69,6 +69,7 @@ Don't fire off `git commit && git push` mechanically. Do this instead:
 - Read the code, run builds, run tests
 - Edit files (the work-in-progress lives in the working tree)
 - Run smoke tests, inspect logs, verify behavior
+- Enable commit guardrails: `git config core.hooksPath .githooks`
 - Run `pnpm install`, `pnpm -r build`, `pnpm --filter ... smoke`
 - Investigate errors, fix them, leave the fixes uncommitted until Nelu says
   ship
@@ -114,6 +115,11 @@ pnpm --filter @graphnosis-app/desktop-sidecar smoke
 
 Standalone end-to-end: encryption → ingest → recall → forget. No Tauri, no
 Claude, no LLM required. First thing to run after any sidecar change.
+
+**Local-only:** `smoketest*.ts` under `apps/desktop-sidecar/src/` are gitignored,
+purged from public history, and not in a fresh clone. Enable
+`git config core.hooksPath .githooks` so pre-commit blocks re-adding them.
+CI (linux-server) builds and runs the HTTP e2e check only — not smoke.
 
 ## Tauri dev launch
 
