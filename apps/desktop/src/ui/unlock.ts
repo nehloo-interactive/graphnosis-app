@@ -542,6 +542,9 @@ function friendlyUnlockError(msg: string): string {
   if (/no saved passphrase for this cortex/i.test(msg)) {
     return 'Touch ID is not set up for this cortex yet. Unlock with your passphrase once to enable it.';
   }
+  if (/Touch ID used a stale saved passphrase/i.test(msg)) {
+    return msg;
+  }
   if (/company network|idp unreachable|idp_unreachable/i.test(msg)) {
     return msg;
   }

@@ -491,14 +491,6 @@ async fn unlock_cortex(
         return Err(format!("cortex folder does not exist: {}", args.cortex_dir));
     }
 
-    // Persist the passphrase locally so subsequent launches can offer
-    // Touch ID unlock without re-prompting for the passphrase. We log on
-    // failure only; successful writes are routine and don't need stderr.
-    if let Err(e) = keychain::store_passphrase(&args.cortex_dir, &args.passphrase) {
-        eprintln!("[unlock_cortex] could not store passphrase for Touch ID: {:#}", e);
-        return Err(e.to_string());
-    }
-
     // Shut down any stale supervised session BEFORE sidecar::start. start()
     // pkill's all graphnosis-sidecar processes first — if we still hold a
     // SidecarHandle from a prior session and spawn then fails, the UI would
@@ -514,6 +506,17 @@ async fn unlock_cortex(
     let handle = sidecar::start(&app, &cortex_dir, &args.passphrase, args.preferred_default_graph.as_deref())
         .await
         .map_err(|e| e.to_string())?;
+
+    // Cache the passphrase for Touch ID only after the sidecar proves it
+    // decrypts master.enc. Storing before startup meant a stale Touch ID read
+    // could persist a wrong passphrase, and a failed unlock could block typed
+    // entry when the Keychain write failed.
+    if let Err(e) = keychain::store_passphrase(&args.cortex_dir, &args.passphrase) {
+        eprintln!(
+            "[unlock_cortex] sidecar unlocked but could not store passphrase for Touch ID: {:#}",
+            e
+        );
+    }
 
     let snapshot = adopt_sidecar_session(
         &app,
@@ -726,8 +729,23 @@ async fn biometric_unlock(
     let passphrase = keychain::load_passphrase(&cortex_dir)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "no saved passphrase for this cortex".to_string())?;
-    let args = UnlockArgs { cortex_dir, passphrase, preferred_default_graph };
-    unlock_cortex(app, state, args).await
+    let args = UnlockArgs {
+        cortex_dir: cortex_dir.clone(),
+        passphrase,
+        preferred_default_graph,
+    };
+    match unlock_cortex(app, state, args).await {
+        Err(e) if e.contains("Wrong passphrase") => {
+            let _ = keychain::clear_passphrase(&cortex_dir);
+            Err(
+                "Touch ID used a stale saved passphrase (common after a passphrase \
+                 change or when switching between dev and release builds). Enter your \
+                 cortex passphrase and click Unlock once to re-enable Touch ID."
+                    .to_string(),
+            )
+        }
+        other => other,
+    }
 }
 
 #[derive(Serialize, Deserialize)]

@@ -319,6 +319,7 @@ pub fn load_sso_secrets(cortex_dir: &str) -> Result<Option<SsoKeychainSecrets>> 
 }
 
 pub fn store_passphrase(cortex_dir: &str, passphrase: &str) -> Result<()> {
+    let passphrase = passphrase.trim();
     if !is_usable_passphrase(passphrase) {
         return Err(anyhow::anyhow!("refusing to store empty passphrase for Touch ID"));
     }
@@ -329,7 +330,7 @@ pub fn load_passphrase(cortex_dir: &str) -> Result<Option<String>> {
     let normalized = normalize_cortex_dir(cortex_dir);
     if let Some(p) = kc::load(&normalized)? {
         if is_usable_passphrase(&p) {
-            return Ok(Some(p));
+            return Ok(Some(p.trim().to_string()));
         }
         // Corrupt / empty entry at the current key — clear and fall through to
         // legacy migration (common after a cortex folder move left a 0-byte file).
@@ -339,10 +340,14 @@ pub fn load_passphrase(cortex_dir: &str) -> Result<Option<String>> {
     // a different literal path (trailing slash, old parent directory, …).
     for legacy in legacy_touchid_candidates(&normalized, cortex_dir) {
         if let Some(p) = kc::load(&legacy)? {
+            let trimmed = p.trim().to_string();
+            if !is_usable_passphrase(&trimmed) {
+                continue;
+            }
             // Promote to the normalized key so future lookups are stable.
-            let _ = kc::store(&normalized, &p);
+            let _ = kc::store(&normalized, &trimmed);
             let _ = kc::clear(&legacy);
-            return Ok(Some(p));
+            return Ok(Some(trimmed));
         }
     }
     Ok(None)
@@ -374,7 +379,6 @@ mod tests {
     }
 }
 
-#[allow(dead_code)]
 pub fn clear_passphrase(cortex_dir: &str) -> Result<()> {
     kc::clear(&normalize_cortex_dir(cortex_dir))
 }
