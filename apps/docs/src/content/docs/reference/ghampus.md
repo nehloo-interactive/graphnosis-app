@@ -15,6 +15,8 @@ sidebar:
 
 Meet **Ghampus** — Graphnosis' seahorse mascot. He is the small character on the logo, on the lock screen, in the menu bar, and quietly at the heart of how Graphnosis thinks about your memory.
 
+In the app, Ghampus speaks through **Ghampus Hush** — the in-app confidential AI tab (tagline: *Your confidential AI. Already on it.*). Same seahorse, same on-device memory and consent-gated recall; Hush is the product name for the chat surface where Ghampus walks skills, surfaces proactive tips, and keeps your secrets on your machine.
+
 This page is the short version of his story.
 
 ## Why a seahorse?
@@ -63,10 +65,12 @@ Every part of the product UI uses the same vocabulary:
 - Engrams are the indexed memory traces inside it.
 - The synapse is the local background process that connects your AI client to the cortex (when you see *"Another Graphnosis synapse is already holding this cortex's lock"*, that is what it means).
 - Ghampus is the character that ties it together — the friendly face of the hippocampus.
+- **Ghampus Hush** is the in-app tab where he chats, walks skills, and surfaces proactive cards — your confidential AI, already on it.
 
 ## Where you will spot him
 
 - **The app logo** — menu bar, dock, lock screen, About panel.
+- **Ghampus Hush tab** — top of the left rail; default landing for new users. Chat, skill walks, proactive tips, savings dashboard.
 - **The website** — favicon, the hero of the landing page, the upper-left wordmark.
 - **Error states** — when the synapse is down or a cortex is locked, Ghampus is the one telling you, not a generic spinner.
 - **The Skill Demos** — the three signed `.gsk` packs that ship with every fresh cortex carry his seal: signed with the Graphnosis Ed25519 publisher key, so you know the demo really came from him.

@@ -155,7 +155,7 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&
     let ghampus_item = MenuItem::with_id(
         app,
         "ghampus",
-        "Open Ghampus",
+        "Open Ghampus Hush",
         status.unlocked,
         None::<&str>,
     )?;

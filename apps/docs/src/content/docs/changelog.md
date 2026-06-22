@@ -11,6 +11,37 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+---
+
+## v1.22.0 — Ghampus Hush branding and proactive intelligence
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-21</p>
+
+Ghampus Hush is the official name for the in-app confidential AI — marketing, docs, and desktop UI aligned on *Your confidential AI. Already on it.* Proactive tips, memory suggestions, reminders, clarification flows, and performance profiles ship in this release.
+
+### Added
+
+- **Ghampus Hush branding.** Desktop rail, header, tray, and marketing/docs use the Hush product name and tagline; mascot remains Ghampus the seahorse.
+- **Proactive tips & memory suggestions.** In-chat tip cards when idle; post-reply suggestions to save decisions, deadlines, and facts you shared.
+- **Reminders & temporal parsing.** Obligation due-dates surfaced from cortex content; startup, daily, and weekly summaries.
+- **Clarification & recovery nudges.** Ghampus asks when intent is ambiguous; recovery prompts when brain/embed workers stall.
+- **Walk skill picker.** Choose which skill to walk from chat without leaving the textarea.
+- **Performance profiles.** Low / balanced / high impact presets for embed workers, docs deferral, and background lane scheduling.
+- **History cache.** Faster Ghampus thread load on repeat visits.
+
+### Changed
+
+- **Vitality health nudges.** Idle-time cortex-gardening suggestions for low-scoring engrams.
+- **Background lane scheduler.** Serializes heavy brain/Ghampus work under low-impact profile.
+- **Enterprise FAQ & persona pages.** Copy updated for confidential-AI positioning.
+
+### Fixed
+
+- **Brain recovery & embed workers.** More resilient worker lifecycle; safer queueing during recall.
+- **Ghampus busy/timeouts.** Clearer handling when sidecar is saturated or steps exceed bounds.
+
+---
+
 ## v1.21.1 — Ghampus stop, timeouts, and skill train
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-21</p>
