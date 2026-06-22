@@ -18,7 +18,7 @@ import {
   formatGroundingVerifyFeedback,
   GHAMPUS_GROUNDING_RULES_BLOCK,
 } from './ghampus-grounding.js';
-import { isHowToQuestionText, wantsBriefAnswerText, matchResponseLanguageInstruction } from './ghampus-language.js';
+import { isHowToQuestionText, wantsBriefAnswerText, matchResponseLanguageInstruction, buildRomanianContentRulesBlock, buildResponseLanguageRulesBlock, answerLanguageMismatchUserQuery, shouldDefaultBriefAnswer } from './ghampus-language.js';
 import {
   looksLikeSubgraphDump,
   stripRecallAuditTrail,
@@ -79,6 +79,10 @@ export function isRawRecallDump(draft: string): boolean {
   if (/_\s*\(from [^)]+\)\s*_/i.test(t)) return true;
   if (/^\[from [^\]]+\]/im.test(t)) return true;
   if (/^## Recall hits \(structured\)/m.test(t)) return true;
+  if (/^#{1,3}\s+(?:Attested Memory|dig_deeper|Recent Chat)/im.test(t)) return true;
+  if (/Source-filename expansion|Cross-engram entity hop/i.test(t)) return true;
+  if (/\bavg\.?\s*score\b/i.test(t) && /\d+\s+node/i.test(t)) return true;
+  if (/via dig_deeper \(multi-strategy\)/i.test(t)) return true;
 
   const body = REASON_PREFIX_RE.test(t)
     ? t.replace(REASON_PREFIX_RE, '').replace(/^[:\s-]+/, '').trim()
@@ -152,6 +156,7 @@ export function needsAnswerPolish(
   if (!draft?.trim()) return false;
 
   if (hints?.polishSource === 'formatter' && isShortDeterministicFormatterOutput(draft, hints)) {
+    if (answerLanguageMismatchUserQuery(userText, draft)) return true;
     return false;
   }
 
@@ -184,31 +189,54 @@ export function needsAnswerPolish(
   if (src === 'synthesis') {
     const hall = detectLikelyHallucination(draft, hints?.recallContext ?? '');
     if (hall.likely) return true;
+
+    if (shouldDefaultBriefAnswer(userText, qh)) {
+      const t = draft.trim();
+      if (/^#{1,3}\s+\S/m.test(t)) return true;
+      if (/## (?:Attested Memory|dig_deeper|Recent Chat|Recall hits)/i.test(t)) return true;
+      if (countTopLevelBullets(t) > 2 && !isHowToQuestion(userText)) return true;
+      if (t.length > 700 && !isHowToQuestion(userText) && !qh?.wantsProjectTaskList) return true;
+    }
   }
+
+  if (answerLanguageMismatchUserQuery(userText, draft)) return true;
 
   return false;
 }
 
 const POLISH_MAX_CHARS = 6000;
 
-function buildPolishSystem(userText: string): string {
-  const brief = wantsBriefAnswer(userText);
+function buildPolishSystem(userText: string, hints?: FinalizeAnswerHints): string {
+  const qh = hints?.queryHints;
+  const brief = shouldDefaultBriefAnswer(userText, qh);
   const howTo = isHowToQuestion(userText);
-  const maxBullets = brief ? 4 : (howTo ? 6 : 8);
+  const maxBullets = brief ? (howTo ? 6 : 2) : (howTo ? 6 : 8);
   const langRule = matchResponseLanguageInstruction(userText);
+  const langBlock = buildResponseLanguageRulesBlock(userText);
+  const roRules = buildRomanianContentRulesBlock(userText);
+
+  const brevityRule = brief
+    ? '- Default brevity: 1-3 sentences for simple questions; no section headers unless the user asked for a list or grouped format.'
+    : '- The user asked for detail — organize with bullets or short sections as helpful.';
 
   return `You are Ghampus inside Graphnosis. The user asked a question and a draft answer was prepared from memory tools.
 
 Rewrite the draft as a direct answer to the user's question. Rules:
 - Answer ONLY the question — do NOT repeat or echo the question.
+${brevityRule}
 - Do NOT include audit footers, "Found N matching memories", "Here's what I found", or "_(from …)_" citations.
+- Do NOT echo internal recall wire format: "## Attested Memory", "## dig_deeper", "## Recent Chat", node counts, avg scores, "Source-filename expansion", or "Cross-engram entity hop".
 - Do NOT dump raw memory bullets, skill procedure text (Step 1:, Step 2:), or unrelated skill SOPs.
 - Do NOT include pricing tiers or sales prep unless the user asked about pricing or sales.
 - Do NOT include code blocks unless the user asked for code or configuration examples directly relevant to their question.
-- Synthesize only facts relevant to the question from the draft — never invent names, dates, or steps.
-- Use markdown bullet lists (${brief ? 'max 4 bullets' : `max ${maxBullets} bullets for how-to/setup questions`}) or short prose.
+- Synthesize only facts relevant to the question from the draft — never invent names, dates, steps, or English translations of titles.
+- When recall is thin, say what is missing — do not pad with guessed translations or invented titles.
+- Preserve person names exactly as in the draft/recall — never merge spellings or blend OCR-corrupted variants.
+- Use markdown bullet lists (max ${maxBullets} bullets${howTo && brief ? ' for how-to/setup' : ''}) or short prose.
 - Remove duplicate or nested bullets; one level only.
 - ${langRule}
+${langBlock}
+${roRules ? `\n${roRules}` : ''}
 
 ${GHAMPUS_DOMAIN_GLOSSARY_BLOCK}
 ${GHAMPUS_GROUNDING_RULES_BLOCK}`;
@@ -239,6 +267,7 @@ export type VerifyAnswerResult = {
   tooLong: boolean;
   isHallucinatedAcronym?: boolean;
   inventsFactsNotInContext?: boolean;
+  wrongLanguage?: boolean;
   feedback: string;
   suggestedFocus: string;
 };
@@ -264,6 +293,7 @@ export function shouldSkipVerification(
   if (hints?.polishSource === 'synthesis') return false;
 
   if (hints?.polishSource === 'formatter' && isShortDeterministicFormatterOutput(trimmed, hints)) {
+    if (answerLanguageMismatchUserQuery(_userText, trimmed)) return false;
     return true;
   }
 
@@ -306,6 +336,9 @@ export function parseVerifyAnswerJson(raw: string): VerifyAnswerResult | null {
     if (parsed.inventsFactsNotInContext !== undefined) {
       result.inventsFactsNotInContext = Boolean(parsed.inventsFactsNotInContext);
     }
+    if (parsed.wrongLanguage !== undefined) {
+      result.wrongLanguage = Boolean(parsed.wrongLanguage);
+    }
     return result;
   } catch {
     return null;
@@ -318,7 +351,8 @@ export function isVerifyResultOk(result: VerifyAnswerResult): boolean {
     && !result.isDumpOrNoise
     && !result.tooLong
     && !result.isHallucinatedAcronym
-    && !result.inventsFactsNotInContext;
+    && !result.inventsFactsNotInContext
+    && !result.wrongLanguage;
 }
 
 /** Whether another polish iteration should run after a failed verify. */
@@ -332,18 +366,28 @@ export function wouldContinueVerifyLoop(
   return iteration + 1 < maxIterations;
 }
 
-export function formatVerifyFeedback(result: VerifyAnswerResult): string {
+export function formatVerifyFeedback(result: VerifyAnswerResult, userText?: string, hints?: FinalizeAnswerHints): string {
   const parts: string[] = [];
   if (result.feedback) parts.push(result.feedback);
   if (result.suggestedFocus) parts.push(`Focus on: ${result.suggestedFocus}`);
   if (!result.answersQuestion) parts.push('The answer must directly address the user\'s question.');
   if (result.isDumpOrNoise) parts.push('Remove skill dumps, pricing tiers, and unrelated memory bullets.');
-  if (result.tooLong) parts.push('Shorten to at most 6 bullets for how-to answers.');
+  if (result.tooLong) {
+    const brief = userText ? shouldDefaultBriefAnswer(userText, hints?.queryHints) : true;
+    parts.push(brief
+      ? 'Shorten to 1-3 sentences with no section headers — name the person/role directly.'
+      : 'Shorten to at most 6 bullets for how-to answers.');
+  }
   if (result.isHallucinatedAcronym) {
     parts.push('Wrong acronym expansion — MCP means Model Context Protocol in Graphnosis, not Master Certified Professional.');
   }
   if (result.inventsFactsNotInContext) {
     parts.push('Remove anything not supported by the recall context below — no invented dates, milestones, features, or setup steps.');
+  }
+  if (result.wrongLanguage) {
+    parts.push(userText
+      ? `Rewrite in ${matchResponseLanguageInstruction(userText).replace(/\.$/, '')} — translate recall content; do not echo foreign-language prose from memory.`
+      : 'Rewrite in the same language as the user\'s question — translate recall content as needed.');
   }
   return parts.join(' ');
 }
@@ -364,7 +408,12 @@ function buildPolishUser(
   return user;
 }
 
-function buildVerifySystem(): string {
+function buildVerifySystem(userText: string, hints?: FinalizeAnswerHints): string {
+  const brief = shouldDefaultBriefAnswer(userText, hints?.queryHints);
+  const tooLongRule = brief
+    ? `- tooLong: true if the answer has markdown section headers (##) for a simple question, more than 3 sentences, more than 2 top-level bullets (unless how-to with ≤6 steps), or repeats recall metadata like "## Attested Memory", "dig_deeper", "Recent Chat".`
+    : `- tooLong: true if a how-to/setup answer has more than 6 top-level bullets unless the user asked to list everything exhaustively.`;
+
   return `You are a critic reviewing a Ghampus assistant answer before it is shown to the user.
 Return ONLY valid JSON with this exact shape:
 {
@@ -373,23 +422,27 @@ Return ONLY valid JSON with this exact shape:
   "tooLong": boolean,
   "isHallucinatedAcronym": boolean,
   "inventsFactsNotInContext": boolean,
+  "wrongLanguage": boolean,
   "feedback": "one sentence what's wrong",
   "suggestedFocus": "what to emphasize"
 }
 
 Rules:
 - answersQuestion: false if the text does not directly address the user's question.
-- isDumpOrNoise: true for skill procedure dumps, pricing tiers, unrelated bullet lists, "Here's what I found", memory audit trails, or skill SOPs not relevant to the question.
-- tooLong: true if a how-to/setup answer has more than 6 top-level bullets unless the user asked to list everything exhaustively.
+- isDumpOrNoise: true for skill procedure dumps, pricing tiers, unrelated bullet lists, "Here's what I found", memory audit trails, "## Attested Memory", "## dig_deeper", "## Recent Chat", node counts, avg scores, cross-engram hop meta, skill SOPs not relevant to the question.
+${tooLongRule}
 - feedback: one concise sentence describing the main problem (empty string if all checks pass).
 - suggestedFocus: what the answer should emphasize instead (empty string if all checks pass).
 - Match the language of the user's question in feedback and suggestedFocus when non-empty.
+- wrongLanguage: true when the answer is not in the same language as the user's question (e.g. Romanian prose answering an English question, or English prose answering a Romanian question). Recall snippet language does not justify a mismatch.
+
+${buildResponseLanguageRulesBlock(userText)}
 
 ${GHAMPUS_DOMAIN_GLOSSARY_BLOCK}
 ${GHAMPUS_GROUNDING_RULES_BLOCK}
 
 - isHallucinatedAcronym: true when the answer invents wrong acronym expansions (e.g. MCP as "Master Certified Professional"). MCP in Graphnosis always means Model Context Protocol.
-- inventsFactsNotInContext: true when the answer states dates, milestones, product features, URLs, or setup steps NOT present in the recall context provided. "Obsidian Vault" engram name must not be conflated with the Obsidian app unless context says so.`;
+- inventsFactsNotInContext: true when the answer states dates, milestones, product features, URLs, setup steps, invented English title translations, or corrupted/blended person names NOT present in the recall context provided. "Obsidian Vault" engram name must not be conflated with the Obsidian app unless context says so.`;
 }
 
 function buildVerifyUser(userText: string, answer: string, recallContext?: string): string {
@@ -468,7 +521,7 @@ async function polishGhampusAnswerDraft(
     stepKey: `polish-${pass}`,
   });
 
-  const system = buildPolishSystem(userText);
+  const system = buildPolishSystem(userText, hints);
   const user = buildPolishUser(userText, draft, hints?.verifyFeedback, hints?.recallContext);
 
   const out = await runLlmPass(llm, system, user, draft, 'polish');
@@ -483,10 +536,11 @@ async function verifyGhampusAnswer(
   userText: string,
   answer: string,
   recallContext?: string,
+  hints?: FinalizeAnswerHints,
 ): Promise<VerifyAnswerResult | null> {
   const raw = await runLlmPass(
     llm,
-    buildVerifySystem(),
+    buildVerifySystem(userText, hints),
     buildVerifyUser(userText, answer, recallContext),
     '',
     'verify',
@@ -527,6 +581,20 @@ function applyGroundingChecks(
   }
 
   return updated;
+}
+
+function applyLanguageMismatchCheck(
+  userText: string,
+  answer: string,
+  verify: VerifyAnswerResult | null,
+): VerifyAnswerResult | null {
+  if (!verify || verify.wrongLanguage) return verify;
+  if (!answerLanguageMismatchUserQuery(userText, answer)) return verify;
+  return {
+    ...verify,
+    wrongLanguage: true,
+    feedback: verify.feedback || 'Answer language does not match the user\'s question.',
+  };
 }
 
 /**
@@ -582,13 +650,14 @@ export async function finalizeGhampusAnswerWithVerification(
       stepKey: `check-${i + 1}`,
     });
 
-    let verify = await verifyGhampusAnswer(llm, userText, current, hints?.recallContext);
+    let verify = await verifyGhampusAnswer(llm, userText, current, hints?.recallContext, hints);
     verify = applyGroundingChecks(current, verify, hints?.recallContext);
+    verify = applyLanguageMismatchCheck(userText, current, verify);
     if (!wouldContinueVerifyLoop(i, maxIter, verify)) {
       break;
     }
 
-    verifyFeedback = formatVerifyFeedback(verify!);
+    verifyFeedback = formatVerifyFeedback(verify!, userText, hints);
   }
 
   return applyFinalFormatting(current, hints);

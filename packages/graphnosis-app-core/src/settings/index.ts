@@ -1106,12 +1106,24 @@ export interface AppSettings {
    * as "never run"). Persisted to settings.json after each completed run.
    */
   brain?: {
+    /**
+     * Background activity tier (Settings → Performance). Works with
+     * `lowPowerMode`: when low-power is ON, brain passes always stand down
+     * regardless of this field.
+     *
+     *   - `normal`      — default scheduling (parallel boot work allowed).
+     *   - `low-impact`  — spread boot tasks over time, cap embed workers,
+     *                     yield between heavy chunks (fans/RAM friendly).
+     *
+     * Absent = `normal` (back-compat).
+     */
+    backgroundActivity?: 'normal' | 'low-impact';
     /** Low-power mode: when true, ALL autonomous background passes (duplicate
      *  scan, consolidation, cross-engram, synapse, insight, temporal decay,
      *  goals, reinforcement, GNN, GLL) stand down. The graph still ingests,
      *  recalls, and saves — only the self-improving "brain" work pauses. The
      *  user's hard "stop heating my laptop" switch; the frontend also pauses the
-     *  3D animation when this is on. */
+     *  D animation when this is on. */
     lowPowerMode?: boolean;
     /** Unix-ms timestamps of each completed background activity. */
     lastRun?: {
@@ -1260,6 +1272,33 @@ export interface GhampusProactiveSettings {
   startupDelayMs?: number;
 }
 
+/** Autonomous todo / obligation reminder kinds emitted by Ghampus. */
+export type GhampusReminderKind = 'startup' | 'daily' | 'weekly' | 'due-soon' | 'due-now';
+
+/** Ghampus autonomous temporal reminders (todos, obligations, due dates). */
+export interface GhampusRemindersSettings {
+  /** Master switch. Default true — autonomous reminders on for personal use. */
+  enabled?: boolean;
+  /** Ms after sidecar start before the first startup summary. Default 60_000 (1 min). */
+  startupDelayMs?: number;
+  /** When true (default), fire macOS notifications when the app is backgrounded. */
+  nativeNotifications?: boolean;
+}
+
+/** Proactive Ghampus tip cards (static library, in-app only). */
+export interface GhampusTipsSettings {
+  /** Master switch. Default true — contextual tip cards when Ghampus chat is idle. */
+  enabled?: boolean;
+  /** Ms after sidecar start before the optional startup tip. Default 180_000 (3 min). */
+  startupDelayMs?: number;
+}
+
+/** Post-turn memory suggestion cards in Ghampus chat. */
+export interface GhampusMemorySuggestionsSettings {
+  /** Master switch. Default true — suggest saves after chat turns when heuristics match. */
+  enabled?: boolean;
+}
+
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
 export interface AgentSettings {
   /** User-controlled kill switch. Default true. Flipped from the tray menu or the Ghampus tab. */
@@ -1268,6 +1307,22 @@ export interface AgentSettings {
   skillMaintenance?: GhampusSkillMaintenanceSettings;
   /** Proactive skill-card watcher tuning. Absent → defaults (5 min startup delay). */
   proactive?: GhampusProactiveSettings;
+  /** Autonomous todo / obligation reminders. Absent → defaults (enabled, 1 min startup delay). */
+  reminders?: GhampusRemindersSettings;
+  /** Proactive tip cards in Ghampus chat. Absent → defaults (enabled, 3 min startup delay). */
+  tips?: GhampusTipsSettings;
+  /** Post-turn memory suggestion cards. Absent → defaults (enabled). */
+  memorySuggestions?: GhampusMemorySuggestionsSettings;
+  /** Idle vitality nudge cards in Ghampus chat. Absent → defaults (enabled). */
+  vitalityNudges?: GhampusVitalityNudgesSettings;
+}
+
+/** Vitality suggestion cards when chat is idle. */
+export interface GhampusVitalityNudgesSettings {
+  /** Master switch. Default true. */
+  enabled?: boolean;
+  /** Ms after sidecar start before first nudge tick. Default 180_000 (3 min). */
+  startupDelayMs?: number;
 }
 
 /** Defaults for agent.skillMaintenance — enabled + idleOnly. */
@@ -1293,6 +1348,65 @@ export function resolveGhampusProactiveSettings(
     ? p.startupDelayMs
     : DEFAULT_PROACTIVE_STARTUP_DELAY_MS;
   return { startupDelayMs };
+}
+
+const DEFAULT_REMINDERS_STARTUP_DELAY_MS = 60_000;
+
+/** Defaults for agent.reminders — enabled, 1 min startup delay, native notifications on. */
+export function resolveGhampusRemindersSettings(
+  agent?: AgentSettings | null,
+): Required<GhampusRemindersSettings> {
+  const r = agent?.reminders;
+  const startupDelayMs = typeof r?.startupDelayMs === 'number' && r.startupDelayMs >= 0
+    ? r.startupDelayMs
+    : DEFAULT_REMINDERS_STARTUP_DELAY_MS;
+  return {
+    enabled: r?.enabled !== false,
+    startupDelayMs,
+    nativeNotifications: r?.nativeNotifications !== false,
+  };
+}
+
+const DEFAULT_TIPS_STARTUP_DELAY_MS = 3 * 60_000;
+
+/** Defaults for agent.tips — enabled, 3 min startup delay (after history prefetch). */
+export function resolveGhampusTipsSettings(
+  agent?: AgentSettings | null,
+): Required<GhampusTipsSettings> {
+  const t = agent?.tips;
+  const startupDelayMs = typeof t?.startupDelayMs === 'number' && t.startupDelayMs >= 0
+    ? t.startupDelayMs
+    : DEFAULT_TIPS_STARTUP_DELAY_MS;
+  return {
+    enabled: t?.enabled !== false,
+    startupDelayMs,
+  };
+}
+
+/** Defaults for agent.memorySuggestions — enabled. */
+export function resolveGhampusMemorySuggestionsSettings(
+  agent?: AgentSettings | null,
+): Required<GhampusMemorySuggestionsSettings> {
+  const m = agent?.memorySuggestions;
+  return {
+    enabled: m?.enabled !== false,
+  };
+}
+
+const DEFAULT_VITALITY_NUDGES_STARTUP_DELAY_MS = 3 * 60_000;
+
+/** Defaults for agent.vitalityNudges — enabled, 3 min startup delay. */
+export function resolveGhampusVitalityNudgesSettings(
+  agent?: AgentSettings | null,
+): Required<GhampusVitalityNudgesSettings> {
+  const v = agent?.vitalityNudges;
+  const startupDelayMs = typeof v?.startupDelayMs === 'number' && v.startupDelayMs >= 0
+    ? v.startupDelayMs
+    : DEFAULT_VITALITY_NUDGES_STARTUP_DELAY_MS;
+  return {
+    enabled: v?.enabled !== false,
+    startupDelayMs,
+  };
 }
 
 /**
@@ -1890,6 +2004,10 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       // Low-power mode — same trap as clipboardCapture above: must be threaded
       // explicitly or mergeWithDefaults silently drops it on every save, so the
       // toggle reads OFF again after saving (and the brain keeps running hot).
+      ...(typeof b.backgroundActivity === 'string'
+        && (b.backgroundActivity === 'normal' || b.backgroundActivity === 'low-impact')
+        ? { backgroundActivity: b.backgroundActivity }
+        : {}),
       ...(typeof b.lowPowerMode === 'boolean' ? { lowPowerMode: b.lowPowerMode } : {}),
     };
   }
@@ -1899,6 +2017,10 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     const a = partial.agent;
     const sm = a.skillMaintenance;
     const pr = a.proactive;
+    const rm = a.reminders;
+    const tp = a.tips;
+    const ms = a.memorySuggestions;
+    const vn = a.vitalityNudges;
     agent = {
       enabled: typeof a.enabled === 'boolean' ? a.enabled : true,
       ...(sm && typeof sm === 'object'
@@ -1915,6 +2037,46 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
             proactive: {
               ...(typeof pr.startupDelayMs === 'number' && pr.startupDelayMs >= 0
                 ? { startupDelayMs: pr.startupDelayMs }
+                : {}),
+            },
+          }
+        : {}),
+      ...(rm && typeof rm === 'object'
+        ? {
+            reminders: {
+              ...(typeof rm.enabled === 'boolean' ? { enabled: rm.enabled } : {}),
+              ...(typeof rm.startupDelayMs === 'number' && rm.startupDelayMs >= 0
+                ? { startupDelayMs: rm.startupDelayMs }
+                : {}),
+              ...(typeof rm.nativeNotifications === 'boolean'
+                ? { nativeNotifications: rm.nativeNotifications }
+                : {}),
+            },
+          }
+        : {}),
+      ...(tp && typeof tp === 'object'
+        ? {
+            tips: {
+              ...(typeof tp.enabled === 'boolean' ? { enabled: tp.enabled } : {}),
+              ...(typeof tp.startupDelayMs === 'number' && tp.startupDelayMs >= 0
+                ? { startupDelayMs: tp.startupDelayMs }
+                : {}),
+            },
+          }
+        : {}),
+      ...(ms && typeof ms === 'object'
+        ? {
+            memorySuggestions: {
+              ...(typeof ms.enabled === 'boolean' ? { enabled: ms.enabled } : {}),
+            },
+          }
+        : {}),
+      ...(vn && typeof vn === 'object'
+        ? {
+            vitalityNudges: {
+              ...(typeof vn.enabled === 'boolean' ? { enabled: vn.enabled } : {}),
+              ...(typeof vn.startupDelayMs === 'number' && vn.startupDelayMs >= 0
+                ? { startupDelayMs: vn.startupDelayMs }
                 : {}),
             },
           }

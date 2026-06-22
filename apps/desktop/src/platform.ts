@@ -480,6 +480,13 @@ const SSE_TO_TAURI: Record<string, string> = {
   'ghampus.thinking':             'graphnosis://ghampus-thinking',
   'ghampus.trace':                'graphnosis://ghampus-trace',
   'ghampus.card':                 'graphnosis://ghampus-card',
+  'ghampus.reminder':             'graphnosis://ghampus-reminder',
+  'ghampus.tip':                  'graphnosis://ghampus-tip',
+  'ghampus.vitality-nudge':       'graphnosis://ghampus-vitality-nudge',
+  'ghampus.recovery-nudge':       'graphnosis://ghampus-recovery-nudge',
+  'ghampus.memory-suggestion':    'graphnosis://ghampus-memory-suggestion',
+  'engram.recovery-needed':       'graphnosis://engram-recovery-needed',
+  'engram.lkg-restored':          'graphnosis://engram-lkg-restored',
 };
 
 type ListenHandler<T> = (event: { payload: T }) => void;

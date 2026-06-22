@@ -5,6 +5,7 @@
 
 let ipcDepth = 0;
 let uiBusy = false;
+let lastUserMessageAt = 0;
 
 export function incrementGhampusBusy(): void {
   ipcDepth++;
@@ -22,8 +23,20 @@ export function isGhampusBusy(): boolean {
   return ipcDepth > 0 || uiBusy;
 }
 
+/** Record user send — proactive tips defer while chat is active. */
+export function markGhampusUserActivity(): void {
+  lastUserMessageAt = Date.now();
+}
+
+/** Ms since last Ghampus user message (0 if never). */
+export function ghampusUserIdleMs(now = Date.now()): number {
+  if (lastUserMessageAt <= 0) return Number.POSITIVE_INFINITY;
+  return now - lastUserMessageAt;
+}
+
 /** Test helper — reset counters between smoketest phases. */
 export function resetGhampusBusyForTest(): void {
   ipcDepth = 0;
   uiBusy = false;
+  lastUserMessageAt = 0;
 }

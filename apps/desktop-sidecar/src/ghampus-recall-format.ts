@@ -111,11 +111,61 @@ export function stripMcpAuditFooterBlock(raw) {
 export function stripMcpAuditInline(raw) {
   return raw.replace(/^---\s*$/gm, "").replace(/^Attached \d+ memory node\(s\)[^\n]*$/gm, "").replace(/^Per-graph \(tier · nodes · tokens\):[^\n]*$/gm, "").replace(/^\(\d+ other engram(?:s)? searched, no matches\.\)$/gm, "").replace(/^Scope warnings:[^\n]*$/gm, "").replace(/^⚠️[^\n]*(?:Heads-up|not loaded yet)[^\n]*$/gm, "").replace(/^\[[^\]]+(?:access:|Revoke in Settings)[^\]]*\]$/gim, "");
 }
+/** Section headers LLMs echo from recall / dig_deeper wire format — never user-facing. */
+const INTERNAL_RECALL_SECTION_HEADERS: RegExp[] = [
+  /^#{1,3}\s+Attested Memory\b/i,
+  /^#{1,3}\s+dig_deeper\b/i,
+  /^#{1,3}\s+Recall hits\b/i,
+  /^#{1,3}\s+What I found in your cortex\b/i,
+  /^#{1,3}\s+Recent Chat\b/i,
+  /^#{1,3}\s+Recent chat history\b/i,
+  /^#{1,3}\s+Additional context\b/i,
+];
+
+/** Inline recall-tool meta lines echoed into answers. */
+const INTERNAL_RECALL_WIRE_LINE_RES: RegExp[] = [
+  /Source-filename expansion/i,
+  /Cross-engram entity hop/i,
+  /via dig_deeper \(multi-strategy\)/i,
+  /\bavg\.?\s*score\b/i,
+  /\b(?:average|mean)\s+score\b/i,
+  /\b\d+\s+memory node\(s\)\b/i,
+  /^CALL `dig_deeper`/im,
+  /^BEFORE telling the user/i,
+  /^🔁\s*BEFORE telling/i,
+  /^💡\s+Try dig_deeper/i,
+  /^ℹ️\s*No memories matched/i,
+];
+
+function isInternalRecallSectionHeader(line: string): boolean {
+  const trimmed = line.trim();
+  return INTERNAL_RECALL_SECTION_HEADERS.some((re) => re.test(trimmed));
+}
+
+/** Strip internal recall / dig_deeper wire sections and meta lines from LLM output. */
+export function stripInternalRecallWireFormat(raw: string): string {
+  const lines = raw.split('\n');
+  const out: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^#{1,3}\s+/.test(trimmed) && isInternalRecallSectionHeader(trimmed)) {
+      continue;
+    }
+    if (INTERNAL_RECALL_WIRE_LINE_RES.some((re) => re.test(line))) continue;
+    out.push(line);
+  }
+
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export function stripRecallAuditTrail(raw: string) {
-  return stripSubgraphPresentation(
-    stripMcpAuditInline(
-      stripMcpAuditFooterBlock(raw).replace(/^_?enriched:\s*"[^"]*"\s*→\s*"[^"]*"_?\s*$/gim, "").replace(/^_anchored \d+ node\(s\) on entities:.*_$/gim, "").replace(/^_GNN expanded recall by \d+ node\(s\).*?_$/gim, "").replace(/^💡 _[\s\S]*?_\s*$/gim, "").replace(/\n{3,}/g, "\n\n").trim()
-    )
+  return stripInternalRecallWireFormat(
+    stripSubgraphPresentation(
+      stripMcpAuditInline(
+        stripMcpAuditFooterBlock(raw).replace(/^_?enriched:\s*"[^"]*"\s*→\s*"[^"]*"_?\s*$/gim, "").replace(/^_anchored \d+ node\(s\) on entities:.*_$/gim, "").replace(/^_GNN expanded recall by \d+ node\(s\).*?_$/gim, "").replace(/^💡 _[\s\S]*?_\s*$/gim, "").replace(/\n{3,}/g, "\n\n").trim()
+      )
+    ),
   );
 }
 export function stripSubgraphPresentation(raw: string) {

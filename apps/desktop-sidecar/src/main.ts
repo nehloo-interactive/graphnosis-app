@@ -30,12 +30,17 @@ import { ConnectorManager } from './connectors/manager.js';
 import { initAdminPolicy, mergeManagedProviderPolicy } from './admin-policy.js';
 import { LLM_CATALOG, DynamicOllamaLlm } from './local-llm.js';
 import { workerEmbed, workerEmbedBackground, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel, setWorkerCount } from './local-embed.js';
+import { resolveEffectiveEmbedWorkers, resolvePerformanceProfile, wrapEmbedWithYield } from './performance-profile.js';
 import type { LocalLlm } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
 import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
 import { ProactiveWatcher } from './proactive-watcher.js';
+import { GhampusReminderScheduler } from './ghampus-reminders.js';
+import { GhampusProactiveTipsScheduler } from './ghampus-proactive-tips.js';
+import { GhampusVitalityNudgesScheduler } from './ghampus-vitality-nudges.js';
+import { emitGhampusRecoveryNudge } from './ghampus-recovery-nudge.js';
 import { SkillMaintenanceScheduler } from './skill-maintenance-scheduler.js';
 import { SidecarIdleMaintenance } from './sidecar-idle-maintenance.js';
 import { SkillTrainer } from './skill-trainer.js';
@@ -398,6 +403,29 @@ async function loadAllGraphsFromDisk(
       );
     }
   }
+
+  // Post-sweep: promote any remaining .lkg/.gai mismatches (load-time promote
+  // may have failed; disk-only engrams not yet resident are caught here too).
+  try {
+    const { promoted } = await host.runBootLkgRecoveryScan();
+    if (promoted.length > 0 && broadcastRaw) {
+      for (const graphId of promoted) {
+        const meta = host.getGraphMetadata(graphId);
+        broadcastRaw({
+          kind: 'engram.lkg-restored',
+          name: 'engram.lkg-restored',
+          payload: {
+            graphId,
+            displayName: meta?.displayName ?? graphId,
+          },
+        });
+      }
+    }
+  } catch (e) {
+    console.error(
+      `[graphnosis-sidecar] boot LKG recovery scan failed: ${(e as Error).message}`,
+    );
+  }
 }
 
 /**
@@ -556,7 +584,7 @@ async function main(): Promise<void> {
     await clearSessionLease(env.cortexDir).catch(() => { /* non-fatal */ });
     // Terminate embed workers before releasing the lock so they don't linger
     // as orphan threads after the main process exits.
-    await terminateEmbedWorker().catch(() => { /* non-fatal on shutdown */ });
+    await terminateEmbedWorker({ permanent: true }).catch(() => { /* non-fatal on shutdown */ });
     try { await releaseLock(); } catch { /* lock already released */ }
   };
   // Remove orphan .tmp-* files left by a previous interrupted writeFileAtomic.
@@ -649,6 +677,8 @@ async function main(): Promise<void> {
   // to the SHA-derived stub so the server still boots — TF-IDF still works.
   let embedFn = embeddings.stubEmbed;
   let embedBgFn = embeddings.stubEmbed;
+  const embedYieldState = { ms: 0 };
+  let embedBgRaw = embeddings.stubEmbed;
   let embedAdapterId = 'graphnosis-app:stub@384';
   let embedDimensions = 384;
   if (process.env.GRAPHNOSIS_EMBED_DISABLE !== '1') {
@@ -668,7 +698,8 @@ async function main(): Promise<void> {
       const probe = await Promise.race([workerEmbed('graphnosis boot probe'), embedProbeTimeout]);
       if (probe.length !== live.dim) throw new Error(`unexpected embedding dim ${probe.length} (expected ${live.dim} for ${live.model})`);
       embedFn = workerEmbed;
-      embedBgFn = workerEmbedBackground; // dedicated background lane for buildEmbeddings
+      embedBgRaw = workerEmbedBackground;
+      embedBgFn = wrapEmbedWithYield(embedBgRaw, () => embedYieldState.ms);
       embedAdapterId = live.id;
       embedDimensions = live.dim;
       // One-time startup info — debug-only. The TF-IDF fallback WARNING
@@ -819,17 +850,19 @@ async function main(): Promise<void> {
   fileWatcher.setQuietMs(initialSettings.ai.reingestQuietMs);
   // Apply saved embed worker count now (the pool already spawned with the
   // env-var default; setWorkerCount resizes it to match user preference).
-  if (initialSettings.ai.embedWorkers !== undefined) {
-    setWorkerCount(initialSettings.ai.embedWorkers);
-  }
+  const envWorkerOverride = (() => {
+    const n = Number(process.env.GRAPHNOSIS_EMBED_WORKERS);
+    return Number.isFinite(n) && n >= 1 ? Math.round(n) : undefined;
+  })();
+  embedYieldState.ms = resolvePerformanceProfile(initialSettings).embedChunkYieldMs;
+  setWorkerCount(resolveEffectiveEmbedWorkers(initialSettings, envWorkerOverride));
   // Re-evaluate on every settings change so toggling the flag or
   // adjusting the quiet period takes effect immediately.
   host.onSettingsChanged((s) => {
     fileWatcher.setEnabled(s.ai.autoReingestOnFileChange);
     fileWatcher.setQuietMs(s.ai.reingestQuietMs);
-    if (s.ai.embedWorkers !== undefined) {
-      setWorkerCount(s.ai.embedWorkers);
-    }
+    embedYieldState.ms = resolvePerformanceProfile(s).embedChunkYieldMs;
+    setWorkerCount(resolveEffectiveEmbedWorkers(s, envWorkerOverride));
   });
   process.on('SIGINT', () => fileWatcher.dispose());
   process.on('SIGTERM', () => fileWatcher.dispose());
@@ -857,6 +890,17 @@ async function main(): Promise<void> {
   const eventsSocketPath = process.env.GRAPHNOSIS_EVENTS_SOCKET
     ?? path.join(env.cortexDir, 'events.sock');
   const { broadcastRaw, subscribe: subscribeEvents } = await startEvents({ host, socketPath: eventsSocketPath });
+
+  host.setRecoveryNeededHandler((payload) => {
+    void emitGhampusRecoveryNudge(host, broadcastRaw, payload);
+    try {
+      broadcastRaw({
+        kind: 'engram.recovery-needed',
+        name: 'engram.recovery-needed',
+        payload,
+      });
+    } catch { /* non-fatal */ }
+  });
 
   // Watch the parent directory of the cortex folder for rename events.
   // If the cortex folder itself is renamed or moved while the cortex is open,
@@ -1217,6 +1261,25 @@ async function main(): Promise<void> {
     ?? path.join(env.cortexDir, 'sidecar.sock');
   const proactiveWatcher = new ProactiveWatcher({ host, skillTrainer: skillTrainer ?? null, broadcastRaw });
   proactiveWatcher.start();
+  const reminderScheduler = new GhampusReminderScheduler({
+    host,
+    broadcastRaw,
+    cortexDir: env.cortexDir,
+  });
+  reminderScheduler.start();
+  const tipsScheduler = new GhampusProactiveTipsScheduler({
+    host,
+    broadcastRaw,
+    cortexDir: env.cortexDir,
+  });
+  tipsScheduler.start();
+  const vitalityNudgesScheduler = new GhampusVitalityNudgesScheduler({
+    host,
+    brainEngine,
+    broadcastRaw,
+    cortexDir: env.cortexDir,
+  });
+  vitalityNudgesScheduler.start();
   const skillMaintenanceScheduler = new SkillMaintenanceScheduler({
     host,
     skillTrainer,
@@ -1249,6 +1312,8 @@ async function main(): Promise<void> {
     skillTrainer,
     licenseValidator,
     proactiveWatcher,
+    reminderScheduler,
+    tipsScheduler,
     skillMaintenanceScheduler,
     callMcpTool,
     ...(env.ssoRole
@@ -1269,6 +1334,11 @@ async function main(): Promise<void> {
   console.error(
     `[graphnosis-sidecar] IPC listening on ${ipcSocketPath} (${Date.now() - sidecarStartMs}ms from sidecar start)`,
   );
+
+  // Warm ghampus-history.jsonl in the background so the Ghampus tab opens instantly.
+  void import('./ghampus-history-cache.js').then(({ prefetchGhampusHistory }) => {
+    prefetchGhampusHistory(env.cortexDir);
+  });
 
   if (isDocsGhostEngram(host)) {
     dbg(
@@ -1355,12 +1425,14 @@ async function main(): Promise<void> {
     })
     .then(async () => {
       host.setBootPhaseActive(false);
-      brainEngine.notifyBootSettled();
-      void schedulePostBootDocsReingest(ipcDeps, SIDECAR_VERSION).catch((e: unknown) => {
+      try {
+        await schedulePostBootDocsReingest(ipcDeps, SIDECAR_VERSION);
+      } catch (e: unknown) {
         console.error(
           `[graphnosis-sidecar] post-boot docs reingest failed: ${(e as Error).message}`,
         );
-      });
+      }
+      brainEngine.notifyBootSettled();
       void host.flushBootDeferredWork()
         .then(() => {
           // Hollow-bundle materialize adds nodes after the sweep — finalize

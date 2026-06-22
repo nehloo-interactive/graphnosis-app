@@ -18,6 +18,7 @@ import {
   isScopedTaskListQuery,
   isTemporalTodoQuery,
   isConversationContextQuery,
+  wantsExpandedAnswerText,
   MULTILINGUAL_QUESTION_OPENERS,
   MULTILINGUAL_RECALL_QUESTION_RE,
   PERSON_NAME_RE,
@@ -41,7 +42,7 @@ export {
   isTranslationRequest,
 } from './ghampus-direct-answer.js';
 
-export { isConversationContextQuery, hasMemoryAnchorInQuery, isMetaChallengeQuery } from './ghampus-language.js';
+export { isConversationContextQuery, hasMemoryAnchorInQuery, isMetaChallengeQuery, isNonMemoryQuestion, detectGhampusMetaCategory, type GhampusMetaCategory } from './ghampus-language.js';
 
 export {
   normalizeEngramKey,
@@ -87,6 +88,8 @@ export interface GhampusQueryHints {
   /** User asked to train/retrain a skill SOP — not create_engram or remember. */
   wantsSkillTrain: boolean;
   wantsExhaustive: boolean;
+  /** User asked to expand / elaborate — allow longer synthesis. */
+  wantsExpandedAnswer: boolean;
   wantsGrouped: boolean;
   wantsTeamRoster: boolean;
   wantsTeamTaskList: boolean;
@@ -649,6 +652,7 @@ export function detectGhampusQueryHints(
   const wantsDefinitional = isDefinitionalQuery(text);
   const topicAbout = extractTopicAboutFromQuery(text);
   const wantsTopicAbout = topicAbout !== null && !wantsDefinitional;
+  const wantsExpandedAnswer = wantsExpandedAnswerText(text);
   const wantsExhaustive =
     /\b(list all|show all|find all|give me all|what are all|all (my |the )?(nodes?|todos?|tasks?|items?|entries)|every|enumerate)\b/i.test(text)
     || /\b(list|show)\b.*\b(todos?|tasks?|items?|entries|obligations?|memories)\b/i.test(text)
@@ -742,6 +746,7 @@ export function detectGhampusQueryHints(
     wantsExplicitSkillWalk,
     wantsSkillTrain,
     wantsExhaustive: wantsExhaustive || wantsTeamRoster || (hasQuotedSearch && !skipMemoryTools),
+    wantsExpandedAnswer,
     wantsGrouped,
     wantsTeamRoster,
     wantsTeamTaskList,

@@ -32,6 +32,7 @@ export const BACKGROUND_POLL_METHODS = new Set<string>([
   'embedding:status',
   'license:status',
   'brain:getVitality',
+  'brain:getVitalityBreakdown',
   'consent.listPendingPrompts',
   'skill:listPendingProposals',
   // Scope notification only — not user data; must not mark the sidecar "busy"

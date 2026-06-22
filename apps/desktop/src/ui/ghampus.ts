@@ -1,7 +1,7 @@
 /**
  * Ghampus — local AI agent UI (chat, panels, proactive cards).
  */
-import { invoke, listen } from '../platform';
+import { invoke, listen, sendNotification } from '../platform';
 import { app } from './app-context';
 import { gAlert, gConfirm, gPrompt } from './dialogs';
 import { ipcCall } from './ipc';
@@ -13,6 +13,10 @@ export function initGhampus(): void {
   wireGhampusControls();
   wireGhampusModelSelect();
   wireSkillMaintenanceSettings();
+  wireReminderSettings();
+  wireTipSettings();
+  wireMemorySuggestionSettings();
+  wireVitalityNudgeSettings();
   wireProactiveSettings();
   wireSavingsBaselineSettings();
   wireGhampusAttachButtons();
@@ -59,12 +63,20 @@ export async function refreshGhampusState(): Promise<void> {
       plan: 'free' | 'pro' | 'teams' | 'enterprise';
       skillMaintenance?: { enabled: boolean; idleOnly: boolean };
       proactive?: { startupDelayMs: number };
+      reminders?: { enabled: boolean; startupDelayMs: number; nativeNotifications: boolean };
+      tips?: { enabled: boolean; startupDelayMs: number };
+      memorySuggestions?: { enabled: boolean };
+      vitalityNudges?: { enabled: boolean; startupDelayMs: number };
     }>('agent:status', {});
     ghampusEnabled = s.enabled;
     ghampusPlan = s.plan;
     updateGhampusVisibility();
     paintSkillMaintenanceSettings(s.skillMaintenance);
     paintProactiveSettings(s.proactive);
+    paintReminderSettings(s.reminders);
+    paintTipSettings(s.tips);
+    paintMemorySuggestionSettings(s.memorySuggestions);
+    paintVitalityNudgeSettings(s.vitalityNudges);
   } catch { /* non-fatal — keep last known state */ }
 }
 
@@ -142,6 +154,60 @@ export function wireSkillMaintenanceSettings(): void {
   });
   idleEl?.addEventListener('change', () => {
     void ipcCall('agent:setSkillMaintenance', { idleOnly: idleEl.checked }).catch(() => {});
+  });
+}
+
+function paintReminderSettings(rm?: { enabled: boolean; nativeNotifications: boolean }): void {
+  const enabledEl = document.getElementById('ghampus-reminders-enabled') as HTMLInputElement | null;
+  const notifEl = document.getElementById('ghampus-reminders-native-notif') as HTMLInputElement | null;
+  if (enabledEl && rm) enabledEl.checked = rm.enabled;
+  if (notifEl && rm) notifEl.checked = rm.nativeNotifications;
+}
+
+export function wireReminderSettings(): void {
+  const enabledEl = document.getElementById('ghampus-reminders-enabled') as HTMLInputElement | null;
+  const notifEl = document.getElementById('ghampus-reminders-native-notif') as HTMLInputElement | null;
+  enabledEl?.addEventListener('change', () => {
+    void ipcCall('agent:setReminders', { enabled: enabledEl.checked }).catch(() => {});
+  });
+  notifEl?.addEventListener('change', () => {
+    void ipcCall('agent:setReminders', { nativeNotifications: notifEl.checked }).catch(() => {});
+  });
+}
+
+function paintTipSettings(tp?: { enabled: boolean }): void {
+  const enabledEl = document.getElementById('ghampus-tips-enabled') as HTMLInputElement | null;
+  if (enabledEl && tp) enabledEl.checked = tp.enabled;
+}
+
+export function wireTipSettings(): void {
+  const enabledEl = document.getElementById('ghampus-tips-enabled') as HTMLInputElement | null;
+  enabledEl?.addEventListener('change', () => {
+    void ipcCall('agent:setTips', { enabled: enabledEl.checked }).catch(() => {});
+  });
+}
+
+function paintMemorySuggestionSettings(ms?: { enabled: boolean }): void {
+  const enabledEl = document.getElementById('ghampus-memory-suggestions-enabled') as HTMLInputElement | null;
+  if (enabledEl && ms) enabledEl.checked = ms.enabled;
+}
+
+export function wireMemorySuggestionSettings(): void {
+  const enabledEl = document.getElementById('ghampus-memory-suggestions-enabled') as HTMLInputElement | null;
+  enabledEl?.addEventListener('change', () => {
+    void ipcCall('agent:setMemorySuggestions', { enabled: enabledEl.checked }).catch(() => {});
+  });
+}
+
+function paintVitalityNudgeSettings(vn?: { enabled: boolean }): void {
+  const enabledEl = document.getElementById('ghampus-vitality-nudges-enabled') as HTMLInputElement | null;
+  if (enabledEl && vn) enabledEl.checked = vn.enabled;
+}
+
+export function wireVitalityNudgeSettings(): void {
+  const enabledEl = document.getElementById('ghampus-vitality-nudges-enabled') as HTMLInputElement | null;
+  enabledEl?.addEventListener('change', () => {
+    void ipcCall('agent:setVitalityNudges', { enabled: enabledEl.checked }).catch(() => {});
   });
 }
 
@@ -986,7 +1052,49 @@ type GhampusChatMessage =
   | { kind: 'walk-progress'; steps: WalkStep[]; ts: number }
   | { kind: 'refine-proposal'; proposal: RefineProposal; ts: number }
   | { kind: 'tier-strip'; context: TierContext; ts: number }
-  | { kind: 'proactive-card'; card: ProactiveCardPayload; ts: number };
+  | { kind: 'proactive-card'; card: ProactiveCardPayload; ts: number }
+  | { kind: 'tip'; tip: TipCardPayload; ts: number }
+  | { kind: 'vitality-nudge'; nudge: VitalityNudgeCardPayload; ts: number }
+  | { kind: 'memory-suggestion'; suggestion: MemorySuggestionCardPayload; ts: number }
+  | { kind: 'recovery-nudge'; nudge: RecoveryNudgePayload; ts: number };
+
+interface RecoveryNudgePayload {
+  id: string;
+  graphId: string;
+  displayName: string;
+  title: string;
+  text: string;
+}
+
+interface MemorySuggestionCardPayload {
+  id: string;
+  kind: 'remember' | 'obligation' | 'create_engram';
+  text: string;
+  engramHint?: string;
+  obligation?: { obligationType: string; expiresAt: number };
+  reason: string;
+  createEngramName?: string;
+}
+
+interface TipCardPayload {
+  id: string;
+  tipId: string;
+  title: string;
+  body: string;
+  category: string;
+  examplePrompt?: string;
+  expectedOutcome?: string;
+}
+
+interface VitalityNudgeCardPayload {
+  id: string;
+  nudgeId: string;
+  title: string;
+  body: string;
+  nudgeKind: string;
+  examplePrompt?: string;
+  walkSkillLabel?: string;
+}
 
 interface ProactiveCardPayload {
   id: string; createdAt: number; signalType: string; signalLabel: string;
@@ -1060,13 +1168,32 @@ function isGhampusThreadAtBottom(
   return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= threshold;
 }
 
-function scrollGhampusThreadToBottomIfPinned(): void {
+function isGhampusPaneVisible(): boolean {
+  const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
+  return !!(pane && !pane.classList.contains('hidden'));
+}
+
+function scrollGhampusThreadToBottomIfPinned(opts?: { instant?: boolean }): void {
   if (!threadScrollPinned) return;
   const thread = document.getElementById('ghampus-thread');
   if (!thread) return;
-  requestAnimationFrame(() => {
-    thread.scrollTop = thread.scrollHeight;
-  });
+  const instant = opts?.instant ?? !isGhampusPaneVisible();
+  const apply = () => {
+    if (instant) {
+      const prev = thread.style.scrollBehavior;
+      thread.style.scrollBehavior = 'auto';
+      thread.scrollTop = thread.scrollHeight;
+      thread.style.scrollBehavior = prev;
+    } else {
+      thread.scrollTop = thread.scrollHeight;
+    }
+  };
+  if (instant) {
+    apply();
+    requestAnimationFrame(apply);
+  } else {
+    requestAnimationFrame(apply);
+  }
 }
 
 function resetGhampusThreadScrollPin(): void {
@@ -1268,6 +1395,55 @@ function dedupeAwayDigests(messages: GhampusChatMessage[]): GhampusChatMessage[]
   return messages.filter((msg, i) => !isQuietAwayDigest(msg) || i === lastQuietIdx);
 }
 
+/** Normalize flat ghampus-history.jsonl rows into typed chat messages. */
+function normalizeGhampusHistoryMessages(messages: unknown[]): GhampusChatMessage[] {
+  const out: GhampusChatMessage[] = [];
+  for (const raw of messages) {
+    const m = normalizeGhampusHistoryMessage(raw);
+    if (m) out.push(m);
+  }
+  return out;
+}
+
+function normalizeGhampusHistoryMessage(raw: unknown): GhampusChatMessage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Record<string, unknown>;
+  if (m.kind === 'vitality-nudge' && typeof m.title === 'string') {
+    return {
+      kind: 'vitality-nudge',
+      ts: typeof m.ts === 'number' ? m.ts : Date.now(),
+      nudge: {
+        id: String(m.id ?? `${String(m.nudgeId ?? 'vnudge')}-${m.ts ?? Date.now()}`),
+        nudgeId: String(m.nudgeId ?? 'unknown'),
+        title: m.title as string,
+        body: String(m.body ?? ''),
+        nudgeKind: String(m.nudgeKind ?? 'health-check'),
+        ...(typeof m.examplePrompt === 'string' ? { examplePrompt: m.examplePrompt } : {}),
+        ...(typeof m.walkSkillLabel === 'string' ? { walkSkillLabel: m.walkSkillLabel } : {}),
+      },
+    };
+  }
+  if (m.kind === 'tip' && typeof m.title === 'string') {
+    return {
+      kind: 'tip',
+      ts: typeof m.ts === 'number' ? m.ts : Date.now(),
+      tip: {
+        id: String(m.id ?? `${String(m.tipId ?? 'tip')}-${m.ts ?? Date.now()}`),
+        tipId: String(m.tipId ?? 'unknown'),
+        title: m.title,
+        body: String(m.body ?? ''),
+        category: String(m.category ?? 'job-memory'),
+        ...(typeof m.examplePrompt === 'string' ? { examplePrompt: m.examplePrompt } : {}),
+        ...(typeof m.expectedOutcome === 'string' ? { expectedOutcome: m.expectedOutcome } : {}),
+      },
+    };
+  }
+  if ((m.kind === 'user' || m.kind === 'ghampus') && typeof m.text === 'string' && typeof m.ts === 'number') {
+    return raw as GhampusChatMessage;
+  }
+  return null;
+}
+
 function fmtRelTime(ts: number): string {
   const diffS = Math.floor((Date.now() - ts) / 1000);
   if (diffS < 60)  return 'just now';
@@ -1395,6 +1571,14 @@ function renderChatMessage(msg: GhampusChatMessage): string {
       return renderTierStrip(msg.context);
     case 'proactive-card':
       return renderProactiveCard(msg.card);
+    case 'tip':
+      return renderTipCard(msg.tip, msg.ts);
+    case 'vitality-nudge':
+      return renderVitalityNudgeCard(msg.nudge, msg.ts);
+    case 'memory-suggestion':
+      return renderMemorySuggestionCard(msg.suggestion, msg.ts);
+    case 'recovery-nudge':
+      return renderRecoveryNudgeCard(msg.nudge, msg.ts);
     default:
       return '';
   }
@@ -1420,6 +1604,166 @@ function renderSkillMatchCard(skill: SkillMatchPayload, ts: number): string {
               data-source-id="${escapeHtml(skill.sourceId)}">Run it?</button>
       <button class="g-btn btn-skill-dismiss" style="font-size: 12px; padding: 4px 10px;"
               data-source-id="${escapeHtml(skill.sourceId)}">Not now</button>
+    </div>
+  </div>`;
+}
+
+const TIP_CATEGORY_LABELS: Record<string, string> = {
+  'job-memory': 'Job memory',
+  'slash-commands': 'Slash commands',
+  'engram-scoping': 'Engrams',
+  'follow-ups': 'Follow-ups',
+  'skills': 'Skills',
+  'mcp-claude': 'MCP / Claude',
+  'romanian': 'Română',
+  'recovery': 'Recovery',
+  'brain-linking': 'Brain & links',
+  'sharing': 'Sharing',
+};
+
+function renderRecoveryNudgeCard(nudge: RecoveryNudgePayload, ts: number): string {
+  const bodyHtml = escapeHtml(nudge.text)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-recovery-nudge-card" data-graph-id="${escapeHtml(nudge.graphId)}">
+        <div class="ghampus-tip-header">
+          <span class="ghampus-tip-badge" style="background: var(--warn, #b8860b);">Recovery</span>
+          <span class="ghampus-tip-category">${escapeHtml(nudge.displayName)}</span>
+        </div>
+        <p class="ghampus-recovery-nudge-body">${bodyHtml}</p>
+        <div class="ghampus-memory-suggestion-actions">
+          <button class="g-btn primary ghampus-recovery-open">Open Recovery</button>
+        </div>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(ts)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderVitalityNudgeCard(nudge: VitalityNudgeCardPayload, ts: number): string {
+  const bodyHtml = escapeHtml(nudge.body).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const exampleBlock = nudge.examplePrompt
+    ? `<div class="ghampus-tip-example">
+        <span class="ghampus-tip-example-label">Try</span>
+        <code class="ghampus-tip-example-prompt">${escapeHtml(nudge.examplePrompt)}</code>
+      </div>`
+    : '';
+  const walkBtn = nudge.walkSkillLabel
+    ? `<button type="button" class="g-btn primary ghampus-vitality-walk" data-skill-label="${escapeHtml(nudge.walkSkillLabel)}">Walk ${escapeHtml(nudge.walkSkillLabel.replace(/-/g, ' '))}</button>`
+    : '';
+  const tryBtn = nudge.examplePrompt && !nudge.walkSkillLabel
+    ? `<button type="button" class="g-btn ghampus-vitality-try" data-prompt="${escapeHtml(nudge.examplePrompt)}">Send prompt</button>`
+    : '';
+  const actions = (walkBtn || tryBtn)
+    ? `<div class="ghampus-vitality-nudge-actions">${walkBtn}${tryBtn}</div>`
+    : '';
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-tip-card ghampus-vitality-nudge-card" data-nudge-id="${escapeHtml(nudge.nudgeId)}">
+        <div class="ghampus-tip-header">
+          <span class="ghampus-tip-badge">Vitality</span>
+          <span class="ghampus-tip-category">${escapeHtml(nudge.nudgeKind.replace(/-/g, ' '))}</span>
+        </div>
+        <p class="ghampus-tip-title">${escapeHtml(nudge.title)}</p>
+        <p class="ghampus-tip-body">${bodyHtml}</p>
+        ${exampleBlock}${actions}
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(ts)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderTipCard(tip: TipCardPayload, ts: number): string {
+  const catLabel = TIP_CATEGORY_LABELS[tip.category] ?? tip.category;
+  const bodyHtml = escapeHtml(tip.body).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const exampleBlock = tip.examplePrompt
+    ? `<div class="ghampus-tip-example">
+        <span class="ghampus-tip-example-label">Try</span>
+        <code class="ghampus-tip-example-prompt">${escapeHtml(tip.examplePrompt)}</code>
+      </div>`
+    : '';
+  const outcomeBlock = tip.expectedOutcome
+    ? `<div class="ghampus-tip-outcome">
+        <span class="ghampus-tip-outcome-label">Expected</span>
+        <span class="ghampus-tip-outcome-text">${escapeHtml(tip.expectedOutcome)}</span>
+      </div>`
+    : '';
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-tip-card" data-tip-id="${escapeHtml(tip.tipId)}">
+        <div class="ghampus-tip-header">
+          <span class="ghampus-tip-badge">Tip</span>
+          <span class="ghampus-tip-category">${escapeHtml(catLabel)}</span>
+        </div>
+        <p class="ghampus-tip-title">${escapeHtml(tip.title)}</p>
+        <p class="ghampus-tip-body">${bodyHtml}</p>
+        ${exampleBlock}${outcomeBlock}
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(ts)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderMemorySuggestionCard(suggestion: MemorySuggestionCardPayload, ts: number): string {
+  const kindLabel = suggestion.kind === 'create_engram'
+    ? 'New engram'
+    : suggestion.kind === 'obligation'
+      ? 'Deadline'
+      : 'Memory';
+  const preview = escapeHtml(suggestion.text);
+  const engramDefault = escapeHtml(suggestion.engramHint ?? 'personal');
+  const obligationNote = suggestion.obligation
+    ? `<span class="ghampus-memory-suggestion-due">Due ${new Date(suggestion.obligation.expiresAt).toLocaleDateString()}</span>`
+    : '';
+  const createNote = suggestion.kind === 'create_engram' && suggestion.createEngramName
+    ? `<span class="ghampus-memory-suggestion-due">Create engram: ${escapeHtml(suggestion.createEngramName)}</span>`
+    : '';
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-memory-suggestion-card" data-suggestion-id="${escapeHtml(suggestion.id)}">
+        <div class="ghampus-memory-suggestion-header">
+          <span class="ghampus-memory-suggestion-badge">Memory</span>
+          <span class="ghampus-memory-suggestion-kind">${escapeHtml(kindLabel)}</span>
+        </div>
+        <p class="ghampus-memory-suggestion-title">Save to your cortex?</p>
+        <p class="ghampus-memory-suggestion-reason">${escapeHtml(suggestion.reason)}</p>
+        <blockquote class="ghampus-memory-suggestion-preview">${preview}</blockquote>
+        ${obligationNote}${createNote}
+        <div class="ghampus-memory-suggestion-engram">
+          <label class="ghampus-memory-suggestion-engram-label">Engram</label>
+          <select class="ghampus-memory-suggestion-engram-select" data-default="${engramDefault}">
+            <option value="${engramDefault}">${engramDefault}</option>
+          </select>
+        </div>
+        <div class="ghampus-memory-suggestion-actions">
+          <button class="g-btn primary ghampus-memory-suggestion-save" data-suggestion-id="${escapeHtml(suggestion.id)}">Save</button>
+          <button class="g-btn ghampus-memory-suggestion-later" data-suggestion-id="${escapeHtml(suggestion.id)}">Not now</button>
+          <button class="g-btn ghampus-memory-suggestion-dismiss" data-suggestion-id="${escapeHtml(suggestion.id)}">Dismiss</button>
+        </div>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(ts)}</div>
+      </div>
     </div>
   </div>`;
 }
@@ -1660,6 +2004,150 @@ function wireGhampusSidecarEvents(): void {
       startProactiveQueueTimer();
     },
   );
+
+  void listen<{
+    id: string;
+    kind: string;
+    title: string;
+    text: string;
+    ts: number;
+    itemCount: number;
+    notify: boolean;
+  }>(
+    'graphnosis://ghampus-reminder',
+    (ev) => {
+      if (!ev.payload?.text) return;
+      const msg: GhampusChatMessage = {
+        kind: 'ghampus',
+        text: ev.payload.text,
+        ts: ev.payload.ts ?? Date.now(),
+      };
+      appendToThread(msg);
+      if (ev.payload.notify) {
+        void maybeNotifyReminder(ev.payload.title, ev.payload.text);
+      }
+    },
+  );
+
+  void listen<{
+    id: string;
+    graphId: string;
+    displayName: string;
+    title: string;
+    text: string;
+    ts: number;
+  }>(
+    'graphnosis://ghampus-recovery-nudge',
+    (ev) => {
+      if (!ev.payload?.graphId) return;
+      const p = ev.payload;
+      const msg: GhampusChatMessage = {
+        kind: 'recovery-nudge',
+        nudge: {
+          id: p.id,
+          graphId: p.graphId,
+          displayName: p.displayName,
+          title: p.title,
+          text: p.text,
+        },
+        ts: p.ts ?? Date.now(),
+      };
+      appendToThread(msg);
+    },
+  );
+
+  void listen<{
+    id: string;
+    tipId: string;
+    title: string;
+    body: string;
+    category: string;
+    ts: number;
+    examplePrompt?: string;
+    expectedOutcome?: string;
+  }>(
+    'graphnosis://ghampus-tip',
+    (ev) => {
+      if (!ev.payload?.title) return;
+      const p = ev.payload;
+      const msg: GhampusChatMessage = {
+        kind: 'tip',
+        tip: {
+          id: p.id,
+          tipId: p.tipId,
+          title: p.title,
+          body: p.body,
+          category: p.category,
+          ...(p.examplePrompt ? { examplePrompt: p.examplePrompt } : {}),
+          ...(p.expectedOutcome ? { expectedOutcome: p.expectedOutcome } : {}),
+        },
+        ts: p.ts ?? Date.now(),
+      };
+      appendToThread(msg);
+    },
+  );
+
+  void listen<{
+    id: string;
+    nudgeId: string;
+    title: string;
+    body: string;
+    kind: string;
+    ts: number;
+    examplePrompt?: string;
+    walkSkillLabel?: string;
+  }>(
+    'graphnosis://ghampus-vitality-nudge',
+    (ev) => {
+      if (!ev.payload?.title) return;
+      const p = ev.payload;
+      const msg: GhampusChatMessage = {
+        kind: 'vitality-nudge',
+        nudge: {
+          id: p.id,
+          nudgeId: p.nudgeId,
+          title: p.title,
+          body: p.body,
+          nudgeKind: p.kind,
+          ...(p.examplePrompt ? { examplePrompt: p.examplePrompt } : {}),
+          ...(p.walkSkillLabel ? { walkSkillLabel: p.walkSkillLabel } : {}),
+        },
+        ts: p.ts ?? Date.now(),
+      };
+      appendToThread(msg);
+    },
+  );
+
+  void listen<{
+    id: string;
+    kind: 'remember' | 'obligation' | 'create_engram';
+    text: string;
+    engramHint?: string;
+    createEngramName?: string;
+    obligation?: { obligationType: string; expiresAt: number };
+    reason: string;
+    ts: number;
+  }>(
+    'graphnosis://ghampus-memory-suggestion',
+    (ev) => {
+      if (!ev.payload?.text) return;
+      const p = ev.payload;
+      const msg: GhampusChatMessage = {
+        kind: 'memory-suggestion',
+        suggestion: {
+          id: p.id,
+          kind: p.kind,
+          text: p.text,
+          reason: p.reason,
+          ...(p.engramHint ? { engramHint: p.engramHint } : {}),
+          ...(p.createEngramName ? { createEngramName: p.createEngramName } : {}),
+          ...(p.obligation ? { obligation: p.obligation } : {}),
+        },
+        ts: p.ts ?? Date.now(),
+      };
+      appendToThread(msg);
+    },
+  );
 }
 
 function randBetweenMs(minMin: number, maxMin: number): number {
@@ -1692,6 +2180,19 @@ function dequeueProactiveCard(): void {
 function startProactiveQueueTimer(): void {
   if (proactiveQueueTimer) return;
   proactiveQueueTimer = setInterval(dequeueProactiveCard, 30_000); // check every 30 s
+}
+
+/** Native notification when a reminder arrives and the Ghampus tab is not focused. */
+async function maybeNotifyReminder(title: string, body: string): Promise<void> {
+  const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
+  const ghampusVisible = pane && !pane.classList.contains('hidden');
+  if (ghampusVisible && document.hasFocus?.()) return;
+  try {
+    sendNotification({
+      title: title || 'Ghampus reminder',
+      body: body.split('\n').slice(0, 3).join(' ').slice(0, 180),
+    });
+  } catch { /* non-fatal */ }
 }
 
 function renderWalkPlanCard(plan: WalkPlan): string {
@@ -1803,6 +2304,95 @@ function renderTierStrip(ctx: TierContext): string {
 // In-memory thread cache — cleared on pane enter; rebuilt from history IPC.
 // When the sidecar stub is not yet wired this stays empty and the empty state shows.
 let ghampusThreadMessages: GhampusChatMessage[] = [];
+let ghampusThreadPrefetchDone = false;
+let ghampusThreadPrefetchInflight: Promise<void> | null = null;
+/** null = untried; false = sidecar lacks ghampus:history:prefetch (version skew). */
+let ghampusHistoryPrefetchSupported: boolean | null = null;
+
+const GHAMPUS_THREAD_EMPTY_HTML = `<div id="ghampus-thread-empty" class="ghampus-thread-empty">
+  <img src="/graphnosis-logo-transparent-bg.png" alt=""
+       style="width: 40px; height: 40px; opacity: .3; margin-bottom: 10px;" />
+  <p style="margin: 0; font-size: 13px; opacity: .45;">
+    Start typing — or wait for Ghampus to pick up where you left off.
+  </p>
+</div>`;
+
+const GHAMPUS_THREAD_LOADING_HTML = `<div id="ghampus-thread-loading" class="ghampus-thread-empty ghampus-thread-loading">
+  <img src="/graphnosis-logo-transparent-bg.png" alt=""
+       style="width: 40px; height: 40px; opacity: .3; margin-bottom: 10px;" />
+  <p style="margin: 0; font-size: 13px; opacity: .45;">Loading conversation…</p>
+</div>`;
+
+function ghampusChatMessagesEl(): HTMLElement | null {
+  return document.getElementById('ghampus-chat-messages') ?? document.getElementById('ghampus-thread');
+}
+
+function showGhampusThreadLoading(): void {
+  const container = ghampusChatMessagesEl();
+  if (!container) return;
+  if (document.getElementById('ghampus-thread-loading')) return;
+  container.innerHTML = GHAMPUS_THREAD_LOADING_HTML;
+}
+
+function hideGhampusThreadLoading(): void {
+  document.getElementById('ghampus-thread-loading')?.remove();
+}
+
+function paintGhampusHistoryMessages(messages: GhampusChatMessage[]): void {
+  const container = ghampusChatMessagesEl();
+  if (!container || messages.length === 0) return;
+  ghampusThreadMessages = [];
+  hideGhampusThreadLoading();
+  document.getElementById('ghampus-thread-empty')?.remove();
+  container.innerHTML = '';
+  for (const msg of messages) appendToThread(msg);
+  scrollGhampusThreadToBottomIfPinned({ instant: true });
+}
+
+/** Drop thread cache on lock / cortex switch — next unlock prefetches fresh history. */
+export function resetGhampusThreadCache(): void {
+  ghampusThreadMessages = [];
+  ghampusThreadPrefetchDone = false;
+  ghampusThreadPrefetchInflight = null;
+  refreshGhampusThreadInflight = null;
+  const container = ghampusChatMessagesEl();
+  if (container && container.querySelector('.ghampus-thread-entry') == null) {
+    container.innerHTML = GHAMPUS_THREAD_EMPTY_HTML;
+  }
+}
+
+/** Warm ghampus-history after unlock — non-blocking; paints DOM when data arrives. */
+export function prefetchGhampusThread(): void {
+  if (ghampusThreadPrefetchDone || ghampusThreadMessages.length > 0) return;
+  if (ghampusThreadPrefetchInflight) return;
+  ghampusThreadPrefetchInflight = prefetchGhampusThreadInner().finally(() => {
+    ghampusThreadPrefetchInflight = null;
+    ghampusThreadPrefetchDone = true;
+    reconcileGhampusThreadDom();
+    scrollGhampusThreadToBottomIfPinned({ instant: true });
+  });
+}
+
+async function prefetchGhampusThreadInner(): Promise<void> {
+  try {
+    if (ghampusHistoryPrefetchSupported !== false) {
+      try {
+        await ipcCall('ghampus:history:prefetch', {});
+        ghampusHistoryPrefetchSupported = true;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('Unknown IPC method')) {
+          ghampusHistoryPrefetchSupported = false;
+        }
+      }
+    }
+    const res = await ipcCall<{ messages: unknown[] }>('ghampus:history', {});
+    const messages = dedupeAwayDigests(normalizeGhampusHistoryMessages(res.messages ?? []));
+    if (messages.length > 0 && ghampusThreadMessages.length === 0) {
+      paintGhampusHistoryMessages(messages);
+    }
+  } catch { /* non-fatal — refreshGhampusThread is the fallback */ }
+}
 
 function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean }): void {
   if (!opts?.skipCache) ghampusThreadMessages.push(msg);
@@ -1887,6 +2477,30 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
       void sendRefineResponse(sourceId, 'skip');
     });
   }
+  if (msg.kind === 'memory-suggestion') {
+    wireMemorySuggestionCardActions(node, msg.suggestion);
+  }
+  if (msg.kind === 'vitality-nudge') {
+    node.querySelector<HTMLButtonElement>('.ghampus-vitality-walk')?.addEventListener('click', () => {
+      const label = msg.nudge.walkSkillLabel ?? 'cortex-gardening';
+      void ipcCall('ghampus:send', { text: `Walk skill ${label}`, turnId: crypto.randomUUID() });
+    });
+    node.querySelector<HTMLButtonElement>('.ghampus-vitality-try')?.addEventListener('click', () => {
+      const prompt = msg.nudge.examplePrompt;
+      if (!prompt) return;
+      void ipcCall('ghampus:send', { text: prompt, turnId: crypto.randomUUID() });
+    });
+    node.querySelector<HTMLElement>('.ghampus-tip-example-prompt')?.addEventListener('click', () => {
+      const prompt = msg.nudge.examplePrompt;
+      if (!prompt) return;
+      void ipcCall('ghampus:send', { text: prompt, turnId: crypto.randomUUID() });
+    });
+  }
+  if (msg.kind === 'recovery-nudge') {
+    node.querySelector<HTMLButtonElement>('.ghampus-recovery-open')?.addEventListener('click', () => {
+      document.dispatchEvent(new CustomEvent('graphnosis:open-recovery'));
+    });
+  }
   if (msg.kind === 'proactive-card') {
     if (msg.card.signalType === 'skill-stale') {
       wireSkillStaleCardActions(node, msg.card);
@@ -1937,6 +2551,73 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
       btn.closest('.ghampus-thread-entry')?.remove();
     });
   }
+}
+
+function wireMemorySuggestionCardActions(node: HTMLElement, suggestion: MemorySuggestionCardPayload): void {
+  const select = node.querySelector<HTMLSelectElement>('.ghampus-memory-suggestion-engram-select');
+  if (select) {
+    void ipcCall<{ engrams?: Array<{ graphId: string; displayName: string }> }>('agent:runTool', {
+      tool: 'list_engrams',
+      args: {},
+    }).then((res) => {
+      const engrams = res.engrams ?? [];
+      const defaultId = select.dataset.default ?? suggestion.engramHint ?? 'personal';
+      select.innerHTML = engrams.length
+        ? engrams.map((e) => {
+          const selected = e.graphId === defaultId ? ' selected' : '';
+          return `<option value="${escapeHtml(e.graphId)}"${selected}>${escapeHtml(e.displayName)}</option>`;
+        }).join('')
+        : `<option value="${escapeHtml(defaultId)}">${escapeHtml(defaultId)}</option>`;
+    }).catch(() => {});
+  }
+
+  const removeCard = () => node.closest('.ghampus-thread-entry')?.remove();
+  const fadeActions = (label: string) => {
+    const actions = node.querySelector<HTMLElement>('.ghampus-memory-suggestion-actions');
+    if (actions) actions.innerHTML = `<span style="font-size:12px;opacity:.55;">${escapeHtml(label)}</span>`;
+  };
+
+  node.querySelector<HTMLButtonElement>('.ghampus-memory-suggestion-save')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const card = btn.closest('.ghampus-memory-suggestion-card');
+    const engramId = card?.querySelector<HTMLSelectElement>('.ghampus-memory-suggestion-engram-select')?.value
+      ?? suggestion.engramHint
+      ?? 'personal';
+    btn.disabled = true;
+    try {
+      await ipcCall('agent:acceptMemorySuggestion', {
+        id: suggestion.id,
+        text: suggestion.text,
+        engramId,
+        kind: suggestion.kind,
+        ...(suggestion.obligation ? { obligation: suggestion.obligation } : {}),
+        ...(suggestion.createEngramName ? { createEngramName: suggestion.createEngramName } : {}),
+      });
+      fadeActions('Saved to memory');
+      appendToThread({
+        kind: 'ghampus',
+        text: `Saved to **${engramId}**.`,
+        ts: Date.now(),
+      });
+    } catch (err) {
+      btn.disabled = false;
+      fadeActions(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  node.querySelector<HTMLButtonElement>('.ghampus-memory-suggestion-later')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    fadeActions('Not now — ask again later if you share more');
+    node.querySelector<HTMLElement>('.ghampus-memory-suggestion-card')?.classList.add('ghampus-memory-suggestion-card--muted');
+  });
+
+  node.querySelector<HTMLButtonElement>('.ghampus-memory-suggestion-dismiss')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    await ipcCall('agent:dismissMemorySuggestion', { id: suggestion.id }).catch(() => {});
+    removeCard();
+  });
 }
 
 function wireSkillStaleCardActions(node: HTMLElement, card: ProactiveCardPayload): void {
@@ -2181,6 +2862,8 @@ export async function refreshGhampusThread(): Promise<void> {
   refreshGhampusThreadInflight = refreshGhampusThreadInner().finally(() => {
     refreshGhampusThreadInflight = null;
     reconcileGhampusThreadDom();
+    syncGhampusLlmSetupGuide(lastGhampusLlmStatus);
+    scrollGhampusThreadToBottomIfPinned({ instant: true });
   });
   return refreshGhampusThreadInflight;
 }
@@ -2206,19 +2889,31 @@ async function refreshGhampusThreadInner(): Promise<void> {
   // If we already have live messages from this session, leave the DOM alone.
   // Only the first load (or an explicit clear) should fetch history.
   const hasLiveMessages = ghampusThreadMessages.length > 0;
-  if (hasLiveMessages) return;
+  if (hasLiveMessages) {
+    scrollGhampusThreadToBottomIfPinned({ instant: true });
+    return;
+  }
 
-  // Try history first
+  // Boot prefetch still running — show a subtle loading state, then reuse cache.
+  if (ghampusThreadPrefetchInflight) {
+    showGhampusThreadLoading();
+    await ghampusThreadPrefetchInflight;
+    hideGhampusThreadLoading();
+    if (ghampusThreadMessages.length > 0) {
+      scrollGhampusThreadToBottomIfPinned({ instant: true });
+      return;
+    }
+  }
+
+  // Try history first (sidecar cache should make this instant after prefetch).
   let messages: GhampusChatMessage[] = [];
   try {
-    const res = await ipcCall<{ messages: GhampusChatMessage[] }>('ghampus:history', {});
-    messages = dedupeAwayDigests(res.messages ?? []);
+    const res = await ipcCall<{ messages: unknown[] }>('ghampus:history', {});
+    messages = dedupeAwayDigests(normalizeGhampusHistoryMessages(res.messages ?? []));
   } catch { /* not yet wired */ }
 
   if (messages.length > 0) {
-    ghampusThreadMessages = [];
-    thread.innerHTML = '';
-    for (const msg of messages) appendToThread(msg);
+    paintGhampusHistoryMessages(messages);
     return;
   }
 
@@ -2226,12 +2921,10 @@ async function refreshGhampusThreadInner(): Promise<void> {
   // above prevents parallel tab-refresh races from appending duplicates).
   try {
     await ipcCall<{ emitted?: boolean }>('ghampus:digest', {});
-    const res2 = await ipcCall<{ messages: GhampusChatMessage[] }>('ghampus:history', {});
-    const digestMessages = dedupeAwayDigests(res2.messages ?? []);
+    const res2 = await ipcCall<{ messages: unknown[] }>('ghampus:history', {});
+    const digestMessages = dedupeAwayDigests(normalizeGhampusHistoryMessages(res2.messages ?? []));
     if (digestMessages.length > 0) {
-      ghampusThreadMessages = [];
-      thread.innerHTML = '';
-      for (const msg of digestMessages) appendToThread(msg);
+      paintGhampusHistoryMessages(digestMessages);
       return;
     }
   } catch { /* fall through to notification cards */ }
@@ -2249,8 +2942,10 @@ async function refreshGhampusThreadInner(): Promise<void> {
     }>('agent:listNotifications', { sinceMs: lastVisited, limit: 8 });
 
     if (res.notifications.length === 0) {
-      // Truly nothing — show empty state
-      thread.innerHTML = `<div id="ghampus-thread-empty" class="ghampus-thread-empty">
+      // Truly nothing — show empty state inside the chat-messages container
+      const container = ghampusChatMessagesEl();
+      if (!container) return;
+      container.innerHTML = `<div id="ghampus-thread-empty" class="ghampus-thread-empty">
         <div style="width: 36px; height: 36px; border-radius: 10px; background: #14b8a6;
                     display: flex; align-items: center; justify-content: center;
                     font-weight: 700; font-size: 18px; color: #fff; margin-bottom: 12px; opacity: .5;">G</div>
@@ -2332,6 +3027,142 @@ function updateGhampusInputPlaceholder(activeEngramId?: string): void {
   const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
   if (!input) return;
   input.placeholder = 'Ask anything — type / to save, recall, or run a skill';
+}
+
+// ── Local LLM setup guide (in-thread, when Ghampus chat can't run) ─────────────
+
+interface GhampusLlmStatus {
+  ollamaReachable: boolean;
+  installedModels: string[];
+  activeModel: string | null;
+  enabled?: boolean;
+  catalog?: Array<{ model: string; label: string; recommended?: boolean }>;
+}
+
+let lastGhampusLlmStatus: GhampusLlmStatus | null = null;
+let ghampusLlmStatusPollTimer: ReturnType<typeof setInterval> | null = null;
+
+function isGhampusLlmReady(status: GhampusLlmStatus): boolean {
+  return !!(status.ollamaReachable && status.installedModels.length > 0 && status.enabled);
+}
+
+/** Stop polling when the user leaves the Ghampus tab. */
+export function stopGhampusLlmStatusPoll(): void {
+  if (ghampusLlmStatusPollTimer !== null) {
+    clearInterval(ghampusLlmStatusPollTimer);
+    ghampusLlmStatusPollTimer = null;
+  }
+}
+
+function startGhampusLlmStatusPoll(): void {
+  if (ghampusLlmStatusPollTimer !== null) return;
+  ghampusLlmStatusPollTimer = setInterval(() => { void refreshGhampusHeader(); }, 15_000);
+}
+
+function ghampusRecommendedPullTag(catalog?: Array<{ model: string; recommended?: boolean }>): string {
+  const rec = catalog?.find((c) => c.recommended) ?? catalog?.[0];
+  if (!rec) return 'llama3.2:3b';
+  const short = rec.model.match(/^([^:]+:[^-]+)/);
+  return short ? short[1] : rec.model;
+}
+
+function ghampusLlmSetupIntro(status: GhampusLlmStatus): string {
+  if (!status.ollamaReachable) {
+    return 'Ghampus chat needs Ollama running on your Mac. Embeddings and recall work without it; synthesis does not.';
+  }
+  if (status.installedModels.length === 0) {
+    return 'Ollama is connected — pull a recommended model, then enable the local LLM in Graphnosis.';
+  }
+  return 'Model installed — enable the local LLM master switch so Ghampus can synthesize answers.';
+}
+
+function ghampusLlmSetupSteps(status: GhampusLlmStatus, pullTag: string): string {
+  const steps: string[] = [];
+  if (!status.ollamaReachable) {
+    steps.push(
+      `<li><strong>Install Ollama.</strong> Download from `
+      + `<a href="#" id="btn-ghampus-llm-ollama-site">ollama.com</a> or run `
+      + `<code class="ghampus-llm-setup-cmd">brew install ollama</code> in Terminal.</li>`,
+      `<li><strong>Start Ollama.</strong> Open the Ollama app once (menu-bar icon on macOS), `
+      + `or run <code class="ghampus-llm-setup-cmd">ollama serve</code> if you prefer Terminal.</li>`,
+    );
+  }
+  if (!status.ollamaReachable || status.installedModels.length === 0) {
+    steps.push(
+      `<li><strong>Pull a model.</strong> In Terminal: `
+      + `<code class="ghampus-llm-setup-cmd">ollama pull ${escapeHtml(pullTag)}</code> `
+      + `(recommended — matches Graphnosis defaults).</li>`,
+    );
+  }
+  if (!status.enabled) {
+    steps.push(
+      `<li><strong>Enable in Graphnosis.</strong> Open <strong>Foresight → Local LLM</strong>, `
+      + `turn on the master switch, and pick your active model.</li>`,
+    );
+  }
+  steps.push(
+    `<li><strong>Verify loopback.</strong> Status should show a green connection on `
+    + `<code class="ghampus-llm-setup-cmd">127.0.0.1:11434</code> — nothing leaves your machine.</li>`,
+  );
+  return steps.join('');
+}
+
+function buildGhampusLlmSetupGuideHtml(status: GhampusLlmStatus): string {
+  const pullTag = ghampusRecommendedPullTag(status.catalog);
+  const intro = ghampusLlmSetupIntro(status);
+  const steps = ghampusLlmSetupSteps(status, pullTag);
+  return `<div class="chat-msg ghampus ghampus-llm-setup-msg">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-llm-setup-card">
+        <div class="ghampus-tip-header">
+          <span class="ghampus-tip-badge">Setup</span>
+          <span class="ghampus-tip-category">Local LLM</span>
+        </div>
+        <p class="ghampus-tip-title">Set up a local LLM for Ghampus chat</p>
+        <p class="ghampus-tip-body">${escapeHtml(intro)}</p>
+        <ol class="ghampus-llm-setup-steps">${steps}</ol>
+        <p class="ghampus-llm-setup-foot">
+          Embeddings and recall work without a local LLM. Ghampus chat synthesis needs Ollama.
+          <a href="#" id="btn-ghampus-llm-docs" class="ghampus-llm-setup-link">Full setup guide →</a>
+        </p>
+        <div class="ghampus-llm-setup-actions">
+          <button type="button" class="g-btn primary" id="btn-ghampus-llm-open-setup">Open Local LLM setup →</button>
+          <button type="button" class="g-btn" id="btn-ghampus-llm-recheck">Recheck connection</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function syncGhampusLlmSetupGuide(status: GhampusLlmStatus | null): void {
+  if (!status) return;
+  const container = document.getElementById('ghampus-chat-messages');
+  if (!container) return;
+
+  const ready = isGhampusLlmReady(status);
+  const existing = document.getElementById('ghampus-llm-setup-guide');
+
+  if (ready) {
+    existing?.remove();
+    stopGhampusLlmStatusPoll();
+    return;
+  }
+
+  startGhampusLlmStatusPoll();
+  const html = buildGhampusLlmSetupGuideHtml(status);
+  if (existing) {
+    existing.innerHTML = html;
+  } else {
+    const entry = document.createElement('div');
+    entry.id = 'ghampus-llm-setup-guide';
+    entry.className = 'ghampus-thread-entry ghampus-llm-setup-entry';
+    entry.innerHTML = html;
+    container.insertBefore(entry, container.firstChild);
+  }
+  document.getElementById('ghampus-thread-empty')?.remove();
 }
 
 function ghampusModelDisplayName(
@@ -2447,11 +3278,14 @@ export async function refreshGhampusHeader(): Promise<void> {
         ollamaReachable: boolean;
         installedModels: string[];
         activeModel: string | null;
-        catalog?: Array<{ model: string; label: string }>;
+        enabled?: boolean;
+        catalog?: Array<{ model: string; label: string; recommended?: boolean }>;
       }>('llm:status', {}),
     ]);
     ghampusCloudRoutingReady = catalogData.cloudRoutingReady === true;
+    lastGhampusLlmStatus = llmStatus;
     paintGhampusModelSelect(llmStatus);
+    syncGhampusLlmSetupGuide(llmStatus);
 
     // Usage counter
     const counterEl = document.getElementById('ghampus-usage-counter');
@@ -2471,12 +3305,379 @@ export async function refreshGhampusHeader(): Promise<void> {
   updateGhampusInputPlaceholder();
 }
 
+// ── Skill picker drawer (/walk · /train · /skills while typing) ─────────────
+
+type SkillPickerMode = 'walk' | 'train' | 'skills';
+
+type SkillPickerSkill = {
+  sourceId: string;
+  label: string;
+  slug: string;
+  displayLabel: string;
+  vitality: number | null;
+};
+
+const SKILL_PICKER_MODE_CONFIG: Record<SkillPickerMode, {
+  title: string;
+  hint: string;
+  placeholder: string;
+  commandPrefix: string;
+}> = {
+  walk: {
+    title: 'Walk a skill',
+    hint: '',
+    placeholder: 'Filter by name…',
+    commandPrefix: '/walk',
+  },
+  train: {
+    title: 'Train a skill',
+    hint: '',
+    placeholder: 'Filter by name…',
+    commandPrefix: '/train',
+  },
+  skills: {
+    title: 'Your skills',
+    hint: 'Type to filter your trained skills by name. Pick one to list it in chat, or press Enter to list all matches.',
+    placeholder: 'Filter by name…',
+    commandPrefix: '/skills',
+  },
+};
+
+function skillBaseName(label: string): string {
+  return label.replace(/^skill:\d+:/, '').trim();
+}
+
+function skillHumanLabel(label: string): string {
+  return skillBaseName(label).replace(/-/g, ' ');
+}
+
+function skillWalkSlug(label: string): string {
+  return skillBaseName(label).replace(/\s+/g, '-');
+}
+
+function parseSkillPickerCommand(text: string): { mode: SkillPickerMode | null; filter: string } {
+  const t = text.trimStart();
+  let m = t.match(/^\/walk(?:\s+skill)?(?:\s+(.*))?$/is);
+  if (m) return { mode: 'walk', filter: (m[1] ?? '').trimEnd() };
+  m = t.match(/^\/train(?:\s+(?:skill\s+)?(.*))?$/is);
+  if (m) return { mode: 'train', filter: (m[1] ?? '').trimEnd() };
+  m = t.match(/^\/skills(?:\s+(.*))?$/is);
+  if (m) return { mode: 'skills', filter: (m[1] ?? '').trimEnd() };
+  return { mode: null, filter: '' };
+}
+
+type SkillPickerHandle = {
+  open: (mode: SkillPickerMode, initialFilter?: string, opts?: { focusFilter?: boolean }) => Promise<void>;
+  syncFromInput: (mode: SkillPickerMode, filter: string) => void;
+  ensureReady: () => Promise<void>;
+  isOpen: () => boolean;
+  close: () => void;
+  findExactMatch: (filter: string) => SkillPickerSkill | undefined;
+};
+
+function skillPickerVitalityClass(v: number | null): string {
+  if (v == null) return '';
+  if (v >= 70) return 'v-high';
+  if (v >= 40) return 'v-mid';
+  return 'v-low';
+}
+
+function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): SkillPickerHandle {
+  const backdrop = document.getElementById('ghampus-walk-picker');
+  const titleEl = document.getElementById('ghampus-walk-picker-title');
+  const hintEl = document.getElementById('ghampus-walk-picker-hint');
+  const filterEl = document.getElementById('ghampus-walk-picker-filter') as HTMLInputElement | null;
+  const listEl = document.getElementById('ghampus-walk-picker-list');
+  const emptyEl = document.getElementById('ghampus-walk-picker-empty');
+  const noop: SkillPickerHandle = {
+    open: async () => {},
+    syncFromInput: () => {},
+    ensureReady: async () => {},
+    isOpen: () => false,
+    close: () => {},
+    findExactMatch: () => undefined,
+  };
+  if (!backdrop || !filterEl || !listEl || !emptyEl) return noop;
+
+  let allSkills: SkillPickerSkill[] = [];
+  let filtered: SkillPickerSkill[] = [];
+  let activeIdx = 0;
+  let previousFocus: HTMLElement | null = null;
+  let drawerOpen = false;
+  let activeMode: SkillPickerMode = 'walk';
+  let skillsLoaded = false;
+  let loadPromise: Promise<void> | null = null;
+  let syncDebounce: ReturnType<typeof setTimeout> | null = null;
+
+  const applyModeChrome = (mode: SkillPickerMode): void => {
+    activeMode = mode;
+    const cfg = SKILL_PICKER_MODE_CONFIG[mode];
+    if (titleEl) titleEl.textContent = cfg.title;
+    if (hintEl) {
+      hintEl.textContent = cfg.hint;
+      hintEl.classList.toggle('hidden', !cfg.hint);
+    }
+    filterEl.placeholder = cfg.placeholder;
+    listEl.setAttribute('aria-label', cfg.title);
+  };
+
+  const focusActiveItem = (): void => {
+    listEl.querySelector<HTMLButtonElement>(`.ghampus-walk-picker-item[data-idx="${activeIdx}"]`)?.focus();
+  };
+
+  const close = (): void => {
+    drawerOpen = false;
+    backdrop.classList.add('hidden');
+    filterEl.value = '';
+    filterEl.classList.remove('is-synced');
+    activeIdx = 0;
+    if (syncDebounce) {
+      clearTimeout(syncDebounce);
+      syncDebounce = null;
+    }
+    if (previousFocus && document.contains(previousFocus)) {
+      previousFocus.focus();
+    }
+    previousFocus = null;
+  };
+
+  const findExactMatch = (filter: string): SkillPickerSkill | undefined => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return undefined;
+    const slugQ = skillWalkSlug(q).toLowerCase();
+    return allSkills.find((s) =>
+      s.slug.toLowerCase() === q
+      || s.slug.toLowerCase() === slugQ
+      || s.displayLabel.toLowerCase() === q
+      || s.label.toLowerCase() === q,
+    );
+  };
+
+  const buildSubmitText = (skill?: SkillPickerSkill, filterOverride?: string): string => {
+    const cfg = SKILL_PICKER_MODE_CONFIG[activeMode];
+    if (activeMode === 'skills') {
+      const f = (skill?.slug ?? filterOverride ?? filterEl.value.trim());
+      return f ? `/skills ${f}` : '/skills';
+    }
+    if (skill) return `${cfg.commandPrefix} ${skill.slug}`;
+    return cfg.commandPrefix;
+  };
+
+  const submitPickerChoice = async (skill?: SkillPickerSkill, filterOverride?: string): Promise<void> => {
+    const text = buildSubmitText(skill, filterOverride);
+    close();
+    await submitText(text);
+  };
+
+  const pickSkill = async (skill: SkillPickerSkill | undefined): Promise<void> => {
+    if (activeMode === 'skills') {
+      if (skill) await submitPickerChoice(skill);
+      else if (filterEl.value.trim()) await submitPickerChoice(undefined, filterEl.value.trim());
+      return;
+    }
+    if (!skill) return;
+    await submitPickerChoice(skill);
+  };
+
+  const renderList = (): void => {
+    const q = filterEl.value.trim().toLowerCase();
+    filtered = q
+      ? allSkills.filter((s) =>
+          s.displayLabel.toLowerCase().includes(q)
+          || s.slug.toLowerCase().includes(q)
+          || s.label.toLowerCase().includes(q),
+        )
+      : [...allSkills];
+    if (activeIdx >= filtered.length) activeIdx = Math.max(0, filtered.length - 1);
+
+    listEl.innerHTML = filtered.map((s, i) => {
+      const vClass = skillPickerVitalityClass(s.vitality);
+      const vBadge = s.vitality != null
+        ? `<span class="ghampus-walk-picker-vitality ${vClass}">${s.vitality}</span>`
+        : '';
+      return `<li role="presentation">
+        <button type="button" class="ghampus-walk-picker-item${i === activeIdx ? ' is-active' : ''}"
+                data-idx="${i}" role="option" aria-selected="${i === activeIdx ? 'true' : 'false'}">
+          <span class="ghampus-walk-picker-name">${escapeHtml(s.displayLabel)}</span>
+          ${vBadge}
+        </button>
+      </li>`;
+    }).join('');
+
+    const noSkills = allSkills.length === 0;
+    const noMatches = filtered.length === 0;
+    emptyEl.textContent = noSkills
+      ? 'No skills in your library yet. Train one in Skills.'
+      : 'No skills match your filter.';
+    emptyEl.classList.toggle('hidden', !noMatches);
+    listEl.classList.toggle('hidden', noMatches && !noSkills);
+
+    listEl.querySelectorAll<HTMLButtonElement>('.ghampus-walk-picker-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        void pickSkill(filtered[Number(btn.dataset['idx'])]);
+      });
+    });
+  };
+
+  const loadSkills = async (): Promise<void> => {
+    if (skillsLoaded) return;
+    try {
+      const res = await ipcCall<{ skills: Array<{ sourceId: string; label: string; recallBreadth?: number }> }>(
+        'agent:listSkills',
+        {},
+      );
+      allSkills = (res.skills ?? []).map((s) => ({
+        sourceId: s.sourceId,
+        label: s.label,
+        slug: skillWalkSlug(s.label),
+        displayLabel: skillHumanLabel(s.label),
+        vitality: s.recallBreadth ?? null,
+      })).sort((a, b) => a.displayLabel.localeCompare(b.displayLabel));
+    } catch {
+      allSkills = [];
+    }
+    skillsLoaded = true;
+  };
+
+  const ensureReady = async (): Promise<void> => {
+    if (skillsLoaded) return;
+    if (!loadPromise) loadPromise = loadSkills();
+    await loadPromise;
+  };
+
+  const showDrawerShell = (focusFilter: boolean): void => {
+    if (!drawerOpen) {
+      previousFocus = document.activeElement as HTMLElement | null;
+      backdrop.classList.remove('hidden');
+      drawerOpen = true;
+      listEl.innerHTML = '';
+      emptyEl.textContent = 'Loading skills…';
+      emptyEl.classList.remove('hidden');
+      listEl.classList.add('hidden');
+    }
+    if (focusFilter) filterEl.focus();
+  };
+
+  const applyFilter = (mode: SkillPickerMode, filter: string, focusFilter: boolean): void => {
+    applyModeChrome(mode);
+    filterEl.value = filter;
+    filterEl.classList.toggle('is-synced', !focusFilter);
+    activeIdx = 0;
+    if (!skillsLoaded) {
+      showDrawerShell(focusFilter);
+      void ensureReady().then(() => {
+        if (!drawerOpen) return;
+        renderList();
+        if (focusFilter) filterEl.focus();
+      });
+      return;
+    }
+    showDrawerShell(focusFilter);
+    renderList();
+    if (focusFilter) filterEl.focus();
+  };
+
+  const open = async (mode: SkillPickerMode, initialFilter = '', opts?: { focusFilter?: boolean }): Promise<void> => {
+    applyFilter(mode, initialFilter, opts?.focusFilter ?? true);
+    await ensureReady();
+    if (!drawerOpen) return;
+    renderList();
+    if (opts?.focusFilter ?? true) filterEl.focus();
+  };
+
+  const syncFromInput = (mode: SkillPickerMode, filter: string): void => {
+    if (syncDebounce) clearTimeout(syncDebounce);
+    syncDebounce = setTimeout(() => {
+      syncDebounce = null;
+      applyFilter(mode, filter, false);
+    }, 50);
+  };
+
+  filterEl.addEventListener('input', () => {
+    filterEl.classList.remove('is-synced');
+    activeIdx = 0;
+    renderList();
+  });
+
+  filterEl.addEventListener('focus', () => {
+    filterEl.classList.remove('is-synced');
+  });
+
+  filterEl.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!filtered.length) return;
+      activeIdx = (activeIdx + 1) % filtered.length;
+      renderList();
+      focusActiveItem();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!filtered.length) return;
+      activeIdx = (activeIdx - 1 + filtered.length) % filtered.length;
+      renderList();
+      focusActiveItem();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filtered[activeIdx]) void pickSkill(filtered[activeIdx]);
+      else if (activeMode === 'skills' && filterEl.value.trim()) void submitPickerChoice(undefined, filterEl.value.trim());
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  });
+
+  listEl.addEventListener('keydown', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.ghampus-walk-picker-item');
+    if (!btn) return;
+    const idx = Number(btn.dataset['idx']);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIdx = (idx + 1) % filtered.length;
+      renderList();
+      focusActiveItem();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIdx = (idx - 1 + filtered.length) % filtered.length;
+      renderList();
+      focusActiveItem();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      void pickSkill(filtered[idx]);
+    }
+  });
+
+  backdrop.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const panel = backdrop.querySelector<HTMLElement>('.ghampus-walk-picker');
+    if (!panel) return;
+    const focusables = panel.querySelectorAll<HTMLElement>(
+      'input, button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
+
+  document.getElementById('btn-ghampus-walk-picker-close')?.addEventListener('click', close);
+
+  return { open, syncFromInput, ensureReady, isOpen: () => drawerOpen, close, findExactMatch };
+}
+
 // ── Slash command definitions ─────────────────────────────────────────────────
 const SLASH_COMMANDS = [
   { name: 'save',    icon: '💾', args: '[content] [@engram]', desc: 'Save a memory',         template: '/save '         },
   { name: 'create',  icon: '✨', args: '[engram name]',       desc: 'Create a new engram',   template: '/create '       },
   { name: 'engrams', icon: '🗂️', args: '',                    desc: 'List your engrams',     template: '/engrams'       },
-  { name: 'skills',  icon: '⚡', args: '',                    desc: 'List your skills',      template: '/skills'        },
+  { name: 'skills',  icon: '⚡', args: '[filter]',            desc: 'List your skills',      template: '/skills '       },
+  { name: 'walk',    icon: '👣', args: '[skill name]',        desc: 'Run a skill',           template: '/walk '         },
+  { name: 'train',   icon: '🎓', args: '[skill name]',        desc: 'Retrain a skill (Pro)', template: '/train '        },
   { name: 'forget',  icon: '🗑️', args: '',                    desc: 'Manage / delete memories', template: '/forget'     },
   { name: 'help',    icon: '❓', args: '',                    desc: 'Show all commands',     template: '/help'          },
 ] as const;
@@ -2534,6 +3735,7 @@ function wireGhampusChat(): void {
     // Move cursor to end
     input!.selectionStart = input!.selectionEnd = input!.value.length;
     autoGrow();
+    input!.dispatchEvent(new Event('input', { bubbles: true }));
     // Execute no-arg commands immediately
     if (!cmd.args) void sendMessage();
   }
@@ -2546,6 +3748,7 @@ function wireGhampusChat(): void {
 
   function updatePalette(): void {
     const val = input!.value;
+    if (parseSkillPickerCommand(val).mode) { hidePalette(); return; }
     if (!val.startsWith('/')) { hidePalette(); return; }
     const filter = val.slice(1).split(/\s/)[0].toLowerCase();
     // Only show palette while user is still typing the command word (no space yet after it)
@@ -2559,14 +3762,24 @@ function wireGhampusChat(): void {
     input!.style.height = 'auto';
     input!.style.height = `${Math.min(input!.scrollHeight, 140)}px`;
   }
-  input.addEventListener('input', () => { autoGrow(); updatePalette(); });
 
-  async function sendMessage(): Promise<void> {
-    const text = input!.value.trim();
-    if (!text) return;
-    hidePalette();
-    input!.value = '';
-    input!.style.height = 'auto';
+  function handleSkillPickerInputSync(): void {
+    const parsed = parseSkillPickerCommand(input!.value);
+    if (parsed.mode) {
+      hidePalette();
+      skillPicker.syncFromInput(parsed.mode, parsed.filter);
+    } else if (skillPicker.isOpen()) {
+      skillPicker.close();
+    }
+  }
+
+  input.addEventListener('input', () => {
+    autoGrow();
+    handleSkillPickerInputSync();
+    updatePalette();
+  });
+
+  async function submitGhampusText(text: string): Promise<void> {
     const ts = Date.now();
     const turnId = newGhampusTurnId();
     liveTraceTurnId = turnId;
@@ -2582,8 +3795,54 @@ function wireGhampusChat(): void {
     }
   }
 
+  const skillPicker = wireSkillPickerDrawer(submitGhampusText);
+
+  async function sendMessage(): Promise<void> {
+    const text = input!.value.trim();
+    if (!text) return;
+    hidePalette();
+    const parsed = parseSkillPickerCommand(text);
+    if (parsed.mode) {
+      const cfg = SKILL_PICKER_MODE_CONFIG[parsed.mode];
+      if (!parsed.filter) {
+        input!.value = '';
+        input!.style.height = 'auto';
+        skillPicker.close();
+        void skillPicker.open(parsed.mode, '', { focusFilter: true });
+        return;
+      }
+      if (parsed.mode === 'skills') {
+        input!.value = '';
+        input!.style.height = 'auto';
+        skillPicker.close();
+        await submitGhampusText(`${cfg.commandPrefix} ${parsed.filter}`);
+        return;
+      }
+      await skillPicker.ensureReady();
+      const exact = skillPicker.findExactMatch(parsed.filter);
+      if (exact) {
+        input!.value = '';
+        input!.style.height = 'auto';
+        skillPicker.close();
+        await submitGhampusText(`${cfg.commandPrefix} ${exact.slug}`);
+        return;
+      }
+      skillPicker.syncFromInput(parsed.mode, parsed.filter);
+      return;
+    }
+    if (skillPicker.isOpen()) skillPicker.close();
+    input!.value = '';
+    input!.style.height = 'auto';
+    await submitGhampusText(text);
+  }
+
   input.addEventListener('keydown', (e) => {
     trackGhampusActivity();
+    if (e.key === 'Escape' && skillPicker.isOpen()) {
+      e.preventDefault();
+      skillPicker.close();
+      return;
+    }
     // Palette navigation
     if (paletteVisible) {
       if (e.key === 'ArrowDown') {
@@ -2663,6 +3922,33 @@ function wireGhampusChat(): void {
   }
 }
 function wireGhampusControls(): void {
+  document.getElementById('ghampus-chat-messages')?.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('#btn-ghampus-llm-open-setup')) {
+      e.preventDefault();
+      app.activateMode('goals');
+      setTimeout(() => {
+        document.getElementById('fcard-llm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 50);
+      return;
+    }
+    if (t.closest('#btn-ghampus-llm-recheck')) {
+      e.preventDefault();
+      void refreshGhampusHeader();
+      return;
+    }
+    if (t.closest('#btn-ghampus-llm-ollama-site')) {
+      e.preventDefault();
+      void invoke('open_external_url', { url: 'https://ollama.com/download' });
+      return;
+    }
+    if (t.closest('#btn-ghampus-llm-docs')) {
+      e.preventDefault();
+      void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com/local-ai' })
+        .catch(() => invoke('open_external_url', { url: 'https://docs.graphnosis.com/local-ai' }));
+    }
+  });
+
   document.getElementById('btn-ghampus-kill')?.addEventListener('click', () => {
     void (async () => {
       await ipcCall('agent:setEnabled', { enabled: false });

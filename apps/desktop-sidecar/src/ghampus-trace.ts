@@ -88,8 +88,12 @@ export function formatGhampusToolErrorPreview(errText: string): string {
         parts.push('maxTokens must be ≤ 8000');
       } else if (path === 'query' || /expected string.*query/i.test(msg)) {
         parts.push('search query missing');
-      } else if (msg) {
+      } else if (path === 'graphId' || /graphId/i.test(path)) {
+        parts.push('memory graph not specified');
+      } else if (msg && !/invalid_type|received undefined|expected string/i.test(msg)) {
         parts.push(path ? `${path}: ${msg}` : msg);
+      } else if (path) {
+        parts.push(`${path} invalid`);
       }
     }
     if (parts.length > 0) return parts.join('; ').slice(0, 120);

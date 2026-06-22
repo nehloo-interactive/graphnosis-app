@@ -105,6 +105,24 @@ export type RecoveryStatus =
   | 'url-refetch-not-implemented'
   | 'content-not-in-oplog';
 
+/** Disk state for one engram where .lkg is substantially larger than .gai. */
+export interface LkgRecoveryCandidate {
+  graphId: GraphId;
+  displayName: string;
+  gaiBytes: number;
+  lkgBytes: number;
+  needsPromote: boolean;
+  loaded: boolean;
+}
+
+export type EngramRecoveryNeededHandler = (payload: {
+  graphId: GraphId;
+  displayName: string;
+  reason: string;
+  gaiBytes?: number;
+  lkgBytes?: number;
+}) => void;
+
 /**
  * Format of a cached content blob (before encryption). We prepend a small
  * JSON header so recovery knows how to re-ingest (parser kind, mime, original
@@ -343,6 +361,20 @@ export class GraphnosisHost {
   private bootDeferredFlushPromise: Promise<void> | null = null;
   /** Dedupes concurrent loadGraph calls (boot sweep timeout + UI graphs.load). */
   private loadGraphInflight = new Map<GraphId, Promise<void>>();
+  /** Shrink-save blocks this session — pause brain mutations after threshold. */
+  private shrinkSaveBlockedCount = new Map<GraphId, number>();
+  /** Engrams where autonomous brain writes stand down until a successful save. */
+  private brainMutationsPaused = new Set<GraphId>();
+  /** One warn per engram per session when brain mutations pause. */
+  private brainMutationsPauseWarned = new Set<GraphId>();
+  /** One save-blocked warn per engram per session (shrink or empty shell). */
+  private saveBlockedWarned = new Set<GraphId>();
+  /** One in-app recovery nudge per engram per session (save blocked / promote failed). */
+  private recoveryNeededEmitted = new Set<GraphId>();
+  /** Optional hook — main.ts wires Ghampus nudge + boot toast. */
+  private onRecoveryNeeded: EngramRecoveryNeededHandler | null = null;
+  /** Dedupe noisy op-log integrity callbacks (future-timestamp per device+file). */
+  private _oplogIntegrityWarned = new Set<string>();
   private readonly oplogWriter: oplog.OpLogWriter;
   /** Append-only LLM event log — one .gll file per engram. */
   readonly gllWriter: GllWriter;
@@ -2557,13 +2589,12 @@ export class GraphnosisHost {
     // reconcile runs — without it, inspectNodes can briefly return [] on some
     // .gai shapes until reconcile finishes.
     await this.opts.adapter.build(handle);
-    // Zero-node .gai with a much larger .lkg (partial write / hollow shell):
-    // promote .lkg before hollow-bundle materialize tries a partial rebuild
-    // save that shrink-save guard would block (2.7MB over 13MB pattern).
+    // Tiny .gai with a much larger .lkg (partial write / hollow shell, including
+    // partial loads with some nodes): promote .lkg before a rebuild save hits
+    // shrink-save guard (2.7MB over 13MB pattern).
     let committedNodes = this.opts.adapter.inspectNodes(handle).length;
     if (
       !usedTinyLkgRestore &&
-      committedNodes === 0 &&
       lkgSize > EMPTY_SAVE_BLOCK_MIN_BYTES &&
       lkgSize > loadedGaiBytes / SHRINK_SAVE_BLOCK_RATIO
     ) {
@@ -2574,6 +2605,9 @@ export class GraphnosisHost {
         loadedGaiBytes = lkgSize;
         committedNodes = this.opts.adapter.inspectNodes(handle).length;
         sourceIndex = await this.loadBundle(graphId);
+        usedTinyLkgRestore = true;
+      } else {
+        this.emitRecoveryNeeded(graphId, 'lkg_auto_promote_failed', loadedGaiBytes, lkgSize);
       }
     }
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
@@ -2932,10 +2966,170 @@ export class GraphnosisHost {
     await this.appendRecoveryLog({
       event: 'shrink_save_blocked', graphId, newBytes, onDiskBytes: onDisk, kind,
     });
-    dbg(
-      `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to write ${newBytes}B ` +
-      `${kind} over ${onDisk}B on-disk .gai/.lkg (would clobber last-known-good)`,
-    );
+    if (!this.saveBlockedWarned.has(graphId)) {
+      this.saveBlockedWarned.add(graphId);
+      console.warn(
+        `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to write ${newBytes}B ` +
+        `${kind} over ${onDisk}B on-disk .gai/.lkg (would clobber last-known-good). ` +
+        `Use Recovery → promote .lkg to restore; further blocks for this engram suppressed this session.`,
+      );
+      const { gaiBytes, lkgBytes } = await this.getGaiLkgByteSizes(graphId);
+      this.emitRecoveryNeeded(graphId, 'shrink_save_blocked', gaiBytes, lkgBytes);
+    }
+    const blocked = (this.shrinkSaveBlockedCount.get(graphId) ?? 0) + 1;
+    this.shrinkSaveBlockedCount.set(graphId, blocked);
+    if (blocked >= SHRINK_SAVE_BRAIN_PAUSE_THRESHOLD && !this.brainMutationsPaused.has(graphId)) {
+      this.brainMutationsPaused.add(graphId);
+      if (!this.brainMutationsPauseWarned.has(graphId)) {
+        this.brainMutationsPauseWarned.add(graphId);
+        await this.appendRecoveryLog({
+          event: 'brain_mutations_paused',
+          graphId,
+          blockedSaves: blocked,
+          reason: 'persistent_shrink_save_blocked',
+        });
+        console.warn(
+          `[graphnosis-host] brain mutations paused for engram[${redactId(graphId)}] after ${blocked} blocked saves ` +
+          `(in-memory graph much smaller than on-disk .lkg). Use Recovery or promote .lkg to restore — ` +
+          `mutations resume after a successful save.`,
+        );
+      }
+    }
+  }
+
+  /** True when shrink-save has blocked repeatedly — autonomous brain skips this engram. */
+  isBrainMutationsPaused(graphId: GraphId): boolean {
+    return this.brainMutationsPaused.has(graphId);
+  }
+
+  /** Wire once from main.ts to surface recovery-needed events to the UI. */
+  setRecoveryNeededHandler(handler: EngramRecoveryNeededHandler | null): void {
+    this.onRecoveryNeeded = handler;
+  }
+
+  /** True when on-disk .lkg is substantially larger than .gai (shrink-save risk). */
+  needsLkgPromote(gaiBytes: number, lkgBytes: number): boolean {
+    return lkgBytes > EMPTY_SAVE_BLOCK_MIN_BYTES
+      && lkgBytes > gaiBytes / SHRINK_SAVE_BLOCK_RATIO;
+  }
+
+  async getGaiLkgByteSizes(graphId: GraphId): Promise<{ gaiBytes: number; lkgBytes: number }> {
+    const gaiPath = this.graphPath(graphId);
+    let gaiBytes = 0;
+    let lkgBytes = 0;
+    try { gaiBytes = (await fs.stat(gaiPath)).size; } catch { /* missing */ }
+    try { lkgBytes = (await fs.stat(`${gaiPath}${LKG_SUFFIX}`)).size; } catch { /* no .lkg */ }
+    return { gaiBytes, lkgBytes };
+  }
+
+  /** Scan loaded + on-disk engrams for .lkg/.gai size mismatch. */
+  async listLkgRecoveryCandidates(): Promise<LkgRecoveryCandidate[]> {
+    const ids = new Set<GraphId>(this.listGraphs());
+    try {
+      const graphsDir = path.join(this.opts.cortexDir, 'graphs');
+      for (const name of await fs.readdir(graphsDir)) {
+        if (name.endsWith('.gai')) ids.add(name.slice(0, -4));
+      }
+    } catch { /* no graphs dir yet */ }
+
+    const out: LkgRecoveryCandidate[] = [];
+    for (const graphId of ids) {
+      const { gaiBytes, lkgBytes } = await this.getGaiLkgByteSizes(graphId);
+      if (lkgBytes <= EMPTY_SAVE_BLOCK_MIN_BYTES) continue;
+      const needsPromote = this.needsLkgPromote(gaiBytes, lkgBytes);
+      if (!needsPromote) continue;
+      const meta = this.getGraphMetadata(graphId);
+      out.push({
+        graphId,
+        displayName: meta?.displayName ?? graphId,
+        gaiBytes,
+        lkgBytes,
+        needsPromote,
+        loaded: this.graphs.has(graphId),
+      });
+    }
+    return out.sort((a, b) => b.lkgBytes - a.lkgBytes);
+  }
+
+  /** Promote .lkg → .gai on disk and reload the engram if it is resident. */
+  async promoteLkgAndReload(graphId: GraphId): Promise<{ ok: boolean; error?: string; nodes?: number }> {
+    const { gaiBytes, lkgBytes } = await this.getGaiLkgByteSizes(graphId);
+    if (!this.needsLkgPromote(gaiBytes, lkgBytes)) {
+      return { ok: true };
+    }
+    const restored = await this.tryRestoreTinyGaiFromLkg(graphId, this.key, gaiBytes, lkgBytes);
+    if (!restored) {
+      return { ok: false, error: 'Could not decrypt or promote last-known-good (.lkg)' };
+    }
+    if (this.graphs.has(graphId)) {
+      await this.reloadGraphFromDisk(graphId);
+    }
+    const g = this.graphs.get(graphId);
+    const nodes = g ? this.opts.adapter.inspectNodes(g.handle).length : undefined;
+    this.recoveryNeededEmitted.delete(graphId);
+    this.shrinkSaveBlockedCount.delete(graphId);
+    this.brainMutationsPaused.delete(graphId);
+    this.saveBlockedWarned.delete(graphId);
+    return { ok: true, ...(nodes !== undefined ? { nodes } : {}) };
+  }
+
+  /** Boot / post-promote: unload resident engram and load fresh from promoted .gai. */
+  async reloadGraphFromDisk(graphId: GraphId): Promise<void> {
+    const existing = this.graphs.get(graphId);
+    if (existing) {
+      if (existing.embeddingsBuilding) await existing.embeddingsBuilding.catch(() => {});
+      if (existing.reconcileBuilding) await existing.reconcileBuilding.catch(() => {});
+      if (existing.bundleMaterializing) await existing.bundleMaterializing.catch(() => {});
+      try { await existing.cache.save(); } catch { /* best-effort */ }
+      try { this.opts.adapter.dispose(existing.handle); } catch { /* best-effort */ }
+      this.graphs.delete(graphId);
+      this.lastAccessAt.delete(graphId);
+    }
+    this.loadGraphInflight.delete(graphId);
+    await this.loadGraphInner(graphId);
+  }
+
+  /** Auto-promote every mismatched engram at boot; nudge UI when promote fails. */
+  async runBootLkgRecoveryScan(): Promise<{ promoted: string[]; failed: LkgRecoveryCandidate[] }> {
+    const promoted: string[] = [];
+    const failed: LkgRecoveryCandidate[] = [];
+    for (const c of await this.listLkgRecoveryCandidates()) {
+      const result = await this.promoteLkgAndReload(c.graphId);
+      if (result.ok) {
+        promoted.push(c.graphId);
+      } else {
+        failed.push(c);
+        this.emitRecoveryNeeded(c.graphId, result.error ?? 'lkg_promote_failed', c.gaiBytes, c.lkgBytes);
+      }
+    }
+    return { promoted, failed };
+  }
+
+  private emitRecoveryNeeded(
+    graphId: GraphId,
+    reason: string,
+    gaiBytes?: number,
+    lkgBytes?: number,
+  ): void {
+    if (this.recoveryNeededEmitted.has(graphId)) return;
+    this.recoveryNeededEmitted.add(graphId);
+    const meta = this.getGraphMetadata(graphId);
+    try {
+      this.onRecoveryNeeded?.({
+        graphId,
+        displayName: meta?.displayName ?? graphId,
+        reason,
+        ...(gaiBytes !== undefined ? { gaiBytes } : {}),
+        ...(lkgBytes !== undefined ? { lkgBytes } : {}),
+      });
+    } catch { /* UI hook must not break save/load */ }
+  }
+
+  /** Skip auto-relink / brain edge writes when shrink-save would block persistence. */
+  private async shouldSkipMutationsForShrinkRisk(graphId: GraphId): Promise<boolean> {
+    if (this.isBrainMutationsPaused(graphId)) return true;
+    const { gaiBytes, lkgBytes } = await this.getGaiLkgByteSizes(graphId);
+    return this.needsLkgPromote(gaiBytes, lkgBytes);
   }
 
   private async shouldBlockEmptySave(graphId: GraphId, nodeCount: number): Promise<boolean> {
@@ -2956,10 +3150,16 @@ export class GraphnosisHost {
       await this.appendRecoveryLog({
         event: 'empty_save_blocked', graphId, nodeCount, onDiskBytes: onDisk,
       });
-      dbg(
-        `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to persist ` +
-        `0 nodes over ${onDisk}B on-disk .gai/.lkg — restore from .lkg or op-log recovery`,
-      );
+      if (!this.saveBlockedWarned.has(graphId)) {
+        this.saveBlockedWarned.add(graphId);
+        console.warn(
+          `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to persist ` +
+          `0 nodes over ${onDisk}B on-disk .gai/.lkg — restore from .lkg or op-log recovery. ` +
+          `Further blocks for this engram suppressed this session.`,
+        );
+        const { gaiBytes, lkgBytes } = await this.getGaiLkgByteSizes(graphId);
+        this.emitRecoveryNeeded(graphId, 'empty_save_blocked', gaiBytes, lkgBytes);
+      }
       return; // keep dirty=true so a recovered graph can save later
     }
     await fs.mkdir(path.dirname(this.graphPath(graphId)), { recursive: true });
@@ -3026,6 +3226,9 @@ export class GraphnosisHost {
     await writeFileAtomicWithBackup(this.bundlePath(graphId), Buffer.from(bundleCt), LKG_SUFFIX);
     await g.cache.save();
     g.dirty = false;
+    this.shrinkSaveBlockedCount.delete(graphId);
+    this.brainMutationsPaused.delete(graphId);
+    this.saveBlockedWarned.delete(graphId);
     // Per-graph mutation tick — bumps every successful save. Doubles
     // as the cursor returned by `getMutationCursor()` for reconciliation
     // polls. Background auto-relink edges also flow through here, so
@@ -3133,10 +3336,6 @@ export class GraphnosisHost {
     // rebuilds for the restored graph instead of serving stale vectors.
     try { await fs.unlink(this.cachePath(graphId)); } catch { /* already gone */ }
     await this.appendRecoveryLog({ event: 'recovered_from_lkg', graphId, badGaiError: badMsg });
-    console.error(
-      `[graphnosis-host] engram '${redactId(graphId)}' failed integrity (${badMsg}); ` +
-      `auto-recovered from last-known-good (.lkg). Bad files quarantined as .corrupt-${ts}.`,
-    );
     return handle;
   }
 
@@ -3170,10 +3369,6 @@ export class GraphnosisHost {
     try { await fs.rename(bundleLkg, this.bundlePath(graphId)); } catch { /* optional */ }
     try { await fs.unlink(this.cachePath(graphId)); } catch { /* stale cache */ }
     await this.appendRecoveryLog({ event: 'recovered_from_lkg', graphId, gaiBytes, lkgBytes, reason: 'tiny_gai_shell' });
-    console.error(
-      `[graphnosis-host] engram '${redactId(graphId)}': auto-restored from .lkg ` +
-      `(${gaiBytes}B .gai shell → ${lkgBytes}B .lkg promoted)`,
-    );
     return handle;
   }
 
@@ -3578,6 +3773,7 @@ export class GraphnosisHost {
   }
 
   private async runRelink(graphId: GraphId): Promise<void> {
+    if (await this.shouldSkipMutationsForShrinkRisk(graphId)) return;
     const g = this.graphs.get(graphId);
     if (!g) return; // engram unloaded mid-pass; nothing to do
     const maxNodes = this.settings.ai.autoRelinkMaxNodes;
@@ -5614,6 +5810,13 @@ export class GraphnosisHost {
     return {
       getDevicePubKey: (deviceId) => this.deviceIdentity.getPubKey(deviceId),
       onIntegrityIssue: (i) => {
+        // future-timestamp fires once per bad event; dedupe like legacy v1
+        // malformed (one summary per device+file per session).
+        if (i.kind === 'future-timestamp') {
+          const key = `${i.deviceId ?? ''}:${i.file}`;
+          if (this._oplogIntegrityWarned.has(key)) return;
+          this._oplogIntegrityWarned.add(key);
+        }
         console.error(`[graphnosis-host] op-log integrity (${i.kind})${i.deviceId ? ` device=${redactId(i.deviceId)}` : ''} in ${i.file}: ${i.detail}`);
       },
     };
@@ -6521,6 +6724,8 @@ const EMPTY_SAVE_BLOCK_MIN_BYTES = 10 * 1024;
 /** Refuse a save when new ciphertext is less than half the best on-disk size —
  *  blocks rotating a tiny .gai over a good .lkg (personal, Jun 2026). */
 const SHRINK_SAVE_BLOCK_RATIO = 0.5;
+/** After this many shrink-save blocks on one engram, pause autonomous brain writes. */
+const SHRINK_SAVE_BRAIN_PAUSE_THRESHOLD = 3;
 
 async function maxFileAndLkgBytes(target: string, lkgSuffix: string): Promise<number> {
   let max = 0;

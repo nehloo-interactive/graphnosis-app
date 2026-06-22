@@ -208,6 +208,13 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "ghampus.thinking"
             | "ghampus.trace"
             | "ghampus.card"
+            | "ghampus.reminder"
+            | "ghampus.tip"
+            | "ghampus.vitality-nudge"
+            | "ghampus.recovery-nudge"
+            | "ghampus.memory-suggestion"
+            | "engram.recovery-needed"
+            | "engram.lkg-restored"
             | "graph.delta" => {  // per-source live-ingest delta → graphnosis://graph-delta
                 // Forward the raw payload to the frontend as-is.
                 // The frontend matches on the event name to update the

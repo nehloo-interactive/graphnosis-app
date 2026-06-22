@@ -243,6 +243,17 @@ export function buildRecallQueryForTool(
     return phrase;
   }
 
+  if (hints.wantsTeamRoster) {
+    if (tool === 'recall_structured') {
+      const label = teamLabel ?? 'team';
+      return `${label} roles roluri members owners roster membri echipa`;
+    }
+    if (tool === 'dig_deeper') {
+      return `${text} team members owners roles roluri membri echipa board consilieri`;
+    }
+    return `${text} owners members roles roluri assignees board consilieri fondator`;
+  }
+
   if (hints.wantsTopicAbout || hints.wantsDefinitional) {
     const topic = extractTopicAboutFromQuery(text) ?? text.trim();
     if (tool === 'recall_structured') return entityFocusedQuery(topic);
@@ -265,17 +276,6 @@ export function buildRecallQueryForTool(
         : `${text} role rol assignee owner`;
     }
     return `${text} role rol team echipa owners members assignee`;
-  }
-
-  if (hints.wantsTeamRoster) {
-    if (tool === 'recall_structured') {
-      const label = teamLabel ?? 'team';
-      return `${label} roles roluri members owners roster membri echipa`;
-    }
-    if (tool === 'dig_deeper') {
-      return `${text} team members owners roles roluri membri echipa board consilieri`;
-    }
-    return `${text} owners members roles roluri assignees board consilieri fondator`;
   }
 
   if (hints.wantsTeamTaskList || hints.wantsProjectTaskList || (hints.wantsGrouped && /\b(team|echipei|echipa|members?|membri|sarcini|tasks?|todos?)\b/i.test(text))) {

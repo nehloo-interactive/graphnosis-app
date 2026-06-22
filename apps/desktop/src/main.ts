@@ -58,7 +58,8 @@ import {
   refreshGhampusAttachments, refreshGhampusSavings, refreshGhampusNotifications,
   refreshGhampusSkills, refreshGhampusRecentSaves, refreshGhampusSharingPanel,
   refreshGhampusThread, refreshGhampusHeader, refreshModelsPanel, refreshAiActivityRollup,
-  syncGhampusTimeTicker,
+  syncGhampusTimeTicker, prefetchGhampusThread, resetGhampusThreadCache,
+  stopGhampusLlmStatusPoll,
 } from './ui/ghampus';
 import {
   initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
@@ -184,6 +185,15 @@ interface RecoveryReport {
   outcomes: RecoveryOutcome[];
 }
 
+interface LkgRecoveryCandidate {
+  graphId: string;
+  displayName: string;
+  gaiBytes: number;
+  lkgBytes: number;
+  needsPromote: boolean;
+  loaded: boolean;
+}
+
 /** Result of any `configure_mcp_client` call (Claude Desktop, Claude Code,
  *  Cursor — all share this shape). Backwards-compat name kept since the
  *  modal + helpers still reference it across the file. */
@@ -288,6 +298,8 @@ interface AppSettings {
   graphMetadata?: Record<string, GraphMetadata>;
   brain?: {
     clipboardCapture?: { enabled: boolean };
+    lowPowerMode?: boolean;
+    backgroundActivity?: 'normal' | 'low-impact';
     temporalDecay?: {
       enabled?: boolean;
       dailyRatePercent?: number;
@@ -975,6 +987,7 @@ const els = {
   btnOpenOllamaSite: $<HTMLAnchorElement>('btn-open-ollama-site'),
   settingClipboardCapture: $<HTMLInputElement>('setting-clipboard-capture'),
   settingLowPower: $<HTMLInputElement>('setting-low-power'),
+  settingBackgroundActivity: $<HTMLSelectElement>('setting-background-activity'),
   // Brain pane stats
   lbBrainStats: $<HTMLDivElement>('lb-brain-stats'),
   lbStatDecayNodes: $<HTMLSpanElement>('lb-stat-decay-nodes'),
@@ -1014,6 +1027,47 @@ let brainVitalityReport: {
     orphans: number;
   };
 } | null = null;
+type VitalityBreakdownPayload = {
+  pendingDuplicatePairs: number;
+  cortexFactors: {
+    connectivity: number;
+    confidence: number;
+    activity: number;
+    coherence: number;
+    weighted: { connectivity: number; confidence: number; activity: number; coherence: number };
+  };
+  byGraphBreakdown: Record<string, {
+    graphId: string;
+    score: number;
+    activeNodes: number;
+    connectedActive: number;
+    orphansEstimate: number;
+    recentOps: number;
+    factors: VitalityBreakdownPayload['cortexFactors'];
+  }>;
+};
+let brainVitalityBreakdown: VitalityBreakdownPayload | null = null;
+/** null = untried; false = sidecar lacks brain:getVitalityBreakdown (version skew). */
+let vitalityBreakdownSupported: boolean | null = null;
+let _vitalityBreakdownUnsupportedLogged = false;
+const COHERENCE_BANNER_DISMISSED_KEY = 'graphnosis:coherence-banner-dismissed';
+let homeExpandedEngramBar: string | null = null;
+let _vitalityBreakdownFetchPending = false;
+
+function isUnknownIpcMethodError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.includes('Unknown IPC method');
+}
+
+function markVitalityBreakdownUnsupported(reason?: unknown): void {
+  if (vitalityBreakdownSupported === false) return;
+  vitalityBreakdownSupported = false;
+  if (!_vitalityBreakdownUnsupportedLogged) {
+    _vitalityBreakdownUnsupportedLogged = true;
+    const detail = reason instanceof Error ? reason.message : reason ? String(reason) : 'unknown';
+    console.debug(`[vitality] breakdown IPC unavailable — using basic vitality only (${detail})`);
+  }
+}
 // Cortex-wide totals cached from inspector_stats (refreshFederatedStats) so the
 // Home hero can show whole-cortex numbers, not just the active engram's.
 let cortexStats: { memories: number; sources: number; engrams: number } | null = null;
@@ -1704,6 +1758,8 @@ function invalidateCortexScopedState(): void {
   cortexStats = null;
   lastInspectorStats = null;
   brainVitalityReport = null;
+  brainVitalityBreakdown = null;
+  homeExpandedEngramBar = null;
   brainInsights = [];
   brainGoals = [];
   brainHealingJournal = [];
@@ -1723,6 +1779,8 @@ function invalidateCortexScopedState(): void {
 
   homeLoadToken += 1;
   homePrefetchDone = false;
+  ghampusThreadPrefetchScheduled = false;
+  resetGhampusThreadCache();
   bumpActiveEngramHomeLoadGen();
   if (_activeEngramMaterializeRetryTimer) {
     clearTimeout(_activeEngramMaterializeRetryTimer);
@@ -1827,6 +1885,8 @@ function render(status: StatusSnapshot): void {
       refreshActiveEngramLabel();
       // Show vitality as loading immediately — refreshBrainState will update it.
       brainVitalityReport = null; // ensure "Computing vitality…" state renders
+      brainVitalityBreakdown = null;
+      homeExpandedEngramBar = null;
       renderLbVitality();         // paint the loading ring in the Brain tab
       els.brainVitality.style.display = '';
       els.brainVitality.textContent = '🧠 Vitality…';
@@ -1846,6 +1906,7 @@ function render(status: StatusSnapshot): void {
       void refreshEmployeeCatalogPanel();
       startMcpPolling();
       scheduleHomePrefetch(); // warm home-card cache in background after boot
+      scheduleGhampusThreadPrefetch(); // warm Ghampus chat history before tab visit
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
       void loadStudioSubscriptionState().then(() => showWhatsNewModal());
       void (async () => {
@@ -1946,6 +2007,8 @@ function render(status: StatusSnapshot): void {
     // duplicate-id rewrite above.
     showError(null);
     homePrefetchDone = false; // allow re-prefetch on next unlock
+    ghampusThreadPrefetchScheduled = false;
+    resetGhampusThreadCache();
     stopMcpPolling();
     setClipboardCaptureEnabled(false); // stop polling on lock
     // Re-enable the unlock button — it may have been left disabled from the
@@ -3052,6 +3115,7 @@ function refreshActiveActivitySegment(): void {
 }
 
 function activateMode(mode: Mode): void {
+  if (currentMode === 'ghampus' && mode !== 'ghampus') stopGhampusLlmStatusPoll();
   currentMode = mode;
   // Skills is a rail destination that reuses the skills sub-pane inside the
   // Power-tools drawer. This body class force-opens the drawer and hides its
@@ -5192,6 +5256,185 @@ document.getElementById('btn-report-bug')?.addEventListener('click', () => {
 // every `recoverable` item; (2) on Apply, call recovery_apply with the
 // checked source IDs → render outcomes inline.
 
+function formatRecoveryBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+function renderLkgRestoreSection(candidates: LkgRecoveryCandidate[]): string {
+  if (candidates.length === 0) return '';
+  let html = `<div class="recovery-summary recovery-lkg-section" style="margin-bottom: 16px; border: 1px solid var(--warn, #b8860b); border-radius: 8px; padding: 12px;">
+    <strong>Restore from last known good</strong>
+    <p class="subtitle" style="margin-top: 6px;">
+      These engrams have a much larger <code>.lkg</code> backup than their current file.
+      Promoting restores the last good on-disk snapshot — try this before op-log recovery.
+    </p>`;
+  for (const c of candidates) {
+    html += `<div class="recovery-item recoverable" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;">
+      <div style="flex:1;min-width:200px;">
+        <strong>${escape(c.displayName)}</strong>
+        <div class="meta">Current ${formatRecoveryBytes(c.gaiBytes)} · backup ${formatRecoveryBytes(c.lkgBytes)}</div>
+      </div>
+      <button type="button" class="primary btn-lkg-promote" data-graph-id="${escape(c.graphId)}">Restore</button>
+    </div>`;
+  }
+  html += '</div><hr style="margin: 16px 0; border: 0; border-top: 1px solid var(--border, #333);" />';
+  return html;
+}
+
+function wireLkgPromoteButtons(): void {
+  els.recoveryBody.querySelectorAll<HTMLButtonElement>('.btn-lkg-promote').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const graphId = btn.dataset.graphId ?? '';
+      if (!graphId) return;
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Restoring…';
+      try {
+        const result = await ipcCall<{ ok: boolean; error?: string; nodes?: number }>(
+          'recovery.promoteLkg',
+          { graphId },
+        );
+        if (!result.ok) {
+          showError(result.error ?? 'Restore failed');
+          btn.disabled = false;
+          btn.textContent = orig;
+          return;
+        }
+        btn.textContent = 'Restored';
+        btn.closest('.recovery-item')?.classList.add('recovered');
+        hideEngramRecoveryBanner();
+        const id = addIngestToast(
+          `${btn.closest('.recovery-item')?.querySelector('strong')?.textContent ?? 'Engram'} restored`,
+          result.nodes !== undefined
+            ? `Promoted last-known-good backup — ${result.nodes.toLocaleString()} nodes loaded.`
+            : 'Promoted last-known-good backup from disk.',
+        );
+        finishIngestToast(id, 'success');
+        void refreshStats();
+        const remaining = await ipcCall<{ candidates: LkgRecoveryCandidate[] }>('recovery.lkgStatus', {});
+        const section = els.recoveryBody.querySelector('.recovery-lkg-section');
+        if (remaining.candidates.length === 0) {
+          section?.remove();
+          els.recoveryBody.querySelector('hr')?.remove();
+        }
+      } catch (e) {
+        showError(String(e));
+        btn.disabled = false;
+        btn.textContent = orig ?? 'Restore';
+      }
+    });
+  });
+}
+
+/** Persistent banner when an engram still needs manual .lkg recovery. */
+function ensureEngramRecoveryBanner(): HTMLElement {
+  let el = document.getElementById('engram-recovery-banner');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'engram-recovery-banner';
+  el.className = 'studio-banner hidden';
+  el.style.cssText = 'background: color-mix(in srgb, var(--warn, #b8860b) 18%, transparent); border-bottom: 1px solid var(--warn, #b8860b);';
+  el.innerHTML = `
+    <span class="studio-banner-text"></span>
+    <button type="button" class="studio-banner-close" aria-label="Dismiss">×</button>
+  `;
+  const appMain = document.getElementById('app-main') ?? document.querySelector('.app-main');
+  if (appMain?.firstChild) {
+    appMain.insertBefore(el, appMain.firstChild);
+  } else {
+    document.body.prepend(el);
+  }
+  el.querySelector('.studio-banner-close')?.addEventListener('click', () => el?.classList.add('hidden'));
+  el.querySelector('.studio-banner-text')?.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    if (t.tagName === 'BUTTON' || t.closest('button')) return;
+    void openRecoveryPanel();
+  });
+  return el;
+}
+
+function showEngramRecoveryBanner(displayName: string): void {
+  const el = ensureEngramRecoveryBanner();
+  const text = el.querySelector('.studio-banner-text');
+  if (text) {
+    text.innerHTML =
+      `<strong>${escape(displayName)}</strong> needs recovery — ` +
+      `on-disk backup is much larger than the current file. ` +
+      `<button type="button" class="g-btn primary" style="margin-left:8px;font-size:14px;padding:2px 10px;">Open Recovery</button>`;
+    text.querySelector('button')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void openRecoveryPanel();
+    });
+  }
+  el.classList.remove('hidden');
+}
+
+function hideEngramRecoveryBanner(): void {
+  document.getElementById('engram-recovery-banner')?.classList.add('hidden');
+}
+
+async function openRecoveryPanel(): Promise<void> {
+  showError(null);
+  els.recoveryModal.classList.remove('hidden');
+  els.recoveryTitle.textContent = 'Recovery';
+  els.recoverySubtitle.textContent = 'Checking last-known-good backups and op-log sources…';
+  els.recoveryBody.innerHTML = '<p class="subtitle">Loading…</p>';
+  els.btnRecoveryApply.classList.add('hidden');
+  try {
+    const [lkgResult, planResult] = await Promise.allSettled([
+      ipcCall<{ candidates: LkgRecoveryCandidate[] }>('recovery.lkgStatus', {}),
+      invoke<RecoveryPlan>('recovery_plan'),
+    ]);
+    const candidates = lkgResult.status === 'fulfilled'
+      ? (lkgResult.value.candidates ?? [])
+      : [];
+    const lkgHtml = renderLkgRestoreSection(candidates);
+    const plan = planResult.status === 'fulfilled' ? planResult.value : null;
+    if (!plan && lkgHtml === '') {
+      const err = planResult.status === 'rejected' ? String(planResult.reason) : 'Unknown error';
+      const sidecarUnreachable = /connect to sidecar|ECONNREFUSED|ENOENT.*sock|sidecar didn'?t respond/i.test(err);
+      if (sidecarUnreachable) {
+        els.recoveryBody.innerHTML =
+          '<p class="error">The memory engine isn’t responding yet.</p>' +
+          '<p class="subtitle">Wait for unlock to finish, then try again.</p>';
+        els.recoverySubtitle.textContent = 'Engine not ready — retry shortly.';
+      } else {
+        els.recoveryBody.innerHTML = `<p class="error">Could not load recovery: ${escape(err)}</p>`;
+        els.recoverySubtitle.textContent = 'Scan failed.';
+      }
+      return;
+    }
+    if (!plan || plan.total === 0) {
+      els.recoveryBody.innerHTML = lkgHtml || '<p class="subtitle">Nothing to recover.</p>';
+      els.recoverySubtitle.textContent = lkgHtml
+        ? 'Promote a .lkg backup or use op-log recovery when sources are available.'
+        : 'Nothing to recover.';
+      if (lkgHtml) wireLkgPromoteButtons();
+      return;
+    }
+    currentRecoveryPlan = plan;
+    renderPlan(plan);
+    if (lkgHtml) {
+      els.recoveryBody.insertAdjacentHTML('afterbegin', lkgHtml);
+      wireLkgPromoteButtons();
+    }
+  } catch (e) {
+    const raw = String(e);
+    const sidecarUnreachable = /connect to sidecar|ECONNREFUSED|ENOENT.*sock|sidecar didn'?t respond/i.test(raw);
+    if (sidecarUnreachable) {
+      els.recoveryBody.innerHTML =
+        '<p class="error">The memory engine isn’t responding yet.</p>' +
+        '<p class="subtitle">Wait for unlock to finish, then try again.</p>';
+      els.recoverySubtitle.textContent = 'Engine not ready — retry shortly.';
+    } else {
+      els.recoveryBody.innerHTML = `<p class="error">Could not load recovery: ${escape(raw)}</p>`;
+      els.recoverySubtitle.textContent = 'Scan failed.';
+    }
+  }
+}
+
 function statusLabel(s: RecoveryStatus): string {
   switch (s) {
     case 'recoverable': return 'Recoverable (from disk)';
@@ -5891,9 +6134,14 @@ els.btnSettings.addEventListener('click', async () => {
     const savedWorkers = s.ai?.embedWorkers ?? 2;
     els.aiEmbedWorkers.value = String(savedWorkers);
     els.aiEmbedWorkersVal.textContent = `${savedWorkers} worker${savedWorkers === 1 ? '' : 's'}`;
+    // Background activity tier — low-power checkbox is kept in sync for status bar.
+    const bgTier = s.brain?.lowPowerMode === true
+      ? 'low-power'
+      : (s.brain?.backgroundActivity === 'low-impact' ? 'low-impact' : 'normal');
+    if (els.settingBackgroundActivity) els.settingBackgroundActivity.value = bgTier;
+    els.settingLowPower.checked = bgTier === 'low-power';
     // Clipboard capture: disabled by default.
     els.settingClipboardCapture.checked = s.brain?.clipboardCapture?.enabled ?? false;
-    els.settingLowPower.checked = s.brain?.lowPowerMode ?? false;
     // Orbit debug HUD: session-only, reflects live engine state.
     const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
     if (hudCb) hudCb.checked = mainAtlas?.isOrbitDebugHUDVisible?.() ?? false;
@@ -6388,7 +6636,13 @@ els.btnSettingsSave.addEventListener('click', async () => {
           embedBatch: els.aiEmbedBatch.value as 'small' | 'medium' | 'large' | 'auto',
           embedWorkers: parseInt(els.aiEmbedWorkers.value, 10) || 2,
         },
-        brain: { clipboardCapture: { enabled: clipEnabled }, lowPowerMode: els.settingLowPower.checked },
+        brain: {
+          clipboardCapture: { enabled: clipEnabled },
+          lowPowerMode: els.settingBackgroundActivity?.value === 'low-power',
+          backgroundActivity: els.settingBackgroundActivity?.value === 'low-impact'
+            ? 'low-impact'
+            : undefined,
+        },
       },
     });
     // Apply clipboard capture immediately so the user doesn't need to relaunch.
@@ -6398,7 +6652,7 @@ els.btnSettingsSave.addEventListener('click', async () => {
     // lets the graph settle + spread, which reads as "dimmed/dead". The animation
     // is a minor cost next to the brain, and the user controls it separately via
     // the "Alive Engram" toggle. So low-power keeps the graph bright + lively.
-    updateLowPowerIndicator(els.settingLowPower.checked); // reflect in the status bar
+    updateLowPowerIndicator(els.settingBackgroundActivity?.value === 'low-power');
     // Orbit debug HUD: session-only toggle, not persisted to settings.
     const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
     if (hudCb && mainAtlas) {
@@ -6415,35 +6669,9 @@ els.btnSettingsSave.addEventListener('click', async () => {
   }
 });
 
-els.btnRecover.addEventListener('click', async () => {
-  showError(null);
-  els.recoveryModal.classList.remove('hidden');
-  els.recoveryTitle.textContent = 'Recover from op-log';
-  els.recoverySubtitle.textContent = 'Scanning the encrypted op-log for sources that can be re-ingested…';
-  els.recoveryBody.innerHTML = '<p class="subtitle">Loading…</p>';
-  els.btnRecoveryApply.classList.add('hidden');
-  try {
-    const plan = (await invoke('recovery_plan')) as RecoveryPlan;
-    renderPlan(plan);
-  } catch (e) {
-    const raw = String(e);
-    // The op-log is encrypted with the cortex key, so only the running,
-    // unlocked sidecar can scan it. A socket-connect failure means the sidecar
-    // isn't reachable yet (still unlocking, or restarting) — not a corrupt
-    // op-log. Give the user an actionable message instead of the raw error.
-    const sidecarUnreachable = /connect to sidecar|ECONNREFUSED|ENOENT.*sock|sidecar didn'?t respond/i.test(raw);
-    if (sidecarUnreachable) {
-      els.recoveryBody.innerHTML =
-        '<p class="error">The memory engine isn’t responding yet, so the op-log couldn’t be read.</p>' +
-        '<p class="subtitle">This usually means the cortex is still finishing unlock, or the engine just restarted. ' +
-        'Wait a few seconds for unlock to complete, then try again. If it keeps failing, relaunch the app.</p>';
-      els.recoverySubtitle.textContent = 'Engine not ready — retry shortly.';
-    } else {
-      els.recoveryBody.innerHTML = `<p class="error">Could not read op-log: ${escape(raw)}</p>`;
-      els.recoverySubtitle.textContent = 'Scan failed.';
-    }
-  }
-});
+els.btnRecover.addEventListener('click', () => { void openRecoveryPanel(); });
+
+document.addEventListener('graphnosis:open-recovery', () => { void openRecoveryPanel(); });
 
 els.btnRecoveryClose.addEventListener('click', () => {
   closeRecoveryModal();
@@ -8016,6 +8244,7 @@ function renderHomeDashboard(): void {
   }
 
   renderHomeEngramBars();
+  renderHomeCoherenceBanner();
   refreshHomeStranded();   // dedicated stranded-memories card (cheap, sync)
   refreshHomeOnPremise();  // sovereignty/egress ledger (cheap, sync)
   renderHomeBrainActivity(); // sync from brainStatus — must not wait on scheduleHomeDataLoad
@@ -8057,6 +8286,103 @@ function annotateHomeHelp(): void {
   });
 }
 
+function formatVitalityFactorTooltip(
+  factors: VitalityBreakdownPayload['cortexFactors'],
+): string {
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  return [
+    `Connectivity (40%): ${pct(factors.connectivity)} → +${factors.weighted.connectivity} pts`,
+    `Confidence (25%): ${pct(factors.confidence)} → +${factors.weighted.confidence} pts`,
+    `Activity (20%): ${pct(factors.activity)} → +${factors.weighted.activity} pts`,
+    `Coherence (15%): ${pct(factors.coherence)} → +${factors.weighted.coherence} pts`,
+  ].join('\n');
+}
+
+function renderHomeCoherenceBanner(): void {
+  const banner = document.getElementById('home-coherence-banner');
+  if (!banner) return;
+  const dupes = brainVitalityBreakdown?.pendingDuplicatePairs ?? 0;
+  const coherence = brainVitalityBreakdown?.cortexFactors?.coherence ?? 1;
+  const significantDrag = dupes > 5 || (dupes > 0 && coherence < 0.75);
+  let dismissed = false;
+  try { dismissed = sessionStorage.getItem(COHERENCE_BANNER_DISMISSED_KEY) === '1'; } catch { /* private mode */ }
+  if (!significantDrag || dismissed) {
+    banner.classList.add('hidden');
+    return;
+  }
+  const textEl = banner.querySelector('.home-coherence-banner-text');
+  if (textEl) {
+    textEl.textContent = dupes > 5
+      ? `Duplicate pairs (${dupes.toLocaleString()}) are lowering every engram's score — resolve them in Check-in.`
+      : 'Unresolved duplicates are dragging coherence — review pairs in Check-in.';
+  }
+  banner.classList.remove('hidden');
+  if (banner.dataset.wired === '1') return;
+  banner.dataset.wired = '1';
+  banner.querySelector('#home-coherence-banner-open')?.addEventListener('click', () => {
+    activateMode('atlas');
+    const needs = document.getElementById('home-needs');
+    needs?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    void renderNeedsReview();
+  });
+  banner.querySelector('#home-coherence-banner-dismiss')?.addEventListener('click', () => {
+    try { sessionStorage.setItem(COHERENCE_BANNER_DISMISSED_KEY, '1'); } catch { /* ignore */ }
+    banner.classList.add('hidden');
+  });
+}
+
+function ensureVitalityBreakdownLoaded(): void {
+  if (vitalityBreakdownSupported === false) return;
+  if (brainVitalityBreakdown || _vitalityBreakdownFetchPending || !brainVitalityReport) return;
+  // IPC succeeded but returned null (brain still settling) — don't spam every render.
+  if (vitalityBreakdownSupported === true) return;
+  _vitalityBreakdownFetchPending = true;
+  void ipcCall('brain:getVitalityBreakdown', {})
+    .then((v) => {
+      vitalityBreakdownSupported = true;
+      if (v) brainVitalityBreakdown = v as VitalityBreakdownPayload;
+    })
+    .catch((e) => {
+      if (isUnknownIpcMethodError(e)) markVitalityBreakdownUnsupported(e);
+    })
+    .finally(() => {
+      _vitalityBreakdownFetchPending = false;
+      if (isHomeDashboardView()) renderHomeDashboard();
+    });
+}
+
+function renderEngramBarBreakdown(gid: string): string {
+  const bd = brainVitalityBreakdown?.byGraphBreakdown?.[gid];
+  if (!bd || bd.score <= 0) return '';
+  const f = bd.factors;
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const cells = [
+    ['Connectivity', '40%', pct(f.connectivity), f.weighted.connectivity],
+    ['Confidence', '25%', pct(f.confidence), f.weighted.confidence],
+    ['Activity', '20%', pct(f.activity), f.weighted.activity],
+    ['Coherence', '15%', pct(f.coherence), f.weighted.coherence],
+  ] as const;
+  const factors = cells.map(([label, weight, val, pts]) =>
+    `<div class="home-bar-factor"><span class="home-bar-factor-label">${label} ${weight}</span>` +
+    `<span class="home-bar-factor-val">${val} (+${pts})</span></div>`,
+  ).join('');
+  const orphan = bd.orphansEstimate > 0
+    ? `<div class="home-bar-factor" style="grid-column:1/-1;font-size:11px;">Orphan estimate: ${bd.orphansEstimate.toLocaleString()}</div>`
+    : '';
+  return `<div class="home-bar-breakdown" data-breakdown-for="${escapeHtml(gid)}">${factors}${orphan}</div>`;
+}
+
+function wireHomeEngramBarInteractions(barsEl: HTMLElement): void {
+  barsEl.querySelectorAll<HTMLElement>('.home-bar-row-expandable').forEach((row) => {
+    row.addEventListener('click', () => {
+      const gid = row.dataset.graphId;
+      if (!gid) return;
+      homeExpandedEngramBar = homeExpandedEngramBar === gid ? null : gid;
+      renderHomeEngramBars();
+    });
+  });
+}
+
 // Per-engram vitality bars — collapsed to a top-N with a "show all" toggle so a
 // 20-engram cortex doesn't render a wall of bars (and the row count stays cheap).
 function syncHomeEngramBarLabelColumn(barsEl: HTMLElement): void {
@@ -8077,6 +8403,7 @@ function syncHomeEngramBarLabelColumn(barsEl: HTMLElement): void {
 function renderHomeEngramBars(): void {
   const barsEl = document.getElementById('home-engram-bars');
   if (!barsEl) return;
+  ensureVitalityBreakdownLoaded();
   const vitalityByGraph = brainVitalityReport?.byGraph ?? {};
   const vitalitySettling = brainVitalityReport?.settling === true;
   const stillBooting = isEngramPreloadInProgress() || vitalitySettling;
@@ -8154,6 +8481,10 @@ function renderHomeEngramBars(): void {
   const bar = (r: { gid: string; name: string; score: number; archived: boolean }): string => {
     const archivedCls = r.archived ? ' home-bar-row-archived' : '';
     const nameSpan = `<span class="home-bar-name" data-pres="engram:${escapeHtml(r.gid)}">${escapeHtml(r.name)}</span>`;
+    const bd = brainVitalityBreakdown?.byGraphBreakdown?.[r.gid];
+    const tooltip = bd && r.score > 0 ? ` title="${escapeHtml(formatVitalityFactorTooltip(bd.factors))}"` : '';
+    const expandable = r.score > 0 ? ' home-bar-row-expandable' : '';
+    const graphAttr = r.score > 0 ? ` data-graph-id="${escapeHtml(r.gid)}"` : '';
     if (r.score < 0) {
       return `<div class="home-bar-row home-bar-row-pending${archivedCls}">${nameSpan}` +
         `<span class="home-bar-track"></span><span class="home-bar-val">…</span></div>`;
@@ -8163,11 +8494,11 @@ function renderHomeEngramBars(): void {
         `<span class="home-bar-track"></span><span class="home-bar-val">empty</span></div>`;
     }
     const grade = gradeFromScore(r.score).toLowerCase();
-    // Width inline; colour via grade-* classes (same pattern as skill-vitality bars —
-    // production WebKit ignores --bar-color-* custom props on innerHTML fills).
-    return `<div class="home-bar-row${archivedCls}">${nameSpan}` +
+    const row = `<div class="home-bar-row${archivedCls}${expandable}"${graphAttr}${tooltip}>${nameSpan}` +
       `<span class="home-bar-track"><span class="home-bar-fill grade-${grade}" data-score="${r.score}"></span></span>` +
       `<span class="home-bar-val grade-${grade}">${r.score}</span></div>`;
+    const breakdown = homeExpandedEngramBar === r.gid ? renderEngramBarBreakdown(r.gid) : '';
+    return row + breakdown;
   };
   const more = rows.length > CAP
     ? `<p class="home-bars-empty">+ ${(rows.length - CAP).toLocaleString()} more engrams</p>`
@@ -8184,6 +8515,7 @@ function renderHomeEngramBars(): void {
     if (Number.isFinite(score) && score > 0) fill.style.width = `${score}%`;
   }
   syncHomeEngramBarLabelColumn(barsEl);
+  wireHomeEngramBarInteractions(barsEl);
 }
 
 // "Since you last opened" — the autonomy digest. The anchor (last app-open
@@ -8511,6 +8843,20 @@ function scheduleHomePrefetch(): void {
       }
     } catch { /* non-fatal — the normal scheduleHomeDataLoad path is the fallback */ }
   }, 4000);
+}
+
+// ── Ghampus thread background prefetch ───────────────────────────────────────
+// Sidecar also warms ghampus-history.jsonl at IPC start; this desktop-side pass
+// fetches via IPC after boot settles and paints the hidden thread DOM so the
+// Ghampus tab opens with history already rendered.
+let ghampusThreadPrefetchScheduled = false;
+function scheduleGhampusThreadPrefetch(): void {
+  if (ghampusThreadPrefetchScheduled) return;
+  ghampusThreadPrefetchScheduled = true;
+  // Short delay — lighter than Home prefetch; history read is a single file.
+  setTimeout(() => {
+    prefetchGhampusThread();
+  }, 1500);
 }
 
 // Heavy Home data loads, run ONE AT A TIME with a yield between each, and
@@ -14538,6 +14884,38 @@ interface QuarantineRecoveredPayload {
   sourcesSkipped: number;
   sourcesFailed: number;
 }
+
+interface EngramRecoveryNeededPayload {
+  graphId: string;
+  displayName: string;
+  reason: string;
+  gaiBytes?: number;
+  lkgBytes?: number;
+}
+
+interface EngramLkgRestoredPayload {
+  graphId: string;
+  displayName: string;
+}
+
+void listen<EngramRecoveryNeededPayload>('graphnosis://engram-recovery-needed', (evt) => {
+  const p = evt.payload;
+  if (!p?.displayName) return;
+  showEngramRecoveryBanner(p.displayName);
+});
+
+void listen<EngramLkgRestoredPayload>('graphnosis://engram-lkg-restored', (evt) => {
+  const p = evt.payload;
+  if (!p?.displayName) return;
+  hideEngramRecoveryBanner();
+  const id = addIngestToast(
+    `${p.displayName} restored`,
+    'Auto-promoted last-known-good backup — your engram should save normally again.',
+  );
+  finishIngestToast(id, 'success');
+  void refreshStats();
+});
+
 void listen<QuarantineRecoveredPayload>('graphnosis://cortex-recovered-from-quarantine', (evt) => {
   const p = evt.payload;
   const engramWord = p.quarantinedEngrams === 1 ? 'engram' : 'engrams';
@@ -14991,6 +15369,14 @@ async function refreshBrainState(forceVitality = false): Promise<void> {
   // as its own call returns, and a failure on one doesn't poison the rest.
   const fetchers: Array<{ name: string; promise: Promise<unknown>; apply: (v: unknown) => void }> = [
     { name: 'vitality',     promise: ipcCall('brain:getVitality', forceVitality ? { force: true } : {}),             apply: (v) => { brainVitalityReport = v as typeof brainVitalityReport; } },
+    ...(vitalityBreakdownSupported !== false ? [{
+      name: 'vitality-bd',
+      promise: ipcCall('brain:getVitalityBreakdown', forceVitality ? { force: true } : {}),
+      apply: (v: unknown) => {
+        vitalityBreakdownSupported = true;
+        if (v) brainVitalityBreakdown = v as VitalityBreakdownPayload;
+      },
+    }] : []),
     { name: 'insights',     promise: ipcCall('brain:getInsights', {}),             apply: (v) => { brainInsights = v as typeof brainInsights; } },
     { name: 'goals',        promise: ipcCall('brain:listGoals', {}),               apply: (v) => { brainGoals = v as BrainGoal[]; } },
     { name: 'healing',      promise: ipcCall('brain:getHealingJournal', {}),       apply: (v) => { brainHealingJournal = v as BrainHealingRecord[]; } },
@@ -15010,8 +15396,12 @@ async function refreshBrainState(forceVitality = false): Promise<void> {
       // the slowest sibling.
       updateBrainUI();
     } catch (e) {
-      // A single panel failing should never wedge the others. Log + move on.
-      console.error(`[refreshBrainState] ${f.name} fetch failed: ${(e as Error).message}`);
+      if (f.name === 'vitality-bd' && isUnknownIpcMethodError(e)) {
+        markVitalityBreakdownUnsupported(e);
+      } else {
+        // A single panel failing should never wedge the others. Log + move on.
+        console.error(`[refreshBrainState] ${f.name} fetch failed: ${(e as Error).message}`);
+      }
     }
   }));
   renderRailGetConnected();

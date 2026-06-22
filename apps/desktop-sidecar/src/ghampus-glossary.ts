@@ -2,6 +2,8 @@
  * Graphnosis domain glossary for Ghampus LLM prompts — prevents wrong acronym hallucinations.
  */
 
+import { stripInternalRecallWireFormat } from './ghampus-recall-format.js';
+
 /** Shared glossary block for classify, synthesis, polish, and verify prompts. */
 export const GHAMPUS_DOMAIN_GLOSSARY_BLOCK = `
 GRAPHNOSIS DOMAIN GLOSSARY — use these terms exactly; never invent acronym expansions:
@@ -51,5 +53,6 @@ export function sanitizeGhampusResponse(text: string): string {
   }
   out = out.replace(MCP_WRONG_EXPANSION_RE, 'MCP (Model Context Protocol)');
   out = out.replace(WRONG_MCP_PHRASE_RE, 'Model Context Protocol');
+  out = stripInternalRecallWireFormat(out);
   return out;
 }

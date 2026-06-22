@@ -2,7 +2,7 @@
  * Ghampus selection follow-up — context builder for questions about a highlighted passage.
  */
 import { z } from 'zod';
-import { matchResponseLanguageInstruction } from './ghampus-language.js';
+import { buildResponseLanguageRulesBlock } from './ghampus-language.js';
 
 export const ghampusSelectionContextSchema = z.object({
   selectedText: z.string().min(1),
@@ -129,7 +129,7 @@ Answer ONLY about the highlighted passage, using the full parent answer and rece
 
 Be concise and direct. Use markdown for structure when helpful.
 
-LANGUAGE: ${matchResponseLanguageInstruction(question)}
+${buildResponseLanguageRulesBlock(question)}
 
 Do not invent facts beyond what appears in the parent answer, conversation history, or supplemental recall.
 

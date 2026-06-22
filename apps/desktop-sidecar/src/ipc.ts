@@ -18,6 +18,8 @@ import { ingestBundledSkillDemos } from './skill-demos-ingest.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { broadcastOplogCompacted } from './sidecar-idle-maintenance.js';
+import { dbg } from './log-redact.js';
+import { enqueueBackgroundLane, resolveDocsReingestDelayMs } from './background-lane-scheduler.js';
 import { actorOf } from './activity-actors.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { skillRunToListItem, deriveSkillRunStatus } from './skill-runs.js';
@@ -110,13 +112,8 @@ let currentEmbeddingSwitchAbort: AbortController | null = null;
 let currentReingestAbort: AbortController | null = null;
 
 // Ghampus clarification state — persists across IPC calls (module scope).
-// Set when Ghampus can't confidently classify a message and asks the user
-// to confirm. Cleared when the user replies or sends an unrelated message.
-let ghampusPendingClarification: {
-  originalText: string;   // the user's ambiguous message
-  content: string;        // extracted save content
-  engramHint: string | null;
-} | null = null;
+// Set when Ghampus needs a follow-up before completing an action.
+let ghampusPendingClarification: import('./ghampus-clarification.js').GhampusPendingClarificationState | null = null;
 
 // Set when a save is blocked because the target engram doesn't exist yet.
 // Cleared when the engram is created (auto-saves) or user sends a new unrelated message.
@@ -199,6 +196,9 @@ export interface IpcDeps {
   licenseValidator?: import('./license-validator.js').LicenseValidator | null;
   /** Proactive watcher — surfaces skill-match cards into the Ghampus chat thread. */
   proactiveWatcher?: import('./proactive-watcher.js').ProactiveWatcher | null;
+  /** Autonomous todo / obligation reminder scheduler. */
+  reminderScheduler?: import('./ghampus-reminders.js').GhampusReminderScheduler | null;
+  tipsScheduler?: import('./ghampus-proactive-tips.js').GhampusProactiveTipsScheduler | null;
   /** Ghampus stale-skill maintenance — drains skillRetrainQueue during idle windows. */
   skillMaintenanceScheduler?: import('./skill-maintenance-scheduler.js').SkillMaintenanceScheduler | null;
   /**
@@ -377,7 +377,12 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
           // Log full stack to stderr so the dev terminal shows it; return
           // a multi-line message to the caller so the UI surfaces the cause.
           const err = e instanceof Error ? e : new Error(String(e));
-          console.error(`[graphnosis-sidecar] IPC method '${req.method}' failed:`, err);
+          const unknownMethod = err.message.startsWith('Unknown IPC method:');
+          if (unknownMethod) {
+            dbg(`[graphnosis-sidecar] IPC method '${req.method}' not available: ${err.message}`);
+          } else {
+            console.error(`[graphnosis-sidecar] IPC method '${req.method}' failed:`, err);
+          }
           const message = err.stack ?? err.message;
           sock.write(JSON.stringify({ id: req.id, error: message }) + '\n');
         }
@@ -490,6 +495,10 @@ export async function schedulePostBootDocsReingest(
   appVersion: string,
 ): Promise<void> {
   if (docsIngestInflight) return;
+  const delayMs = resolveDocsReingestDelayMs(deps.host);
+  if (delayMs > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  }
   if (deps.host.isBootEmbBuildActive()) {
     await new Promise<void>((resolve) => deps.host.onBootEmbBuildIdle(resolve));
   }
@@ -500,9 +509,11 @@ export async function schedulePostBootDocsReingest(
     bootBusy,
     ingestInflight: docsIngestInflight !== null,
   });
-  if (decision === 'reingest') {
+  if (decision !== 'reingest') return;
+  await enqueueBackgroundLane(deps.host, 'docs-ingest', async () => {
     startBackgroundDocsIngest(deps, appVersion, 'post-boot');
-  }
+    await whenBackgroundDocsIngestDone();
+  });
 }
 
 /** Kick off bundled docs ingest in the background. Returns immediately with a
@@ -2385,6 +2396,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             enabled: z.boolean(),
           }).optional(),
           lowPowerMode: z.boolean().optional(),
+          backgroundActivity: z.enum(['normal', 'low-impact']).optional(),
         }).optional(),
         connectors: z.object({
           // Poll interval (ms) for all connectors. 60s floor. Owned by the
@@ -2487,6 +2499,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           ...(parsed.brain.lowPowerMode !== undefined
             ? { lowPowerMode: parsed.brain.lowPowerMode }
             : {}),
+          ...(parsed.brain.backgroundActivity !== undefined
+            ? { backgroundActivity: parsed.brain.backgroundActivity }
+            : {}),
         };
       }
       // Connector poll interval is owned by the ConnectorManager (it persists
@@ -2514,6 +2529,14 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // of every source ever ingested (minus forgotten), with per-item status
       // (recoverable / file-missing / already-present / etc).
       return deps.host.planRecovery();
+    }
+    case 'recovery.lkgStatus': {
+      const candidates = await deps.host.listLkgRecoveryCandidates();
+      return { candidates };
+    }
+    case 'recovery.promoteLkg': {
+      const { graphId } = z.object({ graphId: z.string().min(1) }).parse(params ?? {});
+      return deps.host.promoteLkgAndReload(graphId);
     }
     case 'recovery.apply': {
       // Re-ingest selected sources. `sourceIds: null` means "all recoverable".
@@ -2782,6 +2805,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const args = z.object({ force: z.boolean().optional() }).parse(params ?? {});
       if (args.force) deps.brainEngine.invalidateVitality();
       return deps.brainEngine.getVitalityReport();
+    }
+
+    case 'brain:getVitalityBreakdown': {
+      if (!deps.brainEngine) return null;
+      const args = z.object({ force: z.boolean().optional() }).parse(params ?? {});
+      if (args.force) deps.brainEngine.invalidateVitality();
+      return deps.brainEngine.getVitalityDetailedReport();
     }
 
     case 'brain:getInsights': {
@@ -3868,12 +3898,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // field drives the upgrade language not access.
       const settings = deps.host.getSettings();
       const plan = await resolveAgentPlan(deps);
-      const { resolveGhampusSkillMaintenance, resolveGhampusProactiveSettings } = await import('@graphnosis-app/core/settings');
+      const { resolveGhampusSkillMaintenance, resolveGhampusProactiveSettings, resolveGhampusRemindersSettings, resolveGhampusTipsSettings, resolveGhampusMemorySuggestionsSettings, resolveGhampusVitalityNudgesSettings } = await import('@graphnosis-app/core/settings');
       return {
         enabled: settings.agent?.enabled !== false,
         plan,
         skillMaintenance: resolveGhampusSkillMaintenance(settings.agent),
         proactive: resolveGhampusProactiveSettings(settings.agent),
+        reminders: resolveGhampusRemindersSettings(settings.agent),
+        tips: resolveGhampusTipsSettings(settings.agent),
+        memorySuggestions: resolveGhampusMemorySuggestionsSettings(settings.agent),
+        vitalityNudges: resolveGhampusVitalityNudgesSettings(settings.agent),
       };
     }
     case 'agent:setEnabled': {
@@ -3928,6 +3962,124 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           },
         },
       });
+      return { ok: true };
+    }
+    case 'agent:setReminders': {
+      const args = z.object({
+        enabled: z.boolean().optional(),
+        startupDelayMs: z.number().int().nonnegative().optional(),
+        nativeNotifications: z.boolean().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prior = current.agent ?? { enabled: true };
+      const { resolveGhampusRemindersSettings } = await import('@graphnosis-app/core/settings');
+      const rm = resolveGhampusRemindersSettings(prior);
+      await deps.host.setSettings({
+        ...current,
+        agent: {
+          ...prior,
+          reminders: {
+            ...rm,
+            ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
+            ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
+            ...(args.nativeNotifications !== undefined ? { nativeNotifications: args.nativeNotifications } : {}),
+          },
+        },
+      });
+      return { ok: true };
+    }
+    case 'agent:setTips': {
+      const args = z.object({
+        enabled: z.boolean().optional(),
+        startupDelayMs: z.number().int().nonnegative().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prior = current.agent ?? { enabled: true };
+      const { resolveGhampusTipsSettings } = await import('@graphnosis-app/core/settings');
+      const tp = resolveGhampusTipsSettings(prior);
+      await deps.host.setSettings({
+        ...current,
+        agent: {
+          ...prior,
+          tips: {
+            ...tp,
+            ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
+            ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
+          },
+        },
+      });
+      return { ok: true };
+    }
+    case 'agent:setMemorySuggestions': {
+      const args = z.object({
+        enabled: z.boolean().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prior = current.agent ?? { enabled: true };
+      const { resolveGhampusMemorySuggestionsSettings } = await import('@graphnosis-app/core/settings');
+      const ms = resolveGhampusMemorySuggestionsSettings(prior);
+      await deps.host.setSettings({
+        ...current,
+        agent: {
+          ...prior,
+          memorySuggestions: {
+            ...ms,
+            ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
+          },
+        },
+      });
+      return { ok: true };
+    }
+    case 'agent:setVitalityNudges': {
+      const args = z.object({
+        enabled: z.boolean().optional(),
+        startupDelayMs: z.number().int().nonnegative().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prior = current.agent ?? { enabled: true };
+      const { resolveGhampusVitalityNudgesSettings } = await import('@graphnosis-app/core/settings');
+      const vn = resolveGhampusVitalityNudgesSettings(prior);
+      await deps.host.setSettings({
+        ...current,
+        agent: {
+          ...prior,
+          vitalityNudges: {
+            ...vn,
+            ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
+            ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
+          },
+        },
+      });
+      return { ok: true };
+    }
+    case 'agent:acceptMemorySuggestion': {
+      const args = z.object({
+        id: z.string().min(1),
+        text: z.string().min(1),
+        engramId: z.string().min(1),
+        kind: z.enum(['remember', 'obligation', 'create_engram']),
+        obligation: z.object({
+          obligationType: z.enum(['deadline', 'renewal', 'review-by']),
+          expiresAt: z.number(),
+        }).optional(),
+        createEngramName: z.string().optional(),
+      }).parse(params ?? {});
+      const cortexDir = deps.host.getCortexDir();
+      const { acceptMemorySuggestion } = await import('./ghampus-memory-suggestions.js');
+      return acceptMemorySuggestion(deps.host, cortexDir, {
+        id: args.id,
+        text: args.text,
+        engramId: args.engramId,
+        kind: args.kind,
+        ...(args.obligation !== undefined ? { obligation: args.obligation } : {}),
+        ...(args.createEngramName !== undefined ? { createEngramName: args.createEngramName } : {}),
+      });
+    }
+    case 'agent:dismissMemorySuggestion': {
+      const { id } = z.object({ id: z.string().min(1) }).parse(params ?? {});
+      const cortexDir = deps.host.getCortexDir();
+      const { dismissMemorySuggestion } = await import('./ghampus-memory-suggestions.js');
+      await dismissMemorySuggestion(cortexDir, id);
       return { ok: true };
     }
     case 'agent:runTool': {
@@ -4045,20 +4197,20 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     case 'ghampus:history': {
       // Returns the persisted conversation thread from the cortex directory.
       try {
-        const { readFile } = await import('node:fs/promises');
+        const { getGhampusHistory } = await import('./ghampus-history-cache.js');
         const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
-        if (!cortexDir) return { messages: [] };
-        const histPath = `${cortexDir}/ghampus-history.jsonl`;
-        const raw = await readFile(histPath, 'utf8').catch(() => '');
-        const messages = raw.trim().split('\n').filter(Boolean).map((line) => {
-          try { return JSON.parse(line) as unknown; }
-          catch { return null; }
-        }).filter(Boolean);
-        // Return last 100 messages to avoid huge payloads.
-        return { messages: messages.slice(-100) };
+        const { messages } = await getGhampusHistory(cortexDir);
+        return { messages };
       } catch {
         return { messages: [] };
       }
+    }
+
+    case 'ghampus:history:prefetch': {
+      const { prefetchGhampusHistory } = await import('./ghampus-history-cache.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      prefetchGhampusHistory(cortexDir);
+      return { ok: true };
     }
 
     case 'ghampus:inbox:list': {
@@ -4160,6 +4312,30 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return { ok: true };
     }
 
+    case 'ghampus:reminders:snooze': {
+      const args = z.object({
+        itemId: z.string().optional(),
+        snoozeMs: z.number().int().positive().optional(),
+      }).parse(params ?? {});
+      const ms = args.snoozeMs ?? 24 * 60 * 60_000;
+      if (args.itemId) {
+        deps.reminderScheduler?.snoozeItem(args.itemId, ms);
+      } else {
+        deps.reminderScheduler?.snoozeAll(ms);
+      }
+      return { ok: true };
+    }
+
+    case 'ghampus:reminders:tick': {
+      const result = await deps.reminderScheduler?.tickForTest(true);
+      return result ?? { emitted: [], itemCount: 0 };
+    }
+
+    case 'ghampus:tips:tick': {
+      const result = await deps.tipsScheduler?.tickForTest(true);
+      return result ?? { emitted: false };
+    }
+
     case 'ghampus:digest': {
       const args = z.object({ sinceMs: z.number().optional() }).parse(params ?? {});
       const sinceMs = args.sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -4192,6 +4368,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
       const digestMsg = { kind: 'ghampus', text, ts: Date.now() };
       await appendFile(histPath, JSON.stringify(digestMsg) + '\n').catch(() => {});
+      const { appendGhampusHistoryCacheMessage } = await import('./ghampus-history-cache.js');
+      appendGhampusHistoryCacheMessage(digestMsg);
       return { emitted: true };
     }
     case 'ghampus:send': {

@@ -20,7 +20,7 @@ const LANG_SIGNALS: Record<Exclude<UserLanguage, 'other'>, RegExp[]> = {
     /\b(what|who|how|when|where|which|why|for|from|about|tasks?|todos?|team|members?|list|show|find|tell|remember|give me)\b/i,
   ],
   ro: [
-    /\b(ce|cine|care|cum|c[aă]nd|unde|pentru|despre|din|sarcini|taskuri|echipa|membri|listeaz|arat[aă]|aminte[sș]te|spune|toate|roluri|exist[aă])\b/i,
+    /\b(ce|cine|care|cum|c[aă]nd|unde|pentru|despre|din|sarcini|taskuri|echipa|membri|listeaz|arat[aă]|aminte[sș]te|spune|toate|roluri|exist[aă]|caut[aă]?|g[aă]se[sș]te|gaseste)\b/i,
     /[ăâîșțĂÂÎȘȚ]/,
   ],
   fr: [
@@ -114,6 +114,63 @@ export function wantsBriefAnswerText(text: string): boolean {
   return WANTS_BRIEF_ANSWER_RE.test(text);
 }
 
+/** User explicitly asked for a longer / detailed answer — multilingual. */
+export const WANTS_EXPANDED_ANSWER_EN_RE =
+  /\b(?:expand(?:ed|ing)?|elaborate|more detail(?:s)?|in depth|in-depth|explain more|tell me more|full answer|comprehensive|go deeper|give me details|detailed answer|thorough(?:ly)?)\b/i;
+export const WANTS_EXPANDED_ANSWER_RO_RE =
+  /(?:^|[\s,.:;(!-])(?:în detaliu|in detaliu|mai mult(?:e)?|detaliaz[aă]|extinde|explic[aă] mai mult|pe larg|r[aă]spuns complet)\b/i;
+
+export function wantsExpandedAnswerText(text: string): boolean {
+  return WANTS_EXPANDED_ANSWER_EN_RE.test(text) || WANTS_EXPANDED_ANSWER_RO_RE.test(text);
+}
+
+/** Simple who/what person or role lookup — default to one-sentence answers. */
+export const SIMPLE_PERSON_LOOKUP_RE =
+  /\b(?:who (?:can help|is|handles|owns|runs|leads|manages|should|would)|who's|who can|cine (?:e|este|poate|se ocup[aă]|controleaz[aă]|face|s[aă] ocup[aă]))(?=\s|$|[?.!,])/i;
+
+export function isSimplePersonLookupQuestion(text: string): boolean {
+  if (SIMPLE_PERSON_LOOKUP_RE.test(text)) return true;
+  if (
+    /\b(?:what is|who is|which is|ce este|ce e|cine e)\b/i.test(text)
+    && !/\b(?:list|all|every|toate|show all|enumerate)\b/i.test(text)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Hints that suppress default brevity (lists, rosters, skill walks, etc.). */
+export type BriefModeHints = {
+  wantsExhaustive?: boolean;
+  wantsGrouped?: boolean;
+  wantsTeamRoster?: boolean;
+  wantsTeamTaskList?: boolean;
+  wantsProjectTaskList?: boolean;
+  wantsExplicitSkillWalk?: boolean;
+  wantsSkillList?: boolean;
+  wantsMcpToolList?: boolean;
+};
+
+/** Default Ghampus answers are brief unless user asked to expand or needs a structured list. */
+export function shouldDefaultBriefAnswer(text: string, hints?: BriefModeHints): boolean {
+  if (wantsExpandedAnswerText(text)) return false;
+  if (hints?.wantsExhaustive) return false;
+  if (hints?.wantsGrouped) return false;
+  if (hints?.wantsTeamRoster) return false;
+  if (hints?.wantsTeamTaskList) return false;
+  if (hints?.wantsProjectTaskList) return false;
+  if (hints?.wantsExplicitSkillWalk) return false;
+  if (hints?.wantsSkillList) return false;
+  if (hints?.wantsMcpToolList) return false;
+  if (
+    /\b(?:summarize|summary|rezum[aă]|compil|recap|recapitul)\b/i.test(text)
+    && /\b(?:discussion|conversation|chat|discu[țt]|conversa[țt]|thread)\b/i.test(text)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /** First-word list/show verbs — never fuzzy-match save verbs. */
 export const MULTILINGUAL_LIST_VERB_PREFIX_RE =
   /^(?:listeaz|arat|lista|montre|muestra|zeig|enumere)/i;
@@ -147,14 +204,87 @@ export const TASK_DEADLINE_NOUN_RE =
 export const ROLE_NOUN_RE =
   /\b(roluri|rolurile|rol\b|roles?|ce rol|what role|pozi[tț]ia|func[tț]ia|job|title|ocup[aă])\b/i;
 
-/** Single-line LLM instruction — always universal; optional hint when confident. */
+/** Human-readable label for synthesis / polish prompts. */
+export function responseLanguageLabel(lang: UserLanguage): string {
+  if (lang === 'other') return 'the same language the user wrote in';
+  return LANG_LABEL[lang];
+}
+
+/** Single-line LLM instruction — always names the detected user language when known. */
 export function matchResponseLanguageInstruction(userText: string): string {
   const lang = detectUserMessageLanguage(userText);
-  if (lang !== 'en' && lang !== 'other') {
-    const label = LANG_LABEL[lang];
-    return `Respond in ${label} since the user asked in ${label}.`;
+  if (lang === 'other') {
+    return 'Respond in the same language as the user\'s question.';
   }
-  return 'Match the language of the user\'s question.';
+  const label = LANG_LABEL[lang];
+  return `Respond in ${label} — the user's question is in ${label}.`;
+}
+
+/**
+ * Full LANGUAGE block for synthesis / polish — user query language overrides recall snippet language.
+ */
+export function buildResponseLanguageRulesBlock(userText: string): string {
+  const lang = detectUserMessageLanguage(userText);
+  if (lang === 'en') {
+    return `LANGUAGE (mandatory — highest priority):
+- The user's question is in English. Respond in English even if <cortex_data> or recall snippets are in Romanian, French, or another language.
+- Translate or summarize foreign-language memory into natural English — do NOT echo Romanian (or other non-English) prose unless quoting a proper noun or title verbatim.
+- Preserve person names and original book/work titles exactly as stored; everything else should be English.`;
+  }
+  if (lang === 'ro') {
+    return `LANGUAGE (mandatory — highest priority):
+- The user's question is in Romanian. Respond in Romanian even if some recall snippets are in English.
+- Translate or summarize English memory into natural Romanian when needed — do NOT echo English prose unless quoting a proper noun or title verbatim.`;
+  }
+  if (lang === 'other') {
+    return `LANGUAGE (mandatory): Match the language of the user's question — recall snippet language does not override it.`;
+  }
+  const label = LANG_LABEL[lang];
+  return `LANGUAGE (mandatory — highest priority):
+- The user's question is in ${label}. Respond in ${label} even if recall snippets are in another language.
+- Translate or summarize memory content into ${label} as needed.`;
+}
+
+/**
+ * True when the draft answer appears to be in a different language than the user's question.
+ * Used to force polish when synthesis/formatter echoed recall language instead of query language.
+ */
+export function answerLanguageMismatchUserQuery(userText: string, answer: string): boolean {
+  const userLang = detectUserMessageLanguage(userText);
+  if (userLang === 'other') return false;
+
+  const draft = answer.trim();
+  if (!draft) return false;
+
+  const answerLang = detectUserMessageLanguage(draft);
+  if (answerLang === userLang || answerLang === 'other') return false;
+
+  const userScore = scoreLanguage(draft, userLang);
+  const answerScore = scoreLanguage(draft, answerLang);
+
+  if (userLang === 'en') {
+    if (/[ăâîșțĂÂÎȘȚ]/.test(draft)) return true;
+    return answerLang === 'ro' && answerScore >= 2 && answerScore > userScore;
+  }
+
+  if (userLang === 'ro') {
+    if (answerLang === 'en' && userScore === 0 && answerScore >= 2 && !/[ăâîșțĂÂÎȘȚ]/.test(draft)) {
+      return true;
+    }
+    return answerLang !== 'ro' && userScore === 0 && answerScore >= 2;
+  }
+
+  return answerLang !== userLang && answerScore >= 2 && answerScore > userScore;
+}
+
+/** Extra synthesis/polish rules when the user asked in Romanian. */
+export function buildRomanianContentRulesBlock(userText: string): string {
+  if (detectUserMessageLanguage(userText) !== 'ro') return '';
+  return `
+ROMANIAN QUERY — content rules:
+- Respond in Romanian.
+- Do NOT invent English titles for Romanian book or work names — quote the original Romanian title from memory; if unsure of translation, state the title verbatim without translating.
+- Preserve person names exactly as stored in recall — never merge spellings or invent corrupted variants (e.g. keep "Ungur Sandu" as-is; do not blend OCR misreads).`;
 }
 
 /** "Remind me …" recall phrasing — not an explicit save (multilingual). */
@@ -364,4 +494,193 @@ export function isTemporalTodoQuery(msg: string): boolean {
   const m = msg.trim();
   return TASK_NOUN_RE.test(m)
     && /\b(?:due|overdue|past due|tomorrow|today|this week|expir(?:e|ing|es)?|deadline)\b/i.test(m);
+}
+
+/** Meta / self / app-help categories that skip cortex recall. */
+export type GhampusMetaCategory =
+  | 'model_status'
+  | 'ghampus_identity'
+  | 'app_help'
+  | 'general_knowledge'
+  | 'chitchat';
+
+const META_IDENTITY_SUBJECTS = new Set([
+  'ghampus', 'graphnosis', 'graphnosis app', 'cortex', 'engram', 'engrams',
+  'mcp', 'ollama', 'consent', 'synapse', 'sidecar',
+]);
+
+/** User scoped the question to a named engram or saved memory — must recall. */
+export function hasEngramOrMemoryScopeInQuery(text: string): boolean {
+  const t = text.trim();
+  return (
+    hasMemoryAnchorInQuery(t)
+    || /\b(?:in|în|inside|within|din|from|de la)\s+\S+\s+engram\b/i.test(t)
+    || /\bengram\s+[a-z0-9][\w-]{1,40}\b/i.test(t)
+    || /\bghampus-tests\b/i.test(t)
+    || /\b(?:eval product|seahorse codename|product version)\b/i.test(t)
+    || /\b(?:what did I (?:say|tell|write|save|store)|remember when|ce am (?:spus|zis)|what did we (?:discuss|save|store))\b/i.test(t)
+  );
+}
+
+/** Task, person, project, or search lookups — never treat as meta self-help. */
+export function isPersonalMemoryLookupQuery(text: string): boolean {
+  const t = text.trim();
+  if (/^(?:what(?:'s| is) the capital of|care e capitala)\b/i.test(t)) return false;
+  if (/^\d+\s*[\+\-\*\/×÷]\s*\d+\s*=?\s*$/.test(t.replace(/[?.!]+$/, ''))) return false;
+  if (hasEngramOrMemoryScopeInQuery(t)) return true;
+  if (isRemindMeRecallQuery(t)) return true;
+  if (isScopedTaskListQuery(t)) return true;
+  if (isTemporalTodoQuery(t)) return true;
+  if (TASK_NOUN_RE.test(t) && TASK_SCOPE_PREPOSITIONS.test(t)) return true;
+  const firstWord = (t.toLowerCase().split(/\s+/)[0] ?? '').replace(/[?.!,]+$/, '');
+  if (isMultilingualSearchVerbFirstWord(firstWord)) return true;
+  if (TEAM_NOUN_RE.test(t) && (TASK_NOUN_RE.test(t) || ROLE_NOUN_RE.test(t))) return true;
+  if (ROLE_NOUN_RE.test(t) && PERSON_NAME_RE.test(t)) return true;
+  if (
+    /\b(?:who can help|who handles|who owns|who runs|who leads|cine (?:e|este|poate|se ocup[aă]))\b/i.test(t)
+    && !/\b(?:ghampus|graphnosis)\b/i.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /^(?:(?:what|how)\s+about|tell\s+me\s+about|(?:ce|spune(?:-mi)?)\s+(?:[sș]tii|stii)\s+despre)\s+/i.test(t)
+    && !/^(?:(?:what|how)\s+about|tell\s+me\s+about)\s+(?:ghampus|graphnosis|mcp|ollama|consent)\b/i.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /^(?:what|who)\s+(?:is|are)\s+/i.test(t)
+    && PERSON_NAME_RE.test(t)
+    && !/\bcapital of\b/i.test(t)
+    && !/^(?:what|who)\s+(?:is|are)\s+(?:ghampus|graphnosis|mcp|ollama|consent)\b/i.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(?:unpublished|writings|team|project|todo|task|sarcin|obligation|deadline)\b/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+function isMetaIdentityTopic(topic: string): boolean {
+  const norm = topic.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (META_IDENTITY_SUBJECTS.has(norm)) return true;
+  return /^(?:ghampus|graphnosis(?:\s+app)?|cortex|engrams?|mcp|ollama|consent|sidecar|synapse)$/i.test(norm);
+}
+
+function isModelStatusQuestion(text: string): boolean {
+  const t = text.trim();
+  return (
+    /\b(?:what|which)\s+(?:model|llm|ai)\b/i.test(t)
+    || /\b(?:what|which)\s+(?:model|llm)\s+(?:are you|do you|rus?ti|folose[sș]ti|using|running)\b/i.test(t)
+    || /\b(?:model|llm)\s+(?:are you|do you|rus?ti|folose[sș]ti|using|running)\b/i.test(t)
+    || /\bce\s+(?:model|llm)\b/i.test(t)
+    || /\b(?:ollama|local llm)\s+model\b/i.test(t)
+    || /\b(?:currently|right now|now)\b[\s\S]{0,30}\b(?:model|llm)\b/i.test(t)
+    || /\b(?:model|llm)\b[\s\S]{0,30}\b(?:currently|right now|now)\b/i.test(t)
+    || /\bwhat model are you using\b/i.test(t)
+  );
+}
+
+function isGhampusIdentityQuestion(text: string): boolean {
+  const t = text.trim().replace(/[?.!]+$/, '');
+  return (
+    /^(?:who are you|what are you|what is ghampus|what'?s ghampus|who is ghampus)\b/i.test(t)
+    || /^(?:cine e[sș]ti|ce e[sș]ti|cine este ghampus|ce este ghampus)\b/i.test(t)
+    || /\bwhat can you do\b/i.test(t)
+    || /\bce po[tț]i face\b/i.test(t)
+    || /\bare you claude\b/i.test(t)
+    || /\b(?:local or cloud|on device|on-device|cloud or local)\b/i.test(t)
+    || /\b(?:e[sș]ti|esti)\s+(?:local|cloud|claude)\b/i.test(t)
+    || (
+      /\b(?:what|which)\s+version\b/i.test(t)
+      && /\b(?:graphnosis|ghampus)\b/i.test(t)
+      && !/\b(?:eval|product|seahorse|codename|ghampus-tests)\b/i.test(t)
+    )
+    || (
+      /^(?:what|who)\s+(?:is|are)\s+(?:ghampus|graphnosis)\b/i.test(t)
+      && !hasEngramOrMemoryScopeInQuery(t)
+    )
+  );
+}
+
+function isAppHelpQuestion(text: string): boolean {
+  const t = text.trim();
+  if (/\bslash commands?\b/i.test(t)) return true;
+  if (/\bhow does consent work\b/i.test(t) || /\bcum func[tț]ioneaz[aă] consim[tț][aă]m[aă]ntul\b/i.test(t)) {
+    return true;
+  }
+  if (/\bwhat (?:is|are)\s+(?:mcp|model context protocol|sensitive engrams?|consent tiers?)\b/i.test(t)) {
+    return true;
+  }
+  if (/\b(?:ce este|ce sunt)\s+(?:mcp|engram(?:ul|uri)?|consim[tț][aă]m[aă]ntul)\b/i.test(t)) {
+    return true;
+  }
+  if (
+    isHowToQuestionText(t)
+    && /\b(?:ollama|graphnosis|ghampus|engram|mcp|consent|settings?|cortex|synapse|local llm|model|memory studio|install)\b/i.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /^(?:what|who)\s+(?:is|are)\s+\S/i.test(t)
+    && isMetaIdentityTopic(t.replace(/^(?:what|who)\s+(?:is|are)\s+/i, '').trim())
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isGeneralKnowledgeQuestion(text: string): boolean {
+  const t = text.trim().replace(/[?.!]+$/, '');
+  if (/^\d+\s*[\+\-\*\/×÷]\s*\d+\s*=?\s*$/.test(t)) return true;
+  if (/^[\d\s+\-*/().=]+\s*[=?]?\s*$/.test(t) && /[\+\-\*\/]/.test(t)) return true;
+  if (/^(?:what(?:'s| is) the capital of|care e capitala)\b/i.test(t)) return true;
+  if (
+    /^(?:what is|what's|define|ce este)\s+/i.test(t)
+    && !isMetaIdentityTopic(t.replace(/^(?:what is|what's|define|ce este)\s+/i, '').trim())
+    && !PERSON_NAME_RE.test(t)
+    && !TEAM_NOUN_RE.test(t)
+    && !TASK_NOUN_RE.test(t)
+    && t.split(/\s+/).length <= 12
+  ) {
+    const subject = t.replace(/^(?:what is|what's|define|ce este)\s+/i, '').trim();
+    if (subject.length >= 2 && !/\b(?:my|mine|our|team|project|task|todo|sarcin|echipa|membru)\b/i.test(t)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isChitchatMessage(text: string): boolean {
+  const t = text.trim().replace(/[?.!]+$/, '');
+  if (!t || t.split(/\s+/).length > 8) return false;
+  return (
+    /^(?:hi|hello|hey|thanks|thank you|thx|bye|goodbye|good morning|good night|salut|bun[aă]|mul[tț]umesc|la revedere|merci|danke|hola|ciao)[!.?\s]*$/i.test(t)
+    || /^(?:how are you|what'?s up|ce mai faci)\??$/i.test(t)
+  );
+}
+
+/**
+ * Detect meta / app / general-knowledge questions that should NOT recall cortex.
+ * Returns null when the message needs personal memory research.
+ */
+export function detectGhampusMetaCategory(text: string): GhampusMetaCategory | null {
+  const t = text.trim();
+  if (!t) return null;
+  if (isPersonalMemoryLookupQuery(t)) return null;
+  if (isMetaChallengeQuery(t)) return null;
+  if (isConversationContextQuery(t)) return null;
+
+  if (isModelStatusQuestion(t)) return 'model_status';
+  if (isGhampusIdentityQuestion(t)) return 'ghampus_identity';
+  if (isAppHelpQuestion(t)) return 'app_help';
+  if (isChitchatMessage(t)) return 'chitchat';
+  if (isGeneralKnowledgeQuestion(t)) return 'general_knowledge';
+  return null;
+}
+
+/** True when the user question should skip recall tools and answer directly. */
+export function isNonMemoryQuestion(text: string): boolean {
+  return detectGhampusMetaCategory(text) !== null;
 }

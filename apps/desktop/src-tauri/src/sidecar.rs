@@ -71,6 +71,19 @@ pub struct SidecarHandle {
     _stderr_buffer: Arc<Mutex<VecDeque<String>>>,
 }
 
+/// Reap embed-worker child processes that outlive a SIGKILL'd sidecar parent.
+/// Compiled workers re-exec the same `graphnosis-sidecar` binary; dev smoke
+/// runs fork `embed-worker.js` — sweep both patterns. Safe after graceful
+/// shutdown (workers already terminated) and on quit (main sidecar is dead).
+#[cfg(unix)]
+fn kill_orphan_embed_workers() {
+    for pattern in ["graphnosis-sidecar", "embed-worker"] {
+        let _ = std::process::Command::new("pkill")
+            .args(["-9", "-f", pattern])
+            .output();
+    }
+}
+
 impl Drop for SidecarHandle {
     /// Synchronous last-resort kill — fires whenever the handle is dropped,
     /// including on abnormal Tauri exit where the tokio runtime shuts down
@@ -92,6 +105,8 @@ impl Drop for SidecarHandle {
             extern "C" { fn kill(pid: i32, sig: i32) -> i32; }
             unsafe { kill(pid as i32, 9); }
         }
+        #[cfg(unix)]
+        kill_orphan_embed_workers();
         // Remove the lockfile synchronously — no runtime needed.
         let lock_file = self.cortex_dir.join(".lockfile.lock");
         let _ = std::fs::remove_dir(&lock_file);
@@ -135,6 +150,8 @@ impl SidecarHandle {
         // on an already-exited child is a no-op (returns an ignorable error).
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
+        #[cfg(unix)]
+        kill_orphan_embed_workers();
         // When the sidecar exits via SIGKILL (or didn't handle SIGTERM in
         // time), proper-lockfile never releases `.lockfile.lock`. Delete it
         // here so the next unlock can acquire the lock immediately instead of

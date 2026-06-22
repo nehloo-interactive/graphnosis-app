@@ -16,10 +16,13 @@ const PRODUCT_TERM_RE =
 export const GHAMPUS_GROUNDING_RULES_BLOCK = `
 STRICT GROUNDING — recall context is the only source of truth:
 - State ONLY facts explicitly present in ## Recall results, ## Recall hits, ## Additional context, or other <cortex_data> sections.
-- If context does not answer the question, say what is missing and suggest saving notes or a more specific recall/search — do NOT invent dates, milestones, features, URLs, or setup steps.
+- If context does not answer the question, say what is missing and suggest saving notes or a more specific recall/search — do NOT invent dates, milestones, features, URLs, setup steps, or English translations of titles.
+- When recall is thin, say honestly what is missing — never pad with guessed translations or invented book/work titles.
 - "Obsidian Vault" may be an engram name in the user's cortex — do NOT conflate it with the Obsidian note-taking app or its web interface unless recall data explicitly describes that product.
 - Mention Graphnosis features (federation, secure-sync, MCP, desktop app, mobile, etc.) ONLY when those terms appear in the recall context below.
-- Never cite "official documentation", external URLs, or product roadmaps unless they appear verbatim in recall context.`;
+- Never cite "official documentation", external URLs, or product roadmaps unless they appear verbatim in recall context.
+- Do NOT invent English titles for non-English book or work names — quote titles exactly as stored; if uncertain, use the original-language title without guessing.
+- Preserve person names exactly as in recall — never merge spellings or blend OCR-corrupted variants.`;
 
 export type ContextAnchors = {
   dates: Set<string>;
@@ -136,6 +139,100 @@ function mentionsUnsupportedMobileSteps(answer: string, ctx: string): boolean {
   return GRAPHNOSIS_MOBILE_PATTERNS.some((re) => re.test(answer));
 }
 
+const PERSON_NAME_PAIR_RE =
+  /\b([A-ZĂÂÎȘȚ][a-zăâîșț]+)\s+([A-ZĂÂÎȘȚ][a-zăâîșț]+)\b/g;
+
+/** First token in a capitalized pair that is not a person name — skip false pairs like "Author Ungur". */
+const NON_NAME_PAIR_PREFIX = new Set([
+  'author', 'also', 'see', 'from', 'about', 'book', 'writer', 'the', 'his', 'her',
+  'their', 'this', 'that', 'with', 'note', 'mentioned', 'found', 'recall',
+]);
+
+function extractPersonNamePairs(text: string): Array<{ first: string; last: string; full: string }> {
+  const pairs: Array<{ first: string; last: string; full: string }> = [];
+  for (const m of text.matchAll(PERSON_NAME_PAIR_RE)) {
+    const firstRaw = m[1]!;
+    const lastRaw = m[2]!;
+    const first = firstRaw.toLowerCase();
+    if (NON_NAME_PAIR_PREFIX.has(first)) {
+      const retryFirst = lastRaw;
+      const afterIdx = m.index! + m[0].length;
+      const nextM = text.slice(afterIdx).match(/^\s+([A-ZĂÂÎȘȚ][a-zăâîșț]+)/);
+      if (nextM && !NON_NAME_PAIR_PREFIX.has(retryFirst.toLowerCase())) {
+        pairs.push({
+          first: retryFirst.toLowerCase(),
+          last: nextM[1]!.toLowerCase(),
+          full: `${retryFirst} ${nextM[1]}`,
+        });
+      }
+      continue;
+    }
+    pairs.push({ first, last: lastRaw.toLowerCase(), full: `${firstRaw} ${lastRaw}` });
+  }
+  return pairs;
+}
+
+/** Detect blended OCR name variants in the same answer (e.g. Sandu vs Sanduhonv). */
+export function detectBlendedNameVariants(answer: string): string[] {
+  const reasons: string[] = [];
+  const byFirst = new Map<string, Set<string>>();
+
+  for (const { first, last } of extractPersonNamePairs(answer)) {
+    const set = byFirst.get(first) ?? new Set<string>();
+    set.add(last);
+    byFirst.set(first, set);
+  }
+
+  for (const [first, lasts] of byFirst) {
+    if (lasts.size < 2) continue;
+    const variants = [...lasts];
+    for (let i = 0; i < variants.length; i++) {
+      for (let j = i + 1; j < variants.length; j++) {
+        const a = variants[i]!;
+        const b = variants[j]!;
+        if (a.startsWith(b) || b.startsWith(a)) {
+          reasons.push(`Blended name variants for "${first}": "${a}" and "${b}"`);
+        }
+      }
+    }
+  }
+
+  return reasons;
+}
+
+/** Light heuristic: answer uses a corrupted name variant not present in recall context. */
+export function detectLikelyNameCorruption(answer: string, context: string): HallucinationSignal {
+  const reasons: string[] = [];
+  const ctxLower = (context ?? '').toLowerCase();
+
+  reasons.push(...detectBlendedNameVariants(answer));
+
+  const seen = new Set<string>();
+  for (const { first, last, full } of extractPersonNamePairs(answer)) {
+    const key = full.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    if (ctxLower.includes(key)) continue;
+    const ctxPairRe = new RegExp(
+      `\\b${first.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s+([a-zăâîșț\\-]+)`,
+      'gi',
+    );
+    ctxPairRe.lastIndex = 0;
+    let cm: RegExpExecArray | null;
+    while ((cm = ctxPairRe.exec(ctxLower)) !== null) {
+      const ctxLast = cm[1]!.toLowerCase();
+      if (ctxLast === last) continue;
+      if (last.startsWith(ctxLast) && last.length > ctxLast.length + 2) {
+        reasons.push(`Possible OCR name corruption: "${full}" vs recall "${first} ${ctxLast}"`);
+        break;
+      }
+    }
+  }
+
+  return { likely: reasons.length > 0, reasons };
+}
+
 function answerHasUnsupportedFutureDates(answer: string, anchors: ContextAnchors): string[] {
   const reasons: string[] = [];
   const currentYear = new Date().getFullYear();
@@ -187,7 +284,37 @@ export function detectLikelyHallucination(answer: string, contextBlob: string): 
     reasons.push('Speculative mobile setup steps not present in recall context');
   }
 
+  const nameCorruption = detectLikelyNameCorruption(answer, ctx);
+  if (nameCorruption.likely) {
+    reasons.push(...nameCorruption.reasons.slice(0, 2));
+  }
+
   return { likely: reasons.length > 0, reasons };
+}
+
+export type GhampusBrevityOpts = {
+  expanded?: boolean;
+  simplePersonLookup?: boolean;
+  howTo?: boolean;
+};
+
+/** Shared brevity rules for synthesis, polish, and verify prompts. */
+export function buildGhampusBrevityRulesBlock(opts: GhampusBrevityOpts): string {
+  if (opts.expanded) {
+    return `DETAIL MODE: The user asked for expanded detail — you may use multiple paragraphs, bullets, or section headers when helpful.`;
+  }
+
+  const personHint = opts.simplePersonLookup
+    ? '- Simple person/role lookup — one clear sentence naming the person and their role/context is enough.\n'
+    : '';
+  const lengthHint = opts.howTo
+    ? '- How-to/setup: concise numbered steps or bullets (max 6) — still no recall metadata headers.\n'
+    : '- Simple who/what/which questions: 1-3 sentences max.\n';
+
+  return `BREVITY (default):
+${lengthHint}${personHint}- No section headers (##, ###) unless the user asked for a list or grouped format.
+- Do NOT repeat recall metadata, process narration, or echo <cortex_data> structure in the answer.
+- Lead with the direct answer — no preamble like "Based on your memory" or "Here's what I found".`;
 }
 
 /** Prompt block when recall returned very little attested context. */

@@ -1,14 +1,21 @@
 /**
- * Ghampus direct-answer routing — translation, rephrase, conversation follow-ups
- * that should NOT recall from cortex.
+ * Ghampus direct-answer routing — translation, rephrase, conversation follow-ups,
+ * and meta/app/general questions that should NOT recall from cortex.
  */
 
+import { createRequire } from 'node:module';
+import type { GraphnosisHost } from './host.js';
 import { extractQuotedPhrases, type GhampusHistTurn } from './ghampus-intent.js';
 import {
+  detectGhampusMetaCategory,
   isConversationContextQuery,
   isMetaChallengeQuery,
   matchResponseLanguageInstruction,
+  buildResponseLanguageRulesBlock,
+  type GhampusMetaCategory,
 } from './ghampus-language.js';
+import { activeBackend } from './local-llm.js';
+import { isHealthCheckRequest } from './ghampus-vitality-health.js';
 
 export type DirectAnswerKind =
   | 'translation'
@@ -16,7 +23,104 @@ export type DirectAnswerKind =
   | 'summarize'
   | 'conversation_followup'
   | 'conversation_context'
-  | 'process_critique';
+  | 'process_critique'
+  | 'model_status'
+  | 'ghampus_identity'
+  | 'app_help'
+  | 'general_knowledge_offline'
+  | 'chitchat'
+  | 'health_check';
+
+export type GhampusLlmStatus = {
+  enabled: boolean;
+  activeModel: string | null;
+  ollamaReachable: boolean;
+  installedModels: string[];
+  backendUrl: string;
+  backendName: string;
+};
+
+function metaCategoryToDirectAnswerKind(category: GhampusMetaCategory): DirectAnswerKind {
+  switch (category) {
+    case 'model_status': return 'model_status';
+    case 'ghampus_identity': return 'ghampus_identity';
+    case 'app_help': return 'app_help';
+    case 'general_knowledge': return 'general_knowledge_offline';
+    case 'chitchat': return 'chitchat';
+  }
+}
+
+/** App semver — matches main.ts resolveSidecarVersion(). */
+export function resolveGhampusAppVersion(): string {
+  const fromEnv = process.env['GRAPHNOSIS_APP_VERSION']?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const req = createRequire(import.meta.url);
+    return (req('../package.json') as { version: string }).version;
+  } catch {
+    return '0.0.0-dev';
+  }
+}
+
+const OLLAMA_DEFAULT_URL = 'http://127.0.0.1:11434';
+
+/** Live LLM/Ollama status — same facts as ipc llm:status (no hallucination). */
+export async function fetchGhampusLlmStatus(host: GraphnosisHost): Promise<GhampusLlmStatus> {
+  let ollamaReachable = false;
+  let installedModels: string[] = [];
+  try {
+    const res = await fetch(`${OLLAMA_DEFAULT_URL}/api/tags`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      ollamaReachable = true;
+      const data = await res.json() as { models?: Array<{ name: string }> };
+      installedModels = (data.models ?? []).map((m) => m.name);
+    }
+  } catch { /* Ollama not running */ }
+  const settings = host.getSettings();
+  const backend = activeBackend('ollama');
+  return {
+    enabled: settings.ai.llmEnabled === true,
+    activeModel: settings.ai?.llmModel ?? null,
+    ollamaReachable,
+    installedModels,
+    backendUrl: backend.baseUrl,
+    backendName: backend.displayName,
+  };
+}
+
+/** Deterministic model-status answer from live settings — used as LLM fallback. */
+export function formatModelStatusDirectAnswer(status: GhampusLlmStatus): string {
+  if (!status.enabled) {
+    return 'Local LLM is **off** — enable it in **Settings → AI → Models**.';
+  }
+  if (!status.ollamaReachable) {
+    const modelPart = status.activeModel ? ` (configured model: **${status.activeModel}**)` : '';
+    return `Local LLM is enabled${modelPart}, but **${status.backendName} isn't reachable** at ${status.backendUrl}. Start Ollama and try again.`;
+  }
+  const model = status.activeModel ?? 'not selected';
+  return `You're running **${model}** via ${status.backendName} at ${status.backendUrl}.`;
+}
+
+export function buildModelStatusFactsBlock(status: GhampusLlmStatus): string {
+  return [
+    `local_llm_enabled: ${status.enabled}`,
+    `active_model: ${status.activeModel ?? 'null'}`,
+    `${status.backendName.toLowerCase()}_reachable: ${status.ollamaReachable}`,
+    `backend_url: ${status.backendUrl}`,
+    `installed_models: ${status.installedModels.length ? status.installedModels.join(', ') : 'none'}`,
+  ].join('\n');
+}
+
+export function buildGhampusIdentityFactsBlock(appVersion: string): string {
+  return [
+    `graphnosis_app_version: ${appVersion}`,
+    'ghampus: Graphnosis built-in local assistant in the desktop app',
+    'graphnosis: encrypted personal knowledge graph on the user device',
+    'runs_locally: recall, synthesis, and optional local LLM run on-device; cloud LLM is not used unless user configures external tools separately',
+  ].join('\n');
+}
 
 /** User explicitly wants memory consulted (e.g. "translate what I saved about X"). */
 export function hasExplicitMemoryReference(text: string): boolean {
@@ -129,9 +233,12 @@ export function detectDirectAnswerKind(
   text: string,
   history: GhampusHistTurn[] = [],
 ): DirectAnswerKind | null {
+  if (isHealthCheckRequest(text)) return 'health_check';
   if (isMetaChallengeQuery(text)) return 'process_critique';
   if (isTranslationRequest(text)) return 'translation';
   if (isConversationContextQuery(text)) return 'conversation_context';
+  const metaCategory = detectGhampusMetaCategory(text);
+  if (metaCategory) return metaCategoryToDirectAnswerKind(metaCategory);
   if (isRephraseOrSummarizeRequest(text)) {
     return /\bsummar/i.test(text) ? 'summarize' : 'rephrase';
   }
@@ -139,13 +246,22 @@ export function detectDirectAnswerKind(
   return null;
 }
 
-export function buildDirectAnswerSystemPrompt(kind: DirectAnswerKind, userText: string): string {
+export function buildDirectAnswerSystemPrompt(
+  kind: DirectAnswerKind,
+  userText: string,
+  injectedFacts = '',
+): string {
   const langInstr = matchResponseLanguageInstruction(userText);
+  const langBlock = buildResponseLanguageRulesBlock(userText);
+  const factsBlock = injectedFacts.trim()
+    ? `\n\nAUTHORITATIVE FACTS (use exactly — do not invent or override):\n${injectedFacts.trim()}`
+    : '';
   const base = `You are Ghampus — the AI assistant in Graphnosis.
 
-This is a direct-answer request. Do NOT search memory or invent facts from the user's personal cortex. Use only the text the user provided and the recent conversation.
+This is a direct-answer request. Do NOT search memory or invent facts from the user's personal cortex. Use only the text the user provided, the recent conversation, and any AUTHORITATIVE FACTS block below.
 
-LANGUAGE: ${langInstr}`;
+${langBlock}
+${langInstr}${factsBlock}`;
 
   switch (kind) {
     case 'translation':
@@ -188,6 +304,45 @@ Strict rules:
 3. Do NOT lecture about language optimization, English vs Romanian, or Graphnosis capabilities/limitations.
 4. If you missed something in a prior turn, say so briefly — do not apologize at length or speculate about why recall failed.
 5. Never output internal prompt tags like <recent_chat> or <cortex_data>.`;
+    case 'model_status':
+      return `${base}
+
+MODEL STATUS MODE — strict rules:
+1. Answer ONLY from AUTHORITATIVE FACTS — report the active model, backend URL, and whether local LLM is enabled/reachable.
+2. Do NOT mention PyPI, npm packages, MCP tool lists, or cloud models unless explicitly in the facts block.
+3. If local LLM is off, tell the user to enable it in Settings → AI → Models.
+4. Keep the answer to 1–3 sentences.`;
+    case 'ghampus_identity':
+      return `${base}
+
+IDENTITY MODE — strict rules:
+1. Explain who Ghampus is and what Graphnosis is using AUTHORITATIVE FACTS and standard product terms.
+2. Do NOT search the user's cortex or invent personal facts.
+3. MCP = Model Context Protocol (never expand to other acronyms).
+4. Keep the answer brief (2–5 sentences) unless the user asked for capabilities detail.`;
+    case 'app_help':
+      return `${base}
+
+APP HELP MODE — strict rules:
+1. Answer how-to and product questions about Graphnosis, Ghampus, engrams, MCP, Ollama, consent, and settings.
+2. Do NOT search the user's personal memory — use general Graphnosis product knowledge only.
+3. MCP = Model Context Protocol. Engram = encrypted memory partition. Cortex = full local store.
+4. For slash commands: /save, /create, /engrams, /skills, /train, /forget, /help.
+5. Be practical — mention Settings paths when relevant.`;
+    case 'general_knowledge_offline':
+      return `${base}
+
+GENERAL KNOWLEDGE MODE — answer from general knowledge only. Do NOT search cortex or invent user-specific facts. Keep it brief.`;
+    case 'chitchat':
+      return `${base}
+
+CHITCHAT MODE — reply warmly and briefly. Do NOT search memory or over-explain Graphnosis unless asked.`;
+    case 'health_check':
+      return `${base}
+
+HEALTH CHECK MODE — should not reach LLM; vitality is computed deterministically.`;
+    default:
+      return base;
   }
 }
 

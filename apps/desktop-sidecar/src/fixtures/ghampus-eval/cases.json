@@ -160,6 +160,60 @@
       "canonicalKey": "ro-remind-alice",
       "tags": ["multilingual", "ro"],
       "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "direct-model-status",
+      "category": "direct-answer",
+      "text": "what model are you using currently?",
+      "expectedDirectAnswerKind": "model_status",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "direct-model-status-ro",
+      "category": "direct-answer",
+      "lang": "ro",
+      "text": "ce model folosești acum?",
+      "expectedDirectAnswerKind": "model_status",
+      "tags": ["multilingual", "ro"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "direct-ghampus-identity",
+      "category": "direct-answer",
+      "text": "what is ghampus?",
+      "expectedDirectAnswerKind": "ghampus_identity",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "direct-general-knowledge",
+      "category": "direct-answer",
+      "text": "what is the capital of France?",
+      "expectedDirectAnswerKind": "general_knowledge_offline",
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "direct-recall-must-not-skip",
+      "category": "recall",
+      "text": "What is the Graphnosis Eval Product version in ghampus-tests?",
+      "canonicalKey": "recall-product-version",
+      "tags": ["regression", "direct-answer-guard"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "language-en-query-ro-recall",
+      "category": "recall",
+      "lang": "en",
+      "text": "who can help with social media posts for unpublishedromania?",
+      "tags": ["regression", "language-match"],
+      "overlayProfiles": ["deterministic"]
+    },
+    {
+      "id": "language-ro-query-ro-recall",
+      "category": "recall",
+      "lang": "ro",
+      "text": "cine poate sa ma ajute cu postarile de social media pentru unpublishedromania?",
+      "tags": ["regression", "language-match"],
+      "overlayProfiles": ["deterministic"]
     }
   ]
 }
