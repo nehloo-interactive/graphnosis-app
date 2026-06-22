@@ -3,7 +3,7 @@ import { detectPolicyContradictions } from '@graphnosis-app/core';
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
-import { VitalityScorer, type VitalityReport } from './vitality.js';
+import { VitalityScorer, type VitalityDetailedReport, type VitalityReport } from './vitality.js';
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
@@ -12,6 +12,8 @@ import { clientActiveWithin, CLIENT_QUIET_MS, isIngestActive, onClientIdle, onIn
 // embedding queue or they can run concurrently with a connector ingest's embed
 // and crash the (non-reentrant) embed worker, deadlocking all embedding.
 import { withEmbedding } from './embedding-queue.js';
+import { enqueueBackgroundLane } from './background-lane-scheduler.js';
+import { resolvePerformanceProfile } from './performance-profile.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
 import { predictEdgesForEngram, edgePredictionEnabled } from './edge-prediction.js';
 import { redactId, dbg } from './log-redact.js';
@@ -699,8 +701,10 @@ export class BrainEngine {
   /** First boot scan — event-deferred while ingest or emb-cache rebuild is active. */
   private runPostBootFirstScan(): void {
     const run = (): void => {
-      void this.runFullScan({ skipLlmLoops: true });
-      void this.runTemporalDecay();
+      void enqueueBackgroundLane(this.host, 'brain-pass', async () => {
+        await this.runFullScan({ skipLlmLoops: true });
+        await this.runTemporalDecay();
+      });
     };
     if (!this.brainPassesPaused()) {
       run();
@@ -818,15 +822,30 @@ export class BrainEngine {
    *  compute exactly once (`settling: false`) — typically when the UI
    *  next pulls or when emitVitality() fires from maybeFinalize…(). */
   async getVitalityReport(): Promise<VitalityReport | null> {
+    const detailed = await this.getVitalityDetailedReport();
+    if (!detailed) return null;
+    const { pendingDuplicatePairs: _p, byGraphBreakdown: _b, cortexFactors: _c, fixes: _f, ...base } = detailed;
+    return { ...base, settling: detailed.settling ?? false };
+  }
+
+  async getVitalityDetailedReport(): Promise<VitalityDetailedReport | null> {
     if (!this.vitalityPresentationReady) {
       if (!this.isVitalityPresentationReady()) {
-        return await this.frozenVitalitySnapshot();
+        const frozen = await this.frozenVitalitySnapshot();
+        if (!frozen) return null;
+        const pendingDups = this.duplicatePairs.length;
+        const detailed = await this.vitality.computeDetailed(pendingDups);
+        return { ...detailed, overall: frozen.overall, byGraph: frozen.byGraph, settling: true };
       }
       this.vitalityPresentationReady = true;
       this.vitality.invalidate();
     }
-    const report = await this.vitality.compute(this.duplicatePairs.length);
+    const report = await this.vitality.computeDetailed(this.duplicatePairs.length);
     return { ...report, settling: false };
+  }
+
+  getPendingDuplicatePairCount(): number {
+    return this.duplicatePairs.length;
   }
 
   /** Called after boot deferred work (bundle materialize) — idempotent. */
@@ -1461,6 +1480,7 @@ export class BrainEngine {
 
     try {
       for (const graphId of this.selectDuplicateScanEngrams(this.host.listGraphs())) {
+        if (this.host.isBrainMutationsPaused(graphId)) continue;
         try {
           const nodes = this.host.listNodes(graphId);
           const active = nodes
@@ -1537,10 +1557,11 @@ export class BrainEngine {
           const linkEdges: Array<{ a: string; b: string; similarity: number }> = [];
 
           let pairIdx = 0;
+          const yieldMask = resolvePerformanceProfile(this.host.getSettings()).duplicateScanYieldEvery - 1;
           for (const pair of pairs) {
             // Keep the UI's IPC responsive during a large near-duplicate set
             // (a re-ingested corpus can produce tens of thousands of pairs).
-            if ((pairIdx++ & 2047) === 0) await yieldToLoop();
+            if ((pairIdx++ & yieldMask) === 0) await yieldToLoop();
             const a = nodeById.get(pair.idA);
             const b = nodeById.get(pair.idB);
             if (!a || !b) continue;
@@ -1836,7 +1857,7 @@ export class BrainEngine {
       };
     }
 
-    const raw = await llm.complete({
+    const raw = await this.llmCompleteWithTimeout({
       system: HEALING_REVIEW_SYSTEM_PROMPT,
       user: [
         `Rule that fired: ${record.rule}`,
@@ -2333,12 +2354,21 @@ export class BrainEngine {
     timeoutMs = 15_000,
   ): Promise<string> {
     if (!this.llm) throw new Error('LLM not available');
-    return Promise.race([
-      this.llm.complete(input),
-      new Promise<string>((_, reject) =>
-        setTimeout(() => reject(new Error(`LLM call exceeded ${timeoutMs}ms`)), timeoutMs),
-      ),
-    ]);
+    const { tryAcquireLlmSlot, WorkPriority } = await import('./work-priority.js');
+    const slot = tryAcquireLlmSlot(WorkPriority.P3_ENRICHMENT);
+    if (!slot) {
+      throw new Error('LLM slot busy — higher-priority work active');
+    }
+    try {
+      return await Promise.race([
+        this.llm.complete(input),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error(`LLM call exceeded ${timeoutMs}ms`)), timeoutMs),
+        ),
+      ]);
+    } finally {
+      slot.release();
+    }
   }
 
   private async pingLlm(): Promise<boolean> {

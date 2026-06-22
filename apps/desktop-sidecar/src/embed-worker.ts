@@ -42,6 +42,24 @@ const MODEL_TAG = MODEL_CHOICE === 'multilingual'
   : EmbeddingModel.BGESmallENV15;
 const DIM = MODEL_CHOICE === 'multilingual' ? 1024 : 384;
 
+// If the sidecar parent dies without running graceful shutdown (force-quit,
+// SIGKILL, tokio Drop race), forked/spawned workers become launchd orphans
+// and keep burning CPU on ONNX. Exit when the parent is gone.
+const bootPpid = process.ppid;
+if (bootPpid > 1) {
+  setInterval(() => {
+    if (process.ppid === 1) {
+      process.exit(0);
+      return;
+    }
+    try {
+      process.kill(bootPpid, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 2_000).unref?.();
+}
+
 const modelReady: Promise<FlagEmbedding> = (async () => {
   await fs.mkdir(cacheDir, { recursive: true });
   const model = await FlagEmbedding.init({

@@ -10,6 +10,7 @@
 import type { GraphnosisHost } from './host.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
 import { withEmbedding } from './embedding-queue.js';
+import { beginIngest, endIngest } from './client-activity.js';
 import { dbg } from './log-redact.js';
 
 export type DocsIngestProgress = {
@@ -192,47 +193,52 @@ export async function ingestGraphnosisDocs(
   const totalPages = BUNDLED_DOCS.length;
   const yieldToLoop = () => new Promise<void>((r) => setImmediate(r));
 
-  for (const doc of BUNDLED_DOCS) {
-    const sourceRef = `graphnosis-docs:${doc.slug}`;
-    const bundled = bundledDocForRef(sourceRef);
-    if (!bundled) continue;
-    try {
-      await withEmbedding(() => host.ingest(graphId, 'clip', sourceRef, bundled, {
-        // Suppress the per-document relink debounce. Without this flag,
-        // every page ingest fires kickoffRelink — and because embedding
-        // each page takes 2-5s (longer than the 1500ms debounce window),
-        // a full O(N²) relink pass fires between every page. 32 relink
-        // passes on a growing engram adds 60-120s+ to the ingest and causes
-        // the IPC timeout. One relink after all pages is sufficient.
-        skipAutoRelink: true,
-        // Batch save: one encrypted write after all pages instead of 32.
-        skipSave: true,
-      }), `docs:${doc.slug}`);
-      ingested++;
-    } catch (e) {
-      failed++;
-      console.error(`[docs-ingest] failed to ingest ${doc.slug}:`, e);
+  beginIngest(graphId);
+  try {
+    for (const doc of BUNDLED_DOCS) {
+      const sourceRef = `graphnosis-docs:${doc.slug}`;
+      const bundled = bundledDocForRef(sourceRef);
+      if (!bundled) continue;
+      try {
+        await withEmbedding(() => host.ingest(graphId, 'clip', sourceRef, bundled, {
+          // Suppress the per-document relink debounce. Without this flag,
+          // every page ingest fires kickoffRelink — and because embedding
+          // each page takes 2-5s (longer than the 1500ms debounce window),
+          // a full O(N²) relink pass fires between every page. 32 relink
+          // passes on a growing engram adds 60-120s+ to the ingest and causes
+          // the IPC timeout. One relink after all pages is sufficient.
+          skipAutoRelink: true,
+          // Batch save: one encrypted write after all pages instead of 32.
+          skipSave: true,
+        }), `docs:${doc.slug}`);
+        ingested++;
+      } catch (e) {
+        failed++;
+        console.error(`[docs-ingest] failed to ingest ${doc.slug}:`, e);
+      }
+      onProgress?.({
+        phase: 'ingest',
+        pagesDone: ingested + failed,
+        totalPages,
+        slug: doc.slug,
+      });
+      // Yield so the event loop can service IPC + push progress frames.
+      await yieldToLoop();
     }
-    onProgress?.({
-      phase: 'ingest',
-      pagesDone: ingested + failed,
-      totalPages,
-      slug: doc.slug,
-    });
-    // Yield so the event loop can service IPC + push progress frames.
-    await yieldToLoop();
-  }
-  // Single relink pass after all pages are ingested — picks up cross-page
-  // entity overlaps in one shot instead of 32 incremental passes.
-  // Latency benchmark skips relink: relinkFullGraph on ~3400 nodes adds
-  // ~100k edges and turns a ~200 ms recall into multi-second contention.
-  if (ingested > 0) {
-    onProgress?.({ phase: 'relink', totalPages });
-    if (!opts?.skipRelink) {
-      host.triggerRelink(graphId);
+    // Single relink pass after all pages are ingested — picks up cross-page
+    // entity overlaps in one shot instead of 32 incremental passes.
+    // Latency benchmark skips relink: relinkFullGraph on ~3400 nodes adds
+    // ~100k edges and turns a ~200 ms recall into multi-second contention.
+    if (ingested > 0) {
+      onProgress?.({ phase: 'relink', totalPages });
+      if (!opts?.skipRelink) {
+        host.triggerRelink(graphId);
+      }
+      onProgress?.({ phase: 'save', totalPages });
+      await host.save(graphId);
     }
-    onProgress?.({ phase: 'save', totalPages });
-    await host.save(graphId);
+    return { ingested, failed };
+  } finally {
+    endIngest(graphId);
   }
-  return { ingested, failed };
 }

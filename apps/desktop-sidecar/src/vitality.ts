@@ -1,5 +1,37 @@
 import type { GraphnosisHost } from './host.js';
 
+export const VITALITY_WEIGHTS = {
+  connectivity: 0.40,
+  confidence: 0.25,
+  activity: 0.20,
+  coherence: 0.15,
+} as const;
+
+export interface VitalityFactorScores {
+  /** Raw 0–1 factor before weighting. */
+  connectivity: number;
+  confidence: number;
+  activity: number;
+  coherence: number;
+  /** Weighted contribution to the 0–100 score (factor × weight × 100). */
+  weighted: {
+    connectivity: number;
+    confidence: number;
+    activity: number;
+    coherence: number;
+  };
+}
+
+export interface VitalityEngramBreakdown {
+  graphId: string;
+  score: number;
+  activeNodes: number;
+  connectedActive: number;
+  orphansEstimate: number;
+  recentOps: number;
+  factors: VitalityFactorScores;
+}
+
 export interface VitalityReport {
   overall: number;
   byGraph: Record<string, number>;
@@ -17,6 +49,13 @@ export interface VitalityReport {
     connectedFraction: number;      // share woven to ≥1 other node
     orphans: number;                // active nodes standing alone
   };
+}
+
+export interface VitalityDetailedReport extends VitalityReport {
+  pendingDuplicatePairs: number;
+  byGraphBreakdown: Record<string, VitalityEngramBreakdown>;
+  cortexFactors: VitalityFactorScores;
+  fixes: string[];
 }
 
 /**
@@ -40,49 +79,57 @@ export interface VitalityReport {
  */
 export class VitalityScorer {
   private cache: VitalityReport | null = null;
+  private detailedCache: VitalityDetailedReport | null = null;
   private cacheExpireAt = 0;
   /** Fingerprint of listGraphs() at last compute — stale when the resident set grows mid-boot. */
   private cachedGraphKey = '';
+  private cachedPendingDups = 0;
   private static readonly TTL_MS = 5 * 60 * 1000;
 
   constructor(private readonly host: GraphnosisHost) {}
 
   async compute(pendingDuplicatePairs: number): Promise<VitalityReport> {
+    const detailed = await this.computeDetailed(pendingDuplicatePairs);
+    return detailed;
+  }
+
+  async computeDetailed(pendingDuplicatePairs: number): Promise<VitalityDetailedReport> {
     const graphKey = this.graphSetKey();
-    if (this.cache && Date.now() < this.cacheExpireAt && this.cachedGraphKey === graphKey) {
-      return this.cache;
+    if (
+      this.detailedCache
+      && Date.now() < this.cacheExpireAt
+      && this.cachedGraphKey === graphKey
+      && this.cachedPendingDups === pendingDuplicatePairs
+    ) {
+      return this.detailedCache;
     }
-    const report = await this.recompute(pendingDuplicatePairs);
+    const report = this.recomputeDetailed(pendingDuplicatePairs);
     this.cachedGraphKey = graphKey;
+    this.cachedPendingDups = pendingDuplicatePairs;
     return report;
   }
 
   invalidate(): void {
     this.cache = null;
+    this.detailedCache = null;
     this.cachedGraphKey = '';
+    this.cachedPendingDups = 0;
   }
 
   private graphSetKey(): string {
     return this.host.listGraphs().slice().sort().join('\0');
   }
 
-  private async recompute(pendingDuplicatePairs: number): Promise<VitalityReport> {
+  private recomputeDetailed(pendingDuplicatePairs: number): VitalityDetailedReport {
     const byGraph: Record<string, number> = {};
+    const byGraphBreakdown: Record<string, VitalityEngramBreakdown> = {};
     let totalWeight = 0;
     let weightedSum = 0;
-    // Cortex-wide trust accumulators (across every engram).
     let tActive = 0, tConfSum = 0, tHighConf = 0, tConnected = 0;
+    let cfConn = 0, cfConf = 0, cfAct = 0;
 
-    // Per-engram op count from the maintained counter — NOT a full op-log scan.
-    // Reading the whole op-log here (2M events) was the ~4.5 GB memory floor that
-    // pinned the Home dashboard into GBs. The activity term saturates at 40 ops,
-    // so this since-boot count is an accurate "recently active?" signal. (Counter
-    // resets on restart; active engrams re-saturate within 40 ops.)
     const recentOpsByGraph = this.host.recentOpsByGraph();
-
-    // Unresolved duplicate pairs are a cortex-wide count, so the coherence
-    // term is the same for every engram.
-    const coherence = clamp(1 - pendingDuplicatePairs * 0.05);
+    const coherenceRaw = clamp(1 - pendingDuplicatePairs * 0.05);
 
     for (const graphId of this.host.listGraphs()) {
       const nodes = this.host.listNodes(graphId);
@@ -92,14 +139,20 @@ export class VitalityScorer {
       );
       const activeCount = active.length;
 
-      // An empty engram has no vitality to measure.
       if (activeCount === 0) {
         byGraph[graphId] = 0;
+        byGraphBreakdown[graphId] = {
+          graphId,
+          score: 0,
+          activeNodes: 0,
+          connectedActive: 0,
+          orphansEstimate: 0,
+          recentOps: 0,
+          factors: buildFactors(0, 0, 0, coherenceRaw),
+        };
         continue;
       }
 
-      // Connectivity — fraction of active memories woven into the graph.
-      // The core signal: isolated orphans drag it down, a dense web lifts it.
       const edges = this.host.listEdges(graphId);
       const linked = new Set<string>();
       for (const e of edges.directed) { linked.add(e.from); linked.add(e.to); }
@@ -110,30 +163,40 @@ export class VitalityScorer {
       }
       const connectivity = connectedActive / activeCount;
 
-      // Confidence — average active-node confidence, stretched so the band
-      // human-added memories actually occupy (≈0.35–0.95) spans 0–1.
       const confSum = active.reduce((s, n) => s + n.confidence, 0);
       const avgConf = confSum / activeCount;
       const confidence = clamp((avgConf - 0.35) / 0.6);
 
-      // Fold this engram into the cortex-wide trust aggregates.
       tActive += activeCount;
       tConfSum += confSum;
       tHighConf += active.filter((n) => n.confidence >= 0.7).length;
       tConnected += connectedActive;
 
-      // Activity — op-log events in the last 7 days; a maintained cortex
-      // scores high, a long-neglected one low.
       const recentOps = recentOpsByGraph[graphId] ?? 0;
       const activity = clamp(recentOps / 40);
 
+      cfConn += connectivity * activeCount;
+      cfConf += confidence * activeCount;
+      cfAct += activity * activeCount;
+
+      const factors = buildFactors(connectivity, confidence, activity, coherenceRaw);
       const raw = clamp(
-        connectivity * 0.40 +
-        confidence * 0.25 +
-        activity * 0.20 +
-        coherence * 0.15,
+        connectivity * VITALITY_WEIGHTS.connectivity +
+        confidence * VITALITY_WEIGHTS.confidence +
+        activity * VITALITY_WEIGHTS.activity +
+        coherenceRaw * VITALITY_WEIGHTS.coherence,
       );
-      byGraph[graphId] = Math.round(raw * 100);
+      const score = Math.round(raw * 100);
+      byGraph[graphId] = score;
+      byGraphBreakdown[graphId] = {
+        graphId,
+        score,
+        activeNodes: activeCount,
+        connectedActive,
+        orphansEstimate: activeCount - connectedActive,
+        recentOps,
+        factors,
+      };
 
       totalWeight += activeCount;
       weightedSum += raw * activeCount;
@@ -143,22 +206,124 @@ export class VitalityScorer {
       ? Math.round((weightedSum / totalWeight) * 100)
       : 0;
 
-    const report: VitalityReport = {
+    const cortexFactors = totalWeight > 0
+      ? buildFactors(
+        cfConn / totalWeight,
+        cfConf / totalWeight,
+        cfAct / totalWeight,
+        coherenceRaw,
+      )
+      : buildFactors(0, 0, 0, coherenceRaw);
+
+    const trust = {
+      activeNodes: tActive,
+      avgConfidence: tActive > 0 ? tConfSum / tActive : 0,
+      highConfidenceFraction: tActive > 0 ? tHighConf / tActive : 0,
+      connectedFraction: tActive > 0 ? tConnected / tActive : 0,
+      orphans: tActive - tConnected,
+    };
+
+    const report: VitalityDetailedReport = {
       overall,
       byGraph,
       computedAt: Date.now(),
-      trust: {
-        activeNodes: tActive,
-        avgConfidence: tActive > 0 ? tConfSum / tActive : 0,
-        highConfidenceFraction: tActive > 0 ? tHighConf / tActive : 0,
-        connectedFraction: tActive > 0 ? tConnected / tActive : 0,
-        orphans: tActive - tConnected,
-      },
+      trust,
+      pendingDuplicatePairs,
+      byGraphBreakdown,
+      cortexFactors,
+      fixes: suggestVitalityFixes({
+        overall,
+        pendingDuplicatePairs,
+        byGraphBreakdown,
+        trust,
+        cortexFactors,
+      }),
     };
     this.cache = report;
+    this.detailedCache = report;
     this.cacheExpireAt = Date.now() + VitalityScorer.TTL_MS;
     return report;
   }
+}
+
+function buildFactors(
+  connectivity: number,
+  confidence: number,
+  activity: number,
+  coherence: number,
+): VitalityFactorScores {
+  return {
+    connectivity,
+    confidence,
+    activity,
+    coherence,
+    weighted: {
+      connectivity: Math.round(connectivity * VITALITY_WEIGHTS.connectivity * 100),
+      confidence: Math.round(confidence * VITALITY_WEIGHTS.confidence * 100),
+      activity: Math.round(activity * VITALITY_WEIGHTS.activity * 100),
+      coherence: Math.round(coherence * VITALITY_WEIGHTS.coherence * 100),
+    },
+  };
+}
+
+export function formatFactorPct(n: number): string {
+  return `${Math.round(n * 100)}%`;
+}
+
+export function suggestVitalityFixes(input: {
+  overall: number;
+  pendingDuplicatePairs: number;
+  byGraphBreakdown: Record<string, VitalityEngramBreakdown>;
+  trust?: VitalityReport['trust'];
+  cortexFactors: VitalityFactorScores;
+  focusGraphId?: string | null;
+}): string[] {
+  const fixes: string[] = [];
+  const dupes = input.pendingDuplicatePairs;
+  if (dupes > 0) {
+    fixes.push(
+      dupes > 5
+        ? `Clear **${dupes} duplicate pairs** in Check-in — coherence (15% weight) is dragging every engram's score.`
+        : `Review **${dupes} pending duplicate pair${dupes === 1 ? '' : 's'}** in Check-in to lift coherence.`,
+    );
+  }
+  const orphans = input.trust?.orphans ?? 0;
+  if (orphans > 5) {
+    fixes.push(
+      `Connect **${orphans.toLocaleString()} orphaned memories** — open the 3D graph or run **cortex-gardening** to weave isolated nodes.`,
+    );
+  }
+  if (input.cortexFactors.activity < 0.25) {
+    fixes.push('Recent activity is low — **remember** or **ingest** this week\'s notes to lift the activity factor (20% weight).');
+  }
+  if (input.cortexFactors.confidence < 0.45) {
+    fixes.push('Average confidence is soft — review low-confidence nodes in **Memory Studio** and edit or forget stale entries.');
+  }
+  if (input.cortexFactors.connectivity < 0.55) {
+    fixes.push('Connectivity is weak — link related memories in the **3D engram view** or let the brain pass auto-link overnight.');
+  }
+
+  const focus = input.focusGraphId
+    ? input.byGraphBreakdown[input.focusGraphId]
+    : null;
+  const candidates = Object.values(input.byGraphBreakdown)
+    .filter((b) => b.activeNodes === 0 || b.score < 40)
+    .sort((a, b) => a.score - b.score);
+  const low = focus ?? candidates[0];
+  if (low) {
+    if (low.activeNodes === 0) {
+      fixes.push(`Populate empty engram **${low.graphId}** — ingest sources or \`/save\` a few seed memories.`);
+    } else if (low.score < 35 && !input.focusGraphId) {
+      fixes.push(`Engram **${low.graphId}** scores **${low.score}** — ask Ghampus \`health check ${low.graphId}\` for a factor breakdown.`);
+    }
+  }
+
+  if (input.overall < 45 && !fixes.some((f) => f.includes('cortex-gardening'))) {
+    fixes.push('Overall vitality is low — try **Walk skill cortex-gardening** to tidy duplicates, orphans, and stale nodes.');
+  }
+
+  const unique = [...new Set(fixes)];
+  return unique.slice(0, 3);
 }
 
 function clamp(n: number, lo = 0, hi = 1): number {

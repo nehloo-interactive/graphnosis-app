@@ -18,6 +18,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { EmbedFn } from '@graphnosis-app/core/embeddings';
 import { dbg } from './log-redact.js';
+import { MAX_EMBED_WORKERS, resolveDefaultEmbedWorkers } from './performance-profile.js';
 
 // ── Bun-compiled mode detection ─────────────────────────────────────────────
 //
@@ -91,7 +92,16 @@ function defaultCacheDir(): string {
 
 // ── Pool configuration ───────────────────────────────────────────────────────
 
-let WORKER_COUNT = Math.max(1, Number(process.env.GRAPHNOSIS_EMBED_WORKERS ?? 2));
+const envWorkers = Number(process.env.GRAPHNOSIS_EMBED_WORKERS);
+const envWorkerCount = Number.isFinite(envWorkers) && envWorkers >= 1
+  ? Math.round(envWorkers)
+  : undefined;
+let WORKER_COUNT = Math.max(
+  1,
+  Math.min(MAX_EMBED_WORKERS, envWorkerCount ?? resolveDefaultEmbedWorkers()),
+);
+/** Ms between spawning each worker slot at boot / grow — spreads ONNX load. */
+const SPAWN_STAGGER_MS = 400;
 const cacheDir = process.env.GRAPHNOSIS_EMBED_CACHE ?? defaultCacheDir();
 const workerScriptPath = fileURLToPath(new URL('./embed-worker.js', import.meta.url));
 
@@ -141,6 +151,20 @@ const slotFailures = new Array<number>(WORKER_COUNT).fill(0);
 const MAX_SLOT_FAILURES = 3;
 /** Next slot index for the initial, one-worker-at-a-time pool fill. */
 let initialFillNext = 0;
+/** When true, workers are not respawned and setWorkerCount is a no-op. */
+let poolShuttingDown = false;
+/** Transient — true while terminateEmbedWorker tears down for model switch. */
+let poolTearingDown = false;
+const WORKER_SHUTDOWN_TERM_MS = 2_000;
+
+function registerEmbedPoolShutdownHooks(): void {
+  const run = (): void => { void terminateEmbedWorker({ permanent: true }); };
+  process.once('SIGINT', run);
+  process.once('SIGTERM', run);
+  process.on('beforeExit', run);
+}
+
+registerEmbedPoolShutdownHooks();
 
 // ── Child process lifecycle ──────────────────────────────────────────────────
 
@@ -203,7 +227,8 @@ function spawnWorker(idx: number): ChildProcess {
 
   child.on('exit', (code, signal) => {
     // code === null when killed by signal (expected on terminateEmbedWorker).
-    if (code === 0 || signal === 'SIGTERM') return;
+    if (poolShuttingDown || poolTearingDown) return;
+    if (code === 0 || signal === 'SIGTERM' || signal === 'SIGKILL') return;
     const reason = signal ? `signal ${signal}` : `exit code ${code}`;
     // Reject every in-flight request routed to this child so its callers
     // fail fast instead of hanging on a response that will never arrive.
@@ -249,7 +274,14 @@ function spawnNextInitial(): void {
   if (initialFillNext >= WORKER_COUNT) return;
   const idx = initialFillNext;
   initialFillNext += 1;
-  workers[idx] = spawnWorker(idx);
+  const spawn = (): void => {
+    workers[idx] = spawnWorker(idx);
+  };
+  if (idx === 0) {
+    spawn();
+  } else {
+    setTimeout(spawn, SPAWN_STAGGER_MS * idx).unref?.();
+  }
 }
 
 // Kick off the initial fill — slot 0 now; each later slot is spawned once its
@@ -416,20 +448,64 @@ export async function switchEmbedModel(model: 'english' | 'multilingual'): Promi
 /**
  * Gracefully terminate all embedding child processes. Call on sidecar shutdown
  * so they don't linger as orphan processes after the main process exits.
+ *
+ * @param permanent When true (sidecar exit), block respawns and further resizes.
+ *   When false (model switch), only tear down the current pool.
  */
-export async function terminateEmbedWorker(): Promise<void> {
-  // Stop the initial fill from spawning anything further during shutdown.
+export async function terminateEmbedWorker(options?: { permanent?: boolean }): Promise<void> {
+  const permanent = options?.permanent ?? false;
+  if (permanent && poolShuttingDown) return;
+  if (permanent) poolShuttingDown = true;
+  poolTearingDown = true;
+  // Stop the initial fill from spawning anything further during teardown.
   initialFillNext = WORKER_COUNT;
-  await Promise.allSettled(
-    workers.map((child) =>
-      child === undefined
-        ? Promise.resolve()
-        : new Promise<void>((resolve) => {
-            child.once('exit', () => resolve());
+
+  const live = workers
+    .map((child, idx) => (child === undefined ? undefined : { child, idx }))
+    .filter((slot): slot is { child: ChildProcess; idx: number } => slot !== undefined);
+
+  if (live.length > 0) {
+    await Promise.allSettled(
+      live.map(({ child }) =>
+        new Promise<void>((resolve) => {
+          if (child.killed || child.exitCode !== null) {
+            resolve();
+            return;
+          }
+          let settled = false;
+          const finish = (): void => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          child.once('exit', finish);
+          try {
             child.kill('SIGTERM');
-          }),
-    ),
-  );
+          } catch {
+            finish();
+            return;
+          }
+          setTimeout(() => {
+            if (child.killed || child.exitCode !== null) {
+              finish();
+              return;
+            }
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              finish();
+            }
+          }, WORKER_SHUTDOWN_TERM_MS).unref?.();
+        }),
+      ),
+    );
+
+    for (const { idx } of live) {
+      workers[idx] = undefined;
+    }
+  }
+
+  if (!permanent) poolTearingDown = false;
 }
 
 /**
@@ -444,7 +520,8 @@ export async function terminateEmbedWorker(): Promise<void> {
  * is responsible for writing `ai.embedWorkers` to settings.json.
  */
 export function setWorkerCount(n: number): void {
-  const target = Math.max(1, Math.min(4, Math.round(n)));
+  if (poolShuttingDown) return;
+  const target = Math.max(1, Math.min(MAX_EMBED_WORKERS, Math.round(n)));
   if (target === WORKER_COUNT) return;
 
   if (target < WORKER_COUNT) {
@@ -475,7 +552,9 @@ export function setWorkerCount(n: number): void {
     while (initialFillNext < WORKER_COUNT) {
       const idx = initialFillNext;
       initialFillNext += 1;
-      workers[idx] = spawnWorker(idx);
+      setTimeout(() => {
+        workers[idx] = spawnWorker(idx);
+      }, SPAWN_STAGGER_MS * idx).unref?.();
     }
   }
 

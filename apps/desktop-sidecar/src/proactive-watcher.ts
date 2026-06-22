@@ -27,6 +27,7 @@ import { listNotifications } from './agent-notifications.js';
 import { extractDispatchTriggerLines, findSkillDispatchSourceId } from './skill-dispatch-sync.js';
 import { matchDispatchTriggers } from './proactive-dispatch-match.js';
 import { resolveGhampusProactiveSettings } from '@graphnosis-app/core/settings';
+import { shouldDeferGhampusBackground, scaleGhampusStartupDelay } from './background-lane-scheduler.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -237,7 +238,8 @@ export class ProactiveWatcher {
     if (this.timer) return;
     void this.initState().then(() => {
       this.refreshDispatchTriggers();
-      const delayMs = resolveGhampusProactiveSettings(this.deps.host.getSettings().agent).startupDelayMs;
+      const base = resolveGhampusProactiveSettings(this.deps.host.getSettings().agent).startupDelayMs;
+      const delayMs = scaleGhampusStartupDelay(this.deps.host, base);
       this.startupTimer = setTimeout(() => { void this.tick(); }, delayMs);
       this.startupTimer.unref?.();
       this.timer = setInterval(() => { void this.tick(); }, TICK_MS);
@@ -349,6 +351,7 @@ export class ProactiveWatcher {
 
     const { isBusyAbove, WorkPriority } = await import('./work-priority.js');
     if (isBusyAbove(WorkPriority.P2_GHAMPUS)) return;
+    if (shouldDeferGhampusBackground(this.deps.host)) return;
 
     this.refreshDispatchTriggers();
 
