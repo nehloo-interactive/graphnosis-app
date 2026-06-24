@@ -290,7 +290,7 @@ export function filterStructuredRecallNodes(nodes: StructuredRecallNode[], query
     if (teamish.length > 0) filtered = teamish;
   }
   const isHowTo = isHowToQuestionText(ql);
-  const wantsSkillsExplicit = /\b(walk(?:_| )?skill|run the skill|execute the skill|skill procedure|procedur[aă])\b/i.test(ql) || /\b(skill|skilluri|sop)\b/i.test(ql) && !isHowTo;
+  const wantsSkillsExplicit = /\b(?:(?:preview|walk)(?:_| )?skill|run the skill|execute the skill|skill procedure|procedur[aă])\b/i.test(ql) || /\b(skill|skilluri|sop)\b/i.test(ql) && !isHowTo;
   if (isHowTo && !wantsSkillsExplicit) {
     const withoutSkills = filtered.filter((n) => {
       const src = (n.sourceId ?? "").toLowerCase();
@@ -1125,4 +1125,93 @@ ${fmt.mcpToolFooter}`;
   return `${header}
 
 ${lines.join("\n")}${footer}`;
+}
+
+export type RecentIngestSource = {
+  ingestedAt: string;
+  kind: string;
+  label: string;
+  engramName: string;
+  graphId?: string;
+  sourceId?: string;
+};
+
+/** `kind:timestamp-or-hash:humanLabel` ref prefixes (Clip:1782264776201:Title). */
+const SOURCE_REF_TRIPLE_RE =
+  /^(?:clip|file|url|skill|ai-conversation|ghampus|sharing|text|conversation|session|note|pdf|doc|message):(?:\d{10,}|[a-f0-9]{8,}):(.+)$/i;
+
+/** Bare hash-style clip ids leaked into labels (`clip48757483583465`). */
+const BARE_CLIP_HASH_RE = /^clip\d{10,}$/i;
+
+/** Strip internal source ref prefix from a single display label. */
+export function stripInternalSourceRefPrefix(label: string): string {
+  const raw = label.trim();
+  if (!raw) return raw;
+  if (BARE_CLIP_HASH_RE.test(raw)) return '';
+  const triple = raw.match(SOURCE_REF_TRIPLE_RE);
+  if (triple?.[1]) {
+    const title = triple[1].trim();
+    if (/^skill:/i.test(raw)) return title.replace(/-/g, ' ').trim() || 'Skill';
+    return title;
+  }
+  return raw;
+}
+
+/** Strip clip/source ref tokens and MCP wire suffixes from user-visible prose. */
+export function stripLeakedSourceRefsFromUserText(text: string): string {
+  return text
+    .replace(/\s*\|\s*graph:\s*\S+(?:\s*\|\s*id:\s*\S+)?\s*/gi, ' ')
+    .replace(
+      /\b(?:clip|file|url|skill|ai-conversation|ghampus|sharing):(?:\d{10,}|[a-f0-9]{8,}):/gi,
+      '',
+    )
+    .replace(/\bclip\d{10,}\b/gi, '')
+    .replace(/\bsrc:(?:clip|skill|file|url):[\w:/.-]+/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** Parse MCP `recent` tool bullet rows (refs may contain spaces). */
+export function parseRecentIngestMcpText(rawText: string): RecentIngestSource[] {
+  const sources: RecentIngestSource[] = [];
+  for (const line of rawText.split('\n')) {
+    if (!line.startsWith('•')) continue;
+    const withIds = line.match(
+      /^•\s+(\S+)\s+\[([^\]]+)\]\s+(.+?)\s+\(([^)]+)\)\s+\|\s+graph:\s+(\S+)\s+\|\s+id:\s+(\S+)\s*$/,
+    );
+    if (withIds) {
+      const label = stripInternalSourceRefPrefix(withIds[3].trim());
+      if (!label) continue;
+      sources.push({
+        ingestedAt: withIds[1],
+        kind: withIds[2],
+        label,
+        engramName: withIds[4],
+        graphId: withIds[5],
+        sourceId: withIds[6],
+      });
+      continue;
+    }
+    const legacy = line.match(/^•\s+(\S+)\s+\[([^\]]+)\]\s+(.+?)\s+\(([^)]+)\)\s*$/);
+    if (legacy) {
+      const label = stripInternalSourceRefPrefix(legacy[3].trim());
+      if (!label) continue;
+      sources.push({
+        ingestedAt: legacy[1],
+        kind: legacy[2],
+        label,
+        engramName: legacy[4],
+      });
+    }
+  }
+  return sources;
+}
+
+export function formatRecentIngestsSection(sources: RecentIngestSource[]): string {
+  return sources.map((s, i) => {
+    const date = s.ingestedAt.slice(0, 10);
+    const label = stripInternalSourceRefPrefix(s.label);
+    return `${i + 1}. ${date} · **${label}** (${s.engramName})`;
+  }).join('\n');
 }

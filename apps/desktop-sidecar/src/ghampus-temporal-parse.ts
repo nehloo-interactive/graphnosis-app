@@ -183,6 +183,241 @@ export function extractDueDateFromLine(line: string, now = new Date()): ParsedDu
   return null;
 }
 
+/** Resolved calendar window for a relative temporal phrase in memory text. */
+export interface ParsedTemporalContext {
+  /** Original matched phrase (lowercase). */
+  phrase: string;
+  /** Inclusive local-date range or single day. */
+  start: Date;
+  end: Date;
+  kind: 'point' | 'range';
+}
+
+export interface AugmentMemoryResult {
+  text: string;
+  augmented: boolean;
+  contexts: ParsedTemporalContext[];
+}
+
+const CALENDAR_TAG_RE = /\[calendar:\s/i;
+
+const WEEKDAY_NAMES =
+  'sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat'
+  + '|duminic[aă]|dum|luni|mar[tț]i|miercuri|mie|joi|vineri|vin|s[aâ]mb[aă]t[aă]|sam';
+
+const WEEKDAY_INDEX: Record<string, number> = {
+  sunday: 0, sun: 0, duminica: 0, duminică: 0, dum: 0,
+  monday: 1, mon: 1, luni: 1,
+  tuesday: 2, tue: 2, tues: 2, marti: 2, marți: 2, mar: 2,
+  wednesday: 3, wed: 3, miercuri: 3, mie: 3,
+  thursday: 4, thu: 4, thurs: 4, joi: 4,
+  friday: 5, fri: 5, vineri: 5, vin: 5,
+  saturday: 6, sat: 6, sambata: 6, sâmbătă: 6, sam: 6,
+};
+
+function formatIsoLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function endOfLocalMonth(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+}
+
+/** Monday-start week (ISO/EU convention; sidecar uses the host's local timezone). */
+function thisWeekRange(now: Date): { start: Date; end: Date } {
+  const day = now.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const start = addLocalDays(startOfLocalDay(now), mondayOffset);
+  return { start, end: addLocalDays(start, 6) };
+}
+
+function nextWeekRange(now: Date): { start: Date; end: Date } {
+  const tw = thisWeekRange(now);
+  return { start: addLocalDays(tw.start, 7), end: addLocalDays(tw.end, 7) };
+}
+
+function thisWeekendRange(now: Date): { start: Date; end: Date } {
+  const day = now.getDay();
+  let saturdayOffset: number;
+  if (day === 0) saturdayOffset = -1;
+  else if (day === 6) saturdayOffset = 0;
+  else saturdayOffset = 6 - day;
+  const start = addLocalDays(startOfLocalDay(now), saturdayOffset);
+  return { start, end: addLocalDays(start, 1) };
+}
+
+function nextWeekendRange(now: Date): { start: Date; end: Date } {
+  const tw = thisWeekendRange(now);
+  return { start: addLocalDays(tw.start, 7), end: addLocalDays(tw.end, 7) };
+}
+
+function thisMonthRange(now: Date): { start: Date; end: Date } {
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  return { start, end: endOfLocalMonth(now) };
+}
+
+function nextMonthRange(now: Date): { start: Date; end: Date } {
+  const start = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return { start, end: endOfLocalMonth(start) };
+}
+
+function weekdayIndex(token: string): number | undefined {
+  const key = token.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return WEEKDAY_INDEX[key] ?? WEEKDAY_INDEX[token.toLowerCase()];
+}
+
+function weekdayInIsoWeek(weekday: number, now: Date, weekOffset: 0 | 1): Date {
+  const range = weekOffset === 0 ? thisWeekRange(now) : nextWeekRange(now);
+  const offset = weekday === 0 ? 6 : weekday - 1;
+  return addLocalDays(range.start, offset);
+}
+
+function upcomingWeekday(weekday: number, now: Date): Date {
+  const today = startOfLocalDay(now);
+  let diff = weekday - today.getDay();
+  if (diff < 0) diff += 7;
+  return addLocalDays(today, diff);
+}
+
+function foldForMatch(text: string): string {
+  return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function formatCalendarTag(ctx: ParsedTemporalContext): string {
+  const startIso = formatIsoLocalDate(ctx.start);
+  const endIso = formatIsoLocalDate(ctx.end);
+  const range = startIso === endIso ? startIso : `${startIso} — ${endIso}`;
+  return `[calendar: ${range} (${ctx.phrase})]`;
+}
+
+/**
+ * Detect relative calendar phrases and append searchable ISO date tags.
+ * Uses the machine's local timezone (sidecar runs locally on the user's device).
+ */
+export function extractTemporalContexts(text: string, now = new Date()): ParsedTemporalContext[] {
+  const lower = text.toLowerCase();
+  const folded = foldForMatch(text);
+  const found: ParsedTemporalContext[] = [];
+  const seen = new Set<string>();
+
+  const push = (ctx: ParsedTemporalContext) => {
+    const key = `${ctx.phrase}|${formatIsoLocalDate(ctx.start)}|${formatIsoLocalDate(ctx.end)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push(ctx);
+  };
+
+  const pushPoint = (phrase: string, day: Date) => {
+    const d = startOfLocalDay(day);
+    push({ phrase, start: d, end: d, kind: 'point' });
+  };
+
+  const pushRange = (phrase: string, start: Date, end: Date) => {
+    push({ phrase, start: startOfLocalDay(start), end: startOfLocalDay(end), kind: 'range' });
+  };
+
+  const weekdayRe = new RegExp(
+    `\\b(?:this|next)\\s+(${WEEKDAY_NAMES})\\b`
+    + `|(?:^|\\s)(${WEEKDAY_NAMES})\\s+(?:viitoare?|next|urmatoare?)\\b`
+    + `|(?:^|\\s)(${WEEKDAY_NAMES})\\s+(?:aceasta|this|asta)\\b`,
+    'gi',
+  );
+  for (const m of lower.matchAll(weekdayRe)) {
+    const token = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+    const idx = weekdayIndex(token);
+    if (idx === undefined) continue;
+    const full = m[0]!;
+    const isNext = /\bnext\b/.test(full) || /\bviitoare?\b/.test(full) || /\burmatoare?\b/.test(foldForMatch(full));
+    const day = isNext ? weekdayInIsoWeek(idx, now, 1) : weekdayInIsoWeek(idx, now, 0);
+    pushPoint(full.trim(), day);
+  }
+
+  const bareWeekdayRe = new RegExp(`(?:^|\\s|\\b)(${WEEKDAY_NAMES})(?=\\s|$|[,.!?;:])`, 'gi');
+  for (const m of lower.matchAll(bareWeekdayRe)) {
+    const token = m[1]!.trim();
+    const idx = weekdayIndex(token);
+    if (idx === undefined) continue;
+    const start = m.index ?? 0;
+    const before = lower.slice(Math.max(0, start - 12), start);
+    const after = lower.slice(start + m[0]!.length, start + m[0]!.length + 12);
+    if (/\b(?:this|next|aceast|viitor|viitoare|urm[aă]toare)\s*$/.test(before)) continue;
+    if (/^\s*(?:viitoare?|aceast[aă]|next|this|asta)\b/.test(after)) continue;
+    pushPoint(token, upcomingWeekday(idx, now));
+  }
+
+  if (/\b(?:this|next)\s+week\b/.test(lower)
+    || /(?:^|\s)in aceasta saptamana(?:\s|$|[,.!?;:])/.test(folded)
+    || /(?:^|\s)saptamana aceasta(?:\s|$|[,.!?;:])/.test(folded)) {
+    const next = /\bnext\s+week\b/.test(lower) || /(?:^|\s)saptamana viitoare(?:\s|$|[,.!?;:])/.test(folded);
+    const r = next ? nextWeekRange(now) : thisWeekRange(now);
+    pushRange(next ? 'next week' : 'this week', r.start, r.end);
+  } else if (/(?:^|\s)saptamana viitoare(?:\s|$|[,.!?;:])/.test(folded)) {
+    const r = nextWeekRange(now);
+    pushRange('săptămâna viitoare', r.start, r.end);
+  }
+
+  if (/\bthis\s+weekend\b/.test(lower)
+    || /(?:^|\s)weekend(?:-ul)?\s+(?:aceasta|acesta|asta)(?:\s|$|[,.!?;:])/.test(folded)
+    || /(?:^|\s)acest weekend(?:\s|$|[,.!?;:])/.test(folded)) {
+    const r = thisWeekendRange(now);
+    pushRange('this weekend', r.start, r.end);
+  } else if (/\bnext\s+weekend\b/.test(lower) || /(?:^|\s)weekend(?:-ul)?\s+viitor(?:\s|$|[,.!?;:])/.test(folded)) {
+    const r = nextWeekendRange(now);
+    pushRange('next weekend', r.start, r.end);
+  }
+
+  if (/\bthis\s+month\b/.test(lower) || /(?:^|\s)luna aceasta(?:\s|$|[,.!?;:])/.test(folded) || /(?:^|\s)luna asta(?:\s|$|[,.!?;:])/.test(folded)) {
+    const r = thisMonthRange(now);
+    pushRange('this month', r.start, r.end);
+  } else if (/\bnext\s+month\b/.test(lower) || /(?:^|\s)luna viitoare(?:\s|$|[,.!?;:])/.test(folded)) {
+    const r = nextMonthRange(now);
+    pushRange('next month', r.start, r.end);
+  }
+
+  if (/\b(?:end\s+of\s+(?:the\s+)?month)\b/.test(lower) || /(?:^|\s)sfarsitul lunii(?:\s|$|[,.!?;:])/.test(folded)) {
+    const end = endOfLocalMonth(now);
+    pushPoint('end of month', end);
+  }
+
+  if (/\btomorrow\b/.test(lower) || /(?:^|\s)maine(?:\s|$|[,.!?;:])/.test(folded)) {
+    pushPoint('tomorrow', addLocalDays(startOfLocalDay(now), 1));
+  }
+
+  if (/\btoday\b/.test(lower) || /(?:^|\s)astazi(?:\s|$|[,.!?;:])/.test(folded)) {
+    pushPoint('today', startOfLocalDay(now));
+  }
+
+  return found;
+}
+
+/**
+ * Append `[calendar: …]` tags for relative temporal phrases so recall can match ISO dates.
+ * Non-temporal text is returned unchanged.
+ */
+export function augmentMemoryWithTemporalContext(
+  text: string,
+  referenceDate?: Date,
+): AugmentMemoryResult {
+  const trimmed = text.trim();
+  if (!trimmed || CALENDAR_TAG_RE.test(trimmed)) {
+    return { text, augmented: false, contexts: [] };
+  }
+  const now = referenceDate ?? new Date();
+  const contexts = extractTemporalContexts(trimmed, now);
+  if (contexts.length === 0) {
+    return { text, augmented: false, contexts: [] };
+  }
+  const tags = contexts.map(formatCalendarTag).join('\n');
+  return {
+    text: `${trimmed}\n\n${tags}`,
+    augmented: true,
+    contexts,
+  };
+}
+
 /** True when the line looks like a todo / task with possible temporal data. */
 export function lineLooksTemporalTodo(line: string): boolean {
   const t = line.trim();

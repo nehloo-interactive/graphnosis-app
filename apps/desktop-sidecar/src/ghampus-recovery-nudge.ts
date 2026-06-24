@@ -3,12 +3,9 @@
  * (auto-promote failed or save remains blocked after load).
  */
 
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import type { GraphId } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisHost } from './host.js';
 import type { BroadcastRawFn } from './events.js';
-import { appendGhampusHistoryCacheMessage } from './ghampus-history-cache.js';
 
 export interface EngramRecoveryNeededPayload {
   graphId: GraphId;
@@ -64,15 +61,8 @@ export async function emitGhampusRecoveryNudge(
   };
 
   const cortexDir = host.getCortexDir();
-  const histLine = JSON.stringify({
-    kind: 'ghampus',
-    text,
-    ts: nudge.ts,
-    recoveryNudge: true,
-    graphId: payload.graphId,
-  });
-  await fs.appendFile(path.join(cortexDir, 'ghampus-history.jsonl'), histLine + '\n').catch(() => {});
-  appendGhampusHistoryCacheMessage({
+  const { appendGhampusHistoryMessage } = await import('./ghampus-history-cache.js');
+  await appendGhampusHistoryMessage(cortexDir, {
     kind: 'ghampus',
     text,
     ts: nudge.ts,

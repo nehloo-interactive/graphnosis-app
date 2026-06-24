@@ -13,7 +13,7 @@ import type { GraphnosisHost } from './host.js';
 import type { BroadcastRawFn } from './events.js';
 import type { LocalLlm } from './correction.js';
 import { listRecentSaves } from './agent-tools.js';
-import { extractDueDateFromLine } from './ghampus-temporal-parse.js';
+import { extractDueDateFromLine, augmentMemoryWithTemporalContext } from './ghampus-temporal-parse.js';
 import { extractEngramScopeFromQuery } from './ghampus-intent.js';
 import { isGhampusBusy } from './ghampus-busy.js';
 
@@ -350,13 +350,15 @@ export async function acceptMemorySuggestion(
 ): Promise<{ ok: true; engramId: string; sourceId?: string }> {
   await dismissMemorySuggestion(cortexDir, args.id);
 
+  const saveText = augmentMemoryWithTemporalContext(args.text).text;
+
   if (args.kind === 'create_engram' && args.createEngramName) {
     const slug = args.createEngramName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     if (!host.listGraphs().includes(slug)) {
       await host.createGraph(slug);
     }
     const { ingestClip } = await import('./ingest.js');
-    const rec = await ingestClip(host, slug, args.text, args.text.slice(0, 80), {
+    const rec = await ingestClip(host, slug, saveText, saveText.slice(0, 80), {
       addedBy: 'ghampus',
       sourceKind: 'ai-conversation',
       triggeredBy: 'ghampus:memory-suggestion',
@@ -366,7 +368,7 @@ export async function acceptMemorySuggestion(
   }
 
   const { ingestClip } = await import('./ingest.js');
-  const rec = await ingestClip(host, args.engramId, args.text, args.text.slice(0, 80), {
+  const rec = await ingestClip(host, args.engramId, saveText, saveText.slice(0, 80), {
     addedBy: 'ghampus',
     sourceKind: 'ai-conversation',
     triggeredBy: 'ghampus:memory-suggestion',

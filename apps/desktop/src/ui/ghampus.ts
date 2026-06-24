@@ -4,12 +4,28 @@
 import { invoke, listen, sendNotification } from '../platform';
 import { app } from './app-context';
 import { gAlert, gConfirm, gPrompt } from './dialogs';
+import { wireGhampusComposeRail } from './ghampus-compose-rail';
+import {
+  insightPrimaryAction,
+  openForesightLaneModal,
+  renderInsightCard,
+  type ForesightInsightRow,
+  type InsightPrimaryAction,
+} from './foresight-page';
+import { openMemoryIntegrityWorkbench } from './memory-integrity-workbench';
 import { ipcCall } from './ipc';
-import { escapeHtml } from './util';
+import { escapeHtml, presEngramAttr, presSkillAttr, presSurfaceAttr, PRES_GHAMPUS_CHAT, PRES_GHAMPUS_PANELS } from './util';
+
+function sweepGhampusPres(root?: ParentNode | null): void {
+  if (!app().presActive()) return;
+  const r = root ?? document.getElementById('ghampus-chat-wrap');
+  if (r) app().applyPresentationMasking(r);
+}
 
 export function initGhampus(): void {
   wireGhampusSidecarEvents();
   wireGhampusChat();
+  wireGhampusFragmentComments();
   wireGhampusControls();
   wireGhampusModelSelect();
   wireSkillMaintenanceSettings();
@@ -23,6 +39,7 @@ export function initGhampus(): void {
   wireAnnotationModalControls();
   wireGhampusThreadTimestamps();
   wireGhampusThreadScrollPin();
+  initGhampusNewChatModal();
 }
 
 export function isGhampusEnabled(): boolean { return ghampusEnabled; }
@@ -521,8 +538,8 @@ export async function refreshGhampusAttachments(): Promise<void> {
           : '';
         return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;">
           <span>${icon}</span>
-          <strong style="font-size: 13px; cursor: pointer;" data-attach-open="${escapeHtml(a.path)}" title="${a.lastVerifiedOk ? 'Open in default app' : 'File not found — pick its new location'}">${escapeHtml(a.label)}</strong>
-          <code style="font-size: 11px; opacity: .6;">${escapeHtml(a.graphId)}</code>
+          <strong style="font-size: 13px; cursor: pointer;" data-attach-open="${escapeHtml(a.path)}" title="${a.lastVerifiedOk ? 'Open in default app' : 'File not found — pick its new location'}"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(a.label)}</strong>
+          <code style="font-size: 11px; opacity: .6;"${presEngramAttr(a.graphId)}>${escapeHtml(a.graphId)}</code>
           ${stale}
           <span class="subtitle" style="font-size: 11px;">${size}</span>
           ${repairBtn}
@@ -640,10 +657,9 @@ export async function refreshGhampusAttachments(): Promise<void> {
         };
       });
     }
+    sweepGhampusPres(document.getElementById('ghampus-linked-files-panel') ?? document.getElementById('ghampus-attachments-list'));
   } catch { /* non-fatal */ }
 }
-
-// ── Manual annotation modal (Phase C, V1 scaffolding) ──────────────────
 //
 // Click on the image to drop a labeled box. Each click prompts for a
 // label. Save commits the boxes to the engram as a new structured
@@ -900,18 +916,19 @@ export async function refreshGhampusNotifications(): Promise<void> {
         const icon = NOTIF_ORIGIN_ICONS[n.originKind] ?? '·';
         const previewLine = n.tier === 'sensitive'
           ? '<span class="subtitle" style="font-style: italic; font-size: 11px;">[preview hidden · sensitive engram]</span>'
-          : `<span class="subtitle" style="font-size: 11px;">${escapeHtml(n.label)}</span>`;
+          : `<span class="subtitle" style="font-size: 11px;"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(n.label)}</span>`;
         return `<li style="padding: 8px 0; border-bottom: 1px solid var(--g-border, rgba(255,255,255,.05));">
           <div style="display: flex; gap: 8px; align-items: baseline;">
             <span>${icon}</span>
-            <strong style="font-size: 13px;">${escapeHtml(n.origin)}</strong>
-            <code style="font-size: 11px; opacity: .7;">${escapeHtml(n.engramId)}</code>
+            <strong style="font-size: 13px;"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(n.origin)}</strong>
+            <code style="font-size: 11px; opacity: .7;"${presEngramAttr(n.engramId)}>${escapeHtml(n.engramId)}</code>
             <span class="subtitle" style="margin-left: auto; font-size: 11px;">${when}</span>
           </div>
           <div style="margin: 4px 0 0 24px;">${previewLine}</div>
         </li>`;
       }).join('');
     }
+    sweepGhampusPres(document.getElementById('ghampus-notifications-panel'));
   } catch { /* non-fatal */ }
   try {
     const runs = await ipcCall<{ ok: boolean; runs: Array<{ status: string }> }>(
@@ -967,16 +984,17 @@ export async function refreshGhampusSkills(): Promise<void> {
                   stroke-dashoffset="${offset}"/>
               </svg>
               <div class="ghampus-skill-info">
-                <div class="ghampus-skill-name">${escapeHtml(displayLabel)}</div>
-                <div class="ghampus-skill-meta">${trained}${s.origin === 'pack' ? ' · pack' : ''}</div>
+                <div class="ghampus-skill-name"${presSkillAttr(s.sourceId, s.engramId)}>${escapeHtml(displayLabel)}</div>
+                <div class="ghampus-skill-meta"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${trained}${s.origin === 'pack' ? ' · pack' : ''}</div>
               </div>
               <button class="ghampus-skill-run" type="button"
-                      data-skill-source="${escapeHtml(s.sourceId)}">Run ▸</button>
+                      data-skill-label="${escapeHtml(displayLabel)}">Preview ▸</button>
             </div>
           </li>`;
         }).join('');
       }
     }
+    sweepGhampusPres(document.getElementById('ghampus-skills-panel'));
   } catch { /* non-fatal */ }
 }
 
@@ -1001,13 +1019,14 @@ export async function refreshGhampusRecentSaves(): Promise<void> {
             : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
             : `${Math.floor(ageMs / 86_400_000)}d ago`;
           return `<li><div class="ghampus-panel-item">
-            <span class="ghampus-panel-item-label">${escapeHtml(s.label)}</span>
-            <span class="ghampus-panel-item-meta">${escapeHtml(s.engramId)}</span>
-            <span class="ghampus-panel-item-meta">${when}</span>
+            <span class="ghampus-panel-item-label"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(s.label)}</span>
+            <span class="ghampus-panel-item-meta"${presEngramAttr(s.engramId)}>${escapeHtml(s.engramId)}</span>
+            <span class="ghampus-panel-item-meta"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${when}</span>
           </div></li>`;
         }).join('');
       }
     }
+    sweepGhampusPres(document.getElementById('ghampus-recent-saves-panel'));
   } catch { /* non-fatal */ }
 }
 
@@ -1033,12 +1052,13 @@ export async function refreshGhampusSharingPanel(): Promise<void> {
             ? `<span style="color: var(--g-warn, #c47);">expires soon</span>`
             : t.expiresAt === null ? 'no expiry' : new Date(t.expiresAt).toLocaleDateString();
         return `<li><div class="ghampus-panel-item">
-          <span class="ghampus-panel-item-label">${escapeHtml(t.name)}</span>
-          <span class="ghampus-panel-item-meta">${escapeHtml(t.role)}</span>
-          <span class="ghampus-panel-item-meta">${expiryNote}</span>
+          <span class="ghampus-panel-item-label"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(t.name)}</span>
+          <span class="ghampus-panel-item-meta"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(t.role)}</span>
+          <span class="ghampus-panel-item-meta"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${expiryNote}</span>
         </div></li>`;
       }).join('') || '<li class="ghampus-panel-empty">No active shares.</li>';
     }
+    sweepGhampusPres(document.getElementById('ghampus-sharing-panel'));
   } catch { /* non-fatal */ }
 }
 
@@ -1056,7 +1076,9 @@ type GhampusChatMessage =
   | { kind: 'tip'; tip: TipCardPayload; ts: number }
   | { kind: 'vitality-nudge'; nudge: VitalityNudgeCardPayload; ts: number }
   | { kind: 'memory-suggestion'; suggestion: MemorySuggestionCardPayload; ts: number }
-  | { kind: 'recovery-nudge'; nudge: RecoveryNudgePayload; ts: number };
+  | { kind: 'recovery-nudge'; nudge: RecoveryNudgePayload; ts: number }
+  | { kind: 'skill-preview-improve'; card: SkillPreviewImproveCardPayload; ts: number; turnId?: string }
+  | { kind: 'insights-preview'; insights: ForesightInsightRow[]; totalCount: number; ts: number; turnId?: string };
 
 interface RecoveryNudgePayload {
   id: string;
@@ -1065,6 +1087,34 @@ interface RecoveryNudgePayload {
   title: string;
   text: string;
 }
+
+interface SkillPreviewImproveCardPayload {
+  skillLabel: string;
+  skillSlug: string;
+  proPlus: boolean;
+}
+
+interface GhampusFragmentCommentEntry {
+  id: string;
+  messageId: string;
+  quotedText: string;
+  userComment: string;
+  parentAnswerText: string;
+  quoteStartOffset?: number;
+  contextBefore?: string;
+  contextAfter?: string;
+}
+
+const ghampusFragmentComments: GhampusFragmentCommentEntry[] = [];
+let ghampusPendingFragmentSelection: {
+  messageId: string;
+  quotedText: string;
+  parentAnswerText: string;
+  quoteStartOffset?: number;
+  contextBefore?: string;
+  contextAfter?: string;
+  anchorRect?: DOMRect;
+} | null = null;
 
 interface MemorySuggestionCardPayload {
   id: string;
@@ -1289,7 +1339,7 @@ function renderTraceStepHtml(step: GhampusTraceStep): string {
   const statusCls = `ghampus-trace-step--${step.status}`;
   const previewText = step.preview && step.preview !== step.label ? step.preview : '';
   const preview = previewText
-    ? `<span class="ghampus-trace-step-preview">${escapeHtml(previewText)}</span>` : '';
+    ? `<span class="ghampus-trace-step-preview"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(previewText)}</span>` : '';
   const ms = step.ms !== undefined
     ? `<span class="ghampus-trace-step-ms">${formatTraceElapsedMs(step.ms)}</span>`
     : '';
@@ -1302,11 +1352,11 @@ function renderTraceStepHtml(step: GhampusTraceStep): string {
 function renderTraceMetaSummary(trace: GhampusTurnTrace, opts?: { live?: boolean }): string {
   const meta = formatTraceMetaText(trace);
   if (opts?.live) {
-    return `<span class="ghampus-trace-summary-inline ghampus-trace-summary-inline--live" id="ghampus-live-trace-summary">${escapeHtml(meta)}</span>`;
+    return `<span class="ghampus-trace-summary-inline ghampus-trace-summary-inline--live" id="ghampus-live-trace-summary"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(meta)}</span>`;
   }
   return `<button type="button" class="ghampus-trace-toggle" aria-expanded="false" title="Show steps">
     <span class="ghampus-trace-chevron" aria-hidden="true">▸</span>
-    <span class="ghampus-trace-summary-inline">${escapeHtml(meta)}</span>
+    <span class="ghampus-trace-summary-inline"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(meta)}</span>
   </button>`;
 }
 
@@ -1365,6 +1415,7 @@ function renderLiveTrace(turnId: string): void {
   if (wrap) wireTracePanel(wrap);
   if (pinned) stepsHost.scrollTop = stepsHost.scrollHeight;
   scrollGhampusThreadToBottomIfPinned();
+  sweepGhampusPres(stepsHost.closest('.ghampus-thread-entry') ?? stepsHost);
 }
 
 function clearLiveTraceSteps(): void {
@@ -1383,6 +1434,12 @@ function isQuietAwayDigest(msg: GhampusChatMessage): boolean {
   return msg.kind === 'ghampus'
     && msg.text.startsWith(AWAY_DIGEST_PREFIX)
     && QUIET_AWAY_DIGEST_RE.test(msg.text);
+}
+
+function sanitizeAwayDigestDisplayText(text: string): string {
+  if (!text.startsWith(AWAY_DIGEST_PREFIX)) return text;
+  // Legacy digests wrapped the LLM one-liner in _italics_ — strip for display.
+  return text.replace(/(?<![\w/])_([^_\n]+?)_(?![\w/])/g, '$1');
 }
 
 /** Collapse repeated quiet away digests in persisted history to the newest one. */
@@ -1439,7 +1496,36 @@ function normalizeGhampusHistoryMessage(raw: unknown): GhampusChatMessage | null
     };
   }
   if ((m.kind === 'user' || m.kind === 'ghampus') && typeof m.text === 'string' && typeof m.ts === 'number') {
-    return raw as GhampusChatMessage;
+    const text = m.kind === 'ghampus' ? sanitizeAwayDigestDisplayText(m.text) : m.text;
+    return { ...(raw as GhampusChatMessage), text };
+  }
+  if (m.kind === 'insights-preview' && Array.isArray(m.insights)) {
+    const rows = (m.insights as unknown[]).filter((row) =>
+      row && typeof row === 'object' && typeof (row as Record<string, unknown>).id === 'string',
+    ) as ForesightInsightRow[];
+    if (rows.length === 0) return null;
+    return {
+      kind: 'insights-preview',
+      ts: typeof m.ts === 'number' ? m.ts : Date.now(),
+      ...(typeof m.turnId === 'string' ? { turnId: m.turnId } : {}),
+      insights: rows,
+      totalCount: typeof m.totalCount === 'number' ? m.totalCount : rows.length,
+    };
+  }
+  if (m.kind === 'skill-preview-improve' && m.card && typeof m.card === 'object') {
+    const card = m.card as Record<string, unknown>;
+    if (typeof card.skillLabel === 'string' && typeof card.skillSlug === 'string') {
+      return {
+        kind: 'skill-preview-improve',
+        ts: typeof m.ts === 'number' ? m.ts : Date.now(),
+        ...(typeof m.turnId === 'string' ? { turnId: m.turnId } : {}),
+        card: {
+          skillLabel: card.skillLabel,
+          skillSlug: card.skillSlug,
+          proPlus: Boolean(card.proPlus),
+        },
+      };
+    }
   }
   return null;
 }
@@ -1542,9 +1628,10 @@ function renderChatMessage(msg: GhampusChatMessage): string {
       </div>`;
     case 'ghampus': {
       const turnAttr = msg.turnId ? ` data-turn-id="${escapeHtml(msg.turnId)}"` : '';
+      const msgId = String(msg.turnId ?? msg.ts);
       const traceMeta = msg.trace ? renderTraceMetaSummary(msg.trace) : '';
       const traceSteps = msg.trace ? renderTraceStepsOnly(msg.trace) : '';
-      return `<div class="chat-msg ghampus"${turnAttr}>
+      return `<div class="chat-msg ghampus"${turnAttr} data-msg-id="${escapeHtml(msgId)}">
         <div class="chat-msg-avatar">
           <img src="/graphnosis-logo-transparent-bg.png" alt="" />
         </div>
@@ -1579,6 +1666,10 @@ function renderChatMessage(msg: GhampusChatMessage): string {
       return renderMemorySuggestionCard(msg.suggestion, msg.ts);
     case 'recovery-nudge':
       return renderRecoveryNudgeCard(msg.nudge, msg.ts);
+    case 'skill-preview-improve':
+      return renderSkillPreviewImproveCard(msg.card, msg.ts);
+    case 'insights-preview':
+      return renderInsightsPreviewCard(msg.insights, msg.totalCount, msg.ts);
     default:
       return '';
   }
@@ -1586,22 +1677,23 @@ function renderChatMessage(msg: GhampusChatMessage): string {
 
 function renderSkillMatchCard(skill: SkillMatchPayload, ts: number): string {
   const subChip = skill.subSkills > 0
-    ? `<span class="skill-meta-chip">${skill.subSkills} sub-skill${skill.subSkills > 1 ? 's' : ''}</span>` : '';
+    ? `<span class="skill-meta-chip"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${skill.subSkills} sub-skill${skill.subSkills > 1 ? 's' : ''}</span>` : '';
   return `<div class="skill-match-card" data-skill-source="${escapeHtml(skill.sourceId)}">
     <div class="skill-match-card-header">
       <span style="font-size: 16px;">🎓</span>
-      <span class="skill-match-card-name">${escapeHtml(skill.label)}</span>
+      <span class="skill-match-card-name"${presSkillAttr(skill.sourceId)}>${escapeHtml(skill.label)}</span>
     </div>
     <div class="skill-match-chips">
-      <span class="skill-meta-chip">${skill.steps} steps</span>
+      <span class="skill-meta-chip"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${skill.steps} steps</span>
       ${subChip}
-      <span class="skill-meta-chip">last run ${escapeHtml(skill.lastRunAgo)}</span>
-      <span class="skill-meta-chip">vitality ${skill.vitality}</span>
+      <span class="skill-meta-chip"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>last run ${escapeHtml(skill.lastRunAgo)}</span>
+      <span class="skill-meta-chip"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>vitality ${skill.vitality}</span>
     </div>
-    <p class="skill-match-desc">${escapeHtml(skill.description)}</p>
+    <p class="skill-match-desc"${presSkillAttr(skill.sourceId)}>${escapeHtml(skill.description)}</p>
     <div class="skill-match-actions">
       <button class="g-btn primary btn-skill-run" style="font-size: 12px; padding: 4px 12px;"
-              data-source-id="${escapeHtml(skill.sourceId)}">Run it?</button>
+              data-source-id="${escapeHtml(skill.sourceId)}"
+              data-skill-label="${escapeHtml(skill.label)}">Preview</button>
       <button class="g-btn btn-skill-dismiss" style="font-size: 12px; padding: 4px 10px;"
               data-source-id="${escapeHtml(skill.sourceId)}">Not now</button>
     </div>
@@ -1615,11 +1707,474 @@ const TIP_CATEGORY_LABELS: Record<string, string> = {
   'follow-ups': 'Follow-ups',
   'skills': 'Skills',
   'mcp-claude': 'MCP / Claude',
-  'romanian': 'Română',
   'recovery': 'Recovery',
   'brain-linking': 'Brain & links',
   'sharing': 'Sharing',
 };
+
+/** Proactive cards dismissed this session — not re-shown until reload. */
+const sessionDismissedProactiveCards = new Set<string>();
+
+function proactiveCardDismissKey(kind: string, id: string): string {
+  return `${kind}:${id}`;
+}
+
+function isProactiveCardDismissed(kind: string, id: string): boolean {
+  return sessionDismissedProactiveCards.has(proactiveCardDismissKey(kind, id));
+}
+
+function dismissProactiveCardInSession(kind: string, id: string): void {
+  sessionDismissedProactiveCards.add(proactiveCardDismissKey(kind, id));
+}
+
+function fillGhampusPrompt(text: string): void {
+  const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
+  if (!input) return;
+  input.value = text;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  input.focus();
+  input.selectionStart = input.selectionEnd = input.value.length;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  trackGhampusTyping();
+}
+
+function renderTryBlock(examplePrompt: string): string {
+  return `<div class="ghampus-tip-example">
+        <span class="ghampus-tip-example-label">Try</span>
+        <code class="ghampus-tip-example-prompt"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(examplePrompt)}</code>
+        <button type="button" class="g-btn ghampus-tip-fill-prompt" data-prompt="${escapeHtml(examplePrompt)}">Fill prompt</button>
+      </div>`;
+}
+
+function renderCardDismissButton(className: string, dismissKind: string, dismissId: string): string {
+  return `<button type="button" class="g-btn ${className}" data-dismiss-kind="${escapeHtml(dismissKind)}" data-dismiss-id="${escapeHtml(dismissId)}">Dismiss</button>`;
+}
+
+function wireFillPromptButtons(node: HTMLElement): void {
+  node.querySelectorAll<HTMLButtonElement>('.ghampus-tip-fill-prompt').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const prompt = btn.dataset.prompt;
+      if (prompt) fillGhampusPrompt(prompt);
+    });
+  });
+}
+
+function wireCardDismissButton(node: HTMLElement, onDismiss?: () => void): void {
+  node.querySelectorAll<HTMLButtonElement>('[data-dismiss-kind]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const kind = btn.dataset.dismissKind ?? '';
+      const id = btn.dataset.dismissId ?? '';
+      if (kind && id) dismissProactiveCardInSession(kind, id);
+      onDismiss?.();
+      btn.closest('.ghampus-thread-entry')?.remove();
+    });
+  });
+}
+
+function renderSkillPreviewImproveCard(card: SkillPreviewImproveCardPayload, ts: number): string {
+  const label = escapeHtml(card.skillLabel);
+  const slug = escapeHtml(card.skillSlug);
+  const improveBtn = card.proPlus
+    ? `<button type="button" class="g-btn primary ghampus-skill-improve-btn" data-skill-slug="${slug}" data-skill-label="${label}">Improve skill</button>`
+    : '';
+  const upgrade = card.proPlus
+    ? ''
+    : `<p class="ghampus-skill-preview-upgrade">Skill training is on <strong>Pro+</strong> — preview is always available.</p>`;
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-skill-preview-improve-card" data-skill-slug="${slug}">
+        <span class="ghampus-tip-badge">Skill</span>
+        <p class="ghampus-tip-body" style="margin: 6px 0 0;"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>Previewed <strong${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${label}</strong>. Want to refine the SOP?</p>
+        ${upgrade}
+        <div class="ghampus-skill-preview-improve-actions">
+          ${improveBtn}
+          <button type="button" class="g-btn ghampus-skill-improve-dismiss" data-skill-slug="${slug}">Dismiss</button>
+        </div>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(ts)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function newGhampusFragmentCommentId(): string {
+  return `fc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function findGhampusMessageTextById(messageId: string): string | null {
+  for (let i = ghampusThreadMessages.length - 1; i >= 0; i--) {
+    const m = ghampusThreadMessages[i];
+    if (m?.kind !== 'ghampus') continue;
+    const id = String(m.turnId ?? m.ts);
+    if (id === messageId) return m.text;
+  }
+  return null;
+}
+
+function locatePlainTextPoint(root: HTMLElement, offset: number): { node: Text; off: number } | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let pos = 0;
+  let node = walker.nextNode() as Text | null;
+  while (node) {
+    const len = node.textContent?.length ?? 0;
+    if (pos + len >= offset) {
+      return { node, off: Math.max(0, Math.min(offset - pos, len)) };
+    }
+    pos += len;
+    node = walker.nextNode() as Text | null;
+  }
+  return null;
+}
+
+function findFragmentQuoteOffsetInPlain(
+  fullText: string,
+  quoted: string,
+  opts: { startOffset?: number; contextBefore?: string; contextAfter?: string } = {},
+): number {
+  if (!quoted) return -1;
+
+  const candidates: number[] = [];
+  let scan = 0;
+  while (scan <= fullText.length) {
+    const idx = fullText.indexOf(quoted, scan);
+    if (idx < 0) break;
+    candidates.push(idx);
+    scan = idx + Math.max(1, quoted.length);
+  }
+  if (candidates.length === 0) return -1;
+  if (candidates.length === 1) return candidates[0]!;
+
+  const contextWindow = 48;
+  if (opts.startOffset != null && opts.startOffset >= 0) {
+    const exact = candidates.find((pos) => pos === opts.startOffset);
+    if (exact != null && fullText.slice(exact, exact + quoted.length) === quoted) {
+      return exact;
+    }
+    let closest = candidates[0]!;
+    let minDist = Math.abs(candidates[0]! - opts.startOffset);
+    for (const pos of candidates) {
+      const d = Math.abs(pos - opts.startOffset);
+      if (d < minDist) {
+        minDist = d;
+        closest = pos;
+      }
+    }
+    if (minDist <= 64) return closest;
+  }
+
+  const before = opts.contextBefore ?? '';
+  const after = opts.contextAfter ?? '';
+  let best = candidates[0]!;
+  let bestScore = -1;
+  for (const pos of candidates) {
+    let score = 0;
+    const windowBefore = fullText.slice(Math.max(0, pos - contextWindow), pos);
+    const windowAfter = fullText.slice(pos + quoted.length, pos + quoted.length + contextWindow);
+    if (before) {
+      if (windowBefore.endsWith(before)) score += 8;
+      else if (before.length >= 12 && windowBefore.endsWith(before.slice(-12))) score += 5;
+      else if (windowBefore.includes(before)) score += 2;
+    }
+    if (after) {
+      if (windowAfter.startsWith(after)) score += 8;
+      else if (after.length >= 12 && windowAfter.startsWith(after.slice(0, 12))) score += 5;
+      else if (windowAfter.includes(after)) score += 2;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = pos;
+    }
+  }
+  return best;
+}
+
+function extractFragmentContextAt(
+  fullText: string,
+  quoted: string,
+  startOffset: number,
+): { before?: string; after?: string } {
+  const idx = findFragmentQuoteOffsetInPlain(fullText, quoted, { startOffset });
+  if (idx < 0) return {};
+  const contextWindow = 48;
+  const before = fullText.slice(Math.max(0, idx - contextWindow), idx);
+  const after = fullText.slice(idx + quoted.length, idx + quoted.length + contextWindow);
+  return {
+    ...(before ? { before } : {}),
+    ...(after ? { after } : {}),
+  };
+}
+
+function getSelectionStartOffset(bubble: HTMLElement, range: Range): number {
+  const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+  let pos = 0;
+  let node = walker.nextNode() as Text | null;
+  const { startContainer, startOffset } = range;
+  while (node) {
+    if (node === startContainer) return pos + startOffset;
+    pos += node.textContent?.length ?? 0;
+    node = walker.nextNode() as Text | null;
+  }
+  return pos;
+}
+
+function wrapPlainTextRangeInBubble(
+  root: HTMLElement,
+  start: number,
+  end: number,
+  className: string,
+): boolean {
+  if (start < 0 || end <= start) return false;
+  const startPoint = locatePlainTextPoint(root, start);
+  const endPoint = locatePlainTextPoint(root, end);
+  if (!startPoint || !endPoint) return false;
+  try {
+    const range = document.createRange();
+    range.setStart(startPoint.node, startPoint.off);
+    range.setEnd(endPoint.node, endPoint.off);
+    const span = document.createElement('span');
+    span.className = className;
+    try {
+      range.surroundContents(span);
+    } catch {
+      const contents = range.extractContents();
+      span.appendChild(contents);
+      range.insertNode(span);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getGhampusBubblePlainText(bubble: HTMLElement): string {
+  return bubble.textContent ?? '';
+}
+
+function paintGhampusFragmentCommentsBar(): void {
+  const bar = document.getElementById('ghampus-comments-bar');
+  const toggle = document.getElementById('btn-ghampus-comments-toggle');
+  const reviewBtn = document.getElementById('btn-ghampus-review-comments') as HTMLButtonElement | null;
+  const list = document.getElementById('ghampus-comments-list');
+  if (!bar || !toggle || !reviewBtn || !list) return;
+  const n = ghampusFragmentComments.length;
+  bar.classList.toggle('hidden', n === 0);
+  toggle.textContent = `${n} comment${n === 1 ? '' : 's'}`;
+  reviewBtn.disabled = n === 0;
+  list.innerHTML = ghampusFragmentComments.map((c) => `
+    <li class="ghampus-comments-bar-item" data-comment-id="${escapeHtml(c.id)}">
+      <div class="ghampus-comments-bar-quote"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>"${escapeHtml(c.quotedText.slice(0, 100))}${c.quotedText.length > 100 ? '…' : ''}"</div>
+      <div class="ghampus-comments-bar-note"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(c.userComment)}</div>
+      <button type="button" class="ghampus-comments-bar-remove" data-comment-id="${escapeHtml(c.id)}">Remove</button>
+    </li>`).join('');
+  list.querySelectorAll<HTMLButtonElement>('.ghampus-comments-bar-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.commentId ?? '';
+      const idx = ghampusFragmentComments.findIndex((c) => c.id === id);
+      if (idx >= 0) ghampusFragmentComments.splice(idx, 1);
+      paintGhampusFragmentCommentsBar();
+      applyGhampusFragmentMarks();
+    });
+  });
+  sweepGhampusPres(bar);
+}
+
+function applyGhampusFragmentMarks(): void {
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread) return;
+
+  const byMessage = new Map<string, GhampusFragmentCommentEntry[]>();
+  for (const c of ghampusFragmentComments) {
+    const arr = byMessage.get(c.messageId) ?? [];
+    arr.push(c);
+    byMessage.set(c.messageId, arr);
+  }
+
+  for (const [messageId, comments] of byMessage) {
+    const msgEl = thread.querySelector<HTMLElement>(`.chat-msg.ghampus[data-msg-id="${CSS.escape(messageId)}"]`);
+    const bubble = msgEl?.querySelector<HTMLElement>('.chat-msg-bubble');
+    if (!bubble) continue;
+
+    const sourceMd = findGhampusMessageTextById(messageId);
+    if (sourceMd) {
+      bubble.innerHTML = app().renderMarkdownLite(sourceMd);
+    }
+
+    const plain = getGhampusBubblePlainText(bubble);
+    const sorted = [...comments].sort((a, b) => {
+      const oa = findFragmentQuoteOffsetInPlain(plain, a.quotedText, a);
+      const ob = findFragmentQuoteOffsetInPlain(plain, b.quotedText, b);
+      return ob - oa;
+    });
+
+    for (const c of sorted) {
+      const start = findFragmentQuoteOffsetInPlain(plain, c.quotedText, c);
+      if (start < 0) continue;
+      wrapPlainTextRangeInBubble(bubble, start, start + c.quotedText.length, 'ghampus-fragment-mark');
+    }
+  }
+  sweepGhampusPres(thread);
+}
+
+function clearGhampusFragmentComments(): void {
+  ghampusFragmentComments.length = 0;
+  paintGhampusFragmentCommentsBar();
+  applyGhampusFragmentMarks();
+}
+
+function hideGhampusCommentPopover(): void {
+  document.getElementById('ghampus-comment-popover')?.classList.remove('open');
+  ghampusPendingFragmentSelection = null;
+  document.getElementById('ghampus-selection-affordance')?.classList.remove('visible');
+}
+
+function showGhampusCommentPopover(): void {
+  const pending = ghampusPendingFragmentSelection;
+  if (!pending) return;
+  const pop = document.getElementById('ghampus-comment-popover');
+  const quoteEl = document.getElementById('ghampus-comment-popover-quote');
+  const input = document.getElementById('ghampus-comment-popover-input') as HTMLTextAreaElement | null;
+  if (!pop || !quoteEl || !input) return;
+  quoteEl.textContent = `"${pending.quotedText.slice(0, 140)}${pending.quotedText.length > 140 ? '…' : ''}"`;
+  input.value = '';
+  pop.classList.add('open');
+  const rect = pending.anchorRect;
+  if (rect) {
+    pop.style.left = `${Math.min(rect.left, window.innerWidth - 340)}px`;
+    pop.style.top = `${Math.max(8, rect.top - pop.offsetHeight - 8)}px`;
+  }
+  input.focus();
+}
+
+function wireGhampusFragmentComments(): void {
+  const thread = document.getElementById('ghampus-thread');
+  const affordance = document.getElementById('ghampus-selection-affordance');
+  if (!thread || !affordance || thread.dataset.fragmentCommentsWired === '1') return;
+  thread.dataset.fragmentCommentsWired = '1';
+
+  const positionAffordance = (rect: DOMRect) => {
+    affordance.style.left = `${Math.min(rect.left, window.innerWidth - 120)}px`;
+    affordance.style.top = `${Math.max(8, rect.top - 32)}px`;
+    affordance.classList.add('visible');
+  };
+
+  thread.addEventListener('mouseup', (e) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('.ghampus-comment-popover, .ghampus-selection-affordance')) return;
+    const bubble = target.closest<HTMLElement>('.chat-msg.ghampus .chat-msg-bubble');
+    if (!bubble) {
+      affordance.classList.remove('visible');
+      return;
+    }
+    const sel = window.getSelection();
+    const selected = sel?.toString().trim() ?? '';
+    if (!selected || selected.length < 2) {
+      affordance.classList.remove('visible');
+      return;
+    }
+    const chatMsg = bubble.closest<HTMLElement>('.chat-msg.ghampus');
+    const messageId = chatMsg?.dataset.msgId ?? chatMsg?.dataset.turnId ?? '';
+    if (!messageId) return;
+    const sourceMd = findGhampusMessageTextById(messageId);
+    if (sourceMd) {
+      bubble.innerHTML = app().renderMarkdownLite(sourceMd);
+    }
+    const parentAnswerText = getGhampusBubblePlainText(bubble);
+    const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+    const quoteStartOffset = range ? getSelectionStartOffset(bubble, range) : undefined;
+    const ctx = extractFragmentContextAt(parentAnswerText, selected, quoteStartOffset ?? 0);
+    const rect = range?.getBoundingClientRect();
+    ghampusPendingFragmentSelection = {
+      messageId,
+      quotedText: selected,
+      parentAnswerText,
+      ...(quoteStartOffset != null ? { quoteStartOffset } : {}),
+      ...(ctx.before ? { contextBefore: ctx.before } : {}),
+      ...(ctx.after ? { contextAfter: ctx.after } : {}),
+      ...(rect && rect.width > 0 ? { anchorRect: rect } : {}),
+    };
+    if (rect && rect.width > 0) positionAffordance(rect);
+  });
+
+  affordance.addEventListener('click', () => showGhampusCommentPopover());
+  affordance.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      showGhampusCommentPopover();
+    }
+  });
+
+  document.getElementById('btn-ghampus-comment-cancel')?.addEventListener('click', () => hideGhampusCommentPopover());
+  document.getElementById('btn-ghampus-comment-save')?.addEventListener('click', () => {
+    const pending = ghampusPendingFragmentSelection;
+    const input = document.getElementById('ghampus-comment-popover-input') as HTMLTextAreaElement | null;
+    const note = input?.value.trim() ?? '';
+    if (!pending || note.length < 1) return;
+    ghampusFragmentComments.push({
+      id: newGhampusFragmentCommentId(),
+      messageId: pending.messageId,
+      quotedText: pending.quotedText,
+      userComment: note,
+      parentAnswerText: pending.parentAnswerText,
+      ...(pending.quoteStartOffset != null ? { quoteStartOffset: pending.quoteStartOffset } : {}),
+      ...(pending.contextBefore ? { contextBefore: pending.contextBefore } : {}),
+      ...(pending.contextAfter ? { contextAfter: pending.contextAfter } : {}),
+    });
+    hideGhampusCommentPopover();
+    paintGhampusFragmentCommentsBar();
+    applyGhampusFragmentMarks();
+    window.getSelection()?.removeAllRanges();
+  });
+
+  let commentsListOpen = false;
+  document.getElementById('btn-ghampus-comments-toggle')?.addEventListener('click', () => {
+    commentsListOpen = !commentsListOpen;
+    document.getElementById('ghampus-comments-list')?.classList.toggle('open', commentsListOpen);
+  });
+
+  document.getElementById('btn-ghampus-review-comments')?.addEventListener('click', () => {
+    if (ghampusFragmentComments.length === 0) return;
+    void submitGhampusFragmentReview();
+  });
+
+  document.addEventListener('mousedown', (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('#ghampus-comment-popover, #ghampus-selection-affordance')) return;
+    if (!t.closest('.chat-msg.ghampus .chat-msg-bubble')) {
+      document.getElementById('ghampus-selection-affordance')?.classList.remove('visible');
+    }
+  });
+}
+
+async function submitGhampusFragmentReview(): Promise<void> {
+  if (ghampusFragmentComments.length === 0) return;
+  const turnId = newGhampusTurnId();
+  const ts = Date.now();
+  const comments = ghampusFragmentComments.map((c) => ({
+    messageId: c.messageId,
+    quotedText: c.quotedText,
+    userComment: c.userComment,
+    parentAnswerText: c.parentAnswerText,
+    ...(c.quoteStartOffset != null ? { quoteStartOffset: c.quoteStartOffset } : {}),
+    ...(c.contextBefore ? { contextBefore: c.contextBefore } : {}),
+    ...(c.contextAfter ? { contextAfter: c.contextAfter } : {}),
+  }));
+  enqueueGhampusSend({
+    turnId,
+    ts,
+    userText: `Review ${comments.length} comment${comments.length === 1 ? '' : 's'} on selected passages`,
+    ipcPayload: {
+      text: 'Review comments',
+      turnId,
+      fragmentReview: { type: 'fragment_review' as const, comments },
+    },
+    onSent: () => { clearGhampusFragmentComments(); },
+  });
+}
 
 function renderRecoveryNudgeCard(nudge: RecoveryNudgePayload, ts: number): string {
   const bodyHtml = escapeHtml(nudge.text)
@@ -1633,11 +2188,12 @@ function renderRecoveryNudgeCard(nudge: RecoveryNudgePayload, ts: number): strin
       <div class="ghampus-recovery-nudge-card" data-graph-id="${escapeHtml(nudge.graphId)}">
         <div class="ghampus-tip-header">
           <span class="ghampus-tip-badge" style="background: var(--warn, #b8860b);">Recovery</span>
-          <span class="ghampus-tip-category">${escapeHtml(nudge.displayName)}</span>
+          <span class="ghampus-tip-category"${presEngramAttr(nudge.graphId)}>${escapeHtml(nudge.displayName)}</span>
         </div>
-        <p class="ghampus-recovery-nudge-body">${bodyHtml}</p>
+        <p class="ghampus-recovery-nudge-body"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${bodyHtml}</p>
         <div class="ghampus-memory-suggestion-actions">
           <button class="g-btn primary ghampus-recovery-open">Open Recovery</button>
+          ${renderCardDismissButton('ghampus-recovery-dismiss', 'recovery', nudge.graphId)}
         </div>
       </div>
       <div class="chat-msg-meta">
@@ -1649,21 +2205,13 @@ function renderRecoveryNudgeCard(nudge: RecoveryNudgePayload, ts: number): strin
 
 function renderVitalityNudgeCard(nudge: VitalityNudgeCardPayload, ts: number): string {
   const bodyHtml = escapeHtml(nudge.body).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  const exampleBlock = nudge.examplePrompt
-    ? `<div class="ghampus-tip-example">
-        <span class="ghampus-tip-example-label">Try</span>
-        <code class="ghampus-tip-example-prompt">${escapeHtml(nudge.examplePrompt)}</code>
-      </div>`
+  const exampleBlock = nudge.examplePrompt ? renderTryBlock(nudge.examplePrompt) : '';
+  const previewBtn = nudge.walkSkillLabel
+    ? `<button type="button" class="g-btn primary ghampus-vitality-preview" data-prompt="/preview ${escapeHtml(nudge.walkSkillLabel)}">Preview ${escapeHtml(nudge.walkSkillLabel.replace(/-/g, ' '))}</button>`
     : '';
-  const walkBtn = nudge.walkSkillLabel
-    ? `<button type="button" class="g-btn primary ghampus-vitality-walk" data-skill-label="${escapeHtml(nudge.walkSkillLabel)}">Walk ${escapeHtml(nudge.walkSkillLabel.replace(/-/g, ' '))}</button>`
-    : '';
-  const tryBtn = nudge.examplePrompt && !nudge.walkSkillLabel
-    ? `<button type="button" class="g-btn ghampus-vitality-try" data-prompt="${escapeHtml(nudge.examplePrompt)}">Send prompt</button>`
-    : '';
-  const actions = (walkBtn || tryBtn)
-    ? `<div class="ghampus-vitality-nudge-actions">${walkBtn}${tryBtn}</div>`
-    : '';
+  const actions = (previewBtn || nudge.examplePrompt)
+    ? `<div class="ghampus-vitality-nudge-actions">${previewBtn}${renderCardDismissButton('ghampus-vitality-dismiss', 'vitality', nudge.nudgeId)}</div>`
+    : `<div class="ghampus-tip-actions">${renderCardDismissButton('ghampus-vitality-dismiss', 'vitality', nudge.nudgeId)}</div>`;
   return `<div class="chat-msg ghampus">
     <div class="chat-msg-avatar">
       <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
@@ -1674,8 +2222,8 @@ function renderVitalityNudgeCard(nudge: VitalityNudgeCardPayload, ts: number): s
           <span class="ghampus-tip-badge">Vitality</span>
           <span class="ghampus-tip-category">${escapeHtml(nudge.nudgeKind.replace(/-/g, ' '))}</span>
         </div>
-        <p class="ghampus-tip-title">${escapeHtml(nudge.title)}</p>
-        <p class="ghampus-tip-body">${bodyHtml}</p>
+        <p class="ghampus-tip-title"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(nudge.title)}</p>
+        <p class="ghampus-tip-body"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${bodyHtml}</p>
         ${exampleBlock}${actions}
       </div>
       <div class="chat-msg-meta">
@@ -1688,18 +2236,14 @@ function renderVitalityNudgeCard(nudge: VitalityNudgeCardPayload, ts: number): s
 function renderTipCard(tip: TipCardPayload, ts: number): string {
   const catLabel = TIP_CATEGORY_LABELS[tip.category] ?? tip.category;
   const bodyHtml = escapeHtml(tip.body).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  const exampleBlock = tip.examplePrompt
-    ? `<div class="ghampus-tip-example">
-        <span class="ghampus-tip-example-label">Try</span>
-        <code class="ghampus-tip-example-prompt">${escapeHtml(tip.examplePrompt)}</code>
-      </div>`
-    : '';
+  const exampleBlock = tip.examplePrompt ? renderTryBlock(tip.examplePrompt) : '';
   const outcomeBlock = tip.expectedOutcome
     ? `<div class="ghampus-tip-outcome">
         <span class="ghampus-tip-outcome-label">Expected</span>
-        <span class="ghampus-tip-outcome-text">${escapeHtml(tip.expectedOutcome)}</span>
+        <span class="ghampus-tip-outcome-text"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(tip.expectedOutcome)}</span>
       </div>`
     : '';
+  const actions = `<div class="ghampus-tip-actions">${renderCardDismissButton('ghampus-tip-dismiss', 'tip', tip.tipId)}</div>`;
   return `<div class="chat-msg ghampus">
     <div class="chat-msg-avatar">
       <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
@@ -1710,9 +2254,9 @@ function renderTipCard(tip: TipCardPayload, ts: number): string {
           <span class="ghampus-tip-badge">Tip</span>
           <span class="ghampus-tip-category">${escapeHtml(catLabel)}</span>
         </div>
-        <p class="ghampus-tip-title">${escapeHtml(tip.title)}</p>
-        <p class="ghampus-tip-body">${bodyHtml}</p>
-        ${exampleBlock}${outcomeBlock}
+        <p class="ghampus-tip-title"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(tip.title)}</p>
+        <p class="ghampus-tip-body"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${bodyHtml}</p>
+        ${exampleBlock}${outcomeBlock}${actions}
       </div>
       <div class="chat-msg-meta">
         <div class="chat-msg-time">${fmtTime(ts)}</div>
@@ -1745,14 +2289,14 @@ function renderMemorySuggestionCard(suggestion: MemorySuggestionCardPayload, ts:
           <span class="ghampus-memory-suggestion-badge">Memory</span>
           <span class="ghampus-memory-suggestion-kind">${escapeHtml(kindLabel)}</span>
         </div>
-        <p class="ghampus-memory-suggestion-title">Save to your cortex?</p>
-        <p class="ghampus-memory-suggestion-reason">${escapeHtml(suggestion.reason)}</p>
-        <blockquote class="ghampus-memory-suggestion-preview">${preview}</blockquote>
+        <p class="ghampus-memory-suggestion-title"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>Save to your cortex?</p>
+        <p class="ghampus-memory-suggestion-reason"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(suggestion.reason)}</p>
+        <blockquote class="ghampus-memory-suggestion-preview"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${preview}</blockquote>
         ${obligationNote}${createNote}
         <div class="ghampus-memory-suggestion-engram">
           <label class="ghampus-memory-suggestion-engram-label">Engram</label>
-          <select class="ghampus-memory-suggestion-engram-select" data-default="${engramDefault}">
-            <option value="${engramDefault}">${engramDefault}</option>
+          <select class="ghampus-memory-suggestion-engram-select" data-default="${engramDefault}"${presEngramAttr(suggestion.engramHint ?? 'personal')}>
+            <option value="${engramDefault}"${presEngramAttr(suggestion.engramHint ?? 'personal')}>${engramDefault}</option>
           </select>
         </div>
         <div class="ghampus-memory-suggestion-actions">
@@ -1766,6 +2310,93 @@ function renderMemorySuggestionCard(suggestion: MemorySuggestionCardPayload, ts:
       </div>
     </div>
   </div>`;
+}
+
+function renderInsightsPreviewCard(
+  insights: ForesightInsightRow[],
+  totalCount: number,
+  ts: number,
+): string {
+  const foresightDeps = {
+    escapeHtml,
+    engramName: (graphId: string) => app().engramName(graphId),
+  };
+  const cards = insights.map((i) =>
+    renderInsightCard(i, foresightDeps, { compact: true, showDismiss: true, showAction: true }),
+  ).join('');
+  const more = totalCount > insights.length
+    ? `<p class="ghampus-insights-more">${totalCount - insights.length} more in Foresight</p>`
+    : '';
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-insights-preview">
+        <div class="ghampus-insights-preview-header">
+          <span class="ghampus-insights-preview-title">Foresight insights</span>
+          <span class="ghampus-insights-preview-stat">${totalCount} active</span>
+        </div>
+        <div class="ghampus-insights-preview-grid">${cards}</div>
+        ${more}
+        <div class="ghampus-insights-preview-footer">
+          <button type="button" class="g-btn primary ghampus-insights-open-all">View all</button>
+        </div>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(ts)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function wireInsightsPreviewActions(node: HTMLElement, insights: ForesightInsightRow[]): void {
+  const foresightDeps = {
+    escapeHtml,
+    engramName: (graphId: string) => app().engramName(graphId),
+    openNonDeterministic: () => {},
+    onDismissInsight: async (id: string) => {
+      await ipcCall('brain:dismissInsight', { id }).catch(() => {});
+      node.querySelector(`[data-insight-id="${CSS.escape(id)}"]`)?.remove();
+    },
+    onInsightAction: async (action: InsightPrimaryAction, insight: ForesightInsightRow) => {
+      if (action.kind === 'open-integrity') {
+        app().activateMode('goals');
+        openMemoryIntegrityWorkbench('queue');
+        return;
+      }
+      const prompt = action.prompt ?? insightPrimaryAction(insight, app().engramName(insight.graphId)).prompt;
+      if (prompt) fillGhampusPrompt(prompt);
+    },
+  };
+
+  node.querySelector<HTMLButtonElement>('.ghampus-insights-open-all')?.addEventListener('click', () => {
+    app().activateMode('goals');
+    openForesightLaneModal('insights');
+  });
+
+  node.querySelectorAll<HTMLButtonElement>('[data-dismiss-insight]').forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset['dismissInsight'];
+      if (id) void foresightDeps.onDismissInsight(id);
+    });
+  });
+
+  node.querySelectorAll<HTMLButtonElement>('[data-insight-action]').forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset['insightId'];
+      const kind = btn.dataset['insightAction'] as InsightPrimaryAction['kind'] | undefined;
+      const prompt = btn.dataset['insightPrompt'];
+      if (!id || !kind) return;
+      const insight = insights.find((row) => row.id === id);
+      if (!insight) return;
+      const action = insightPrimaryAction(insight, app().engramName(insight.graphId));
+      if (prompt) action.prompt = prompt;
+      void foresightDeps.onInsightAction(action, insight);
+    });
+  });
 }
 
 function renderProactiveCard(card: ProactiveCardPayload): string {
@@ -1785,10 +2416,10 @@ function renderProactiveCard(card: ProactiveCardPayload): string {
           <div class="proactive-card-signal">${signalIcon} ${escapeHtml(card.signalLabel)}</div>
           <span class="proactive-card-label">Suggested action</span>
         </div>
-        <p class="proactive-card-why">${whyHtml}</p>
+        <p class="proactive-card-why"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${whyHtml}</p>
         <div class="proactive-card-actions">
-          <button class="g-btn primary proactive-card-run" data-card-id="${escapeHtml(card.id)}"
-                  data-source-id="${escapeHtml(card.skillSourceId)}">Run ${escapeHtml(skillName)} ▸</button>
+          <button class="g-btn primary proactive-card-preview" data-card-id="${escapeHtml(card.id)}"
+                  data-skill-label="${escapeHtml(card.skillLabel)}"${presSkillAttr(card.skillSourceId, card.skillGraphId)}>Preview ${escapeHtml(skillName)} ▸</button>
           <div class="proactive-snooze-wrap">
             <button class="g-btn proactive-card-snooze" data-card-id="${escapeHtml(card.id)}">Remind me later ▾</button>
             <div class="proactive-snooze-menu hidden">
@@ -1826,7 +2457,7 @@ function renderSkillStaleCard(card: ProactiveCardPayload): string {
           <div class="proactive-card-signal">🔄 ${escapeHtml(card.signalLabel)}</div>
           <span class="proactive-card-label">Skill maintenance</span>
         </div>
-        <p class="proactive-card-why">${whyHtml}</p>
+        <p class="proactive-card-why"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${whyHtml}</p>
         <div class="proactive-card-actions">
           <button class="g-btn primary proactive-stale-run" data-card-id="${escapeHtml(card.id)}"
                   data-source-id="${escapeHtml(card.skillSourceId)}">Retrain now${total === 1 ? ` · ${escapeHtml(skillName)}` : ''}</button>
@@ -1851,17 +2482,98 @@ function renderSkillStaleCard(card: ProactiveCardPayload): string {
 
 // ── Proactive card queue with idle-gating ─────────────────────────────────
 // Cards arrive from the sidecar and are queued here. They are shown one at
-// a time ONLY when the user has been idle — no interruption mid-thought.
+// a time when Ghampus is visible — gentle rate limits apply while chatting.
 const proactiveCardQueue: ProactiveCardPayload[] = [];
-let lastGhampusActivity = Date.now();
-// Minimum 5 min idle before the first card is ever shown.
+let lastGhampusSendAt = Date.now();
+let lastGhampusTypingAt = 0;
+/** True after the user sends at least one message this session. */
+let ghampusChatSessionActive = false;
+// Full idle before first card when user has not chatted yet.
 const IDLE_BEFORE_FIRST_MS = 5 * 60_000;
-// After each card, pick a random wait of 5–30 minutes before the next.
+// Soft idle after a send — allow a card without requiring a long break.
+const IDLE_WHILE_CHAT_MS = 90_000;
+// Don't interrupt mid-keystroke.
+const TYPING_SUPPRESS_MS = 15_000;
+// Max one proactive card per interval while the user is actively chatting.
+const CHAT_ACTIVE_CARD_GAP_MS = 15 * 60_000;
+// After each card while chatting, wait at least this long before the next.
 let nextCardAllowedAt = 0;
 let proactiveQueueTimer: ReturnType<typeof setInterval> | null = null;
 
-function trackGhampusActivity(): void {
-  lastGhampusActivity = Date.now();
+/** Record a user send — resets soft-idle timer for proactive cards. */
+function trackGhampusSendActivity(): void {
+  lastGhampusSendAt = Date.now();
+  ghampusChatSessionActive = true;
+}
+
+function trackGhampusTyping(): void {
+  lastGhampusTypingAt = Date.now();
+}
+
+type PendingGhampusSend = {
+  turnId: string;
+  ts: number;
+  userText: string;
+  ipcPayload: Record<string, unknown>;
+  onSent?: () => void;
+};
+
+const ghampusSendQueue: PendingGhampusSend[] = [];
+let ghampusSendDrain: Promise<void> | null = null;
+const ghampusTurnDoneWaiters = new Map<string, Array<() => void>>();
+
+function notifyGhampusTurnDone(turnId: string): void {
+  const waiters = ghampusTurnDoneWaiters.get(turnId);
+  if (!waiters?.length) return;
+  ghampusTurnDoneWaiters.delete(turnId);
+  for (const resolve of waiters) resolve();
+}
+
+function waitGhampusTurnDone(turnId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const list = ghampusTurnDoneWaiters.get(turnId) ?? [];
+    list.push(resolve);
+    ghampusTurnDoneWaiters.set(turnId, list);
+  });
+}
+
+function clearGhampusSendQueue(): void {
+  ghampusSendQueue.length = 0;
+  ghampusTurnDoneWaiters.clear();
+}
+
+async function drainGhampusSendQueue(): Promise<void> {
+  if (ghampusSendDrain) return ghampusSendDrain;
+  ghampusSendDrain = (async () => {
+    while (ghampusSendQueue.length > 0) {
+      const item = ghampusSendQueue.shift()!;
+      liveTraceTurnId = item.turnId;
+      liveTraceScrollPinned = true;
+      resetGhampusThreadScrollPin();
+      ensureTurnTrace(item.turnId, item.ts);
+      showThinkingBubble();
+      const turnDone = waitGhampusTurnDone(item.turnId);
+      try {
+        await ipcCall('ghampus:send', item.ipcPayload);
+        await turnDone;
+        item.onSent?.();
+      } catch {
+        notifyGhampusTurnDone(item.turnId);
+        forceClearThinkingBubble();
+      }
+    }
+  })().finally(() => {
+    ghampusSendDrain = null;
+    if (ghampusSendQueue.length > 0) void drainGhampusSendQueue();
+  });
+  return ghampusSendDrain;
+}
+
+function enqueueGhampusSend(item: PendingGhampusSend): void {
+  trackGhampusSendActivity();
+  appendToThread({ kind: 'user', text: item.userText, ts: item.ts, turnId: item.turnId });
+  ghampusSendQueue.push(item);
+  void drainGhampusSendQueue();
 }
 
 let _thinkingClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1913,6 +2625,7 @@ function showThinkingBubble(): void {
     renderLiveTrace(liveTraceTurnId);
     startLiveTraceElapsedTimer();
   }
+  sweepGhampusPres(entry);
 }
 
 function clearThinkingBubble(): void {
@@ -1953,8 +2666,10 @@ function wireGhampusSidecarEvents(): void {
         const trace = mergeTraceFromPayload(msg.turnId, msg.trace);
         if (trace) msg = { ...msg, trace };
         if (msg.turnId === liveTraceTurnId) clearLiveTraceSteps();
+        notifyGhampusTurnDone(msg.turnId);
       }
       if (msg.kind === 'ghampus') {
+        msg = { ...msg, text: sanitizeAwayDigestDisplayText(msg.text) };
         forceClearThinkingBubble();
       } else {
         clearThinkingBubble();
@@ -2040,6 +2755,7 @@ function wireGhampusSidecarEvents(): void {
     'graphnosis://ghampus-recovery-nudge',
     (ev) => {
       if (!ev.payload?.graphId) return;
+      if (isProactiveCardDismissed('recovery', ev.payload.graphId)) return;
       const p = ev.payload;
       const msg: GhampusChatMessage = {
         kind: 'recovery-nudge',
@@ -2069,6 +2785,7 @@ function wireGhampusSidecarEvents(): void {
     'graphnosis://ghampus-tip',
     (ev) => {
       if (!ev.payload?.title) return;
+      if (isProactiveCardDismissed('tip', ev.payload.tipId)) return;
       const p = ev.payload;
       const msg: GhampusChatMessage = {
         kind: 'tip',
@@ -2100,6 +2817,7 @@ function wireGhampusSidecarEvents(): void {
     'graphnosis://ghampus-vitality-nudge',
     (ev) => {
       if (!ev.payload?.title) return;
+      if (isProactiveCardDismissed('vitality', ev.payload.nudgeId)) return;
       const p = ev.payload;
       const msg: GhampusChatMessage = {
         kind: 'vitality-nudge',
@@ -2131,6 +2849,7 @@ function wireGhampusSidecarEvents(): void {
     'graphnosis://ghampus-memory-suggestion',
     (ev) => {
       if (!ev.payload?.text) return;
+      if (isProactiveCardDismissed('memory-suggestion', ev.payload.id)) return;
       const p = ev.payload;
       const msg: GhampusChatMessage = {
         kind: 'memory-suggestion',
@@ -2156,9 +2875,14 @@ function randBetweenMs(minMin: number, maxMin: number): number {
 
 function dequeueProactiveCard(): void {
   if (proactiveCardQueue.length === 0) return;
+  if (ghampusRunning) return;
+
   const now = Date.now();
-  const idleMs = now - lastGhampusActivity;
-  if (idleMs < IDLE_BEFORE_FIRST_MS) return;
+  if (now - lastGhampusTypingAt < TYPING_SUPPRESS_MS) return;
+
+  const idleSinceSend = now - lastGhampusSendAt;
+  const requiredIdle = ghampusChatSessionActive ? IDLE_WHILE_CHAT_MS : IDLE_BEFORE_FIRST_MS;
+  if (idleSinceSend < requiredIdle) return;
   if (nextCardAllowedAt > 0 && now < nextCardAllowedAt) return;
 
   const card = proactiveCardQueue.shift();
@@ -2170,8 +2894,10 @@ function dequeueProactiveCard(): void {
     return;
   }
 
-  // Schedule next card 5–30 minutes from now (random)
-  nextCardAllowedAt = now + randBetweenMs(5, 30);
+  const gapMs = ghampusChatSessionActive
+    ? CHAT_ACTIVE_CARD_GAP_MS
+    : randBetweenMs(5, 30);
+  nextCardAllowedAt = now + gapMs;
 
   const msg: GhampusChatMessage = { kind: 'proactive-card', card, ts: card.createdAt };
   appendToThread(msg);
@@ -2213,15 +2939,15 @@ function renderWalkPlanCard(plan: WalkPlan): string {
     const modelTag = (s.isLocal || localOnly) ? '' : '<span class="walk-plan-model-tag">BYOK</span>';
     const modelName = localOnly && !s.isLocal ? 'Ollama (fallback)' : s.model;
     return `<tr>
-      <td>${escapeHtml(s.label)}</td>
+      <td${presSkillAttr(plan.sourceId, plan.graphId ?? undefined)}>${escapeHtml(s.label)}</td>
       <td><div class="walk-plan-needs">${needChips}</div></td>
-      <td><span class="walk-plan-model ${modelClass}">${escapeHtml(modelName)}</span>${modelTag}</td>
+      <td><span class="walk-plan-model ${modelClass}"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(modelName)}</span>${modelTag}</td>
       <td>${costCell}</td>
     </tr>`;
   }).join('');
 
   const hint = plan.learningHint
-    ? `<div class="walk-plan-hint"><span>💡</span><span>${escapeHtml(plan.learningHint)}</span></div>`
+    ? `<div class="walk-plan-hint"><span>💡</span><span${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(plan.learningHint)}</span></div>`
     : '';
 
   const confirmRouting = localOnly ? 'local-only' : 'adaptive';
@@ -2229,7 +2955,7 @@ function renderWalkPlanCard(plan: WalkPlan): string {
 
   return `<div class="walk-plan-card" data-plan-source="${escapeHtml(plan.sourceId)}">
     <div class="walk-plan-header">
-      <span class="walk-plan-title">${escapeHtml(plan.label)} walk plan</span>
+      <span class="walk-plan-title"${presSkillAttr(plan.sourceId, plan.graphId ?? undefined)}>${escapeHtml(plan.label)} walk plan</span>
       <span class="walk-plan-meta">${escapeHtml(metaParts)}</span>
       <span class="walk-plan-cost-badge">${totalFmt}</span>
     </div>
@@ -2264,7 +2990,7 @@ function renderWalkProgress(steps: WalkStep[]): string {
       : s.status === 'error' ? '✕' : '';
     return `<div class="walk-step ${s.status}">
       <div class="walk-step-icon">${icon}</div>
-      <span>${escapeHtml(s.label)}</span>
+      <span${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(s.label)}</span>
     </div>`;
   }).join('');
   return `<div class="walk-step-list">${rows}</div>`;
@@ -2276,8 +3002,8 @@ function renderRefineCard(proposal: RefineProposal): string {
       <span style="font-size: 15px;">🎓</span>
       <span class="refine-card-title">I've watched this skill walk for 3 weeks straight. Refine it?</span>
     </div>
-    <p class="refine-card-obs">${escapeHtml(proposal.observation)}</p>
-    <pre class="refine-card-code">${escapeHtml(proposal.proposedStepCode)}</pre>
+    <p class="refine-card-obs"${presSkillAttr(proposal.sourceId)}>${escapeHtml(proposal.observation)}</p>
+    <pre class="refine-card-code"${presSkillAttr(proposal.sourceId)}>${escapeHtml(proposal.proposedStepCode)}</pre>
     <div class="refine-card-actions">
       <button class="btn-refine-primary btn-refine-update"
               data-source-id="${escapeHtml(proposal.sourceId)}">Update ${escapeHtml(proposal.sourceId.split(':').pop() ?? 'skill')}</button>
@@ -2295,9 +3021,9 @@ function renderTierStrip(ctx: TierContext): string {
   const freeLabel = `<div class="tier-strip-label">Free</div>`;
   const teamsLabel = `<div class="tier-strip-label">Teams+</div>`;
   return `<div class="tier-strip">
-    <div class="tier-strip-col">${proLabel}<div class="tier-strip-body">${escapeHtml(ctx.pro)}</div></div>
-    <div class="tier-strip-col">${freeLabel}<div class="tier-strip-body">${escapeHtml(ctx.free)}</div></div>
-    <div class="tier-strip-col">${teamsLabel}<div class="tier-strip-body">${escapeHtml(ctx.teams)}</div></div>
+    <div class="tier-strip-col">${proLabel}<div class="tier-strip-body"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(ctx.pro)}</div></div>
+    <div class="tier-strip-col">${freeLabel}<div class="tier-strip-body"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(ctx.free)}</div></div>
+    <div class="tier-strip-col">${teamsLabel}<div class="tier-strip-body"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(ctx.teams)}</div></div>
   </div>`;
 }
 
@@ -2313,7 +3039,8 @@ const GHAMPUS_THREAD_EMPTY_HTML = `<div id="ghampus-thread-empty" class="ghampus
   <img src="/graphnosis-logo-transparent-bg.png" alt=""
        style="width: 40px; height: 40px; opacity: .3; margin-bottom: 10px;" />
   <p style="margin: 0; font-size: 13px; opacity: .45;">
-    Start typing — or wait for Ghampus to pick up where you left off.
+    Start typing — or use <strong>New chat</strong> to archive this thread and begin fresh.
+    Use Remember for anything worth keeping in memory.
   </p>
 </div>`;
 
@@ -2346,11 +3073,14 @@ function paintGhampusHistoryMessages(messages: GhampusChatMessage[]): void {
   document.getElementById('ghampus-thread-empty')?.remove();
   container.innerHTML = '';
   for (const msg of messages) appendToThread(msg);
+  applyGhampusFragmentMarks();
   scrollGhampusThreadToBottomIfPinned({ instant: true });
+  sweepGhampusPres(container);
 }
 
 /** Drop thread cache on lock / cortex switch — next unlock prefetches fresh history. */
 export function resetGhampusThreadCache(): void {
+  clearGhampusSendQueue();
   ghampusThreadMessages = [];
   ghampusThreadPrefetchDone = false;
   ghampusThreadPrefetchInflight = null;
@@ -2359,6 +3089,227 @@ export function resetGhampusThreadCache(): void {
   if (container && container.querySelector('.ghampus-thread-entry') == null) {
     container.innerHTML = GHAMPUS_THREAD_EMPTY_HTML;
   }
+}
+
+type GhampusNewChatChoice =
+  | { action: 'cancel' }
+  | { action: 'fresh' }
+  | { action: 'remember'; summaryText: string; engramId: string };
+
+type GhampusEngramOption = { graphId: string; displayName: string };
+
+/** All non-archived engrams for Ghampus save-target pickers (matches header picker sort). */
+async function loadGhampusEngramOptions(): Promise<GhampusEngramOption[]> {
+  await app().reloadGraphsMetadata().catch(() => {});
+  return app().getLoadedGraphs()
+    .filter((g) => !g.metadata.archived)
+    .sort((a, b) => {
+      const aIsSkill = a.metadata.template === 'skill' ? 1 : 0;
+      const bIsSkill = b.metadata.template === 'skill' ? 1 : 0;
+      if (aIsSkill !== bIsSkill) return aIsSkill - bIsSkill;
+      return (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId);
+    })
+    .map((g) => ({
+      graphId: g.graphId,
+      displayName: app().formatEngramLabel(g),
+    }));
+}
+
+function fillGhampusEngramSelect(
+  select: HTMLSelectElement,
+  options: GhampusEngramOption[],
+  preferredId?: string,
+): void {
+  if (options.length === 0) {
+    select.innerHTML = '<option value="personal">Personal</option>';
+    select.value = 'personal';
+    return;
+  }
+  select.innerHTML = options.map((e) =>
+    `<option value="${escapeHtml(e.graphId)}">${escapeHtml(e.displayName)}</option>`,
+  ).join('');
+  const pick =
+    (preferredId && options.some((e) => e.graphId === preferredId) ? preferredId : undefined)
+    ?? options.find((e) => e.graphId === 'personal')?.graphId
+    ?? options[0].graphId;
+  select.value = pick;
+}
+
+let ghampusNewChatResolve: ((choice: GhampusNewChatChoice) => void) | null = null;
+let ghampusNewChatModalReady = false;
+
+function ghampusThreadHasSubstantiveTurns(): boolean {
+  const turns = ghampusThreadMessages.filter(
+    (m): m is Extract<GhampusChatMessage, { kind: 'user' | 'ghampus' }> =>
+      m.kind === 'user' || m.kind === 'ghampus',
+  );
+  const userTurns = turns.filter((m) => m.kind === 'user' && m.text.trim().length >= 8);
+  return userTurns.length >= 1 || turns.length >= 3;
+}
+
+function finishGhampusNewChatModal(choice: GhampusNewChatChoice): void {
+  document.getElementById('ghampus-new-chat-modal')?.classList.add('hidden');
+  if (ghampusNewChatResolve) {
+    ghampusNewChatResolve(choice);
+    ghampusNewChatResolve = null;
+  }
+}
+
+function initGhampusNewChatModal(): void {
+  if (ghampusNewChatModalReady) return;
+  ghampusNewChatModalReady = true;
+  const modal = document.getElementById('ghampus-new-chat-modal');
+  const summaryEl = document.getElementById('ghampus-new-chat-summary') as HTMLTextAreaElement | null;
+  const engramEl = document.getElementById('ghampus-new-chat-engram') as HTMLSelectElement | null;
+  const rememberBtn = document.getElementById('ghampus-new-chat-remember') as HTMLButtonElement | null;
+  const freshBtn = document.getElementById('ghampus-new-chat-fresh') as HTMLButtonElement | null;
+  const skipBtn = document.getElementById('ghampus-new-chat-skip') as HTMLButtonElement | null;
+  const cancelBtn = document.getElementById('ghampus-new-chat-cancel') as HTMLButtonElement | null;
+
+  const startFreshWithoutSaving = () => finishGhampusNewChatModal({ action: 'fresh' });
+
+  cancelBtn?.addEventListener('click', () => finishGhampusNewChatModal({ action: 'cancel' }));
+  freshBtn?.addEventListener('click', startFreshWithoutSaving);
+  skipBtn?.addEventListener('click', startFreshWithoutSaving);
+  rememberBtn?.addEventListener('click', () => {
+    const summaryText = summaryEl?.value.trim() ?? '';
+    const engramId = engramEl?.value.trim() ?? '';
+    if (!summaryText) {
+      void gAlert('Summary required', 'Add a thread summary to save, or choose Skip & start fresh.');
+      return;
+    }
+    if (!engramId) {
+      void gAlert('Choose an engram', 'Pick which engram should receive this summary.');
+      return;
+    }
+    finishGhampusNewChatModal({ action: 'remember', summaryText, engramId });
+  });
+  modal?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') finishGhampusNewChatModal({ action: 'cancel' });
+  });
+}
+
+async function populateGhampusNewChatModal(): Promise<void> {
+  const summaryEl = document.getElementById('ghampus-new-chat-summary') as HTMLTextAreaElement | null;
+  const engramEl = document.getElementById('ghampus-new-chat-engram') as HTMLSelectElement | null;
+  const rememberBtn = document.getElementById('ghampus-new-chat-remember') as HTMLButtonElement | null;
+  if (!summaryEl || !engramEl) return;
+
+  summaryEl.value = '';
+  summaryEl.placeholder = 'Summarizing thread…';
+  summaryEl.disabled = true;
+  if (rememberBtn) {
+    rememberBtn.disabled = true;
+    rememberBtn.textContent = 'Summarizing…';
+  }
+  const hint = document.getElementById('ghampus-new-chat-body');
+  if (hint) {
+    hint.textContent =
+      'The current thread stays archived under ghampus/sessions/. Save a summary to memory, or skip and start fresh anytime — you do not need to wait for the summary.';
+  }
+
+  try {
+    const [engramOptions, res] = await Promise.all([
+      loadGhampusEngramOptions(),
+      ipcCall<{
+        summary: string;
+        defaultEngramId: string;
+        usedLlm?: boolean;
+      }>('ghampus:session:summarize', {}),
+    ]);
+    fillGhampusEngramSelect(engramEl, engramOptions, res.defaultEngramId);
+    summaryEl.value = res.summary ?? '';
+    summaryEl.placeholder = 'Edit the summary before saving…';
+    const hint = document.getElementById('ghampus-new-chat-body');
+    if (hint && res.usedLlm) {
+      hint.textContent =
+        'Local LLM distilled this thread. Edit anything before saving — the archive still lands under ghampus/sessions/.';
+    }
+  } catch (err) {
+    const engramOptions = await loadGhampusEngramOptions().catch(() => [] as GhampusEngramOption[]);
+    if (engramOptions.length) fillGhampusEngramSelect(engramEl, engramOptions);
+    summaryEl.placeholder = 'Could not summarize — type what to remember, or start fresh without saving.';
+    summaryEl.value = '';
+    const hint = document.getElementById('ghampus-new-chat-body');
+    if (hint) {
+      hint.textContent = `Summarize failed (${err instanceof Error ? err.message : String(err)}). You can still type a summary or start fresh.`;
+    }
+  } finally {
+    summaryEl.disabled = false;
+    if (rememberBtn) {
+      rememberBtn.disabled = false;
+      rememberBtn.textContent = 'Remember & start fresh';
+    }
+    summaryEl.focus();
+  }
+}
+
+function promptGhampusNewChatModal(): Promise<GhampusNewChatChoice> {
+  initGhampusNewChatModal();
+  const modal = document.getElementById('ghampus-new-chat-modal');
+  if (!modal) return Promise.resolve({ action: 'cancel' });
+  modal.classList.remove('hidden');
+  void populateGhampusNewChatModal();
+  return new Promise<GhampusNewChatChoice>((resolve) => {
+    ghampusNewChatResolve = resolve;
+  });
+}
+
+async function clearGhampusSessionUi(): Promise<void> {
+  resetGhampusThreadCache();
+  clearGhampusFragmentComments();
+  const thread = ghampusChatMessagesEl();
+  if (thread) thread.innerHTML = GHAMPUS_THREAD_EMPTY_HTML;
+}
+
+/** Archive the on-disk session and reset the visible thread. */
+export async function startFreshGhampusChat(): Promise<void> {
+  if (ghampusRunning || ghampusSendQueue.length > 0) {
+    const stopFirst = await gConfirm(
+      'Ghampus is still working',
+      'Cancel the in-flight turn and start a fresh chat?',
+    );
+    if (!stopFirst) return;
+    clearGhampusSendQueue();
+    await cancelGhampusTurn();
+  }
+
+  if (!ghampusThreadHasSubstantiveTurns()) {
+    const confirmed = await gConfirm(
+      'Start a fresh Ghampus chat?',
+      'The current thread stays in your cortex under ghampus/sessions/ as an archive.',
+    );
+    if (!confirmed) return;
+    await ipcCall('ghampus:session:clear', {});
+    await clearGhampusSessionUi();
+    return;
+  }
+
+  const choice = await promptGhampusNewChatModal();
+  if (choice.action === 'cancel') return;
+
+  if (choice.action === 'remember') {
+    const res = await ipcCall<{ ok: boolean; remembered?: { engramId: string } }>(
+      'ghampus:session:clear',
+      {
+        rememberSummary: true,
+        engramId: choice.engramId,
+        summaryText: choice.summaryText,
+      },
+    );
+    if (!res.ok) {
+      await gAlert('Could not start fresh', 'Session clear failed — try again.');
+      return;
+    }
+    const engramLabel = app().engramName(choice.engramId);
+    await gAlert(
+      'Saved & archived',
+      `Thread summary saved to ${engramLabel}. Ghampus started a fresh chat.`,
+    );
+  } else {
+    await ipcCall('ghampus:session:clear', {});
+  }
+  await clearGhampusSessionUi();
 }
 
 /** Warm ghampus-history after unlock — non-blocking; paints DOM when data arrives. */
@@ -2409,6 +3360,7 @@ function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean })
   if (wrap) wireTracePanel(wrap);
   node.querySelectorAll<HTMLTimeElement>('.chat-msg-time time').forEach(updateLiveTimeEl);
   scrollGhampusThreadToBottomIfPinned();
+  sweepGhampusPres(node);
 }
 
 function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void {
@@ -2436,8 +3388,9 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
 
   if (msg.kind === 'skill-match') {
     node.querySelector<HTMLButtonElement>('.btn-skill-run')?.addEventListener('click', (e) => {
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
-      void requestWalkPlan(sourceId);
+      const btn = e.currentTarget as HTMLButtonElement;
+      const slug = (btn.dataset.skillLabel ?? '').trim().replace(/\s+/g, '-');
+      if (slug) fillGhampusPrompt(`/preview ${slug}`);
     });
     node.querySelector<HTMLButtonElement>('.btn-skill-dismiss')?.addEventListener('click', (e) => {
       (e.currentTarget as HTMLElement).closest('.ghampus-thread-entry')?.remove();
@@ -2480,47 +3433,45 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
   if (msg.kind === 'memory-suggestion') {
     wireMemorySuggestionCardActions(node, msg.suggestion);
   }
+  if (msg.kind === 'tip') {
+    wireFillPromptButtons(node);
+    wireCardDismissButton(node);
+  }
   if (msg.kind === 'vitality-nudge') {
-    node.querySelector<HTMLButtonElement>('.ghampus-vitality-walk')?.addEventListener('click', () => {
-      const label = msg.nudge.walkSkillLabel ?? 'cortex-gardening';
-      void ipcCall('ghampus:send', { text: `Walk skill ${label}`, turnId: crypto.randomUUID() });
+    wireFillPromptButtons(node);
+    node.querySelector<HTMLButtonElement>('.ghampus-vitality-preview')?.addEventListener('click', (e) => {
+      const prompt = (e.currentTarget as HTMLButtonElement).dataset.prompt;
+      if (prompt) fillGhampusPrompt(prompt);
     });
-    node.querySelector<HTMLButtonElement>('.ghampus-vitality-try')?.addEventListener('click', () => {
-      const prompt = msg.nudge.examplePrompt;
-      if (!prompt) return;
-      void ipcCall('ghampus:send', { text: prompt, turnId: crypto.randomUUID() });
-    });
-    node.querySelector<HTMLElement>('.ghampus-tip-example-prompt')?.addEventListener('click', () => {
-      const prompt = msg.nudge.examplePrompt;
-      if (!prompt) return;
-      void ipcCall('ghampus:send', { text: prompt, turnId: crypto.randomUUID() });
-    });
+    wireCardDismissButton(node);
   }
   if (msg.kind === 'recovery-nudge') {
     node.querySelector<HTMLButtonElement>('.ghampus-recovery-open')?.addEventListener('click', () => {
       document.dispatchEvent(new CustomEvent('graphnosis:open-recovery'));
     });
+    wireCardDismissButton(node);
+  }
+  if (msg.kind === 'skill-preview-improve') {
+    node.querySelector<HTMLButtonElement>('.ghampus-skill-improve-btn')?.addEventListener('click', () => {
+      const slug = msg.card.skillSlug;
+      fillGhampusPrompt(`Improve ${slug}: `);
+    });
+    node.querySelector<HTMLButtonElement>('.ghampus-skill-improve-dismiss')?.addEventListener('click', () => {
+      node.closest('.ghampus-thread-entry')?.remove();
+    });
+  }
+  if (msg.kind === 'insights-preview') {
+    wireInsightsPreviewActions(node, msg.insights);
   }
   if (msg.kind === 'proactive-card') {
     if (msg.card.signalType === 'skill-stale') {
       wireSkillStaleCardActions(node, msg.card);
       return;
     }
-    node.querySelector<HTMLButtonElement>('.proactive-card-run')?.addEventListener('click', async (e) => {
+    node.querySelector<HTMLButtonElement>('.proactive-card-preview')?.addEventListener('click', (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
-      const cardId = btn.dataset.cardId ?? '';
-      const sourceId = btn.dataset.sourceId ?? '';
-      const graphId = msg.card.skillGraphId;
-      // Grab the skill label from the button text ("Run Skill Name ▸")
-      const btnText = btn.textContent ?? '';
-      const skillLabel = btnText.replace(/^Run\s+/, '').replace(/\s*▸\s*$/, '').trim();
-      const signalEl = node.querySelector<HTMLElement>('.proactive-card-signal');
-      const signalLabel = signalEl?.textContent?.replace(/^[⏰📥🔍]\s*/, '').trim();
-      btn.disabled = true;
-      node.querySelector<HTMLElement>('.proactive-card-actions')?.remove();
-      await ipcCall('ghampus:inbox:run', { id: cardId }).catch(() => {});
-      showSkillRunning(skillLabel || msg.card.skillLabel, signalLabel);
-      void requestWalkPlan(sourceId, skillLabel || undefined, signalLabel || undefined, graphId);
+      const skillSlug = btn.dataset.skillLabel ?? msg.card.skillLabel;
+      fillGhampusPrompt(`/preview ${skillSlug}`);
     });
     // Snooze toggle — show/hide the dropdown menu
     node.querySelector<HTMLButtonElement>('.proactive-card-snooze')?.addEventListener('click', (e) => {
@@ -2547,6 +3498,7 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
     node.querySelector<HTMLButtonElement>('.proactive-card-dismiss')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
       const cardId = btn.dataset.cardId ?? '';
+      dismissProactiveCardInSession('proactive', cardId);
       await ipcCall('ghampus:inbox:dismiss', { id: cardId }).catch(() => {});
       btn.closest('.ghampus-thread-entry')?.remove();
     });
@@ -2556,19 +3508,12 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
 function wireMemorySuggestionCardActions(node: HTMLElement, suggestion: MemorySuggestionCardPayload): void {
   const select = node.querySelector<HTMLSelectElement>('.ghampus-memory-suggestion-engram-select');
   if (select) {
-    void ipcCall<{ engrams?: Array<{ graphId: string; displayName: string }> }>('agent:runTool', {
-      tool: 'list_engrams',
-      args: {},
-    }).then((res) => {
-      const engrams = res.engrams ?? [];
-      const defaultId = select.dataset.default ?? suggestion.engramHint ?? 'personal';
-      select.innerHTML = engrams.length
-        ? engrams.map((e) => {
-          const selected = e.graphId === defaultId ? ' selected' : '';
-          return `<option value="${escapeHtml(e.graphId)}"${selected}>${escapeHtml(e.displayName)}</option>`;
-        }).join('')
-        : `<option value="${escapeHtml(defaultId)}">${escapeHtml(defaultId)}</option>`;
-    }).catch(() => {});
+    const defaultId = select.dataset.default ?? suggestion.engramHint ?? 'personal';
+    void loadGhampusEngramOptions().then((options) => {
+      fillGhampusEngramSelect(select, options, defaultId);
+    }).catch(() => {
+      fillGhampusEngramSelect(select, [{ graphId: defaultId, displayName: app().engramName(defaultId) }], defaultId);
+    });
   }
 
   const removeCard = () => node.closest('.ghampus-thread-entry')?.remove();
@@ -2615,6 +3560,7 @@ function wireMemorySuggestionCardActions(node: HTMLElement, suggestion: MemorySu
   node.querySelector<HTMLButtonElement>('.ghampus-memory-suggestion-dismiss')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
     btn.disabled = true;
+    dismissProactiveCardInSession('memory-suggestion', suggestion.id);
     await ipcCall('agent:dismissMemorySuggestion', { id: suggestion.id }).catch(() => {});
     removeCard();
   });
@@ -2692,6 +3638,7 @@ function wireSkillStaleCardActions(node: HTMLElement, card: ProactiveCardPayload
     });
   });
   node.querySelector<HTMLButtonElement>('.proactive-stale-dismiss')?.addEventListener('click', async () => {
+    dismissProactiveCardInSession('proactive', card.id);
     await ipcCall('ghampus:skillMaintenance:dismiss', { cardId: card.id }).catch(() => {});
     node.closest('.ghampus-thread-entry')?.remove();
   });
@@ -2835,12 +3782,12 @@ function renderNotifCard(n: {
   const isSensitive = n.tier === 'sensitive';
   const preview = isSensitive
     ? '<div class="notif-card-preview sensitive">[content hidden · sensitive engram]</div>'
-    : `<div class="notif-card-preview">${escapeHtml(n.label)}</div>`;
+    : `<div class="notif-card-preview"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(n.label)}</div>`;
   return `<div class="notif-card" data-notif-id="${escapeHtml(n.id)}">
     <div class="notif-card-header">
       <span>${icon}</span>
-      <span class="notif-card-origin">${escapeHtml(n.origin)}</span>
-      <span class="notif-card-engram">${escapeHtml(n.engramId)}</span>
+      <span class="notif-card-origin"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(n.origin)}</span>
+      <span class="notif-card-engram"${presEngramAttr(n.engramId)}>${escapeHtml(n.engramId)}</span>
       <span class="notif-card-time">${when}</span>
     </div>
     ${preview}
@@ -2879,6 +3826,7 @@ function reconcileGhampusThreadDom(): void {
   }
   thread.innerHTML = '';
   for (const msg of ghampusThreadMessages) appendToThread(msg, { skipCache: true });
+  applyGhampusFragmentMarks();
   if (ghampusRunning) showThinkingBubble();
 }
 
@@ -2972,7 +3920,7 @@ async function refreshGhampusThreadInner(): Promise<void> {
                   style="padding: 0; font-size: 12px;">Mark all read</button>
         </div>
       </div>
-      <p class="subtitle" style="margin: 0; font-size: 12px;">${escapeHtml(summaryText)}</p>
+      <p class="subtitle" style="margin: 0; font-size: 12px;"${presSurfaceAttr(PRES_GHAMPUS_PANELS)}>${escapeHtml(summaryText)}</p>
     </div>`;
 
     const cardsHtml = res.notifications.map((n) => renderNotifCard(n, now)).join('');
@@ -2988,6 +3936,7 @@ async function refreshGhampusThreadInner(): Promise<void> {
     thread.innerHTML = `<div class="ghampus-thread-entry ghampus-notif-opener">
       ${headerHtml}${cardsHtml}${upsell}
     </div>`;
+    sweepGhampusPres(thread);
 
     // Wire dismiss and switch buttons
     thread.querySelectorAll<HTMLButtonElement>('.btn-notif-switch').forEach((btn) => {
@@ -2995,7 +3944,10 @@ async function refreshGhampusThreadInner(): Promise<void> {
         const engramId = btn.dataset.engram ?? '';
         const nameEl = document.getElementById('ghampus-active-engram-name');
         const badge = document.getElementById('ghampus-active-engram');
-        if (nameEl) nameEl.textContent = engramId;
+        if (nameEl) {
+          nameEl.textContent = engramId;
+          nameEl.setAttribute('data-pres', `engram:${engramId}`);
+        }
         if (badge) badge.classList.remove('hidden');
         updateGhampusInputPlaceholder(engramId);
         // Scroll to input
@@ -3243,6 +4195,7 @@ function paintGhampusModelSelect(status: {
   if (!select.value && prev && installedModels.includes(prev)) {
     select.value = prev;
   }
+  sweepGhampusPres(badge);
 }
 
 let ghampusModelSelectWired = false;
@@ -3305,9 +4258,9 @@ export async function refreshGhampusHeader(): Promise<void> {
   updateGhampusInputPlaceholder();
 }
 
-// ── Skill picker drawer (/walk · /train · /skills while typing) ─────────────
+// ── Skill picker drawer (/preview · /train · /skills while typing) ─────────────
 
-type SkillPickerMode = 'walk' | 'train' | 'skills';
+type SkillPickerMode = 'preview' | 'train' | 'skills';
 
 type SkillPickerSkill = {
   sourceId: string;
@@ -3323,11 +4276,11 @@ const SKILL_PICKER_MODE_CONFIG: Record<SkillPickerMode, {
   placeholder: string;
   commandPrefix: string;
 }> = {
-  walk: {
-    title: 'Walk a skill',
+  preview: {
+    title: 'Preview a skill',
     hint: '',
     placeholder: 'Filter by name…',
-    commandPrefix: '/walk',
+    commandPrefix: '/preview',
   },
   train: {
     title: 'Train a skill',
@@ -3357,8 +4310,10 @@ function skillWalkSlug(label: string): string {
 
 function parseSkillPickerCommand(text: string): { mode: SkillPickerMode | null; filter: string } {
   const t = text.trimStart();
-  let m = t.match(/^\/walk(?:\s+skill)?(?:\s+(.*))?$/is);
-  if (m) return { mode: 'walk', filter: (m[1] ?? '').trimEnd() };
+  let m = t.match(/^\/preview(?:\s+skill)?(?:\s+(.*))?$/is);
+  if (m) return { mode: 'preview', filter: (m[1] ?? '').trimEnd() };
+  m = t.match(/^\/walk(?:\s+skill)?(?:\s+(.*))?$/is);
+  if (m) return { mode: 'preview', filter: (m[1] ?? '').trimEnd() };
   m = t.match(/^\/train(?:\s+(?:skill\s+)?(.*))?$/is);
   if (m) return { mode: 'train', filter: (m[1] ?? '').trimEnd() };
   m = t.match(/^\/skills(?:\s+(.*))?$/is);
@@ -3404,7 +4359,7 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
   let activeIdx = 0;
   let previousFocus: HTMLElement | null = null;
   let drawerOpen = false;
-  let activeMode: SkillPickerMode = 'walk';
+  let activeMode: SkillPickerMode = 'preview';
   let skillsLoaded = false;
   let loadPromise: Promise<void> | null = null;
   let syncDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3498,7 +4453,7 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
       return `<li role="presentation">
         <button type="button" class="ghampus-walk-picker-item${i === activeIdx ? ' is-active' : ''}"
                 data-idx="${i}" role="option" aria-selected="${i === activeIdx ? 'true' : 'false'}">
-          <span class="ghampus-walk-picker-name">${escapeHtml(s.displayLabel)}</span>
+          <span class="ghampus-walk-picker-name"${presSkillAttr(s.sourceId)}>${escapeHtml(s.displayLabel)}</span>
           ${vBadge}
         </button>
       </li>`;
@@ -3517,6 +4472,7 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
         void pickSkill(filtered[Number(btn.dataset['idx'])]);
       });
     });
+    sweepGhampusPres(listEl);
   };
 
   const loadSkills = async (): Promise<void> => {
@@ -3672,20 +4628,120 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
 
 // ── Slash command definitions ─────────────────────────────────────────────────
 const SLASH_COMMANDS = [
-  { name: 'save',    icon: '💾', args: '[content] [@engram]', desc: 'Save a memory',         template: '/save '         },
-  { name: 'create',  icon: '✨', args: '[engram name]',       desc: 'Create a new engram',   template: '/create '       },
-  { name: 'engrams', icon: '🗂️', args: '',                    desc: 'List your engrams',     template: '/engrams'       },
-  { name: 'skills',  icon: '⚡', args: '[filter]',            desc: 'List your skills',      template: '/skills '       },
-  { name: 'walk',    icon: '👣', args: '[skill name]',        desc: 'Run a skill',           template: '/walk '         },
-  { name: 'train',   icon: '🎓', args: '[skill name]',        desc: 'Retrain a skill (Pro)', template: '/train '        },
-  { name: 'forget',  icon: '🗑️', args: '',                    desc: 'Manage / delete memories', template: '/forget'     },
-  { name: 'help',    icon: '❓', args: '',                    desc: 'Show all commands',     template: '/help'          },
+  { name: 'save',    icon: '', args: '[content] [@engram]', desc: 'Save a memory',         template: '/save '         },
+  { name: 'recall',  icon: '', args: '[query]',             desc: 'Search your memory',    template: '/recall '       },
+  { name: 'edit',    icon: '', args: '[correction]',        desc: 'Correct existing memory', template: '/edit '       },
+  { name: 'compare', icon: '', args: '[topic]',             desc: 'Compare sources (Pro)', template: '/compare '      },
+  { name: 'create',  icon: '', args: '[engram name]',       desc: 'Create a new engram',   template: '/create '       },
+  { name: 'engrams', icon: '', args: '',                    desc: 'List your engrams',     template: '/engrams'       },
+  { name: 'skills',  icon: '', args: '[filter]',            desc: 'List your skills',      template: '/skills '       },
+  { name: 'preview', icon: '', args: '[skill name]',        desc: 'Preview a skill SOP',   template: '/preview '      },
+  { name: 'train',   icon: '', args: '[skill name]',        desc: 'Retrain a skill (Pro)', template: '/train '        },
+  { name: 'forget',  icon: '', args: '',                    desc: 'Manage / delete memories', template: '/forget'     },
+  { name: 'insights', icon: '', args: '',                   desc: 'Preview Foresight insights', template: '/insights' },
+  { name: 'help',    icon: '', args: '',                    desc: 'Show all commands',     template: '/help'          },
 ] as const;
+
+function getLastGhampusThreadSnippet(): string {
+  for (let i = ghampusThreadMessages.length - 1; i >= 0; i--) {
+    const m = ghampusThreadMessages[i];
+    if (m?.kind === 'ghampus' && m.text.trim()) {
+      return m.text.replace(/[#*`[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+  }
+  return '';
+}
+
+function getGhampusThreadTurnCount(): number {
+  return ghampusThreadMessages.filter((m) => m.kind === 'user' || m.kind === 'ghampus').length;
+}
+
+function getGhampusSelectionText(): string {
+  if (ghampusPendingFragmentSelection?.quotedText) {
+    return ghampusPendingFragmentSelection.quotedText;
+  }
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount < 1) return '';
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread?.contains(sel.getRangeAt(0).commonAncestorContainer)) return '';
+  const text = sel.toString().trim();
+  return text.length >= 2 ? text : '';
+}
+
+const GHAMPUS_CHAT_ZOOM_KEY = 'graphnosis:ghampusChatZoom';
+const GHAMPUS_CHAT_ZOOM_MIN = 0.85;
+const GHAMPUS_CHAT_ZOOM_MAX = 1.6;
+const GHAMPUS_CHAT_ZOOM_STEP = 0.1;
+let ghampusChatZoomWired = false;
+
+function isGhampusPaneActive(): boolean {
+  const pane = document.querySelector<HTMLElement>('[data-pane="ghampus"]');
+  return !!pane && !pane.classList.contains('hidden');
+}
+
+function readGhampusChatZoom(): number {
+  try {
+    const stored = Number(localStorage.getItem(GHAMPUS_CHAT_ZOOM_KEY));
+    if (Number.isFinite(stored) && stored >= GHAMPUS_CHAT_ZOOM_MIN && stored <= GHAMPUS_CHAT_ZOOM_MAX) {
+      return Math.round(stored * 100) / 100;
+    }
+  } catch { /* ignore */ }
+  return 1;
+}
+
+function applyGhampusChatZoom(zoom: number): void {
+  const clamped = Math.min(
+    GHAMPUS_CHAT_ZOOM_MAX,
+    Math.max(GHAMPUS_CHAT_ZOOM_MIN, Math.round(zoom * 100) / 100),
+  );
+  try { localStorage.setItem(GHAMPUS_CHAT_ZOOM_KEY, String(clamped)); } catch { /* ignore */ }
+  document.getElementById('ghampus-chat-wrap')?.style.setProperty('--ghampus-chat-zoom', String(clamped));
+}
+
+function handleGhampusZoomKeydown(e: KeyboardEvent): boolean {
+  if (!isGhampusPaneActive()) return false;
+  const mod = e.metaKey || e.ctrlKey;
+  if (!mod) return false;
+
+  if (e.key === '0' && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    applyGhampusChatZoom(1);
+    return true;
+  }
+
+  const zoomIn = e.key === '=' || e.key === '+'
+    || e.code === 'Equal' || e.code === 'NumpadAdd';
+  const zoomOut = e.key === '-' || e.key === '_'
+    || e.code === 'Minus' || e.code === 'NumpadSubtract';
+
+  if (zoomIn) {
+    e.preventDefault();
+    applyGhampusChatZoom(readGhampusChatZoom() + GHAMPUS_CHAT_ZOOM_STEP);
+    return true;
+  }
+  if (zoomOut) {
+    e.preventDefault();
+    applyGhampusChatZoom(readGhampusChatZoom() - GHAMPUS_CHAT_ZOOM_STEP);
+    return true;
+  }
+  return false;
+}
+
+function wireGhampusChatZoomShortcuts(): void {
+  applyGhampusChatZoom(readGhampusChatZoom());
+  if (ghampusChatZoomWired) return;
+  ghampusChatZoomWired = true;
+  document.addEventListener('keydown', (e) => {
+    handleGhampusZoomKeydown(e);
+  }, true);
+}
 
 function wireGhampusChat(): void {
   const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
   const sendBtn = document.getElementById('btn-ghampus-send');
   if (!input || !sendBtn) return;
+
+  wireGhampusChatZoomShortcuts();
 
   // ── Slash palette ──────────────────────────────────────────────────────────
   let palette: HTMLDivElement | null = null;
@@ -3746,6 +4802,20 @@ function wireGhampusChat(): void {
     paletteActive = 0;
   }
 
+  const composeRail = wireGhampusComposeRail(input, {
+    getSelectedText: getGhampusSelectionText,
+    getLastGhampusSnippet: getLastGhampusThreadSnippet,
+    getThreadTurnCount: getGhampusThreadTurnCount,
+    getHoursSinceActive: () => (Date.now() - lastGhampusSendAt) / 3_600_000,
+    shouldHide: () => paletteVisible && !input!.value.trimStart().startsWith('/'),
+    onInputChange: () => {
+      autoGrow();
+      composeRail.update();
+    },
+    onFillPrompt: fillGhampusPrompt,
+    onThreadSummary: () => { void startFreshGhampusChat(); },
+  });
+
   function updatePalette(): void {
     const val = input!.value;
     if (parseSkillPickerCommand(val).mode) { hidePalette(); return; }
@@ -3755,6 +4825,7 @@ function wireGhampusChat(): void {
     if (val.includes(' ') && !val.match(/^\/\w+$/)) { hidePalette(); return; }
     paletteActive = 0;
     buildPalette(filter);
+    composeRail.update();
   }
 
   // ── Auto-grow textarea ─────────────────────────────────────────────────────
@@ -3777,22 +4848,13 @@ function wireGhampusChat(): void {
     autoGrow();
     handleSkillPickerInputSync();
     updatePalette();
+    composeRail.update();
   });
 
-  async function submitGhampusText(text: string): Promise<void> {
+  function submitGhampusText(text: string): void {
     const ts = Date.now();
     const turnId = newGhampusTurnId();
-    liveTraceTurnId = turnId;
-    liveTraceScrollPinned = true;
-    resetGhampusThreadScrollPin();
-    ensureTurnTrace(turnId, ts);
-    appendToThread({ kind: 'user', text, ts, turnId });
-    showThinkingBubble();
-    try {
-      await ipcCall('ghampus:send', { text, turnId });
-    } catch {
-      forceClearThinkingBubble();
-    }
+    enqueueGhampusSend({ turnId, ts, userText: text, ipcPayload: { text, turnId } });
   }
 
   const skillPicker = wireSkillPickerDrawer(submitGhampusText);
@@ -3801,6 +4863,7 @@ function wireGhampusChat(): void {
     const text = input!.value.trim();
     if (!text) return;
     hidePalette();
+    composeRail.hide();
     const parsed = parseSkillPickerCommand(text);
     if (parsed.mode) {
       const cfg = SKILL_PICKER_MODE_CONFIG[parsed.mode];
@@ -3837,7 +4900,7 @@ function wireGhampusChat(): void {
   }
 
   input.addEventListener('keydown', (e) => {
-    trackGhampusActivity();
+    trackGhampusTyping();
     if (e.key === 'Escape' && skillPicker.isOpen()) {
       e.preventDefault();
       skillPicker.close();
@@ -3879,7 +4942,7 @@ function wireGhampusChat(): void {
     }
   });
 
-  // Hide palette on outside click
+  // Hide slash palette on outside click
   document.addEventListener('mousedown', (e) => {
     if (palette && !palette.contains(e.target as Node) && e.target !== input) {
       hidePalette();
@@ -3887,7 +4950,7 @@ function wireGhampusChat(): void {
   });
 
   sendBtn.addEventListener('click', () => {
-    trackGhampusActivity();
+    trackGhampusSendActivity();
     void sendMessage();
   });
 
@@ -3922,6 +4985,13 @@ function wireGhampusChat(): void {
   }
 }
 function wireGhampusControls(): void {
+  document.getElementById('ghampus-skills-list')?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.ghampus-skill-run');
+    if (!btn) return;
+    const slug = (btn.dataset.skillLabel ?? '').trim().replace(/\s+/g, '-');
+    if (slug) fillGhampusPrompt(`/preview ${slug}`);
+  });
+
   document.getElementById('ghampus-chat-messages')?.addEventListener('click', (e) => {
     const t = e.target as HTMLElement;
     if (t.closest('#btn-ghampus-llm-open-setup')) {
@@ -3947,6 +5017,10 @@ function wireGhampusControls(): void {
       void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com/local-ai' })
         .catch(() => invoke('open_external_url', { url: 'https://docs.graphnosis.com/local-ai' }));
     }
+  });
+
+  document.getElementById('btn-ghampus-new-chat')?.addEventListener('click', () => {
+    void startFreshGhampusChat();
   });
 
   document.getElementById('btn-ghampus-kill')?.addEventListener('click', () => {

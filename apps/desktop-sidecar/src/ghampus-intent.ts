@@ -9,13 +9,16 @@ import {
   parseRememberInToPattern,
   trimGreedyEngramHint,
 } from './ghampus-engram-resolve.js';
-import { detectDirectAnswerKind, type DirectAnswerKind } from './ghampus-direct-answer.js';
+import { detectDirectAnswerKind, getThreadContext, isThreadContinuationMessage, wantsThreadGroundedRecall, type DirectAnswerKind } from './ghampus-direct-answer.js';
+import { resolveImplicitSkillSync } from './ghampus-skill-dispatch-route.js';
 import {
   isHowToQuestionText,
   isMultilingualListVerbFirstWord,
   isMultilingualSearchVerbFirstWord,
+  hasMultilingualSavePhrase,
   isRemindMeRecallQuery,
   isScopedTaskListQuery,
+  stripMultilingualSavePhrasePrefix,
   isTemporalTodoQuery,
   isConversationContextQuery,
   wantsExpandedAnswerText,
@@ -36,10 +39,14 @@ export type { DirectAnswerKind } from './ghampus-direct-answer.js';
 export {
   detectDirectAnswerKind,
   extractTextToTransform,
+  getThreadContext,
   hasExplicitMemoryReference,
   isConversationFollowUp,
   isRephraseOrSummarizeRequest,
+  isThreadContinuationMessage,
   isTranslationRequest,
+  wantsThreadGroundedRecall,
+  type ThreadContext,
 } from './ghampus-direct-answer.js';
 
 export { isConversationContextQuery, hasMemoryAnchorInQuery, isMetaChallengeQuery, isNonMemoryQuestion, detectGhampusMetaCategory, type GhampusMetaCategory } from './ghampus-language.js';
@@ -85,6 +92,12 @@ export interface GhampusQueryHints {
   wantsCrossEngramSearch: boolean;
   /** User explicitly asked to run/walk/execute a skill SOP — not recall over cortex. */
   wantsExplicitSkillWalk: boolean;
+  /** User wants a Memory Integrity / consistency-audit guided walk. */
+  wantsConsistencyWalk: boolean;
+  /** Ambiguous phrase matched a trained skill — run walk_skill without explicit /preview. */
+  wantsImplicitSkillWalk: boolean;
+  /** Skill slug from static/dispatch/fuzzy implicit routing (e.g. consistency-audit). */
+  implicitSkillSlug: string | null;
   /** User asked to train/retrain a skill SOP — not create_engram or remember. */
   wantsSkillTrain: boolean;
   wantsExhaustive: boolean;
@@ -112,6 +125,10 @@ export interface GhampusQueryHints {
   skipMemoryTools: boolean;
   /** User asks about this Ghampus chat thread — not cortex memories. */
   wantsConversationContext: boolean;
+  /** Short/ambiguous message continues the current chat thread — ground in recent turns. */
+  wantsThreadGrounding: boolean;
+  /** Prior user question from getThreadContext — for recall query expansion. */
+  threadPriorUserQuestion: string | null;
   directAnswerKind: DirectAnswerKind | null;
   recallMaxNodes: number;
   recallMaxTokens: number;
@@ -399,12 +416,19 @@ export function extractSkillFilterKeyword(text: string): string | null {
 
 /** Train/retrain a skill SOP — not create engram, not save to memory. */
 export function detectWantsSkillTrain(text: string): boolean {
-  return (
-    /\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\b/i.test(text)
-    || /\bretrain\s+(?:the\s+)?skill\b/i.test(text)
-    || /\b(?:re)?train\s+skill\b/i.test(text)
-    || /\b(?:re)?antren(?:eaz[aă]|ez)\s+(?:skill(?:ul)?|procedur)/i.test(text)
-  );
+  const m = text.trim();
+  if (
+    /\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\b/i.test(m)
+    || /\bretrain\s+(?:the\s+)?skill\b/i.test(m)
+    || /\b(?:re)?train\s+skill\b/i.test(m)
+    || /\b(?:re)?antren(?:eaz[aă]|ez)\s+(?:skill(?:ul)?|procedur)/i.test(m)
+  ) {
+    return true;
+  }
+  if (/\bimprove\s+\S/i.test(m)) return true;
+  if (/\bupdate\s+skill\b/i.test(m)) return true;
+  if (/\bretrain\s+(?!all\b|every\b|batch\b|stale\b|queued\b|the\s+skill\b)\S/i.test(m)) return true;
+  return false;
 }
 
 export interface ParsedSkillTrainIntent {
@@ -412,6 +436,10 @@ export interface ParsedSkillTrainIntent {
   targetEngram: string | null;
   /** User asked for empty recall scope at compile time (against empty engram). */
   emptyRecall: boolean;
+  /** Conversational improve/retrain delta — merged into skill source at train time. */
+  improvementDelta?: string | null;
+  /** True when the user invoked improve/update without describing what should change. */
+  awaitingImprovementDelta?: boolean;
 }
 
 /** Skill name + optional engram target from "train skill X against …". */
@@ -440,6 +468,29 @@ export function parseSkillTrainIntent(msg: string): ParsedSkillTrainIntent | nul
     }
   }
 
+  const conversational: Array<{ re: RegExp; deltaGroup?: number }> = [
+    { re: /\bupdate\s+skill\s+["']?([^"'\n,]+?)["']?\s+to\s+(?:include\s+)?(.+)/is, deltaGroup: 2 },
+    { re: /\bimprove\s+["']?([^"'\n,]+?)["']?(?:\s+to\s+(?:include\s+)?(.+))?$/is, deltaGroup: 2 },
+    {
+      re: /\bretrain\s+(?!all\b|every\b|batch\b|stale\b|queued\b|the\s+skill\b)(?:the\s+)?["']?([^"'\n,]+?)["']?(?:\s+to\s+(?:include\s+)?(.+))?$/is,
+      deltaGroup: 2,
+    },
+  ];
+  for (const { re, deltaGroup } of conversational) {
+    const hit = m.match(re);
+    const skillName = hit?.[1]?.trim() ?? '';
+    const delta = deltaGroup ? hit?.[deltaGroup]?.trim() ?? null : null;
+    if (skillName.length >= 2 && !/^(the|a|an|skill)$/i.test(skillName)) {
+      return {
+        skillName,
+        targetEngram,
+        emptyRecall,
+        improvementDelta: delta,
+        awaitingImprovementDelta: !delta,
+      };
+    }
+  }
+
   const patterns: RegExp[] = [
     /\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\s+["']([^"']+)["']/i,
     /\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\s+(.+?)(?:\s+against\b|\s+in\b|\s+into\b|\s+on\b|\s+with\b|\s*$)/i,
@@ -462,14 +513,14 @@ export function parseSkillTrainIntent(msg: string): ParsedSkillTrainIntent | nul
   return { skillName: '', targetEngram, emptyRecall };
 }
 
-/** Multilingual — run/walk/execute skill (not how-to product questions). */
+/** Multilingual — preview/run/walk/execute skill SOP (not how-to product questions). */
 export function detectWantsExplicitSkillWalk(text: string): boolean {
-  if (/\bhow (?:do|can|to|should)\b/i.test(text) && !/\bwalk(?:_| )?skill\b/i.test(text)) {
+  if (/\bhow (?:do|can|to|should)\b/i.test(text) && !/\b(?:walk|preview)(?:_| )?skill\b/i.test(text)) {
     return false;
   }
   return (
-    /\b(walk(?:_| )?skill|run the skill|execute the skill|skill procedure)\b/i.test(text)
-    || /\b(run|walk|execute)\s+(?:the\s+)?(?:skill|sop|procedur[aăe])\b/i.test(text)
+    /\b(?:(?:preview|walk)(?:_| )?skill|run the skill|execute the skill|skill procedure)\b/i.test(text)
+    || /\b(preview|run|walk|execute)\s+(?:the\s+)?(?:skill|sop|procedur[aăe])\b/i.test(text)
     || /\b(folose[sș]te|execut[aă])\s+(?:skill(?:ul)?|procedur[aă])\b/i.test(text)
     || /\b(lancer?|ex[eé]cuter?)\s+(?:la\s+)?(?:skill|le\s+skill|procedur)/i.test(text)
     || /\b(ejecutar?|correr?)\s+(?:la\s+)?(?:skill|el\s+skill|procedur)/i.test(text)
@@ -477,12 +528,12 @@ export function detectWantsExplicitSkillWalk(text: string): boolean {
   );
 }
 
-/** Skill name / keyword after walk/run/execute — for skill-walk early route. */
+/** Skill name / keyword after preview/walk/run/execute — for skill-preview early route. */
 export function extractSkillWalkTarget(text: string): string | null {
   const patterns: RegExp[] = [
-    /\bwalk(?:_| )?skill\s+["']?([^"'\n,?]+?)["']?(?:\s*$|\s*[?.!]|$)/i,
-    /\b(?:walk|run|execute)\s+(?:the\s+)?skill\s+["']?([^"'\n,?]+?)["']?(?:\s*$|\s*[?.!]|$)/i,
-    /\b(?:walk|run|execute)\s+["']?([^"'\n,?]+?)["']?\s*(?:\s*$|\s*[?.!]|$)/i,
+    /\b(?:preview|walk)(?:_| )?skill\s+["']?([^"'\n,?]+?)["']?(?:\s*$|\s*[?.!]|$)/i,
+    /\b(?:preview|walk|run|execute)\s+(?:the\s+)?skill\s+["']?([^"'\n,?]+?)["']?(?:\s*$|\s*[?.!]|$)/i,
+    /\b(?:preview|walk|run|execute)\s+["']?([^"'\n,?]+?)["']?\s*(?:\s*$|\s*[?.!]|$)/i,
     /\b(?:folose[sș]te|execut[aă])\s+(?:skill(?:ul)?\s+)?["']?([^"'\n,?]+?)["']?(?:\s*$|\s*[?.!]|$)/i,
     /\b(?:lancer?|ex[eé]cuter?)\s+(?:la\s+)?(?:skill\s+)?["']?([^"'\n,?]+?)["']?(?:\s*$|\s*[?.!]|$)/i,
     /\b(?:ejecutar?|correr?)\s+(?:la\s+)?(?:skill\s+)?["']?([^"'\n,?]+?)["']?(?:\s*$|\s*[?.!]|$)/i,
@@ -495,6 +546,15 @@ export function extractSkillWalkTarget(text: string): string | null {
     if (kw.length >= 2 && !/^(the|a|an|un|una|le|la|den|die|das)$/i.test(kw)) return kw;
   }
   return null;
+}
+
+/** Memory Integrity — contradictions, consistency audit, stranded-memory walk phrases. */
+export function detectWantsConsistencyWalk(text: string): boolean {
+  return (
+    /\b(contradiction|contradict(?:ing|ion)?s?|consistency audit|memory conflict|conflicting memories)\b/i.test(text)
+    || /\b(check my memory for|compare what i said|fix stranded|run a consistency)\b/i.test(text)
+    || /\b(walk me through|help me fix).*(contradiction|duplicate|conflict)/i.test(text)
+  );
 }
 
 /** Cross-engram topic — spans memory, not scoped to one engram slug in the query. */
@@ -623,9 +683,13 @@ export function detectGhampusQueryHints(
   scopedEngramIds: string[] = [],
   opts?: DetectGhampusQueryHintsOpts,
 ): GhampusQueryHints {
-  const wantsRecent = /recent|latest|last|new|today|added|ingested|saved recently/i.test(text);
+  const wantsRecent =
+    /recent|latest|last|new|today|added|ingested|saved recently/i.test(text)
+    || /\b(recente|ultimele|cele mai noi|cele mai recente|nou salvat|recent salvat|ultima(?:le)?|ingestate recent)\b/i.test(text)
+    || /\b(caut[aă]|g[aă]se[sș]te|arat[aă]|list[eă])\b.*\b(memorii|memorii recente|memorii noi)\b/i.test(text);
   const wantsSkillTrain = detectWantsSkillTrain(text);
   const wantsExplicitSkillWalk = !wantsSkillTrain && detectWantsExplicitSkillWalk(text);
+  const wantsConsistencyWalk = detectWantsConsistencyWalk(text);
   const wantsMcpNotSkillsCorrection = detectMcpNotSkillsCategoryCorrection(text);
   const wantsMcpToolList = detectWantsMcpToolList(text);
   const mcpToolFilterKeyword = wantsMcpToolList ? extractMcpToolFilterKeyword(text) : null;
@@ -692,7 +756,12 @@ export function detectGhampusQueryHints(
     );
   const hasQuotedSearch = extractQuotedPhrases(text).length > 0;
   const wantsConversationContext = isConversationContextQuery(text);
+  const threadCtx = getThreadContext(opts?.history ?? []);
+  const wantsThreadGrounding = threadCtx !== null && isThreadContinuationMessage(text, opts?.history ?? []);
   let directAnswerKind = detectDirectAnswerKind(text, opts?.history ?? []);
+  if (wantsThreadGrounding && wantsThreadGroundedRecall(text)) {
+    directAnswerKind = null;
+  }
   // Topic pivots ("what about Anca?") are cortex lookups — not chat-only follow-ups like "si, pero donde?"
   if (
     directAnswerKind === 'conversation_followup'
@@ -729,7 +798,7 @@ export function detectGhampusQueryHints(
   const skipEnrichmentRecallOpts = wantsStructuredRecall
     ? { skip_enrichment: true as const }
     : {};
-  return {
+  const hintsDraft: GhampusQueryHints = {
     wantsRecent,
     wantsSkills,
     wantsSkillList,
@@ -744,6 +813,9 @@ export function detectGhampusQueryHints(
     wantsDocSource,
     wantsCrossEngramSearch,
     wantsExplicitSkillWalk,
+    wantsConsistencyWalk,
+    wantsImplicitSkillWalk: false,
+    implicitSkillSlug: null,
     wantsSkillTrain,
     wantsExhaustive: wantsExhaustive || wantsTeamRoster || (hasQuotedSearch && !skipMemoryTools),
     wantsExpandedAnswer,
@@ -761,11 +833,19 @@ export function detectGhampusQueryHints(
     hasQuotedSearch,
     skipMemoryTools,
     wantsConversationContext,
+    wantsThreadGrounding,
+    threadPriorUserQuestion: threadCtx?.priorUserQuestion ?? null,
     directAnswerKind,
     recallMaxNodes,
     recallMaxTokens,
     skipEnrichmentRecallOpts,
   };
+  const implicitMatch = resolveImplicitSkillSync(text, hintsDraft);
+  if (implicitMatch) {
+    hintsDraft.wantsImplicitSkillWalk = true;
+    hintsDraft.implicitSkillSlug = implicitMatch.skillSlug;
+  }
+  return hintsDraft;
 }
 
 /**
@@ -802,6 +882,16 @@ export function buildGhampusRecallQuery(
   hints: GhampusQueryHints,
   opts?: { priorUserQuestion?: string; priorGhampusSnippet?: string },
 ): string {
+  if (hints.wantsThreadGrounding && hints.threadPriorUserQuestion) {
+    const topic = hints.threadPriorUserQuestion.replace(/[?.!]+$/, '').trim();
+    const salient = extractSalientTokensFromSnippet(
+      opts?.priorGhampusSnippet?.trim().slice(0, 320)
+        ?? opts?.priorUserQuestion?.trim().slice(0, 200)
+        ?? '',
+    );
+    const extra = text.trim().replace(/^(?:well[\s.…]*|ok(?:ay)?[,]?\s*|please\s+)/i, '').trim();
+    return [topic, salient, extra].filter(Boolean).join(' ').trim();
+  }
   if (hints.wantsTopicAbout) {
     const topic = extractTopicAboutFromQuery(text);
     if (topic) {
@@ -862,16 +952,37 @@ export function isQuestionShapedMessage(msg: string): boolean {
   return /^(?:did|have|has|had|was|were|is|are|do|does|can|could|would|should|ai|a[tț]i|c[aă])\b/i.test(lower);
 }
 
+/** True when the user is trying to remove/forget memory — not save. */
+export function isForgetLikeCommand(msg: string): boolean {
+  const t = msg.trim();
+  if (/^\/forget\b/i.test(t)) return true;
+  const first = (t.split(/\s+/)[0] ?? '').toLowerCase().replace(/[?.!,]+$/, '');
+  return /^(?:forget|forgot|forgets|forgotten|delete|delet|remove|remov|erase|drop|del|uit|uita|uită|sterge|șterge)$/i.test(first);
+}
+
+/** Summarize/recap this Ghampus thread — not a cortex save. */
+export function isChatSummarizeRequest(msg: string): boolean {
+  const t = msg.trim().toLowerCase();
+  if (!t) return false;
+  const hasSummaryWord = /\b(?:summarize|summarise|summary|summaries|recap|recapitul[aăe]?|rezum[aăt]?|compil[aăe]?)\b/i.test(t);
+  const hasChatRef = /\b(?:this\s+(?:chat|thread|conversation|discussion)|(?:chat|thread|conversation|discussion)\s+history|our\s+(?:chat|conversation))\b/i.test(t);
+  if (hasSummaryWord && hasChatRef) return true;
+  if (/\bmake\s+(?:me\s+)?(?:a\s+)?summar(?:y|ies)\b/i.test(t)) return true;
+  if (/\bsummar(?:y|ize|ise)\s+(?:of\s+)?(?:this\s+)?(?:chat|thread|conversation|discussion)\b/i.test(t)) return true;
+  return false;
+}
+
 /** True when the user explicitly used a save verb (not fuzzy-matched). */
 export function hasExplicitSaveVerb(msg: string): boolean {
   const lower = msg.trim().toLowerCase();
   if (isRemindMeRecallQuery(msg)) return false;
   if (isSaveConfirmationQuestion(msg)) return false;
-  if (isQuestionShapedMessage(msg) && !/^(?:save|remember|store|salveaz[aă]?|aminte[sș]te|noteaz[aă]?)\b/i.test(lower)) {
+  if (isQuestionShapedMessage(msg) && !/^(?:save|remember|store|salveaz[aă]?|aminte[sș]te|noteaz[aă]?)\b/i.test(lower) && !hasMultilingualSavePhrase(msg)) {
     return false;
   }
   // "did you save" / "have you saved" — save token present but not an imperative.
   if (/^(?:did|have|has|had|was|were|ai|a[tț]i|c[aă])\b/i.test(lower)) return false;
+  if (hasMultilingualSavePhrase(msg)) return true;
   return /\b(remember|remmber|remeber|save|sav|store|keep|note|jot|noter|salva|guardar|speichern|записать|amintește|aminteste|notează|noteaza|salvează|salveaza|păstrează|pastreaza|enregistr|merken|zapisz|ricorda)\b/i.test(lower)
     && !isRemindMeRecallQuery(lower);
 }
@@ -992,10 +1103,12 @@ export function isTaskListQuery(msg: string): boolean {
   return isScopedTaskListQuery(msg);
 }
 
-/** First words that must never fuzzy-match save verbs (todo ≈ store, liste ≈ save). */
+/** First words that must never fuzzy-match save verbs (todo ≈ store, liste ≈ save, forget ≈ store). */
 export const FUZZY_SAVE_BLOCKLIST = new Set([
   'todo', 'todos', 'task', 'tasks', 'taskuri', 'taskurile', 'list', 'lists', 'listing',
   'show', 'shows', 'find', 'search', 'give', 'get', 'tell', 'look', 'lookup', 'any', 'all',
+  'forget', 'forgot', 'forgets', 'forgotten', 'delete', 'delet', 'remove', 'remov', 'erase', 'drop',
+  'uit', 'uita', 'uită', 'uitati', 'uitați', 'sterge', 'șterge', 'stergeți', 'ștergeți',
   'cauta', 'caută', 'caut', 'gaseste', 'găsește', 'gasese', 'gasește',
   'sarcini', 'sarcinile', 'sarcina', 'tâches', 'taches', 'tareas', 'aufgaben',
   'membri', 'membru', 'echipa', 'echipei', 'roluri', 'rolurile', 'rol',
@@ -1093,6 +1206,23 @@ export function keywordIntent(msg: string): GhampusIntent | null {
     return { action: 'remember', content: correctionSave.content, engram: correctionSave.engram };
   }
 
+  if (isChatSummarizeRequest(m)) return null;
+
+  const phraseSave = stripMultilingualSavePhrasePrefix(m);
+  if (phraseSave.matched) {
+    const after = phraseSave.stripped;
+    const inTo = parseRememberInToPattern(after);
+    if (inTo) {
+      return { action: 'remember', content: inTo.content, engram: inTo.engram };
+    }
+    const contentFirst = parseRememberContentFirstPattern(after);
+    if (contentFirst) {
+      return { action: 'remember', content: contentFirst.content, engram: contentFirst.engram };
+    }
+    if (after.length >= 1) return { action: 'remember', content: after, engram: null };
+    return { action: 'remember', content: '', engram: null };
+  }
+
   // Recall/list/search verbs must not fuzzy-match save or create verbs.
   if (FUZZY_SAVE_BLOCKLIST.has(firstWord) || isMultilingualListVerbFirstWord(firstWord)) return null;
   if (isMultilingualSearchVerbFirstWord(firstWord)) return null;
@@ -1108,6 +1238,7 @@ export function keywordIntent(msg: string): GhampusIntent | null {
       if (firstWord === v) return true;
       if (FUZZY_SAVE_BLOCKLIST.has(firstWord)) return false;
       if (Math.abs(firstWord.length - v.length) > 3) return false;
+      if (firstWord.length >= 2 && v.length >= 2 && firstWord.slice(0, 2) !== v.slice(0, 2)) return false;
       let common = 0;
       for (const c of firstWord) if (v.includes(c)) common++;
       return common / Math.max(firstWord.length, v.length) >= 0.6;
@@ -1121,7 +1252,7 @@ export function keywordIntent(msg: string): GhampusIntent | null {
     if (name) return { action: 'create_engram', name };
   }
   if (isVerb('delete') && hasEngramWord) {
-    return { action: 'ui_only', reason: 'engram deletion requires Memory Studio' };
+    return { action: 'ui_only', reason: 'engram deletion requires the Sources panel' };
   }
   if (isVerb('remember') || isVerb('save')) {
     const afterVerb = m.replace(/^\S+\s+/, '');

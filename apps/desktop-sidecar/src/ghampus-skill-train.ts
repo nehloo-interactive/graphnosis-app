@@ -1,5 +1,5 @@
 /**
- * Ghampus skill train/walk routes — resolve skill by name, invoke train_skill / walk_skill MCP.
+ * Ghampus skill train/preview routes — resolve skill by name, invoke train_skill / walk_skill MCP.
  */
 
 import { baseSkillName } from './skill-trainer.js';
@@ -33,7 +33,31 @@ export type GhampusSkillRouteRunner = {
   emitGhampusMsg: (text: string) => Promise<void>;
   emitTrace: (step: GhampusTraceStep) => void;
   setPendingClarification?: (v: GhampusPendingClarificationState | null) => void;
+  isSkillTrainingLicensed?: () => boolean | Promise<boolean>;
+  emitSkillPreviewCard?: (card: GhampusSkillPreviewCardPayload) => Promise<void>;
 };
+
+export type GhampusSkillPreviewCardPayload = {
+  skillLabel: string;
+  skillSlug: string;
+  proPlus: boolean;
+};
+
+export const SKILL_TRAIN_PRO_UPGRADE_MESSAGE =
+  'Skill training is on **Pro+** — preview is always available. Subscribe at [graphnosis.com/upgrade](https://graphnosis.com/upgrade) or use the Skills page.';
+
+export function mergeSkillImprovementDelta(skillBody: string, delta: string): string {
+  const trimmed = delta.trim();
+  if (!trimmed) return skillBody;
+  return [
+    '<!-- Ghampus skill improvement (user-requested delta) -->',
+    trimmed,
+    '',
+    '---',
+    '',
+    skillBody.trim(),
+  ].join('\n');
+}
 
 const SKILL_SEARCH_STOP_WORDS = new Set([
   'to', 'the', 'a', 'an', 'for', 'and', 'or', 'my', 'me', 'how', 'what', 'which',
@@ -79,7 +103,7 @@ export type GhampusSkillWalkResolution =
   | { kind: 'ambiguous'; phrase: string; candidates: GhampusListedSkill[] }
   | { kind: 'none'; phrase: string };
 
-/** Resolve a walk target via list_skills-style fuzzy match (stricter than train on ambiguity). */
+/** Resolve a preview target via list_skills-style fuzzy match (stricter than train on ambiguity). */
 export function resolveGhampusSkillWalkMatch(
   skills: GhampusListedSkill[],
   rawPhrase: string,
@@ -112,7 +136,7 @@ export function resolveGhampusSkillWalkMatch(
   return { kind: 'none', phrase };
 }
 
-/** Top fuzzy skill suggestions when no exact walk/train match. */
+/** Top fuzzy skill suggestions when no exact preview/train match. */
 export function suggestGhampusSkillsForPhrase(
   skills: GhampusListedSkill[],
   rawPhrase: string,
@@ -142,6 +166,14 @@ export function suggestGhampusSkillsForPhrase(
   return scored.slice(0, limit).map((row) => row.skill);
 }
 
+export async function ensureSkillTrainingLicensed(runner: GhampusSkillRouteRunner): Promise<boolean> {
+  if (!runner.isSkillTrainingLicensed) return true;
+  const licensed = await runner.isSkillTrainingLicensed();
+  if (licensed) return true;
+  await runner.emitGhampusMsg(SKILL_TRAIN_PRO_UPGRADE_MESSAGE);
+  return false;
+}
+
 async function beginSkillClarification(
   runner: GhampusSkillRouteRunner,
   state: GhampusPendingClarificationState,
@@ -154,11 +186,14 @@ async function beginSkillClarification(
   await runner.emitGhampusMsg(msg);
 }
 
-export function formatSkillWalkNotFoundMessage(phrase: string): string {
-  return `No skill matching **${phrase}**. Try \`/skills\` to list skills, or \`/walk ship-workflow\` with an exact name.`;
+export function formatSkillPreviewNotFoundMessage(phrase: string): string {
+  return `No skill matching **${phrase}**. Try \`/skills\` to list skills, or \`/preview ship-workflow\` with an exact name.`;
 }
 
-export function formatSkillWalkAmbiguousMessage(
+/** @deprecated alias */
+export const formatSkillWalkNotFoundMessage = formatSkillPreviewNotFoundMessage;
+
+export function formatSkillPreviewAmbiguousMessage(
   phrase: string,
   candidates: GhampusListedSkill[],
 ): string {
@@ -166,11 +201,23 @@ export function formatSkillWalkAmbiguousMessage(
     .map((s) => `**${normalizeSkillDisplayLabel(s.label)}**`)
     .join(', ');
   const example = baseSkillName(candidates[0]?.label ?? '').replace(/\s+/g, '-');
-  const hint = example ? ` — e.g. \`/walk ${example}\`` : '';
+  const hint = example ? ` — e.g. \`/preview ${example}\`` : '';
   return `Multiple skills match **${phrase}**: ${names}. Be more specific${hint}.`;
 }
 
-export async function runGhampusSkillWalk(
+/** @deprecated alias */
+export const formatSkillWalkAmbiguousMessage = formatSkillPreviewAmbiguousMessage;
+
+/** Offer "Improve skill" only when the user explicitly asked to preview/train/refine — not implicit walks. */
+export function shouldOfferSkillImproveCard(originalText: string): boolean {
+  const t = originalText.trim();
+  if (/^\/(?:preview|walk)\b/i.test(t)) return true;
+  if (/\b(?:improve|refine|retrain|update)\s+(?:the\s+)?(?:skill|sop)\b/i.test(t)) return true;
+  if (/\b(?:re)?train(?:ing)?\s+(?:the\s+)?skill\b/i.test(t)) return true;
+  return false;
+}
+
+export async function runGhampusSkillPreview(
   rawPhrase: string,
   runner: GhampusSkillRouteRunner,
   originalText = rawPhrase,
@@ -200,7 +247,7 @@ export async function runGhampusSkillWalk(
       });
       return;
     }
-    await runner.emitGhampusMsg(formatSkillWalkNotFoundMessage(resolved.phrase));
+    await runner.emitGhampusMsg(formatSkillPreviewNotFoundMessage(resolved.phrase));
     return;
   }
   if (resolved.kind === 'ambiguous') {
@@ -213,13 +260,13 @@ export async function runGhampusSkillWalk(
       });
       return;
     }
-    await runner.emitGhampusMsg(formatSkillWalkAmbiguousMessage(resolved.phrase, resolved.candidates));
+    await runner.emitGhampusMsg(formatSkillPreviewAmbiguousMessage(resolved.phrase, resolved.candidates));
     return;
   }
 
   const match = resolved.skill;
   if (!match.sourceId) {
-    await runner.emitGhampusMsg(formatSkillWalkNotFoundMessage(phrase));
+    await runner.emitGhampusMsg(formatSkillPreviewNotFoundMessage(phrase));
     return;
   }
 
@@ -236,7 +283,7 @@ export async function runGhampusSkillWalk(
 
   const displayLabel = normalizeSkillDisplayLabel(match.label);
   const stepId = ghampusTraceStepId('walk_skill');
-  runner.emitTrace({ stepId, status: 'running', label: 'walk skill', tool: 'walk_skill' });
+  runner.emitTrace({ stepId, status: 'running', label: 'preview skill', tool: 'walk_skill' });
 
   try {
     const walked = await runner.ghampusTool('walk_skill', {
@@ -246,39 +293,52 @@ export async function runGhampusSkillWalk(
     const body = walked.rawText?.trim() ?? '';
     if (!body) {
       await runner.emitGhampusMsg(
-        `**${displayLabel}** has no walkable steps yet. Open it in the Skills page or retrain it.`,
+        `**${displayLabel}** has no previewable steps yet. Open it in the Skills page or retrain it.`,
       );
       runner.emitTrace({
         stepId,
         status: 'error',
-        label: 'walk skill',
+        label: 'preview skill',
         tool: 'walk_skill',
-        preview: 'empty walk',
+        preview: 'empty preview',
       });
       return;
     }
     runner.emitTrace({
       stepId,
       status: 'ok',
-      label: 'walk skill',
+      label: 'preview skill',
       tool: 'walk_skill',
       preview: displayLabel,
     });
     await runner.emitGhampusMsg(body.slice(0, 12000));
+    if (runner.emitSkillPreviewCard && shouldOfferSkillImproveCard(originalText)) {
+      const licensed = runner.isSkillTrainingLicensed
+        ? await runner.isSkillTrainingLicensed()
+        : false;
+      await runner.emitSkillPreviewCard({
+        skillLabel: displayLabel,
+        skillSlug: baseSkillName(match.label).replace(/\s+/g, '-'),
+        proPlus: licensed,
+      });
+    }
   } catch (e) {
     const errText = e instanceof Error ? e.message : String(e);
     runner.emitTrace({
       stepId,
       status: 'error',
-      label: 'walk skill',
+      label: 'preview skill',
       tool: 'walk_skill',
       preview: formatGhampusToolErrorPreview(errText),
     });
     await runner.emitGhampusMsg(
-      `Could not walk **${displayLabel}**: ${formatMcpErrorForUser(errText)}`,
+      `Could not preview **${displayLabel}**: ${formatMcpErrorForUser(errText)}`,
     );
   }
 }
+
+/** @deprecated alias — use runGhampusSkillPreview */
+export const runGhampusSkillWalk = runGhampusSkillPreview;
 
 export function findGhampusSkillMatch(
   skills: GhampusListedSkill[],

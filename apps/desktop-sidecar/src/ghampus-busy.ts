@@ -3,6 +3,9 @@
  * work defer while Ghampus IPC handlers or the UI report busy.
  */
 
+/** Soft idle while user is in an active chat session — nudges may surface. */
+export const GHAMPUS_CHAT_SOFT_IDLE_MS = 2 * 60_000;
+
 let ipcDepth = 0;
 let uiBusy = false;
 let lastUserMessageAt = 0;
@@ -32,6 +35,11 @@ export function markGhampusUserActivity(): void {
 export function ghampusUserIdleMs(now = Date.now()): number {
   if (lastUserMessageAt <= 0) return Number.POSITIVE_INFINITY;
   return now - lastUserMessageAt;
+}
+
+/** True when the user has been quiet long enough for in-chat nudges. */
+export function ghampusChatSoftIdle(now = Date.now()): boolean {
+  return ghampusUserIdleMs(now) >= GHAMPUS_CHAT_SOFT_IDLE_MS;
 }
 
 /** Test helper — reset counters between smoketest phases. */

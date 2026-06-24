@@ -46,6 +46,27 @@ export function trimGreedyEngramHint(hint: string): string {
   return stripQuotes(h);
 }
 
+/**
+ * Partial save lines often append note text after a known engram ("music to come up with …").
+ * When a prefix resolves to an existing engram and the next word opens note content, trim back.
+ */
+export function refinePartialEngramHint(hint: string, engramList: EngramListEntry[]): string {
+  const trimmed = trimGreedyEngramHint(hint);
+  if (!trimmed || engramList.length === 0) return trimmed;
+  if (resolveEngramFromUserHint(trimmed, engramList)) return trimmed;
+
+  const words = trimmed.split(/\s+/);
+  for (let i = 1; i < words.length; i++) {
+    const prefix = words.slice(0, i).join(' ');
+    if (!resolveEngramFromUserHint(prefix, engramList)) continue;
+    const next = words[i]?.toLowerCase() ?? '';
+    if (next === 'to' || next === 'that' || next === 'că' || next === 'ca' || next === ':') {
+      return prefix;
+    }
+  }
+  return trimmed;
+}
+
 /** Compact key for slug/display comparison — lowercase alphanumerics only. */
 export function normalizeEngramKey(s: string): string {
   return s.normalize('NFC').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -53,6 +74,11 @@ export function normalizeEngramKey(s: string): string {
 
 function slugifyHint(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/** Slug for a new engram from a user-typed hint (matches graph wizard rules). */
+export function slugifyEngramHint(hint: string): string {
+  return slugifyHint(trimGreedyEngramHint(hint)).slice(0, 32);
 }
 
 function tokenizeEngramName(s: string): string[] {

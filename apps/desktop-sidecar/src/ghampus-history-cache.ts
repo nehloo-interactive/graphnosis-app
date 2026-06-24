@@ -1,9 +1,12 @@
 /**
- * In-memory cache for ghampus-history.jsonl — warmed on sidecar boot so
+ * In-memory cache for the active Ghampus session — warmed on sidecar boot so
  * ghampus:history IPC returns instantly when the desktop prefetches or the
  * Ghampus tab opens.
  */
-import { readFile } from 'node:fs/promises';
+import {
+  appendGhampusSessionMessage,
+  readGhampusSessionRaw,
+} from './ghampus-session-store.js';
 
 const HISTORY_LIMIT = 100;
 
@@ -25,17 +28,20 @@ function parseHistLines(raw: string): HistMessage[] {
   }).filter((m): m is HistMessage => m != null);
 }
 
-function histPathFor(cortexDir: string): string {
-  return `${cortexDir}/ghampus-history.jsonl`;
-}
-
-/** Drop cache — e.g. cortex switch or sidecar restart. */
+/** Drop cache — e.g. cortex switch, session clear, or sidecar restart. */
 export function invalidateGhampusHistoryCache(): void {
   cache = null;
   loadInflight = null;
 }
 
-/** Append one message after a write — keeps cache warm without a full re-read. */
+/** Append one message to disk + keep cache warm without a full re-read. */
+export async function appendGhampusHistoryMessage(cortexDir: string, msg: HistMessage): Promise<void> {
+  if (!cortexDir) return;
+  await appendGhampusSessionMessage(cortexDir, msg);
+  appendGhampusHistoryCacheMessage(msg);
+}
+
+/** Append one message to cache only (caller already wrote to disk). */
 export function appendGhampusHistoryCacheMessage(msg: HistMessage): void {
   if (!cache?.ready) return;
   cache.messages = [...cache.messages, msg].slice(-HISTORY_LIMIT);
@@ -46,7 +52,7 @@ async function loadGhampusHistory(cortexDir: string): Promise<HistMessage[]> {
   if (loadInflight) return loadInflight;
 
   loadInflight = (async () => {
-    const raw = await readFile(histPathFor(cortexDir), 'utf8').catch(() => '');
+    const raw = await readGhampusSessionRaw(cortexDir);
     const messages = parseHistLines(raw).slice(-HISTORY_LIMIT);
     cache = { cortexDir, messages, ready: true };
     return messages;

@@ -43,7 +43,7 @@ export function ghampusTimeoutUserMessage(err: unknown): string {
     return 'Memory search is **busy** — another ingest may still be embedding. Wait a moment and try again, or ask about a specific engram by name.';
   }
   if (/loadGraph timed out|engram.*load/i.test(msg)) {
-    return 'Loading an engram took too long — it may be large or need recovery in **Memory Studio**. Try scoping your question to a specific engram.';
+    return 'Loading an engram took too long — it may be large or need recovery. Try scoping your question to a specific engram, or open **Recovery** in Settings.';
   }
   if (/timed out|timeout/i.test(msg)) {
     return `That took too long (${msg.slice(0, 120)}). Try a narrower question or name the engram you mean.`;

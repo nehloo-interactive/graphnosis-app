@@ -10,7 +10,7 @@ import path from 'node:path';
 import { resolveGhampusTipsSettings } from '@graphnosis-app/core/settings';
 import type { GraphnosisHost } from './host.js';
 import type { BroadcastRawFn } from './events.js';
-import { isGhampusBusy, ghampusUserIdleMs } from './ghampus-busy.js';
+import { isGhampusBusy, ghampusChatSoftIdle } from './ghampus-busy.js';
 import { shouldDeferGhampusBackground, scaleGhampusStartupDelay } from './background-lane-scheduler.js';
 
 export type GhampusTipCategory =
@@ -20,7 +20,6 @@ export type GhampusTipCategory =
   | 'follow-ups'
   | 'skills'
   | 'mcp-claude'
-  | 'romanian'
   | 'recovery'
   | 'brain-linking'
   | 'sharing';
@@ -61,7 +60,6 @@ export interface GhampusProactiveTipsSchedulerDeps {
 
 const TICK_MS = 5 * 60_000;
 const STATE_FILE = 'ghampus-tips-state.json';
-const USER_IDLE_MS = 5 * 60_000;
 const REPEAT_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_STARTUP_DELAY_MS = 3 * 60_000;
 
@@ -88,7 +86,7 @@ export const PROACTIVE_TIPS: ProactiveTip[] = [
   {
     id: 'job-temporal-todos',
     title: 'Natural-language due dates',
-    body: 'Todo lines with phrases like **due tomorrow**, **by Friday**, or **termen vineri** are parsed automatically — no special syntax beyond plain language.',
+    body: 'Todo lines with phrases like **due tomorrow**, **by Friday**, or **due next week** are parsed automatically — no special syntax beyond plain language.',
     category: 'job-memory',
     weight: 2,
     examplePrompt: 'Remember: send invoice to Acme — due next Tuesday',
@@ -115,7 +113,7 @@ export const PROACTIVE_TIPS: ProactiveTip[] = [
   {
     id: 'slash-skill',
     title: '/skill — train a workflow',
-    body: '**`/skill`** or **train skill** starts skill authoring from the chat. Capture a repeatable procedure once; Ghampus walks it on demand.',
+    body: '**`/skill`** or **train skill** starts skill authoring from the chat. Capture a repeatable procedure once; preview or run it from Skills or `/preview`.',
     category: 'slash-commands',
     weight: 2,
     examplePrompt: '/skill ship-workflow for our release batch',
@@ -159,12 +157,12 @@ export const PROACTIVE_TIPS: ProactiveTip[] = [
   },
   {
     id: 'skills-walk',
-    title: 'Walk a trained skill',
-    body: 'Matched skills show as cards in chat. Click **Run** to walk step-by-step with cost preview — local Ollama when adaptive routing allows.',
+    title: 'Preview a trained skill',
+    body: 'Use `/preview [skill name]` in chat to view a skill SOP as readable markdown. `/walk` is still accepted as an alias.',
     category: 'skills',
     weight: 2,
-    examplePrompt: 'Run ship-workflow',
-    expectedOutcome: 'Walk plan with steps, models, and est. cost; progress in thread.',
+    examplePrompt: '/preview ship-workflow',
+    expectedOutcome: 'Formatted constraints and procedure steps in the Ghampus thread.',
   },
   {
     id: 'skills-list',
@@ -194,40 +192,13 @@ export const PROACTIVE_TIPS: ProactiveTip[] = [
     expectedOutcome: 'confirm_data_access unlocks tier for the session; recall retries.',
   },
   {
-    id: 'ro-cauta',
-    title: 'Romanian: caută / găsește',
-    body: 'Întrebări în română funcționează nativ — **"caută termenul pentru contractul X"** sau **"găsește notițele despre proiectul Y"**.',
-    category: 'romanian',
-    weight: 2,
-    examplePrompt: 'Caută ce am notat despre termenul de livrare Acme',
-    expectedOutcome: 'Semantic search + răspuns în română din amintiri stocate.',
-  },
-  {
-    id: 'ro-termen',
-    title: 'Romanian: termen & scadențe',
-    body: '**"termen"**, **"scadent"**, **"până vineri"** declanșează parsarea temporală — aceleași remindere ca pentru todo-uri în engleză.',
-    category: 'romanian',
-    weight: 2,
-    examplePrompt: 'Amintește: trimite raportul — termen luni',
-    expectedOutcome: 'Obligație/todo cu dată parsată; apare în sumarul zilnic.',
-  },
-  {
-    id: 'recovery-memory-studio',
-    title: 'Memory Studio recovery',
-    body: 'If a save looks wrong, open **Memory Studio** → inspect the node → **edit** or **forget**. Audit log shows every AI write.',
+    id: 'recovery-edit-forget',
+    title: 'Edit or forget a memory',
+    body: 'If a save looks wrong, open **Brain** or **Sources** → inspect the node → **edit** or **forget**. Settings → Activity shows every AI write.',
     category: 'recovery',
     weight: 1,
-    examplePrompt: 'Open Memory Studio and find nodes tagged ship-workflow',
-    expectedOutcome: 'Inspector with full content, provenance, and edit/forget actions.',
-  },
-  {
-    id: 'recovery-lkg-promote',
-    title: 'Promote .lkg when save blocked',
-    body: 'When shrink-save blocks a write, check **Recovery** for a `.lkg` (last-known-good) snapshot. Promote it to restore a safe on-disk state.',
-    category: 'recovery',
-    weight: 1,
-    examplePrompt: '(after save blocked toast) Recovery panel → promote .lkg for engram',
-    expectedOutcome: 'Restored bundle; brain mutations resume for that engram.',
+    examplePrompt: '/recall ship-workflow decision',
+    expectedOutcome: 'Grounded snippets; open the source in Brain to edit or remove.',
   },
   {
     id: 'brain-auto-link',
@@ -370,7 +341,7 @@ export class GhampusProactiveTipsScheduler {
     if (!this.cortexReady()) return false;
     if (isGhampusBusy()) return false;
     if (shouldDeferGhampusBackground(this.deps.host)) return false;
-    if (ghampusUserIdleMs() < USER_IDLE_MS) return false;
+    if (!ghampusChatSoftIdle()) return false;
 
     return true;
   }
@@ -432,10 +403,8 @@ export class GhampusProactiveTipsScheduler {
       ...(tip.expectedOutcome ? { expectedOutcome: tip.expectedOutcome } : {}),
     };
 
-    const histPath = path.join(this.deps.cortexDir, 'ghampus-history.jsonl');
-    await fs.appendFile(histPath, JSON.stringify(histMsg) + '\n').catch(() => {});
-    const { appendGhampusHistoryCacheMessage } = await import('./ghampus-history-cache.js');
-    appendGhampusHistoryCacheMessage(histMsg);
+    const { appendGhampusHistoryMessage } = await import('./ghampus-history-cache.js');
+    await appendGhampusHistoryMessage(this.deps.cortexDir, histMsg);
 
     try {
       this.deps.broadcastRaw({ kind: 'ghampus.tip', name: 'ghampus.tip', payload });

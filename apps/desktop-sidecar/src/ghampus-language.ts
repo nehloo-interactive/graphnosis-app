@@ -297,7 +297,40 @@ export function isRemindMeRecallQuery(msg: string): boolean {
     || /^recu[eé]rdame\b/i.test(m)
     || /^erinnere(?:\s+)?mich\b/i.test(m)
     || /^ricordami\b/i.test(m)
+    || /^lembra(?:-|\s)?me\b/i.test(m)
   );
+}
+
+/**
+ * Multi-word save imperatives at message start — not covered by first-word fuzzy match.
+ * e.g. Romanian "ține minte …", French "souviens-toi …", Spanish "recuerda que …".
+ */
+const MULTILINGUAL_SAVE_PHRASE_RES: readonly RegExp[] = [
+  /^(?:ține|tine)\s+minte(?:\s+(?:c[aă]|că|de|despre))?\s*/iu,
+  /^(?:aminte[sș]te-te|noteaz[aă]-[țt]i)\s+/iu,
+  /^(?:souviens(?:-|\s)?(?:toi|toit)?|retiens?|enregistre|garde)\s+/iu,
+  /^(?:recuerda(?:\s+(?:que|lo|la|las|los|el|esto|eso))?|guarda(?:\s+(?:que|lo|la|esto|eso))?|anota(?:\s+(?:que|lo|la|esto|eso))?)\s+/iu,
+  /^(?:merk(?:e)?\s+dir|speicher(?:e)?(?:\s+(?:das|dass|folgendes))?)\s+/iu,
+  /^(?:ricorda(?:\s+(?:che|ci[oò]|questo|quello))?)\s+/iu,
+  /^(?:lembra(?:-se|-te)?(?:\s+(?:de|que|disso|disto|isto|isso))?|guarda(?:\s+(?:que|isto|isso))?)\s+/iu,
+];
+
+/** Strip a leading multilingual save phrase; returns remainder + whether a phrase matched. */
+export function stripMultilingualSavePhrasePrefix(msg: string): { stripped: string; matched: boolean } {
+  const t = msg.trim();
+  for (const re of MULTILINGUAL_SAVE_PHRASE_RES) {
+    const m = t.match(re);
+    if (m) {
+      return { stripped: t.slice(m[0].length).trim(), matched: true };
+    }
+  }
+  return { stripped: t, matched: false };
+}
+
+/** True when the message opens with a multilingual save imperative (not remind-me recall). */
+export function hasMultilingualSavePhrase(msg: string): boolean {
+  if (isRemindMeRecallQuery(msg)) return false;
+  return stripMultilingualSavePhrasePrefix(msg).matched;
 }
 
 /** Multilingual question openers — first word signals recall, not save. */
@@ -401,6 +434,14 @@ export function isConversationContextQuery(text: string): boolean {
   if (
     CONVERSATION_META_PRONOUN_RE.test(t)
     && /\b(?:past|previous|earlier|recent|anterioar(?:e|ă))\s+(?:discussion|discussions|conversation|conversations|discu[țt]i(?:i|ile)|conversa[țt]i(?:i|ile))\b/i.test(t)
+  ) {
+    return true;
+  }
+
+  // "what's your most recent context?" / "what context do you have"
+  if (
+    /\b(?:most recent|latest|current)\s+context\b/i.test(t)
+    || /\bwhat(?:'?s|\s+is)\s+(?:your|the)\s+(?:context|recent context)\b/i.test(t)
   ) {
     return true;
   }

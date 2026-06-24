@@ -18,6 +18,7 @@ export type GhampusClarificationKind =
   | 'create_engram'
   | 'slash_save'
   | 'slash_walk'
+  | 'slash_preview'
   | 'slash_train'
   | 'slash_create';
 
@@ -33,6 +34,8 @@ export type GhampusPendingClarificationState =
       originalText: string;
       phrase: string;
       candidates?: GhampusListedSkill[];
+      improvementDelta?: string | null;
+      awaitingDelta?: boolean;
     }
   | {
       kind: 'create_engram' | 'slash_create';
@@ -43,7 +46,7 @@ export type GhampusPendingClarificationState =
       originalText: string;
     }
   | {
-      kind: 'slash_walk' | 'slash_train';
+      kind: 'slash_walk' | 'slash_preview' | 'slash_train';
       originalText: string;
     };
 
@@ -56,6 +59,7 @@ export type IncompleteIntentContext = {
   content?: string;
   engramHint?: string | null;
   suggestedName?: string;
+  awaitingDelta?: boolean;
 };
 
 export type ClarificationResolution =
@@ -73,6 +77,7 @@ export type ClarificationResolution =
       originalText: string;
       targetEngram?: string | null;
       emptyRecall?: boolean;
+      improvementDelta?: string | null;
     }
   | { action: 'create_engram'; name: string }
   | { action: 'slash_save'; content: string; engramHint: string | null }
@@ -104,13 +109,14 @@ function pickSkillByName(skills: GhampusListedSkill[], name: string): GhampusLis
   }) ?? null;
 }
 
-function formatSkillPickList(candidates: GhampusListedSkill[], verb: 'walk' | 'train'): string {
+function formatSkillPickList(candidates: GhampusListedSkill[], verb: 'preview' | 'train' | 'walk'): string {
+  const cmd = verb === 'walk' ? 'preview' : verb;
   return candidates
     .slice(0, 5)
     .map((s) => {
       const label = normalizeSkillDisplayLabel(s.label);
       const slug = skillSlug(s);
-      return `- **${label}** (\`/${verb} ${slug}\`)`;
+      return `- **${label}** (\`/${cmd} ${slug}\`)`;
     })
     .join('\n');
 }
@@ -133,21 +139,24 @@ export function formatIncompleteIntentMessage(
       if (candidates.length > 1) {
         if (candidates.length === 2 && phrase) {
           const top = normalizeSkillDisplayLabel(candidates[0]!.label);
-          return `Did you mean **${top}** for "${phrase}"?\n\nReply **yes**, pick one:\n${formatSkillPickList(candidates, 'walk')}\n\nOr name the skill more precisely.`;
+          return `Did you mean **${top}** for "${phrase}"?\n\nReply **yes**, pick one:\n${formatSkillPickList(candidates, 'preview')}\n\nOr name the skill more precisely.`;
         }
         return phrase
-          ? `Multiple skills match **${phrase}**. Which one should I walk?\n\n${formatSkillPickList(candidates, 'walk')}\n\nReply with a skill name.`
-          : `Which skill should I walk?\n\n${formatSkillPickList(candidates, 'walk')}\n\nReply with a skill name, e.g. \`/walk ship-workflow\`.`;
+          ? `Multiple skills match **${phrase}**. Which one should I preview?\n\n${formatSkillPickList(candidates, 'preview')}\n\nReply with a skill name.`
+          : `Which skill should I preview?\n\n${formatSkillPickList(candidates, 'preview')}\n\nReply with a skill name, e.g. \`/preview ship-workflow\`.`;
       }
       if (candidates.length === 1 && phrase) {
         const only = normalizeSkillDisplayLabel(candidates[0]!.label);
-        return `Did you mean **${only}** for "${phrase}"? Reply **yes** to walk it, or name another skill.`;
+        return `Did you mean **${only}** for "${phrase}"? Reply **yes** to preview it, or name another skill.`;
       }
       if (candidates.length > 0 && phrase) {
-        return `I couldn't find an exact skill for **${phrase}**. Here are skills that might help:\n\n${formatSkillPickList(candidates.slice(0, 3), 'walk')}\n\nReply with a skill name, or try \`/skills\` to see all.`;
+        return `I couldn't find an exact skill for **${phrase}**. Here are skills that might help:\n\n${formatSkillPickList(candidates.slice(0, 3), 'preview')}\n\nReply with a skill name, or try \`/skills\` to see all.`;
       }
-      return 'Which skill should I walk? Example: `/walk ship-workflow` or say `walk skill bug-investigation`.';
+      return 'Which skill should I preview? Example: `/preview ship-workflow` or say `preview skill bug-investigation` (also: `walk skill …`).';
     case 'train_skill':
+      if (context.awaitingDelta && context.phrase) {
+        return `What should change in **${context.phrase}**? Describe steps or rules to add, remove, or rewrite — I'll merge that into a retrain.`;
+      }
       if (candidates.length > 1) {
         return phrase
           ? `Multiple skills match **${phrase}**. Which one should I train?\n\n${formatSkillPickList(candidates, 'train')}\n\nReply with a skill name.`
@@ -163,7 +172,8 @@ export function formatIncompleteIntentMessage(
     case 'slash_save':
       return 'What should I save? Example: `/save Meeting notes from today @coding` — or type the note (optionally ending with `@engram`).';
     case 'slash_walk':
-      return 'Which skill should I walk? Example: `/walk ship-workflow` or reply with a skill name like `bug-investigation`.';
+    case 'slash_preview':
+      return 'Which skill should I preview? Example: `/preview ship-workflow` or reply with a skill name like `bug-investigation`. (`/walk` still works as an alias.)';
     case 'slash_train':
       return 'Which skill should I train? Example: `/train ship-workflow` or reply with a skill name.';
     default:
@@ -177,6 +187,7 @@ function stateToIncompleteContext(state: GhampusPendingClarificationState): Inco
   if ('candidates' in state && state.candidates?.length) ctx.candidates = state.candidates;
   if ('content' in state) ctx.content = state.content;
   if ('engramHint' in state) ctx.engramHint = state.engramHint;
+  if ('awaitingDelta' in state && state.awaitingDelta) ctx.awaitingDelta = true;
   return ctx;
 }
 
@@ -274,6 +285,18 @@ export function tryResolveClarification(
   }
 
   if (pending.kind === 'train_skill') {
+    if (pending.awaitingDelta) {
+      const delta = userText.trim();
+      if (delta.length >= 3) {
+        return {
+          action: 'train_skill',
+          skillName: pending.phrase,
+          originalText: pending.originalText,
+          improvementDelta: delta,
+        };
+      }
+      return { action: 'cancelled' };
+    }
     const picked = resolveSkillFromFollowUp(userText, pending.candidates, opts.skills);
     if (picked) {
       return {

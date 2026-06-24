@@ -219,11 +219,19 @@ function buildPolishSystem(userText: string, hints?: FinalizeAnswerHints): strin
     ? '- Default brevity: 1-3 sentences for simple questions; no section headers unless the user asked for a list or grouped format.'
     : '- The user asked for detail — organize with bullets or short sections as helpful.';
 
+  const structureRule = brief
+    ? '- Structure: one lead sentence, then at most 2 short bullets if needed — no ## headers for simple questions.'
+    : '- Structure: one lead sentence that answers directly, then ## or ### section headers with bullet lists where helpful.';
+
   return `You are Ghampus inside Graphnosis. The user asked a question and a draft answer was prepared from memory tools.
 
 Rewrite the draft as a direct answer to the user's question. Rules:
 - Answer ONLY the question — do NOT repeat or echo the question.
 ${brevityRule}
+${structureRule}
+- Use markdown: ## / ### headers for sections, "- " bullet lists, short paragraphs with blank lines between sections.
+- No emoji, emoticons, or decorative symbols (⚡ ✓ ⚠️ etc.) — plain text only.
+- No colored text, HTML spans, or font tags — markdown bold only when emphasis helps scanning.
 - Do NOT include audit footers, "Found N matching memories", "Here's what I found", or "_(from …)_" citations.
 - Do NOT echo internal recall wire format: "## Attested Memory", "## dig_deeper", "## Recent Chat", node counts, avg scores, "Source-filename expansion", or "Cross-engram entity hop".
 - Do NOT dump raw memory bullets, skill procedure text (Step 1:, Step 2:), or unrelated skill SOPs.

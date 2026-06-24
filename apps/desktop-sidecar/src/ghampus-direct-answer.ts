@@ -16,6 +16,7 @@ import {
 } from './ghampus-language.js';
 import { activeBackend } from './local-llm.js';
 import { isHealthCheckRequest } from './ghampus-vitality-health.js';
+import { GHAMPUS_FIRST_PERSON_SELF_RULE } from './ghampus-glossary.js';
 
 export type DirectAnswerKind =
   | 'translation'
@@ -116,10 +117,44 @@ export function buildModelStatusFactsBlock(status: GhampusLlmStatus): string {
 export function buildGhampusIdentityFactsBlock(appVersion: string): string {
   return [
     `graphnosis_app_version: ${appVersion}`,
-    'ghampus: Graphnosis built-in local assistant in the desktop app',
-    'graphnosis: encrypted personal knowledge graph on the user device',
-    'runs_locally: recall, synthesis, and optional local LLM run on-device; cloud LLM is not used unless user configures external tools separately',
+    'I am Ghampus — Graphnosis\'s built-in local assistant in this desktop app',
+    'Graphnosis is the user\'s encrypted personal knowledge graph on their device',
+    'I run locally: recall, synthesis, and optional local LLM on-device; cloud LLM is not used unless the user configures external tools separately',
   ].join('\n');
+}
+
+/** Deterministic first-person identity answer — LLM fallback for "who is Ghampus?" etc. */
+export function formatGhampusIdentityDirectAnswer(appVersion: string): string {
+  return (
+    `I'm **Ghampus** — Graphnosis's built-in local assistant in this desktop app (v${appVersion}). `
+    + 'I help you search, save, and reason over your encrypted memory on your device. '
+    + 'I run locally; nothing goes to the cloud unless you connect external tools yourself.'
+  );
+}
+
+/** Flip common third-person self-descriptions to first person (identity answers only). */
+export function rewriteGhampusSelfReferenceFirstPerson(text: string): string {
+  let out = text;
+  const rules: Array<[RegExp, string]> = [
+    [/\bGhampus is the\b/gi, "I'm the"],
+    [/\bGhampus is an?\b/gi, "I'm an"],
+    [/\bGhampus is\b/gi, "I'm"],
+    [/\bGhampus provides\b/gi, 'I provide'],
+    [/\bGhampus uses\b/gi, 'I use'],
+    [/\bGhampus runs\b/gi, 'I run'],
+    [/\bGhampus helps\b/gi, 'I help'],
+    [/\bGhampus can\b/gi, 'I can'],
+    [/\bIt'?s an AI assistant\b/gi, "I'm an AI assistant"],
+    [/\bIt is an AI assistant\b/gi, "I'm an AI assistant"],
+    [/\bIt runs locally\b/gi, 'I run locally'],
+    [/\bIt provides\b/gi, 'I provide'],
+    [/\bIt uses\b/gi, 'I use'],
+    [/\bIt helps\b/gi, 'I help'],
+  ];
+  for (const [re, rep] of rules) {
+    out = out.replace(re, rep);
+  }
+  return out;
 }
 
 /** User explicitly wants memory consulted (e.g. "translate what I saved about X"). */
@@ -145,7 +180,80 @@ const TRANSFORM_VERB_RE =
   /\b(?:rephrase|rewrite|reword|paraphrase|summarize|summarise|reformulate|simplify|shorten|condense|resum(?:e|ir|a)|reformula(?:r|te)?|reformule(?:r|z)?|umformulier(?:en)?|zusammenfass(?:en)?|parafrase(?:ar)?)\b/i;
 
 const CONTINUATION_OPENER_RE =
-  /^(?:(?:yes|si|s[íi]|da|oui|ja|ok(?:ay)?|but|however|though|and|also|still|yet|then|so|pero|dar|mais|aber|und|poi|ma)\b|(?:si|s[íi]|yes|ok|okay|da|oui|ja),\s+)/i;
+  /^(?:(?:yes|si|s[íi]|da|oui|ja|ok(?:ay)?|well\.{0,3}|hmm\.{0,3}|right\.{0,3}|yeah\.{0,3}|sure\.{0,3}|actually\.{0,3}|seriously\.{0,3}|please\.{0,3}|but|however|though|and|also|still|yet|then|so|pero|dar|mais|aber|und|poi|ma)\b|(?:si|s[íi]|yes|ok|okay|da|oui|ja),\s+)/i;
+
+const THREAD_IMPERATIVE_RE =
+  /\b(?:check|verify|confirm|double[- ]?check|look(?:\s+up|\s+at|\s+in)?|consult|search|find|read|prove|validate)\b/i;
+const THREAD_REFERENCE_RE =
+  /\b(?:your|the|our|that|this|it|those|these|same|docs?|documentation|sources?|memory|memories|cortex|notes?|what you (?:said|told|mentioned)|your (?:answer|reply|response))\b/i;
+const THREAD_DEIXIS_RE =
+  /\b(?:that|this|it|those|these|you|your|same|still|again|then|why though|not really|what about that)\b/i;
+
+export type ThreadContext = {
+  priorUserQuestion: string;
+  lastGhampusReply: string;
+};
+
+/** Last user question + Ghampus reply pair in recent history — anchor for thread follow-ups. */
+export function getThreadContext(history: GhampusHistTurn[]): ThreadContext | null {
+  const turns = history
+    .filter((t) => (t.kind === 'user' || t.kind === 'ghampus') && (t.text ?? '').trim())
+    .slice(-10);
+  let lastGhampusIdx = -1;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i]!.kind === 'ghampus') {
+      lastGhampusIdx = i;
+      break;
+    }
+  }
+  if (lastGhampusIdx < 0) return null;
+  const lastGhampusReply = turns[lastGhampusIdx]!.text!.trim();
+  if (lastGhampusReply.length < 12) return null;
+  const priorUser = turns.slice(0, lastGhampusIdx).reverse().find((t) => t.kind === 'user');
+  if (!priorUser?.text?.trim()) return null;
+  return { priorUserQuestion: priorUser.text.trim(), lastGhampusReply };
+}
+
+/** User wants cortex/docs consulted to verify the ongoing thread — not a brand-new topic. */
+export function wantsThreadGroundedRecall(text: string): boolean {
+  const t = text.trim();
+  if (!THREAD_IMPERATIVE_RE.test(t)) return false;
+  return THREAD_REFERENCE_RE.test(t)
+    || /\b(?:in (?:the )?docs?|from (?:the )?docs?|your docs?)\b/i.test(t);
+}
+
+/**
+ * Short or ambiguous message that continues the current Ghampus thread
+ * (pronouns, "well…", "check your docs", etc.) — not a fresh cortex lookup.
+ */
+export function isThreadContinuationMessage(text: string, history: GhampusHistTurn[]): boolean {
+  if (hasExplicitMemoryReference(text)) return false;
+  if (!getThreadContext(history)) return false;
+
+  const trimmed = text.trim();
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  if (wordCount > 18) return false;
+
+  if (TOPIC_ABOUT_OPENER_RE.test(trimmed) || PERSON_IN_CONTEXT_OPENER_RE.test(trimmed)) {
+    return false;
+  }
+
+  if (wantsThreadGroundedRecall(trimmed)) return true;
+
+  if (CONTINUATION_OPENER_RE.test(trimmed)) return true;
+
+  if (wordCount <= 8 && THREAD_DEIXIS_RE.test(trimmed)) return true;
+
+  if (
+    wordCount <= 10
+    && THREAD_IMPERATIVE_RE.test(trimmed)
+    && (THREAD_REFERENCE_RE.test(trimmed) || trimmed.endsWith('?'))
+  ) {
+    return true;
+  }
+
+  return false;
+}
 
 /**
  * Topic pivots / person-in-context — cortex lookups, not chat-only follow-ups.
@@ -187,6 +295,7 @@ export function isRephraseOrSummarizeRequest(text: string): boolean {
 }
 
 export function isConversationFollowUp(text: string, history: GhampusHistTurn[]): boolean {
+  if (isThreadContinuationMessage(text, history)) return true;
   if (hasExplicitMemoryReference(text)) return false;
   const trimmed = text.trim();
   const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
@@ -210,23 +319,7 @@ export function isConversationFollowUp(text: string, history: GhampusHistTurn[])
     return false;
   }
 
-  const turns = history
-    .filter((t) => (t.kind === 'user' || t.kind === 'ghampus') && (t.text ?? '').trim())
-    .slice(-8);
-
-  let lastGhampusIdx = -1;
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i]!.kind === 'ghampus') {
-      lastGhampusIdx = i;
-      break;
-    }
-  }
-  if (lastGhampusIdx < 0) return false;
-  const lastGhampus = turns[lastGhampusIdx]!.text!.trim();
-  if (lastGhampus.length < 20) return false;
-
-  const priorUser = turns.slice(0, lastGhampusIdx).reverse().find((t) => t.kind === 'user');
-  return !!priorUser;
+  return getThreadContext(history) !== null;
 }
 
 export function detectDirectAnswerKind(
@@ -242,7 +335,10 @@ export function detectDirectAnswerKind(
   if (isRephraseOrSummarizeRequest(text)) {
     return /\bsummar/i.test(text) ? 'summarize' : 'rephrase';
   }
-  if (isConversationFollowUp(text, history)) return 'conversation_followup';
+  if (isConversationFollowUp(text, history)) {
+    if (wantsThreadGroundedRecall(text)) return null;
+    return 'conversation_followup';
+  }
   return null;
 }
 
@@ -256,7 +352,8 @@ export function buildDirectAnswerSystemPrompt(
   const factsBlock = injectedFacts.trim()
     ? `\n\nAUTHORITATIVE FACTS (use exactly — do not invent or override):\n${injectedFacts.trim()}`
     : '';
-  const base = `You are Ghampus — the AI assistant in Graphnosis.
+  const base = `You are Ghampus — the AI assistant in Graphnosis. When speaking about yourself, always use first person (I/me/my).
+${GHAMPUS_FIRST_PERSON_SELF_RULE}
 
 This is a direct-answer request. Do NOT search memory or invent facts from the user's personal cortex. Use only the text the user provided, the recent conversation, and any AUTHORITATIVE FACTS block below.
 
@@ -284,14 +381,18 @@ SUMMARIZE MODE: Summarize only the provided text. Do not add external facts.`;
     case 'conversation_followup':
       return `${base}
 
-FOLLOW-UP MODE: Answer using the recent conversation thread — especially your last Ghampus reply and the user's prior question. Do not recall cortex memory unless the user explicitly asked to check saved notes or pivoted to a new lookup topic.`;
+FOLLOW-UP MODE: Answer using the recent conversation thread — especially your last reply and the user's prior question.
+- Resolve pronouns ("that", "it", "your docs") from the transcript — never treat a short message as a brand-new topic.
+- If the user asks you to verify, check docs, or confirm something, address ONLY the topic already under discussion.
+- Do NOT search cortex or invent facts about unrelated product features, architecture, or capabilities.
+- If you lack authoritative facts for the thread topic, say so plainly — do not pad with guesses.`;
     case 'conversation_context':
       return `${base}
 
 CONVERSATION REVIEW MODE — strict rules:
-1. Answer ONLY from the conversation transcript below — this Ghampus chat session, NOT cortex memories.
+1. Answer ONLY from the conversation transcript below — this chat session, NOT cortex memories.
 2. Do NOT invent issues, fixes, or topics that were not discussed in the transcript.
-3. If the user asks for a list, include only items grounded in user prompts or Ghampus answers in the transcript.
+3. If the user asks for a list, include only items grounded in user prompts or your prior answers in the transcript.
 4. If nothing relevant appears in the transcript, say so plainly — do not search memory or guess.`;
     case 'process_critique':
       return `${base}
@@ -316,19 +417,21 @@ MODEL STATUS MODE — strict rules:
       return `${base}
 
 IDENTITY MODE — strict rules:
-1. Explain who Ghampus is and what Graphnosis is using AUTHORITATIVE FACTS and standard product terms.
-2. Do NOT search the user's cortex or invent personal facts.
-3. MCP = Model Context Protocol (never expand to other acronyms).
-4. Keep the answer brief (2–5 sentences) unless the user asked for capabilities detail.`;
+1. Answer in first person (I/me/my) — you ARE Ghampus. Never say "Ghampus is…" or refer to yourself in third person.
+2. Explain who you are and what Graphnosis is using AUTHORITATIVE FACTS and standard product terms.
+3. Do NOT search the user's cortex or invent personal facts.
+4. MCP = Model Context Protocol (never expand to other acronyms).
+5. Keep the answer brief (2–5 sentences) unless the user asked for capabilities detail.`;
     case 'app_help':
       return `${base}
 
 APP HELP MODE — strict rules:
-1. Answer how-to and product questions about Graphnosis, Ghampus, engrams, MCP, Ollama, consent, and settings.
-2. Do NOT search the user's personal memory — use general Graphnosis product knowledge only.
-3. MCP = Model Context Protocol. Engram = encrypted memory partition. Cortex = full local store.
-4. For slash commands: /save, /create, /engrams, /skills, /train, /forget, /help.
-5. Be practical — mention Settings paths when relevant.`;
+1. Answer how-to and product questions about Graphnosis, engrams, MCP, Ollama, consent, and settings.
+2. When describing what you (Ghampus) can do, use first person: "I can…", "I help you…".
+3. Do NOT search the user's personal memory — use general Graphnosis product knowledge only.
+4. MCP = Model Context Protocol. Engram = encrypted memory partition. Cortex = full local store.
+5. For slash commands: /save, /create, /engrams, /skills, /train, /forget, /help.
+6. Be practical — mention Settings paths when relevant.`;
     case 'general_knowledge_offline':
       return `${base}
 
@@ -336,7 +439,7 @@ GENERAL KNOWLEDGE MODE — answer from general knowledge only. Do NOT search cor
     case 'chitchat':
       return `${base}
 
-CHITCHAT MODE — reply warmly and briefly. Do NOT search memory or over-explain Graphnosis unless asked.`;
+CHITCHAT MODE — reply warmly and briefly in first person. Do NOT search memory or over-explain Graphnosis unless asked. If greeted or asked who you are, say "I'm Ghampus…" — never third person.`;
     case 'health_check':
       return `${base}
 

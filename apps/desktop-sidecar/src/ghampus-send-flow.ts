@@ -3,11 +3,13 @@
  * Wired from ipc.ts; modules hold domain logic, this file orchestrates the turn.
  */
 
+import { baseSkillName } from './skill-trainer.js';
 import type { GraphnosisHost } from './host.js';
 import type { BroadcastRawFn } from './events.js';
 import type { LocalLlm } from './correction.js';
 import type { McpCallTool, McpCallContext } from './mcp-server.js';
-import { appendGhampusHistoryCacheMessage } from './ghampus-history-cache.js';
+import { appendGhampusHistoryMessage } from './ghampus-history-cache.js';
+import { readGhampusSessionRaw } from './ghampus-session-store.js';
 import { GHAMPUS_MCP_CLIENT_ID } from './mcp-server.js';
 import { listRecentSaves } from './agent-tools.js';
 import {
@@ -49,7 +51,9 @@ import {
   buildDirectAnswerUserPrompt,
   buildGhampusIdentityFactsBlock,
   fetchGhampusLlmStatus,
+  formatGhampusIdentityDirectAnswer,
   formatModelStatusDirectAnswer,
+  rewriteGhampusSelfReferenceFirstPerson,
   resolveGhampusAppVersion,
 } from './ghampus-direct-answer.js';
 import {
@@ -57,9 +61,13 @@ import {
   buildLightRecallQuery,
   buildSelectionFollowUpSystemPrompt,
   buildSelectionFollowUpUserPrompt,
+  buildFragmentReviewSystemPrompt,
+  buildFragmentReviewUserPrompt,
+  formatFragmentReviewOutput,
   formatRecentThreadHistory,
   parseGhampusSendPayload,
   parseRecentGhampusHistLines,
+  type GhampusFragmentReviewPayload,
   type GhampusSelectionContext,
 } from './ghampus-selection-followup.js';
 import {
@@ -69,11 +77,14 @@ import {
   isConsentGateMessage,
   parseRecallNodesIncluded,
   formatProseRecallForGhampusUser,
+  formatRecentIngestsSection,
   formatSkillList,
   filterSkillsByKeyword,
   looksGroupedResponse,
   normalizeSkillDisplayLabel,
+  parseRecentIngestMcpText,
   stripRecallAuditTrail,
+  type RecentIngestSource,
   type StructuredRecallNode,
 } from './ghampus-recall-format.js';
 import {
@@ -113,12 +124,20 @@ import {
   extractSkillBodyFromGetSkill,
   findGhampusSkillMatch,
   formatSkillTrainStartMessage,
+  mergeSkillImprovementDelta,
   resolveSkillTrainGraphId,
-  runGhampusSkillWalk,
+  runGhampusSkillPreview,
+  ensureSkillTrainingLicensed,
+  SKILL_TRAIN_PRO_UPGRADE_MESSAGE,
   suggestGhampusSkillsForPhrase,
   type GhampusListedSkill,
+  type GhampusSkillPreviewCardPayload,
   type GhampusSkillRouteRunner,
 } from './ghampus-skill-train.js';
+import {
+  loadDispatchTriggerLines,
+  resolveImplicitSkillFull,
+} from './ghampus-skill-dispatch-route.js';
 import {
   askGhampusClarification,
   formatMcpErrorForUser,
@@ -131,6 +150,7 @@ import {
   isGhampusTurnCancelled,
   registerGhampusTurn,
 } from './ghampus-turn-cancel.js';
+import { enqueueGhampusSendTurn } from './ghampus-send-queue.js';
 import {
   GHAMPUS_TURN_TIMEOUT_MS,
   ghampusTimeoutUserMessage,
@@ -163,6 +183,8 @@ export type GhampusSendDeps = {
   callMcpTool?: McpCallTool;
   broadcastRaw: BroadcastRawFn;
   brainEngine?: import('./brain-engine.js').BrainEngine | null;
+  skillTrainer?: import('./skill-trainer.js').SkillTrainer | null;
+  hasSkillTrainingLicense?: () => boolean | Promise<boolean>;
 };
 
 const INFERRED_LAYER_MARKER = '--- INFERRED LAYER (overlays — NOT attested memory) ---';
@@ -244,6 +266,7 @@ function sanitizeResponse(t: string): string {
       .replace(/\bskill:\d+:[^\s,)]+/g, (m) => m.replace(/^skill:\d+:/, ''))
       .replace(/\bclip:[a-f0-9]+\b/g, '')
       .replace(/\bn\d+\b/g, '')
+      .replace(/\buser\s+1\d{12,}\b/gi, 'you')
       .replace(/\|fact\|[\d.]+\|/g, '')
       .replace(/^[_]*enriched:\s*".*"\s*→\s*".*"[_]*\s*$/gim, '')
       .replace(/\n{3,}/g, '\n\n')
@@ -258,12 +281,16 @@ function skillRouteRunner(
   ghampusTool: GhampusSkillRouteRunner['ghampusTool'],
   emitGhampusMsg: GhampusSkillRouteRunner['emitGhampusMsg'],
   emitTrace: GhampusSkillRouteRunner['emitTrace'],
+  deps: GhampusSendDeps,
+  emitSkillPreviewCard?: (card: GhampusSkillPreviewCardPayload) => Promise<void>,
 ): GhampusSkillRouteRunner {
   return {
     ghampusTool,
     emitGhampusMsg,
     emitTrace,
     setPendingClarification: (v) => state.setPendingClarification(v),
+    ...(deps.hasSkillTrainingLicense ? { isSkillTrainingLicensed: deps.hasSkillTrainingLicense } : {}),
+    ...(emitSkillPreviewCard ? { emitSkillPreviewCard } : {}),
   };
 }
 
@@ -273,6 +300,17 @@ async function runGhampusSkillTrain(
   runner: SkillTrainRunnerDeps,
   originalText = skillNameOverride ?? parsed.skillName,
 ): Promise<void> {
+  if (!(await ensureSkillTrainingLicensed(runner))) {
+    runner.emitTrace({
+      stepId: ghampusTraceStepId('train_skill'),
+      status: 'error',
+      label: 'train skill',
+      tool: 'train_skill',
+      preview: 'Pro+ required',
+    });
+    return;
+  }
+
   const skillName = (skillNameOverride ?? parsed.skillName).trim();
   if (!skillName) {
     await runner.emitGhampusMsg(askGhampusClarification({
@@ -294,12 +332,25 @@ async function runGhampusSkillTrain(
         originalText,
         phrase: skillName,
         candidates: suggestions,
+        ...(parsed.awaitingImprovementDelta ? { awaitingDelta: true } : {}),
       }, (v) => runner.setPendingClarification?.(v)));
       return;
     }
     await runner.emitGhampusMsg(
       `No trained skill matching **${skillName}**. Try \`/skills\` to see what's available, or train one in the Skills page first.`,
     );
+    return;
+  }
+
+  const improvementDelta = parsed.improvementDelta?.trim() ?? '';
+  if (parsed.awaitingImprovementDelta && !improvementDelta && runner.setPendingClarification) {
+    const display = normalizeSkillDisplayLabel(match.label);
+    await runner.emitGhampusMsg(askGhampusClarification({
+      kind: 'train_skill',
+      originalText,
+      phrase: display,
+      awaitingDelta: true,
+    }, (v) => runner.setPendingClarification?.(v)));
     return;
   }
 
@@ -337,8 +388,12 @@ async function runGhampusSkillTrain(
       return;
     }
 
+    const trainBody = improvementDelta
+      ? mergeSkillImprovementDelta(skillBody, improvementDelta)
+      : skillBody;
+
     const trainArgs: Record<string, unknown> = {
-      skill: skillBody,
+      skill: trainBody,
       skill_name: displayLabel,
       save: true,
     };
@@ -347,15 +402,13 @@ async function runGhampusSkillTrain(
     const trained = await runner.ghampusTool('train_skill', trainArgs) as { rawText?: string };
     const out = trained.rawText ?? '';
     if (/upgrade_required|"upgrade_required"\s*:\s*true/i.test(out)) {
-      await runner.emitGhampusMsg(
-        'Skill training requires **Graphnosis Pro**. Subscribe at [graphnosis.com/upgrade](https://graphnosis.com/upgrade) or use the Skills page.',
-      );
+      await runner.emitGhampusMsg(SKILL_TRAIN_PRO_UPGRADE_MESSAGE);
       runner.emitTrace({
         stepId,
         status: 'error',
         label: 'train skill',
         tool: 'train_skill',
-        preview: 'Pro required',
+        preview: 'Pro+ required',
       });
       return;
     }
@@ -370,7 +423,9 @@ async function runGhampusSkillTrain(
     const summary = out.includes('## Skill Training Complete')
       ? (out.split('### Trained Skill')[0]?.trim() ?? out.slice(0, 1200))
       : out.slice(0, 1200);
-    await runner.emitGhampusMsg(summary.trim() || `Finished training **${displayLabel}**.`);
+    const slug = baseSkillName(match.label).replace(/\s+/g, '-');
+    const tail = `\n\nPreview the updated SOP with \`/preview ${slug}\`.`;
+    await runner.emitGhampusMsg((summary.trim() || `Finished training **${displayLabel}**.`) + tail);
   } catch (e) {
     const errText = e instanceof Error ? e.message : String(e);
     runner.emitTrace({
@@ -389,10 +444,9 @@ export async function runGhampusSend(
   params: unknown,
   state: GhampusSendState,
 ): Promise<{ ok: true }> {
-  const { text, turnId, selectionContext } = parseGhampusSendPayload(params);
+  const { text, turnId, selectionContext, fragmentReview } = parseGhampusSendPayload(params);
   const llm = deps.llm?.() ?? null;
   const cortexDirForHistory = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
-  const histPath = cortexDirForHistory ? `${cortexDirForHistory}/ghampus-history.jsonl` : '';
   const turnStarted = Date.now();
   const traceTurnId = turnId ?? `turn-${turnStarted}`;
 
@@ -402,11 +456,10 @@ export async function runGhampusSend(
     ts: Date.now(),
     turnId: traceTurnId,
     ...(selectionContext ? { selectionContext } : {}),
+    ...(fragmentReview ? { fragmentReview } : {}),
   };
-  if (histPath) {
-    const { appendFile } = await import('node:fs/promises');
-    await appendFile(histPath, JSON.stringify(userMsg) + '\n').catch(() => {});
-    appendGhampusHistoryCacheMessage(userMsg);
+  if (cortexDirForHistory) {
+    await appendGhampusHistoryMessage(cortexDirForHistory, userMsg);
   }
   const { markGhampusUserActivity } = await import('./ghampus-busy.js');
   markGhampusUserActivity();
@@ -418,16 +471,14 @@ export async function runGhampusSend(
       ts: Date.now(),
       turnId: traceTurnId,
     };
-    if (histPath) {
-      const { appendFile } = await import('node:fs/promises');
-      await appendFile(histPath, JSON.stringify(noLlmMsg) + '\n').catch(() => {});
-      appendGhampusHistoryCacheMessage(noLlmMsg);
+    if (cortexDirForHistory) {
+      await appendGhampusHistoryMessage(cortexDirForHistory, noLlmMsg);
     }
     deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: noLlmMsg });
     return { ok: true };
   }
 
-  void (async () => {
+  enqueueGhampusSendTurn(async () => {
     const { incrementGhampusBusy, decrementGhampusBusy } = await import('./ghampus-busy.js');
     incrementGhampusBusy();
     const turnSignal = registerGhampusTurn(traceTurnId);
@@ -527,10 +578,8 @@ export async function runGhampusSend(
         turnId: traceTurnId,
         ...(trace ? { trace } : {}),
       };
-      if (histPath) {
-        const { appendFile } = await import('node:fs/promises');
-        await appendFile(histPath, JSON.stringify(responseMsg) + '\n').catch(() => {});
-        appendGhampusHistoryCacheMessage(responseMsg);
+      if (cortexDirForHistory) {
+        await appendGhampusHistoryMessage(cortexDirForHistory, responseMsg);
       }
       deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: responseMsg });
 
@@ -550,6 +599,19 @@ export async function runGhampusSend(
           },
         ).catch(() => {});
       }
+    };
+
+    const emitSkillPreviewCard = async (card: GhampusSkillPreviewCardPayload) => {
+      const previewCardMsg = {
+        kind: 'skill-preview-improve',
+        card,
+        ts: Date.now(),
+        turnId: traceTurnId,
+      };
+      if (cortexDirForHistory) {
+        await appendGhampusHistoryMessage(cortexDirForHistory, previewCardMsg);
+      }
+      deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: previewCardMsg });
     };
 
     const finalizeAndEmitGhampusMsg = async (
@@ -648,11 +710,7 @@ export async function runGhampusSend(
           case 'recall_source':
             return { text: rawText };
           case 'recent': {
-            const lines = rawText.split('\n').filter((l: string) => l.startsWith('•'));
-            const sources = lines.map((l: string) => {
-              const m = l.match(/^•\s+(\S+)\s+\[[^\]]+\]\s+(\S+)\s+\(([^)]+)\)/);
-              return m ? { ingestedAt: m[1], label: m[2], engramName: m[3] } : null;
-            }).filter(Boolean);
+            const sources = parseRecentIngestMcpText(rawText);
             return { sources };
           }
           case 'find_source': {
@@ -668,8 +726,22 @@ export async function runGhampusSend(
           }
           case 'remember':
             return { ok: true };
-          case 'walk_skill':
-            return { rawText };
+          case 'walk_skill': {
+            const graphId = String(toolArgs.graphId ?? '');
+            const sourceId = String(toolArgs.sourceId ?? '');
+            const { walkSkillSequence, formatSkillForGhampusPreview } = await import('./skill-trainer.js');
+            const crossLinks = await deps.host.skillCallLinks.getForSource(graphId, sourceId).catch(() => []);
+            const walked = walkSkillSequence(deps.host, graphId, sourceId, {
+              recursive: Boolean(toolArgs.recursive),
+              crossEngramLinks: crossLinks ?? [],
+            });
+            if (walked.steps.length === 0 && walked.goals.length === 0) {
+              return { rawText: '' };
+            }
+            const src = deps.host.getSourceRecord(graphId, sourceId);
+            const title = (src?.ref ?? sourceId).replace(/^skill:\d+:/, '').replace(/-/g, ' ').trim();
+            return { rawText: formatSkillForGhampusPreview(walked, title) };
+          }
           case 'get_skill':
           case 'train_skill':
             return { rawText };
@@ -700,11 +772,13 @@ export async function runGhampusSend(
         }
       };
 
+      const makeSkillRouteRunner = () =>
+        skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace, deps, emitSkillPreviewCard);
+
       const loadHistLines = async (): Promise<GhampusHistTurn[]> => {
-        if (!histPath) return [];
+        if (!cortexDirForHistory) return [];
         try {
-          const { readFile } = await import('node:fs/promises');
-          const raw = await readFile(histPath, 'utf8').catch(() => '');
+          const raw = await readGhampusSessionRaw(cortexDirForHistory);
           return parseRecentGhampusHistLines(raw, 15);
         } catch {
           return [];
@@ -762,9 +836,9 @@ export async function runGhampusSend(
         }
         if (resolution.action === 'walk_skill') {
           turnSuggestionMeta = { skip: true, skipReason: 'skill_train' };
-          await runGhampusSkillWalk(
+          await runGhampusSkillPreview(
             resolution.phrase,
-            skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace),
+            makeSkillRouteRunner(),
             resolution.originalText,
           );
           return;
@@ -776,9 +850,10 @@ export async function runGhampusSend(
               skillName: resolution.skillName,
               targetEngram: resolution.targetEngram ?? null,
               emptyRecall: resolution.emptyRecall ?? false,
+              ...(resolution.improvementDelta ? { improvementDelta: resolution.improvementDelta } : {}),
             },
             resolution.skillName,
-            skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace),
+            makeSkillRouteRunner(),
             resolution.originalText,
           );
           return;
@@ -816,6 +891,24 @@ export async function runGhampusSend(
         }
       }
 
+      // ── Fragment comment review (batched selections) ───────────────────
+      if (fragmentReview?.comments?.length) {
+        turnSuggestionMeta = { skip: true, skipReason: 'direct_answer' };
+        const reviewStepId = stableTraceStepId('fragment-review');
+        emitTrace({ stepId: reviewStepId, status: 'running', label: 'Reviewing your comments' });
+        const system = buildFragmentReviewSystemPrompt();
+        const userPrompt = buildFragmentReviewUserPrompt(fragmentReview);
+        let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
+        throwIfCancelled();
+        answer = formatFragmentReviewOutput(sanitizeResponse(answer ?? ''), fragmentReview);
+        emitTrace({ stepId: reviewStepId, status: 'ok', label: 'Reviewing your comments' });
+        await emitGhampusMsg(
+          answer.trim()
+            || "I couldn't process those comments — try rephrasing or send them one at a time.",
+        );
+        return;
+      }
+
       // ── Slash commands ──────────────────────────────────────────────────
       if (text.startsWith('/')) {
         turnSuggestionMeta = { skip: true, skipReason: 'slash_command' };
@@ -829,9 +922,11 @@ export async function runGhampusSend(
             '- `/create [engram name]` — create a new engram\n' +
             '- `/engrams` — list all your engrams\n' +
             '- `/skills [filter]` — list your skills (optional name filter)\n' +
-            '- `/walk [skill name]` — run a skill step-by-step\n' +
+            '- `/preview [skill name]` — view a skill SOP (markdown)\n' +
+            '- `/walk [skill name]` — alias for `/preview`\n' +
             '- `/train [skill name]` — retrain a skill (Pro)\n' +
-            '- `/forget` — manage / delete memories (opens Memory Studio)\n' +
+            '- `/forget` — tips for editing or removing memories\n' +
+            '- `/insights` — preview Foresight insights in chat\n' +
             '- `/help` — show this list',
           );
           return;
@@ -869,32 +964,37 @@ export async function runGhampusSend(
           await runGhampusSkillTrain(
             trainParsed,
             undefined,
-            skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace),
+            makeSkillRouteRunner(),
             text,
           );
           return;
         }
-        if (cmd === 'walk') {
-          const walkArgs = argsStr.replace(/^skill\s+/i, '').trim();
-          const target = walkArgs
-            ? (extractSkillWalkTarget(`walk skill ${walkArgs}`) ?? walkArgs)
+        if (cmd === 'preview' || cmd === 'walk') {
+          const previewArgs = argsStr.replace(/^skill\s+/i, '').trim();
+          const target = previewArgs
+            ? (extractSkillWalkTarget(`preview skill ${previewArgs}`)
+              ?? extractSkillWalkTarget(`walk skill ${previewArgs}`)
+              ?? previewArgs)
             : '';
           if (!target) {
             await emitGhampusMsg(askGhampusClarification({
-              kind: 'slash_walk',
+              kind: cmd === 'walk' ? 'slash_walk' : 'slash_preview',
               originalText: text,
             }, (v) => state.setPendingClarification(v)));
             return;
           }
-          await runGhampusSkillWalk(
+          await runGhampusSkillPreview(
             target,
-            skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace),
+            makeSkillRouteRunner(),
             text,
           );
           return;
         }
         if (cmd === 'forget') {
-          await emitGhampusMsg('To delete or edit memories, go to **Memory Studio** and find the node or source you want to remove.');
+          await emitGhampusMsg(
+            'To delete or edit memories, open **Brain** or **Sources** for the engram, '
+            + 'or use **Check-in** for duplicates. You can also ask me to **recall** a topic first to find the right source.',
+          );
           return;
         }
         if (cmd === 'save') {
@@ -935,6 +1035,36 @@ export async function runGhampusSend(
           const graphId = argsStr.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
           await deps.host.createGraph(graphId);
           await emitGhampusMsg(`Created engram **${argsStr}** (\`${graphId}\`).`);
+          return;
+        }
+        if (cmd === 'insights') {
+          const INSIGHTS_PREVIEW_N = 5;
+          const all = deps.brainEngine?.getInsights() ?? [];
+          if (all.length === 0) {
+            await emitGhampusMsg(
+              'No pending **Foresight insights** yet — patterns surface as the brain loop runs '
+              + '(about every 6 hours when the Local LLM is on). Open **Foresight → Insights** to check later.',
+            );
+            return;
+          }
+          finishPlanning();
+          const previewMsg = {
+            kind: 'insights-preview',
+            ts: Date.now(),
+            turnId: traceTurnId,
+            insights: all.slice(0, INSIGHTS_PREVIEW_N).map((i) => ({
+              id: i.id,
+              graphId: i.graphId,
+              kind: i.kind,
+              title: i.title,
+              body: i.body,
+            })),
+            totalCount: all.length,
+          };
+          if (cortexDirForHistory) {
+            await appendGhampusHistoryMessage(cortexDirForHistory, previewMsg);
+          }
+          deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: previewMsg });
           return;
         }
         await emitGhampusMsg(`Unknown command \`/${cmd}\`. Try \`/help\`.`);
@@ -1002,6 +1132,21 @@ export async function runGhampusSend(
       }
 
       const hints = detectGhampusQueryHints(text, [], { history: histForHints });
+      if (!hints.implicitSkillSlug) {
+        const triggerLines = loadDispatchTriggerLines(deps.host, deps.skillTrainer);
+        let skillsForFuzzy: GhampusListedSkill[] = [];
+        if (triggerLines.length > 0 || !hints.wantsExplicitSkillWalk) {
+          try {
+            const skillListRes = await ghampusTool('list_skills', {}) as { skills?: GhampusListedSkill[] };
+            skillsForFuzzy = skillListRes.skills ?? [];
+          } catch { /* optional fuzzy path */ }
+        }
+        const implicitMatch = resolveImplicitSkillFull(text, hints, triggerLines, skillsForFuzzy);
+        if (implicitMatch) {
+          hints.wantsImplicitSkillWalk = true;
+          hints.implicitSkillSlug = implicitMatch.skillSlug;
+        }
+      }
       intent = finalizeGhampusIntent(text, intent, hints);
 
       if (intent.action === 'remember') {
@@ -1054,12 +1199,12 @@ export async function runGhampusSend(
           targetEngram: intent.targetEngram,
           emptyRecall: intent.emptyRecall,
         };
-        await runGhampusSkillTrain(trainParsed, intent.skillName || undefined, skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace), text);
+        await runGhampusSkillTrain(trainParsed, intent.skillName || undefined, makeSkillRouteRunner(), text);
         return;
       }
 
       if (intent.action === 'ui_only') {
-        await emitGhampusMsg(`That requires **Memory Studio** — I can't do it from here (${intent.reason}).`);
+        await emitGhampusMsg(`That requires the **Sources** or **Brain** view — I can't do it from here (${intent.reason}).`);
         return;
       }
 
@@ -1158,6 +1303,12 @@ export async function runGhampusSend(
         let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
         throwIfCancelled();
         answer = sanitizeResponse(answer ?? '');
+        if (kind === 'ghampus_identity') {
+          answer = rewriteGhampusSelfReferenceFirstPerson(answer);
+          if (!answer.trim()) {
+            answer = formatGhampusIdentityDirectAnswer(resolveGhampusAppVersion());
+          }
+        }
         emitTrace({ stepId: directStepId, status: 'ok', label: traceLabel });
         await emitGhampusMsg(answer.trim() || "I couldn't answer that without searching memory — try rephrasing.");
         return;
@@ -1180,12 +1331,33 @@ export async function runGhampusSend(
         return;
       }
 
+      if (plan.earlyRoute === 'consistency-walk') {
+        const pairs = deps.brainEngine?.getContradictionPairs() ?? [];
+        const dupes = deps.brainEngine?.getDuplicatePairs() ?? [];
+        if (pairs.length === 0 && dupes.length === 0) {
+          await emitGhampusMsg('Nothing queued for Memory Integrity — no contradictions or duplicate pairs. Ask me again after you ingest new memories.');
+          return;
+        }
+        let body = `**Memory Integrity walk** — ${pairs.length} contradiction(s), ${dupes.length} duplicate pair(s).\n\n`;
+        for (const p of pairs.slice(0, 10)) {
+          body += `\n---\n**${p.severity ?? 'medium'}** · ${p.temporalVerdict ?? 'genuine_contradiction'}\n`;
+          body += `A: ${p.snippetA}\nB: ${p.snippetB}\n`;
+          body += `Shared: ${(p.sharedEntities ?? []).slice(0, 4).join(', ')}\n`;
+          body += `→ Resolve in **Foresight → Memory Integrity** (Keep A / Keep B / Mark debate). I will not apply edits without your approval.\n`;
+        }
+        if (dupes.length > 0) {
+          body += `\n_${dupes.length} duplicate pair(s) — merge or keep-both in Check-in._\n`;
+        }
+        await emitGhampusMsg(body);
+        return;
+      }
+
       if (plan.earlyRoute === 'skill-walk') {
         turnSuggestionMeta = { skip: true, skipReason: 'skill_train' };
-        const target = extractSkillWalkTarget(text) ?? '';
-        await runGhampusSkillWalk(
+        const target = plan.implicitSkillSlug ?? hints.implicitSkillSlug ?? extractSkillWalkTarget(text) ?? '';
+        await runGhampusSkillPreview(
           target,
-          skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace),
+          makeSkillRouteRunner(),
           text,
         );
         return;
@@ -1198,7 +1370,7 @@ export async function runGhampusSend(
           await runGhampusSkillTrain(
             trainParsed,
             undefined,
-            skillRouteRunner(state, ghampusTool, emitGhampusMsg, emitTrace),
+            makeSkillRouteRunner(),
             text,
           );
         } else {
@@ -1276,6 +1448,27 @@ export async function runGhampusSend(
         phase1Results.push(await runPlannedTool(entry));
       }
 
+      if (hints.wantsRecent) {
+        plan.phase2 = plan.phase2.filter(
+          (e) => !['recall', 'remind', 'dig_deeper', 'cross_search', 'recall_structured'].includes(e.tool),
+        );
+        const recentRow = phase1Results.find((r) => r.tool === 'recent');
+        const recentSources = (recentRow?.result as { sources?: RecentIngestSource[] })?.sources ?? [];
+        for (const s of recentSources.slice(0, 5)) {
+          if (!s.sourceId) continue;
+          plan.phase2.push({
+            tool: 'recall_source',
+            args: {
+              sourceId: s.sourceId,
+              ...(s.graphId ? { engram: s.graphId } : {}),
+              maxTokens: 1200,
+            },
+            phase: 2,
+            optional: true,
+          });
+        }
+      }
+
       const phase1StructuredCount = countStructuredNodesFromResults(phase1Results, text);
       const phase1RecallMetrics = extractRecallMetricsFromResults(phase1Results);
       appendPostRecallEscalation(
@@ -1311,7 +1504,7 @@ export async function runGhampusSend(
 
       let allResults = [...phase1Results, ...phase2Results];
 
-      if (!hasRecallHitsFromResults(allResults) && !hints.skipMemoryTools) {
+      if (!hasRecallHitsFromResults(allResults) && !hints.skipMemoryTools && !hints.wantsRecent) {
         const retryEntries = buildPostEmptyRecallRetryEntries(
           plan,
           hints,
@@ -1339,6 +1532,7 @@ export async function runGhampusSend(
       if (
         !hints.skipMemoryTools
         && !hints.wantsExhaustive
+        && !hints.wantsRecent
         && isThinRecallContext(structuredNodes.length, digDeeperRan)
         && !planHasDigDeeper(plan)
       ) {
@@ -1399,8 +1593,10 @@ export async function runGhampusSend(
       const primaryRecall = cleanRecallPromptAttested(attestedRaw);
       const recallContextQuery = plan.recallContextQuery ?? text;
       const recallHasHits = hasRecallHitsFromResults(allResults);
+      const recentIngestSources = (allResults.find((r) => r.tool === 'recent')?.result as { sources?: RecentIngestSource[] })?.sources ?? [];
+      const hasRecentIngests = recentIngestSources.length > 0;
 
-      if (consentBlocked && !recallHasHits && structuredNodes.length === 0) {
+      if (consentBlocked && !recallHasHits && structuredNodes.length === 0 && !hasRecentIngests) {
         await emitGhampusMsg(
           'I need your approval in **Graphnosis** to search across engrams that require consent. '
           + 'Check the Allow / Deny dialog, or open **Settings → AI → Consent Phrases** to unlock sensitive-tier recall. '
@@ -1420,14 +1616,44 @@ export async function runGhampusSend(
         return;
       }
 
-      const recentChat = formatRecentThreadHistory(histForHints.slice(0, -1), 8);
+      if (hints.wantsRecent && !hasRecentIngests && !recallHasHits && structuredNodes.length === 0) {
+        await emitGhampusMsg(
+          "I couldn't find any recently ingested sources in your cortex yet. Save something first with `/save` or **remember**.",
+        );
+        return;
+      }
+
+      const recentChatTurns = hints.wantsThreadGrounding ? 12 : 8;
+      const recentChat = formatRecentThreadHistory(histForHints.slice(0, -1), recentChatTurns);
       const recent_chat_block = recentChat
         ? `\n\n<recent_chat>\n${recentChat}\n</recent_chat>`
         : '';
 
+      const threadGroundingBlock = hints.wantsThreadGrounding && hints.threadPriorUserQuestion
+        ? `\nTHREAD GROUNDING — the user's message is a short follow-up to the chat below, NOT a new topic.
+Prior user question: ${hints.threadPriorUserQuestion}
+Answer ONLY that thread topic using <recent_chat> and <cortex_data>. Do NOT introduce unrelated product features, architecture, or capabilities.
+If attested memory does not address the thread topic, say what is missing — do not invent or pad.\n`
+        : '';
+
       const sections: string[] = [];
-      if (primaryRecall) {
+      if (hasRecentIngests) {
+        sections.push(
+          '## Most recently ingested sources (newest first — authoritative for recency queries)\n'
+          + formatRecentIngestsSection(recentIngestSources),
+        );
+      }
+      for (const r of allResults) {
+        if (r.tool !== 'recall_source' || !r.result) continue;
+        const srcText = String((r.result as { text?: string }).text ?? '').trim();
+        if (srcText) {
+          sections.push('## Content from a recent save\n' + srcText.slice(0, 2500));
+        }
+      }
+      if (primaryRecall && !hints.wantsRecent) {
         sections.push('## What I found in your cortex (attested memory)\n' + primaryRecall.slice(0, hints.recallMaxTokens > 4000 ? 8000 : 3000));
+      } else if (primaryRecall && hints.wantsRecent) {
+        sections.push('## Additional semantic recall (secondary — prefer recency list above)\n' + primaryRecall.slice(0, 1500));
       }
       if (structuredNodes.length > 0) {
         sections.push('## Recall hits (structured)\n' + structuredNodes.map((n) => `- ${(n.text ?? '').trim()}`).join('\n'));
@@ -1453,17 +1679,18 @@ export async function runGhampusSend(
 
 ${GHAMPUS_DOMAIN_GLOSSARY_BLOCK}
 ${GHAMPUS_GROUNDING_RULES_BLOCK}
-${roRules ? `\n${roRules}\n` : ''}${thinRecallBlock}
+${threadGroundingBlock}${roRules ? `\n${roRules}\n` : ''}${thinRecallBlock}
 ${brevityBlock}
 
 ${langBlock}
 
 Use ONLY attested memory in <cortex_data>. Never invent facts.
+${hints.wantsRecent ? 'For recency questions, list sources from "Most recently ingested sources" in strict newest-first order; do not reorder by semantic relevance.\n' : ''}
 Never mention knowledge cutoffs, training data limits, or apologize for lacking web access.
 If <cortex_data> is empty or thin, say what is missing from the user's cortex — do not guess, invent English title translations, or pad with unrelated facts.
 Do NOT invent English titles for Romanian (or other non-English) book or work names — quote titles exactly as stored; if uncertain, use the original-language title without guessing (e.g. keep "Cânturi de pe frunte", never invent "Songs from the Shelf").
 Preserve person names exactly as in <cortex_data> — never merge spellings or create OCR-corrupted variants.
-Use <recent_chat> when the user refers to your prior Ghampus answers, earlier turns, or asks follow-ups (pronouns like "that/this/it", "you said", "the second point") — resolve those from recent turns first; do not treat them as fresh cortex lookups unless the user pivots to a new topic or person.
+Use <recent_chat> when the user refers to your prior Ghampus answers, earlier turns, or asks follow-ups (pronouns like "that/this/it", "you said", "the second point", "check your docs") — resolve those from recent turns FIRST; do not treat them as fresh cortex lookups unless the user pivots to a new topic or person.
 Never echo <recent_chat>, <cortex_data>, "## Attested Memory", "## dig_deeper", "## Recent Chat", node counts, avg scores, "Source-filename expansion", "Cross-engram entity hop", or other internal tags/meta in your answer.
 ${consentBlocked ? '\nNote: cross-engram search was blocked by consent — answer only from the attested memory below.\n' : ''}
 OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or recall-process narration.${contextBlock}${recent_chat_block}`;
@@ -1543,10 +1770,8 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
           turnId: traceTurnId,
           ...(stoppedTrace ? { trace: stoppedTrace } : {}),
         };
-        if (histPath) {
-          const { appendFile } = await import('node:fs/promises');
-          await appendFile(histPath, JSON.stringify(stoppedMsg) + '\n').catch(() => {});
-          appendGhampusHistoryCacheMessage(stoppedMsg);
+        if (cortexDirForHistory) {
+          await appendGhampusHistoryMessage(cortexDirForHistory, stoppedMsg);
         }
         deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: stoppedMsg });
         return;
@@ -1568,17 +1793,15 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
         turnId: traceTurnId,
         ...(errTrace ? { trace: errTrace } : {}),
       };
-      if (histPath) {
-        const { appendFile } = await import('node:fs/promises');
-        await appendFile(histPath, JSON.stringify(errMsg) + '\n').catch(() => {});
-        appendGhampusHistoryCacheMessage(errMsg);
+      if (cortexDirForHistory) {
+        await appendGhampusHistoryMessage(cortexDirForHistory, errMsg);
       }
       deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: errMsg });
     } finally {
       clearGhampusTurn(traceTurnId);
       decrementGhampusBusy();
     }
-  })();
+  });
 
   return { ok: true };
 }

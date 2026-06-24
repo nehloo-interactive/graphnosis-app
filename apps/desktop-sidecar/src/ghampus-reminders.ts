@@ -411,11 +411,9 @@ export class GhampusReminderScheduler {
       notify,
     };
 
-    const histPath = path.join(this.deps.cortexDir, 'ghampus-history.jsonl');
-    const histLine = JSON.stringify({ kind: 'ghampus', text, ts: now, reminderKind: kind });
-    await fs.appendFile(histPath, histLine + '\n').catch(() => {});
-    const { appendGhampusHistoryCacheMessage } = await import('./ghampus-history-cache.js');
-    appendGhampusHistoryCacheMessage({ kind: 'ghampus', text, ts: now, reminderKind: kind });
+    const histMsg = { kind: 'ghampus', text, ts: now, reminderKind: kind };
+    const { appendGhampusHistoryMessage } = await import('./ghampus-history-cache.js');
+    await appendGhampusHistoryMessage(this.deps.cortexDir, histMsg);
 
     try {
       this.deps.broadcastRaw({ kind: 'ghampus.reminder', name: 'ghampus.reminder', payload });

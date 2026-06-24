@@ -64,7 +64,7 @@ export function formatGhampusTraceLabel(tool: string, args: Record<string, unkno
     case 'list_skills':
       return 'list skills';
     case 'walk_skill':
-      return 'walk skill';
+      return 'preview skill';
     default:
       return tool;
   }

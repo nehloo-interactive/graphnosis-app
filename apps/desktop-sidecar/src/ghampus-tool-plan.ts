@@ -36,7 +36,7 @@ export type GhampusToolPlanEntry = {
 
 export type GhampusToolPlan = {
   /** Skip recall/LLM entirely — ipc handles via early route */
-  earlyRoute?: 'skill-list' | 'skill-walk' | 'skill-train' | 'mcp-tool-list' | 'slash' | 'direct-answer';
+  earlyRoute?: 'skill-list' | 'skill-walk' | 'skill-train' | 'mcp-tool-list' | 'slash' | 'direct-answer' | 'consistency-walk';
   phase1: GhampusToolPlanEntry[];
   phase2: GhampusToolPlanEntry[];
   userText: string;
@@ -45,6 +45,8 @@ export type GhampusToolPlan = {
   /** After phase-1 recall, prefer recall_source on this sourceId (how-to path). */
   preferRecallSourceId?: boolean;
   directAnswerKind?: DirectAnswerKind | null;
+  /** Implicit skill-dispatch match — walk this slug when earlyRoute is skill-walk. */
+  implicitSkillSlug?: string | null;
 };
 
 const LLM_TOOL_ALLOWLIST = new Set([
@@ -317,6 +319,7 @@ function hasStrongStructuredIntent(hints: GhampusQueryHints): boolean {
   return hints.wantsMcpToolList
     || hints.wantsSkillList
     || hints.wantsExplicitSkillWalk
+    || hints.wantsImplicitSkillWalk
     || hints.wantsTeamRoster
     || hints.wantsPersonRole
     || hints.wantsPersonInContext
@@ -396,6 +399,25 @@ export function planGhampusTools(
     };
   }
 
+  if (hints.wantsImplicitSkillWalk && hints.implicitSkillSlug) {
+    return {
+      earlyRoute: 'skill-walk',
+      phase1: [],
+      phase2: [],
+      userText,
+      implicitSkillSlug: hints.implicitSkillSlug,
+    };
+  }
+
+  if (hints.wantsConsistencyWalk) {
+    return {
+      earlyRoute: 'consistency-walk',
+      phase1: [],
+      phase2: [],
+      userText,
+    };
+  }
+
   if (hints.wantsExplicitSkillWalk) {
     return {
       earlyRoute: 'skill-walk',
@@ -429,15 +451,9 @@ export function planGhampusTools(
     return {
       phase1: [
         entry('list_engrams', {}, 1),
-        entry('recent', { limit: 10 }, 1),
+        entry('recent', { limit: 20 }, 1),
       ],
-      phase2: [
-        entry(
-          'recall',
-          recallArgs(text, hints, scoped, { maxNodes: 15, maxTokens: 1500 }),
-          2,
-        ),
-      ],
+      phase2: [],
       userText,
       recallContextQuery: text,
     };
@@ -800,6 +816,35 @@ export function planGhampusTools(
     return { phase1, phase2, userText, recallContextQuery: planRecallContextQuery };
   }
 
+  if (hints.wantsThreadGrounding && hints.threadPriorUserQuestion) {
+    const contextualQ = recallContextQuery;
+    const phase1: GhampusToolPlanEntry[] = [
+      entry('recall', recallArgs(contextualQ, hints, scoped), 1),
+      entry('list_engrams', {}, 1),
+    ];
+    const phase2: GhampusToolPlanEntry[] = [
+      entry(
+        'dig_deeper',
+        digDeeperArgs(contextualQ, hints, scoped, {
+          maxNodes: hints.recallMaxNodes,
+          maxTokens: Math.min(hints.recallMaxTokens, 4000),
+        }),
+        2,
+        true,
+        'dig_deeper',
+      ),
+      entry(
+        'recall_structured',
+        structuredArgs(contextualQ, hints, scoped),
+        2,
+        true,
+        'recall_structured',
+      ),
+    ];
+    appendCitationAndSourcePhase2(phase2, text, hints);
+    return { phase1, phase2, userText, recallContextQuery: contextualQ };
+  }
+
   // Default open question
   const phase1: GhampusToolPlanEntry[] = [
     entry('recall', recallArgs(text, hints, scoped), 1),
@@ -1064,7 +1109,7 @@ export function appendEmptyRecallEscalation(
   allEngramIds: string[] | undefined,
   crossSearchEngramIds?: string[],
 ): boolean {
-  if (hints.skipMemoryTools) return false;
+  if (hints.skipMemoryTools || hints.wantsRecent) return false;
   const csEngrams = crossSearchEngramIds ?? allEngramIds;
 
   let appended = false;
@@ -1203,7 +1248,7 @@ export function buildPostEmptyRecallRetryEntries(
   ranResults: Array<{ tool: string; result: unknown }>,
   crossSearchEngramIds?: string[],
 ): GhampusToolPlanEntry[] {
-  if (hints.skipMemoryTools || hasRecallHitsFromResults(ranResults)) return [];
+  if (hints.skipMemoryTools || hints.wantsRecent || hasRecallHitsFromResults(ranResults)) return [];
   const csEngrams = crossSearchEngramIds ?? allEngramIds;
 
   const entries: GhampusToolPlanEntry[] = [];
@@ -1279,7 +1324,7 @@ export function appendPostRecallEscalation(
   allEngramIds?: string[],
   crossSearchEngramIds?: string[],
 ): boolean {
-  if (hints.skipMemoryTools) return false;
+  if (hints.skipMemoryTools || hints.wantsRecent) return false;
 
   if (recallMetrics.nodeCount === 0) {
     return appendEmptyRecallEscalation(plan, hints, scopedEngrams, allEngramIds, crossSearchEngramIds);
@@ -1351,7 +1396,7 @@ export async function planGhampusToolsWithLlm(
   signal?: AbortSignal,
 ): Promise<GhampusToolPlan> {
   if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
-  if (hints.skipMemoryTools || hints.wantsSkillList || hints.wantsExplicitSkillWalk || hints.wantsMcpToolList) {
+  if (hints.skipMemoryTools || hints.wantsSkillList || hints.wantsExplicitSkillWalk || hints.wantsImplicitSkillWalk || hints.wantsMcpToolList) {
     return planGhampusTools(text, hints, opts);
   }
   if (hasStrongStructuredIntent(hints)) {

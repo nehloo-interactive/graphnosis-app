@@ -10,7 +10,7 @@ const YEAR_ONLY_RE = /\b(20\d{2})\b/g;
 const VERSION_RE = /\bv?\d+\.\d+(?:\.\d+)?(?:-[a-z0-9.+]+)?\b/gi;
 
 const PRODUCT_TERM_RE =
-  /\b(?:federation|secure-sync|secure sync|MCP|sidecar|engram|cortex|Graphnosis|Tauri|desktop app|mobile app|Obsidian Vault|Memory Studio|Ghampus)\b/gi;
+  /\b(?:federation|secure-sync|secure sync|MCP|sidecar|engram|cortex|Graphnosis|Tauri|desktop app|mobile app|Obsidian Vault|Brain|Ghampus)\b/gi;
 
 /** Shared grounding rules for synthesis, polish, and verify prompts. */
 export const GHAMPUS_GROUNDING_RULES_BLOCK = `

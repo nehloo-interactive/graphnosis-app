@@ -9,12 +9,13 @@ import { resolveGhampusVitalityNudgesSettings } from '@graphnosis-app/core/setti
 import type { GraphnosisHost } from './host.js';
 import type { BroadcastRawFn } from './events.js';
 import type { BrainEngine } from './brain-engine.js';
-import { isGhampusBusy, ghampusUserIdleMs } from './ghampus-busy.js';
+import { isGhampusBusy, ghampusChatSoftIdle } from './ghampus-busy.js';
 import { shouldDeferGhampusBackground, scaleGhampusStartupDelay } from './background-lane-scheduler.js';
 
 export type VitalityNudgeKind =
   | 'health-check'
   | 'clear-duplicates'
+  | 'review-contradictions'
   | 'populate-empty'
   | 'cortex-gardening';
 
@@ -44,7 +45,6 @@ export interface GhampusVitalityNudgesSchedulerDeps {
 
 const TICK_MS = 5 * 60_000;
 const STATE_FILE = 'ghampus-vitality-nudges-state.json';
-const USER_IDLE_MS = 5 * 60_000;
 const REPEAT_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_STARTUP_DELAY_MS = 3 * 60_000;
 
@@ -155,15 +155,28 @@ export class GhampusVitalityNudgesScheduler {
     if (this.deps.host.listGraphs().length === 0) return false;
     if (isGhampusBusy()) return false;
     if (shouldDeferGhampusBackground(this.deps.host)) return false;
-    if (ghampusUserIdleMs() < USER_IDLE_MS) return false;
+    if (!ghampusChatSoftIdle()) return false;
     return true;
   }
 
   private pickNudge(now: number, report: Awaited<ReturnType<BrainEngine['getVitalityDetailedReport']>>): NudgeCandidate | null {
     if (!report) return null;
     const dupes = report.pendingDuplicatePairs;
+    const contras = report.pendingContradictionPairs ?? 0;
     const overall = report.overall;
     const candidates: NudgeCandidate[] = [];
+
+    if (contras > 0) {
+      candidates.push({
+        id: 'review-contradictions',
+        kind: 'review-contradictions',
+        title: 'Contradictions need review',
+        body: `**${contras} contradiction${contras === 1 ? '' : 's'}** are queued — open **Memory Integrity** (Foresight) to Keep A, Keep B, or mark as debate.`,
+        examplePrompt: 'Walk me through my memory contradictions',
+        walkSkillLabel: 'consistency-audit',
+        priority: 110,
+      });
+    }
 
     if (dupes >= DUPLICATE_BANNER_THRESHOLD || report.cortexFactors.coherence < 0.75) {
       candidates.push({
@@ -190,9 +203,9 @@ export class GhampusVitalityNudgesScheduler {
       candidates.push({
         id: 'cortex-gardening',
         kind: 'cortex-gardening',
-        title: 'Run cortex-gardening?',
-        body: 'Overall vitality is soft or duplicates are piling up. The **cortex-gardening** skill walks duplicate triage, orphan linking, and skill hygiene.',
-        examplePrompt: 'Walk skill cortex-gardening',
+        title: 'Preview cortex-gardening?',
+        body: 'Overall vitality is soft or duplicates are piling up. **cortex-gardening** covers duplicate triage, orphan linking, and skill hygiene — preview the SOP before you run it in Cursor.',
+        examplePrompt: '/preview cortex-gardening',
         walkSkillLabel: 'cortex-gardening',
         priority: 80,
       });
@@ -287,10 +300,8 @@ export class GhampusVitalityNudgesScheduler {
       ...(nudge.walkSkillLabel ? { walkSkillLabel: nudge.walkSkillLabel } : {}),
     };
 
-    const histPath = path.join(this.deps.cortexDir, 'ghampus-history.jsonl');
-    await fs.appendFile(histPath, JSON.stringify(histMsg) + '\n').catch(() => {});
-    const { appendGhampusHistoryCacheMessage } = await import('./ghampus-history-cache.js');
-    appendGhampusHistoryCacheMessage(histMsg);
+    const { appendGhampusHistoryMessage } = await import('./ghampus-history-cache.js');
+    await appendGhampusHistoryMessage(this.deps.cortexDir, histMsg);
 
     try {
       this.deps.broadcastRaw({ kind: 'ghampus.vitality-nudge', name: 'ghampus.vitality-nudge', payload });
