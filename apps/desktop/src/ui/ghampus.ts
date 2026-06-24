@@ -2662,9 +2662,12 @@ function wireGhampusSidecarEvents(): void {
     (ev) => {
       if (!ev.payload) return;
       let msg = ev.payload;
-      if (msg.kind === 'ghampus' && msg.turnId) {
-        const trace = mergeTraceFromPayload(msg.turnId, msg.trace);
-        if (trace) msg = { ...msg, trace };
+      // Any sidecar turn terminal (ghampus text, insights card, …) must release the UI send queue.
+      if (msg.turnId && msg.kind !== 'user') {
+        if (msg.kind === 'ghampus') {
+          const trace = mergeTraceFromPayload(msg.turnId, msg.trace);
+          if (trace) msg = { ...msg, trace };
+        }
         if (msg.turnId === liveTraceTurnId) clearLiveTraceSteps();
         notifyGhampusTurnDone(msg.turnId);
       }
