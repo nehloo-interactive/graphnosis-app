@@ -15,6 +15,18 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.23.1 — Ghampus send queue after /insights
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-24</p>
+
+Hotfix: Ghampus no longer hangs with the send button disabled after an `/insights` preview turn completes.
+
+### Fixed
+
+- **Ghampus send queue after /insights** — insights-preview turns now call `notifyGhampusTurnDone`, releasing the serialized send queue so you can message Ghampus again immediately after an insights card finishes.
+
+---
+
 ## v1.23.0 — Memory Integrity and Ghampus compose
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-24</p>
