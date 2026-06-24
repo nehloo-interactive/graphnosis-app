@@ -15,6 +15,8 @@
 import type { GraphnosisHost } from './host.js';
 import type { SkillTrainer } from './skill-trainer.js';
 import type { AgentToolName } from './agent-types.js';
+import { augmentMemoryWithTemporalContext } from './ghampus-temporal-parse.js';
+import { stripInternalSourceRefPrefix } from './ghampus-recall-format.js';
 
 export interface AgentToolDeps {
   host: GraphnosisHost;
@@ -354,6 +356,7 @@ async function runRemember(deps: AgentToolDeps, args: RememberToolArgs): Promise
   const ref = args.label
     ? `ghampus:${args.label.slice(0, 60).replace(/[^\w\s-]/g, '').trim()}-${Date.now().toString(36)}`
     : `ghampus:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const content = augmentMemoryWithTemporalContext(args.content).text;
   // `ai-conversation` is the closest existing SourceRecord.kind for a
   // memory captured during an interactive turn. Ghampus saves are tagged
   // `addedBy: 'ghampus'` so listRecentSaves can filter without scanning
@@ -362,7 +365,7 @@ async function runRemember(deps: AgentToolDeps, args: RememberToolArgs): Promise
     args.engramId,
     'ai-conversation',
     ref,
-    { kind: 'markdown', content: args.content, sourceRef: ref },
+    { kind: 'markdown', content, sourceRef: ref },
     { addedBy: 'ghampus' },
   );
   return {
@@ -370,6 +373,50 @@ async function runRemember(deps: AgentToolDeps, args: RememberToolArgs): Promise
     engramId: args.engramId,
     nodeCount: result.nodeIds.length,
   };
+}
+
+/** Strip internal sourceId/ref prefixes for user-visible labels. */
+export function formatUserVisibleSourceLabel(ref: string, sourceId?: string): string {
+  const raw = (ref || sourceId || '').trim();
+  if (!raw) return 'Saved memory';
+
+  const stripped = stripInternalSourceRefPrefix(raw);
+  if (stripped !== raw) return stripped || 'Saved memory';
+
+  if (/^clip:/i.test(raw)) {
+    const rest = raw.slice(raw.indexOf(':') + 1);
+    const colon = rest.indexOf(':');
+    if (colon !== -1) {
+      const title = rest.slice(colon + 1).trim();
+      if (title) return title;
+    }
+    return 'AI memory';
+  }
+  if (/^skill:/i.test(raw)) {
+    const rest = raw.slice(raw.indexOf(':') + 1);
+    const colon = rest.indexOf(':');
+    const label = colon !== -1 ? rest.slice(colon + 1) : rest;
+    return label.replace(/-/g, ' ').trim() || 'Skill';
+  }
+  if (raw.startsWith('ghampus:')) {
+    const body = raw.slice('ghampus:'.length).replace(/-[a-z0-9]+$/i, '').replace(/-/g, ' ').trim();
+    return body || 'Saved memory';
+  }
+  if (raw.startsWith('ai-conversation:')) {
+    const rest = raw.slice('ai-conversation:'.length);
+    const colon = rest.indexOf(':');
+    return colon !== -1 ? rest.slice(colon + 1).trim() : 'AI conversation';
+  }
+  const cleaned = raw
+    .replace(/^(file|url|sharing):/i, '')
+    .replace(/^https?:\/\//, '')
+    .replace(/\?[^?]*$/, '')
+    .trim();
+  if (cleaned.length >= 3 && !/^clip:/i.test(cleaned)) return cleaned;
+  if (sourceId && !sourceId.startsWith('clip:')) {
+    return formatUserVisibleSourceLabel(sourceId);
+  }
+  return 'Saved memory';
 }
 
 /**
@@ -390,11 +437,7 @@ export function listRecentSaves(deps: AgentToolDeps, args: RecentSavesArgs): Rec
     for (const s of sources) {
       if (s.addedBy !== 'ghampus') continue;
       if (s.ingestedAt < sinceMs) continue;
-      // The ref carries the human-readable label fragment after the
-      // `ghampus:` prefix and before the trailing timestamp. Strip both
-      // ends for a clean display string.
-      const refBody = s.ref.startsWith('ghampus:') ? s.ref.slice('ghampus:'.length) : s.ref;
-      const label = refBody.replace(/-[a-z0-9]+$/i, '').replace(/-/g, ' ').trim() || s.sourceId;
+      const label = formatUserVisibleSourceLabel(s.ref, s.sourceId);
       all.push({
         sourceId: s.sourceId,
         engramId,

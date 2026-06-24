@@ -7,6 +7,16 @@ import { VitalityScorer, type VitalityDetailedReport, type VitalityReport } from
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
+import {
+  classifySeverity,
+  classifyTemporalVerdict,
+  evaluateContradictionTriage,
+  pairKey,
+  type ContradictionSeverity,
+  type SuppressedContradiction,
+  type SuppressionReason,
+  type TemporalVerdict,
+} from './contradiction-utils.js';
 import { clientActiveWithin, CLIENT_QUIET_MS, isIngestActive, onClientIdle, onIngestIdle } from './client-activity.js';
 // Brain recalls/searches embed the query — they MUST go through the global
 // embedding queue or they can run concurrently with a connector ingest's embed
@@ -79,6 +89,13 @@ export interface ContradictionPair {
   detectedAt: number;
   /** semantic = reflectGraph scan; policy = canonical policy / skill conflict */
   kind?: 'semantic' | 'policy';
+  severity?: ContradictionSeverity;
+  temporalVerdict?: TemporalVerdict;
+  /** Source ids when pair came from compare-sources */
+  sourceA?: string;
+  sourceB?: string;
+  resolvedAt?: number;
+  resolution?: 'keep-a' | 'keep-b' | 'mark-debate' | 'dismiss';
 }
 
 export interface Insight {
@@ -463,6 +480,22 @@ export class BrainEngine {
   // conflicting (shared entities, low content similarity). Surfaced via the
   // contradiction_pairs MCP tool and the Check-in deck.
   private contradictionPairs: ContradictionPair[] = [];
+  private contradictionDismissals = new Set<string>();
+  private contradictionPairsLoaded = false;
+  private contradictionHistory: ContradictionPair[] = [];
+  /**
+   * Triage-suppressed pairs (#1): a capped audit ring so suppression is
+   * inspectable, never silent. `temporal-supersession` rows are the
+   * "superseded over time" lane (#3). Persisted across restarts via
+   * host.{load,save}SuppressedContradictions (plain JSON, same as the queue).
+   */
+  private suppressedContradictions: SuppressedContradiction[] = [];
+  /**
+   * Per-engram entity document-frequency cache for the data-driven contradiction
+   * stoplist (#4b). Entities common across an engram (high DF) are not meaningful
+   * conflict anchors. Rebuilt lazily on a short TTL from listNodes.
+   */
+  private entityDfCache = new Map<string, { df: Map<string, number>; total: number; builtAt: number }>();
   private contradictionScanTimer: NodeJS.Timeout | null = null;
   private contradictionScanRunning = false;
   private contradictionScanCursor = 0;
@@ -583,6 +616,25 @@ export class BrainEngine {
       .catch((e) => {
         console.error(`[brain] insights load failed: ${(e as Error).message}`);
         this.insightsLoaded = true; // proceed with empty list
+      });
+
+    void Promise.all([
+      this.host.loadContradictionPairs<ContradictionPair>(),
+      this.host.loadContradictionDismissals(),
+      this.host.loadSuppressedContradictions<SuppressedContradiction>(),
+    ])
+      .then(([saved, dismissals, suppressed]) => {
+        this.contradictionPairs = saved.filter(
+          (c) => !dismissals.includes(pairKey(c.graphId, c.nodeA, c.nodeB)),
+        );
+        this.contradictionDismissals = new Set(dismissals);
+        this.suppressedContradictions = suppressed;
+        this.contradictionPairsLoaded = true;
+        this.retriageExistingQueue();
+      })
+      .catch((e) => {
+        console.error(`[brain] contradiction queue load failed: ${(e as Error).message}`);
+        this.contradictionPairsLoaded = true;
       });
 
     // Load the predictive association index off disk (fire-and-forget).
@@ -769,11 +821,23 @@ export class BrainEngine {
    * file. Only the duplicate scan runs (with its built-in healing
    * review); synapse/insight are LLM-bound and keep their slower cadence.
    */
-  notifyIngestComplete(): void {
+  notifyIngestComplete(graphId?: string, ingestContradictions?: Array<{
+    nodeA: string;
+    nodeB: string;
+    sharedEntities?: string[];
+    description?: string;
+  }>): void {
+    if (graphId && ingestContradictions?.length) {
+      this.ingestContradictions(graphId, ingestContradictions);
+    }
     if (this.ingestScanTimer) clearTimeout(this.ingestScanTimer);
     this.ingestScanTimer = setTimeout(() => {
       this.ingestScanTimer = null;
       void this.runDuplicateScan();
+      void this.runContradictionScan({
+        ...(graphId !== undefined ? { graphId } : {}),
+        deep: false,
+      });
     }, INGEST_SCAN_DEBOUNCE_MS);
     this.ingestScanTimer.unref();
   }
@@ -840,7 +904,7 @@ export class BrainEngine {
       this.vitalityPresentationReady = true;
       this.vitality.invalidate();
     }
-    const report = await this.vitality.computeDetailed(this.duplicatePairs.length);
+    const report = await this.vitality.computeDetailed(this.duplicatePairs.length, this.contradictionPairs.length);
     return { ...report, settling: false };
   }
 
@@ -886,7 +950,7 @@ export class BrainEngine {
         ? cached.pendingDuplicatePairs
         : this.duplicatePairs.length;
       try {
-        const live = await this.vitality.compute(pendingDups);
+        const live = await this.vitality.compute(pendingDups, this.contradictionPairs.length);
         if (Object.keys(byGraph).length === 0) {
           for (const [graphId, score] of Object.entries(live.byGraph)) {
             if (typeof score === 'number' && Number.isFinite(score)) {
@@ -923,8 +987,436 @@ export class BrainEngine {
     return this.contradictionPairs;
   }
 
+  getContradictionHistory(): ContradictionPair[] {
+    return [...this.contradictionHistory].sort(
+      (a, b) => (b.resolvedAt ?? b.detectedAt) - (a.resolvedAt ?? a.detectedAt),
+    );
+  }
+
+  getAttentionCounts(): { duplicates: number; contradictions: number; total: number } {
+    return {
+      duplicates: this.duplicatePairs.length,
+      contradictions: this.contradictionPairs.length,
+      total: this.duplicatePairs.length + this.contradictionPairs.length,
+    };
+  }
+
+  private async persistContradictionQueue(): Promise<void> {
+    try {
+      await this.host.saveContradictionPairs(this.contradictionPairs);
+    } catch (e) {
+      console.error(`[brain] failed to save contradiction queue: ${(e as Error).message}`);
+    }
+  }
+
+  private async persistContradictionDismissals(): Promise<void> {
+    try {
+      await this.host.saveContradictionDismissals([...this.contradictionDismissals]);
+    } catch (e) {
+      console.error(`[brain] failed to save contradiction dismissals: ${(e as Error).message}`);
+    }
+  }
+
+  /** Push one pair into the review queue if not dismissed / already queued. */
+  private pushContradictionPair(
+    entry: Omit<ContradictionPair, 'id' | 'detectedAt' | 'severity' | 'temporalVerdict'> & {
+      id?: string;
+      detectedAt?: number;
+      severity?: ContradictionSeverity;
+      temporalVerdict?: TemporalVerdict;
+      /** Ingest-time detection — apply stricter precision gates. */
+      fromIngest?: boolean;
+      /** Skip triage (policy rows, polarity healing-journal hooks). */
+      skipTriage?: boolean;
+    },
+  ): boolean {
+    const key = pairKey(entry.graphId, entry.nodeA, entry.nodeB);
+    if (this.contradictionDismissals.has(key)) return false;
+    if (this.contradictionPairs.some((c) => pairKey(c.graphId, c.nodeA, c.nodeB) === key)) {
+      return false;
+    }
+    const nodeById = new Map(this.host.listNodes(entry.graphId).map((n) => [n.id, n]));
+    const a = nodeById.get(entry.nodeA);
+    const b = nodeById.get(entry.nodeB);
+    const snippetA = entry.snippetA || (a ? cleanSnippet(a.contentPreview).slice(0, 140) : '');
+    const snippetB = entry.snippetB || (b ? cleanSnippet(b.contentPreview).slice(0, 140) : '');
+
+    let severity = entry.severity;
+    let temporalVerdict = entry.temporalVerdict;
+    let sharedEntities = entry.sharedEntities ?? [];
+
+    if ((entry.kind ?? 'semantic') === 'semantic' && !entry.skipTriage) {
+      const triage = evaluateContradictionTriage({
+        snippetA,
+        snippetB,
+        sharedEntities,
+        ingest: entry.fromIngest === true,
+        isCommonEntity: this.getCommonEntityPredicate(entry.graphId),
+        ...(a?.validUntil !== undefined ? { validUntilA: a.validUntil } : {}),
+        ...(b?.validUntil !== undefined ? { validUntilB: b.validUntil } : {}),
+      });
+      if (!triage.queue) {
+        this.recordSuppressedContradiction({
+          graphId: entry.graphId,
+          nodeA: entry.nodeA,
+          nodeB: entry.nodeB,
+          snippetA,
+          snippetB,
+          severity: triage.severity,
+          temporalVerdict: triage.temporalVerdict,
+          reason: triage.reason as SuppressionReason,
+          sharedEntities: triage.meaningfulShared,
+          fromIngest: entry.fromIngest === true,
+          detectedAt: Date.now(),
+        });
+        return false;
+      }
+      severity = triage.severity;
+      temporalVerdict = triage.temporalVerdict;
+      sharedEntities = triage.meaningfulShared;
+    } else {
+      sharedEntities = sharedEntities.filter((e) => e.trim().length >= 2);
+      severity = severity ?? classifySeverity(snippetA, snippetB, sharedEntities);
+      temporalVerdict = temporalVerdict ?? classifyTemporalVerdict(
+        snippetA,
+        snippetB,
+        a?.validUntil,
+        b?.validUntil,
+      );
+    }
+
+    this.contradictionPairs.push({
+      id: entry.id ?? randomUUID(),
+      graphId: entry.graphId,
+      nodeA: entry.nodeA,
+      nodeB: entry.nodeB,
+      snippetA,
+      snippetB,
+      sharedEntities,
+      description: entry.description,
+      detectedAt: entry.detectedAt ?? Date.now(),
+      kind: entry.kind ?? 'semantic',
+      severity,
+      temporalVerdict,
+      ...(entry.sourceA ? { sourceA: entry.sourceA } : {}),
+      ...(entry.sourceB ? { sourceB: entry.sourceB } : {}),
+    });
+    if (this.contradictionPairs.length > 200) {
+      this.contradictionPairs = this.contradictionPairs.slice(-200);
+    }
+    return true;
+  }
+
+  /**
+   * Record a triage-suppressed pair so suppression is auditable, never silent
+   * (#1). Deduped + capped in-memory ring; `temporal-supersession` rows form the
+   * "superseded over time" lane (#3). Never promoted to the review queue and
+   * never auto-resolved — recall ranking still governs prominence.
+   */
+  private recordSuppressedContradiction(entry: SuppressedContradiction): void {
+    const key = pairKey(entry.graphId, entry.nodeA, entry.nodeB);
+    if (this.suppressedContradictions.some(
+      (s) => pairKey(s.graphId, s.nodeA, s.nodeB) === key,
+    )) {
+      return;
+    }
+    this.suppressedContradictions.push(entry);
+    if (this.suppressedContradictions.length > 300) {
+      this.suppressedContradictions = this.suppressedContradictions.slice(-300);
+    }
+    void this.host.saveSuppressedContradictions(this.suppressedContradictions);
+  }
+
+  /**
+   * Audit window into triage-suppressed pairs (#1/#3). Optionally scoped to one
+   * engram, or to a single suppression reason (e.g. 'temporal-supersession' for
+   * the superseded-over-time lane).
+   */
+  getSuppressedContradictions(
+    graphId?: string,
+    reason?: SuppressionReason,
+  ): SuppressedContradiction[] {
+    return this.suppressedContradictions.filter(
+      (s) => (!graphId || s.graphId === graphId) && (!reason || s.reason === reason),
+    );
+  }
+
+  /**
+   * Build (or reuse, on a short TTL) a predicate flagging entities common across
+   * THIS engram — corpus-derived stopwords (#4b). An entity appearing in more
+   * than COMMON_RATIO of nodes is not a meaningful contradiction anchor. Below
+   * MIN_NODES the corpus is too small to learn stopwords, so it no-ops and the
+   * structural filter + static common-term list still apply.
+   */
+  private getCommonEntityPredicate(graphId: string): (entity: string) => boolean {
+    const MIN_NODES = 40;
+    const COMMON_RATIO = 0.12;
+    const TTL_MS = 5 * 60_000;
+    let cached = this.entityDfCache.get(graphId);
+    const now = Date.now();
+    if (!cached || now - cached.builtAt > TTL_MS) {
+      const nodes = this.host.listNodes(graphId) as Array<{ entities?: string[] }>;
+      const df = new Map<string, number>();
+      for (const n of nodes) {
+        const seen = new Set<string>();
+        for (const e of n.entities ?? []) {
+          const k = e.toLowerCase();
+          if (seen.has(k)) continue;
+          seen.add(k);
+          df.set(k, (df.get(k) ?? 0) + 1);
+        }
+      }
+      cached = { df, total: nodes.length, builtAt: now };
+      this.entityDfCache.set(graphId, cached);
+    }
+    const { df, total } = cached;
+    if (total < MIN_NODES) return () => false;
+    const threshold = total * COMMON_RATIO;
+    return (entity: string) => (df.get(entity.toLowerCase()) ?? 0) > threshold;
+  }
+
+  /**
+   * Re-triage migration: re-run the current deterministic triage over the
+   * already-persisted review queue and move any pair the (now stricter) triage
+   * suppresses into the audit lane — clearing stale false positives the OLD
+   * detector queued before the hardened filter shipped. Idempotent and safe: runs
+   * on every boot, only moves pairs that fail the CURRENT triage, and moved pairs
+   * go to the inspectable suppressed lane (recoverable, not deleted). Policy /
+   * skip-triage rows are never touched; user dismissals are already excluded on load.
+   */
+  private retriageExistingQueue(): void {
+    if (this.contradictionPairs.length === 0) return;
+    const survivors: ContradictionPair[] = [];
+    let moved = 0;
+    for (const c of this.contradictionPairs) {
+      if ((c.kind ?? 'semantic') !== 'semantic') { survivors.push(c); continue; }
+      const triage = evaluateContradictionTriage({
+        snippetA: c.snippetA,
+        snippetB: c.snippetB,
+        sharedEntities: c.sharedEntities ?? [],
+        isCommonEntity: this.getCommonEntityPredicate(c.graphId),
+      });
+      if (triage.queue) {
+        survivors.push(c);
+        continue;
+      }
+      this.recordSuppressedContradiction({
+        graphId: c.graphId,
+        nodeA: c.nodeA,
+        nodeB: c.nodeB,
+        snippetA: c.snippetA,
+        snippetB: c.snippetB,
+        severity: triage.severity,
+        temporalVerdict: triage.temporalVerdict,
+        reason: triage.reason as SuppressionReason,
+        sharedEntities: triage.meaningfulShared,
+        fromIngest: false,
+        detectedAt: c.detectedAt ?? Date.now(),
+      });
+      moved += 1;
+    }
+    if (moved > 0) {
+      this.contradictionPairs = survivors;
+      void this.persistContradictionQueue();
+      this.vitality.invalidate();
+      console.error(`[brain] re-triage: moved ${moved} now-filtered contradiction pair(s) from the review queue to the suppressed lane`);
+    }
+  }
+
+  /** Feed ingest-time SDK contradictions into the review queue (P3). */
+  ingestContradictions(
+    graphId: string,
+    pairs: Array<{
+      nodeA: string;
+      nodeB: string;
+      sharedEntities?: string[];
+      description?: string;
+      sourceA?: string;
+      sourceB?: string;
+      snippetA?: string;
+      snippetB?: string;
+    }>,
+  ): number {
+    let added = 0;
+    for (const p of pairs) {
+      if (this.pushContradictionPair({
+        graphId,
+        nodeA: p.nodeA,
+        nodeB: p.nodeB,
+        snippetA: p.snippetA ?? '',
+        snippetB: p.snippetB ?? '',
+        sharedEntities: p.sharedEntities ?? [],
+        description: p.description ?? 'Ingest-time contradiction',
+        fromIngest: true,
+        ...(p.sourceA ? { sourceA: p.sourceA } : {}),
+        ...(p.sourceB ? { sourceB: p.sourceB } : {}),
+      })) {
+        added += 1;
+      }
+    }
+    if (added > 0) {
+      void this.persistContradictionQueue();
+      this.vitality.invalidate();
+    }
+    return added;
+  }
+
+  /** Remove queue rows touching any of the given node ids (edit / supersede hook). */
+  purgeContradictionPairsForNodes(nodeIds: string[]): number {
+    if (nodeIds.length === 0) return 0;
+    const idSet = new Set(nodeIds);
+    const before = this.contradictionPairs.length;
+    this.contradictionPairs = this.contradictionPairs.filter(
+      (c) => !idSet.has(c.nodeA) && !idSet.has(c.nodeB),
+    );
+    const removed = before - this.contradictionPairs.length;
+    if (removed > 0) {
+      void this.persistContradictionQueue();
+      this.vitality.invalidate();
+    }
+    return removed;
+  }
+
   dismissContradictionPair(id: string): void {
-    this.contradictionPairs = this.contradictionPairs.filter(c => c.id !== id);
+    const c = this.contradictionPairs.find((x) => x.id === id);
+    if (!c) return;
+    this.contradictionPairs = this.contradictionPairs.filter((x) => x.id !== id);
+    const key = pairKey(c.graphId, c.nodeA, c.nodeB);
+    this.contradictionDismissals.add(key);
+    void this.persistContradictionQueue();
+    void this.persistContradictionDismissals();
+    this.vitality.invalidate();
+  }
+
+  async resolveContradictionPair(
+    id: string,
+    action: 'keep-a' | 'keep-b' | 'mark-debate' | 'dismiss',
+    opts?: { triggeredBy?: string },
+  ): Promise<void> {
+    const c = this.contradictionPairs.find((x) => x.id === id);
+    if (!c) return;
+    const now = Date.now();
+    // Defaults to the in-app user action; the MCP resolve tool passes
+    // 'mcp:resolve_contradiction' so the audit trail never claims the user
+    // superseded a memory when an (approved) AI client carried it out.
+    const triggeredBy = opts?.triggeredBy ?? 'user:correct';
+    if (action === 'keep-a' || action === 'keep-b') {
+      const loserId = action === 'keep-a' ? c.nodeB : c.nodeA;
+      const actor = triggeredBy === 'user:correct' ? 'user' : 'approved AI client';
+      try {
+        await this.host.applyCorrection(c.graphId, {
+          edits: [{
+            kind: 'delete',
+            nodeId: loserId,
+            reason: `${actor} resolved contradiction (${action})`,
+          }],
+        }, { triggeredBy });
+      } catch (err) {
+        console.error('[brain] resolveContradictionPair failed:', err);
+        return;
+      }
+    }
+    const resolved: ContradictionPair = {
+      ...c,
+      resolvedAt: now,
+      resolution: action === 'dismiss' ? 'dismiss' : action,
+    };
+    this.contradictionHistory.push(resolved);
+    if (this.contradictionHistory.length > 500) {
+      this.contradictionHistory = this.contradictionHistory.slice(-500);
+    }
+    if (action === 'mark-debate' || action === 'dismiss') {
+      this.contradictionDismissals.add(pairKey(c.graphId, c.nodeA, c.nodeB));
+      void this.persistContradictionDismissals();
+    }
+    this.contradictionPairs = this.contradictionPairs.filter((x) => x.id !== id);
+    void this.persistContradictionQueue();
+    this.vitality.invalidate();
+  }
+
+  /** On-demand compare of two ingested sources (in-app, ungated). */
+  async compareSources(params: {
+    graphId: string;
+    sourceA: string;
+    sourceB: string;
+  }): Promise<ContradictionPair[]> {
+    const recA = this.host.getSourceRecord(params.graphId, params.sourceA);
+    const recB = this.host.getSourceRecord(params.graphId, params.sourceB);
+    if (!recA || !recB) return [];
+    const nodeById = new Map(this.host.listNodes(params.graphId).map((n) => [n.id, n]));
+    const idsA = new Set(recA.nodeIds.filter((id) => nodeById.has(id)));
+    const idsB = new Set(recB.nodeIds.filter((id) => nodeById.has(id)));
+    const now = Date.now();
+    const found: ContradictionPair[] = [];
+    const results = this.host.reflectGraph(params.graphId);
+    for (const r of results) {
+      const aInA = idsA.has(r.nodeA);
+      const bInB = idsB.has(r.nodeB);
+      const aInB = idsB.has(r.nodeA);
+      const bInA = idsA.has(r.nodeB);
+      if (!((aInA && bInB) || (aInB && bInA))) continue;
+      const a = nodeById.get(r.nodeA);
+      const b = nodeById.get(r.nodeB);
+      if (!a || !b) continue;
+      if (a.confidence <= 0.2 || b.confidence <= 0.2) continue;
+      if ((a.validUntil !== undefined && a.validUntil <= now) ||
+          (b.validUntil !== undefined && b.validUntil <= now)) continue;
+      const snippetA = cleanSnippet(a.contentPreview).slice(0, 140);
+      const snippetB = cleanSnippet(b.contentPreview).slice(0, 140);
+      found.push({
+        id: randomUUID(),
+        graphId: params.graphId,
+        nodeA: r.nodeA,
+        nodeB: r.nodeB,
+        snippetA,
+        snippetB,
+        sharedEntities: r.sharedEntities,
+        description: r.description,
+        detectedAt: now,
+        kind: 'semantic',
+        severity: classifySeverity(snippetA, snippetB, r.sharedEntities),
+        temporalVerdict: classifyTemporalVerdict(snippetA, snippetB, a.validUntil, b.validUntil),
+        sourceA: params.sourceA,
+        sourceB: params.sourceB,
+      });
+    }
+    for (const pair of found) {
+      this.pushContradictionPair(pair);
+    }
+    if (found.length > 0) void this.persistContradictionQueue();
+    return found;
+  }
+
+  /** Trigger contradiction scan on demand (Workbench "Audit now"). */
+  async runContradictionScanNow(opts: { graphId?: string; deep?: boolean } = {}): Promise<{ added: number }> {
+    const before = this.contradictionPairs.length;
+    await this.runContradictionScan(opts);
+    return { added: this.contradictionPairs.length - before };
+  }
+
+  /** Enqueue polarity-flip healing-journal / duplicate-scan pairs as contradictions. */
+  private maybeEnqueuePolarityContradiction(
+    graphId: string,
+    nodeA: string,
+    nodeB: string,
+    snippetA: string,
+    snippetB: string,
+    description: string,
+  ): void {
+    if (!POLARITY_RE.test(snippetA) && !POLARITY_RE.test(snippetB)) return;
+    if (this.pushContradictionPair({
+      graphId,
+      nodeA,
+      nodeB,
+      snippetA: snippetA.slice(0, 140),
+      snippetB: snippetB.slice(0, 140),
+      sharedEntities: [],
+      description,
+      kind: 'semantic',
+      skipTriage: true,
+    })) {
+      void this.persistContradictionQueue();
+    }
   }
 
   /**
@@ -935,33 +1427,33 @@ export class BrainEngine {
    * backpressure keep it off the hot path. Surfaces NEW conflicting pairs into
    * the contradiction review queue (read by the contradiction_pairs MCP tool).
    */
-  private async runContradictionScan(): Promise<void> {
+  private async runContradictionScan(opts: { graphId?: string; deep?: boolean } = {}): Promise<void> {
     if (this.contradictionScanRunning) return;
     if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) {
-      this.deferUntilBrainReady(() => { void this.runContradictionScan(); });
+      if (!opts.graphId) {
+        this.deferUntilBrainReady(() => { void this.runContradictionScan(); });
+      }
       return;
     }
     this.contradictionScanRunning = true;
     this.emitActivity('contradiction-scan', 'start');
     const now = Date.now();
     const yieldToLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
+    let added = 0;
     try {
-      const graphs = this.host.listGraphs();
+      const graphs = opts.graphId ? [opts.graphId] : this.host.listGraphs();
       if (graphs.length === 0) return;
-      // Round-robin a bounded slice per run so a large cortex never reflects
-      // every engram in one pass.
-      const SLICE = 3;
-      const start = this.contradictionScanCursor % graphs.length;
+      const SLICE = opts.deep ? graphs.length : (opts.graphId ? 1 : 5);
+      const start = opts.graphId ? 0 : (this.contradictionScanCursor % graphs.length);
       const slice: string[] = [];
       for (let i = 0; i < Math.min(SLICE, graphs.length); i++) {
         slice.push(graphs[(start + i) % graphs.length]!);
       }
-      this.contradictionScanCursor = (start + SLICE) % graphs.length;
+      if (!opts.graphId) {
+        this.contradictionScanCursor = (start + SLICE) % graphs.length;
+      }
 
-      const keyOf = (gid: string, x: string, y: string): string =>
-        x < y ? `${gid}|${x}|${y}` : `${gid}|${y}|${x}`;
-      const known = new Set(this.contradictionPairs.map(c => keyOf(c.graphId, c.nodeA, c.nodeB)));
-      const found: ContradictionPair[] = [];
+      const known = new Set(this.contradictionPairs.map((c) => pairKey(c.graphId, c.nodeA, c.nodeB)));
 
       for (const graphId of slice) {
         try {
@@ -969,28 +1461,30 @@ export class BrainEngine {
           const results = this.host.reflectGraph(graphId);
           if (results.length) {
             for (const c of results) {
-              const key = keyOf(graphId, c.nodeA, c.nodeB);
-              if (known.has(key)) continue;
+              const key = pairKey(graphId, c.nodeA, c.nodeB);
+              if (known.has(key) || this.contradictionDismissals.has(key)) continue;
               const a = nodeById.get(c.nodeA);
               const b = nodeById.get(c.nodeB);
-              // Skip if either node was since superseded / soft-deleted.
               if (!a || !b) continue;
               if (a.confidence <= 0.2 || b.confidence <= 0.2) continue;
               if ((a.validUntil !== undefined && a.validUntil <= now) ||
                   (b.validUntil !== undefined && b.validUntil <= now)) continue;
               known.add(key);
-              found.push({
-                id: randomUUID(),
+              const snippetA = cleanSnippet(a.contentPreview).slice(0, 140);
+              const snippetB = cleanSnippet(b.contentPreview).slice(0, 140);
+              if (this.pushContradictionPair({
                 graphId,
                 nodeA: c.nodeA,
                 nodeB: c.nodeB,
-                snippetA: cleanSnippet(a.contentPreview).slice(0, 140),
-                snippetB: cleanSnippet(b.contentPreview).slice(0, 140),
+                snippetA,
+                snippetB,
                 sharedEntities: c.sharedEntities,
                 description: c.description,
                 detectedAt: now,
                 kind: 'semantic',
-              });
+              })) {
+                added += 1;
+              }
             }
           }
           const meta = this.host.getGraphMetadata(graphId);
@@ -1004,38 +1498,38 @@ export class BrainEngine {
             },
           });
           for (const hit of policyHits) {
-            const key = keyOf(graphId, hit.nodeId, hit.canonicalNodeId);
-            if (known.has(key)) continue;
+            const key = pairKey(graphId, hit.nodeId, hit.canonicalNodeId);
+            if (known.has(key) || this.contradictionDismissals.has(key)) continue;
             const a = nodeById.get(hit.nodeId);
             const b = nodeById.get(hit.canonicalNodeId);
             if (!a || !b) continue;
             known.add(key);
-            found.push({
-              id: randomUUID(),
+            const snippetA = cleanSnippet(a.contentPreview).slice(0, 140);
+            const snippetB = cleanSnippet(b.contentPreview).slice(0, 140);
+            if (this.pushContradictionPair({
               graphId,
               nodeA: hit.nodeId,
               nodeB: hit.canonicalNodeId,
-              snippetA: cleanSnippet(a.contentPreview).slice(0, 140),
-              snippetB: cleanSnippet(b.contentPreview).slice(0, 140),
+              snippetA,
+              snippetB,
               sharedEntities: hit.sharedTokens,
               description: `Policy conflict: ${hit.reason}`,
               detectedAt: now,
               kind: 'policy',
-            });
+              skipTriage: true,
+            })) {
+              added += 1;
+            }
           }
         } catch (e) {
-          // One engram failing must not abort the batch.
           console.error(`[brain] contradiction scan failed for ${redactId(graphId)}: ${(e as Error).message}`);
         }
         await yieldToLoop();
       }
 
-      if (found.length) {
-        this.contradictionPairs.push(...found);
-        // Bound the queue — newest wins.
-        if (this.contradictionPairs.length > 200) {
-          this.contradictionPairs = this.contradictionPairs.slice(-200);
-        }
+      if (added > 0) {
+        await this.persistContradictionQueue();
+        this.vitality.invalidate();
       }
     } finally {
       this.contradictionScanRunning = false;
@@ -1212,13 +1706,13 @@ export class BrainEngine {
   }
 
   async computeVitality(): Promise<VitalityReport> {
-    return this.vitality.compute(this.duplicatePairs.length);
+    return this.vitality.compute(this.duplicatePairs.length, this.contradictionPairs.length);
   }
 
   /** Retrieval-quality Memory Health report — powers the Autonomous
    *  Indelibility tab's health ring. */
   async getMemoryHealth(): Promise<MemoryHealth> {
-    return this.memoryHealth.compute();
+    return this.memoryHealth.compute(this.contradictionPairs.length);
   }
 
   /** Live cross-engram connection store — for the UI's cross-engram panel. */
@@ -1339,6 +1833,7 @@ export class BrainEngine {
     this.emitBrain('__brain_start_fullscan__');
     try {
       await this.runDuplicateScan();
+      await this.runContradictionScan();
       // LLM-backed passes (synapse, insight) can stall on Ollama hangs and
       // each timeout costs 8-15 s × N engrams. Skipped during the post-boot
       // first scan so the very first sweep can't pin the CPU for minutes (the
@@ -1609,6 +2104,14 @@ export class BrainEngine {
                 similarity: pair.similarity,
                 detectedAt: now,
               });
+              this.maybeEnqueuePolarityContradiction(
+                graphId,
+                a.id,
+                b.id,
+                snippetA,
+                snippetB,
+                'Polarity-flip duplicate candidate',
+              );
             } else {
               healActions.push({
                 graphId,
@@ -1951,6 +2454,14 @@ export class BrainEngine {
             this.duplicatePairs.sort((a, b) => b.similarity - a.similarity);
             this.duplicatePairs = this.duplicatePairs.slice(0, MAX_DUPLICATE_PAIRS_STORED);
           }
+          this.maybeEnqueuePolarityContradiction(
+            record.graphId,
+            record.survivingNodeId,
+            restoredId,
+            record.survivingContentSnapshot,
+            record.supersededContentSnapshot,
+            'Healing review unmerged — possible contradiction',
+          );
           this.vitality.invalidate();
         }
         return {
@@ -2424,7 +2935,7 @@ export class BrainEngine {
       this.vitality.invalidate();
     }
     try {
-      const report = await this.vitality.compute(this.duplicatePairs.length);
+      const report = await this.vitality.compute(this.duplicatePairs.length, this.contradictionPairs.length);
       // Persist the live score so the NEXT cold boot can substitute it for
       // the inflated pre-scan estimate. Only persist after the first
       // duplicate scan has completed — otherwise we'd save the same
@@ -2441,6 +2952,7 @@ export class BrainEngine {
                 computedAt: Date.now(),
                 byGraph: report.byGraph,
                 pendingDuplicatePairs: this.duplicatePairs.length,
+                pendingContradictionPairs: this.contradictionPairs.length,
               },
             },
           });

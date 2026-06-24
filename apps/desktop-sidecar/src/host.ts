@@ -943,6 +943,79 @@ export class GraphnosisHost {
     await writeFileAtomic(file, Buffer.from(JSON.stringify(insights)));
   }
 
+  private static readonly CONTRADICTIONS_FILE = 'brain-contradictions.json';
+  private static readonly CONTRADICTION_DISMISSALS_FILE = 'brain-contradiction-dismissals.json';
+
+  /** Load persisted contradiction review queue. Returns [] if no file exists yet. */
+  async loadContradictionPairs<T>(): Promise<T[]> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.CONTRADICTIONS_FILE);
+    let raw: string;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      console.error(`[host] could not read brain contradictions: ${(e as Error).message}`);
+      return [];
+    }
+    try {
+      return JSON.parse(raw) as T[];
+    } catch {
+      console.error('[host] brain-contradictions.json is malformed — starting fresh');
+      return [];
+    }
+  }
+
+  /** Atomically write contradiction queue to disk. */
+  async saveContradictionPairs<T>(pairs: T[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.CONTRADICTIONS_FILE);
+    await writeFileAtomic(file, Buffer.from(JSON.stringify(pairs)));
+  }
+
+  /** Persisted dismissal keys — pairs the user marked debate / both true. */
+  async loadContradictionDismissals(): Promise<string[]> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.CONTRADICTION_DISMISSALS_FILE);
+    try {
+      const raw = await fs.readFile(file, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      return [];
+    }
+  }
+
+  async saveContradictionDismissals(keys: string[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.CONTRADICTION_DISMISSALS_FILE);
+    await writeFileAtomic(file, Buffer.from(JSON.stringify(keys)));
+  }
+
+  private static readonly SUPPRESSED_CONTRADICTIONS_FILE = 'brain-contradictions-suppressed.json';
+
+  /** Load the triage-suppressed contradiction audit ring. [] if none exists yet. */
+  async loadSuppressedContradictions<T>(): Promise<T[]> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.SUPPRESSED_CONTRADICTIONS_FILE);
+    let raw: string;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      console.error(`[host] could not read suppressed contradictions: ${(e as Error).message}`);
+      return [];
+    }
+    try {
+      return JSON.parse(raw) as T[];
+    } catch {
+      console.error('[host] brain-contradictions-suppressed.json is malformed — starting fresh');
+      return [];
+    }
+  }
+
+  /** Atomically write the suppressed-contradiction audit ring to disk. */
+  async saveSuppressedContradictions<T>(items: T[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.SUPPRESSED_CONTRADICTIONS_FILE);
+    await writeFileAtomic(file, Buffer.from(JSON.stringify(items)));
+  }
+
   /** Load + decrypt the cross-engram connection store. [] if none exists yet. */
   async loadConnectionStore(): Promise<connectionStoreMod.CrossEngramConnection[]> {
     const file = path.join(this.opts.cortexDir, connectionStoreMod.CROSS_ENGRAM_CONNECTIONS_FILE);

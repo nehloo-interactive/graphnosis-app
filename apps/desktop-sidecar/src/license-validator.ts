@@ -95,9 +95,12 @@ export interface LicensePayload {
  *   skill-training       — full Autonomous Praxis pipeline + .gsk export
  *   gnn-exploration      — Graphnosis Neural Network: MCP `gnn_neighbors`,
  *                          `gnn_status`, MemoryStudio chip, edge-prediction loop
- *   foresight            — local-LLM tools: `develop`, `predict`, `insights`,
- *                          `llm_query`, `llm_distill`, `audit_memory`,
- *                          `duplicate_pairs`
+ *   foresight            — local-LLM tools ONLY: `develop`, `predict`,
+ *                          `insights`, `llm_query`, `llm_distill`
+ *   memory-integrity     — deterministic Memory Integrity tools (entry Pro, no
+ *                          LLM): `contradiction_pairs`, `compare_sources`,
+ *                          `resolve_contradiction`, `suppressed_contradictions`,
+ *                          `duplicate_pairs`, `audit_memory`
  *   connector-cadence    — unlocks sub-daily connector pull intervals (Pro/Teams)
  *   teams                — Teams-tier features (shared engrams, future gates)
  *   enterprise           — Enterprise-tier marker; gates SSO, audit API, future
@@ -109,7 +112,7 @@ export interface LicensePayload {
  *                          feature automatically; older Pro tokens do not.
  *   beta                 — Early-access / in-progress features for select users
  */
-export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams' | 'enterprise' | 'mcp-tool-control' | 'ghampus' | 'beta';
+export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'memory-integrity' | 'connector-cadence' | 'teams' | 'enterprise' | 'mcp-tool-control' | 'ghampus' | 'beta';
 
 // ── LicenseValidator ──────────────────────────────────────────────────────────
 

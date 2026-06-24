@@ -10,6 +10,7 @@
 // UI can pick the right icon ("github" → 🐙, "claude-ai" → 💬, etc.).
 
 import type { GraphnosisHost } from './host.js';
+import { formatUserVisibleSourceLabel } from './agent-tools.js';
 
 export interface AgentNotificationsDeps {
   host: GraphnosisHost;
@@ -75,14 +76,7 @@ function classifyOrigin(addedBy: string | undefined, ref: string): NotificationE
 
 /** Strip filename-ish refs to a clean display string. */
 function readableLabel(ref: string, sourceId: string): string {
-  // Drop kind prefix (e.g. 'file:', 'clip:'), URL noise, file extension.
-  const stripped = ref
-    .replace(/^(file|clip|url|ai-conversation|skill):/i, '')
-    .replace(/^https?:\/\//, '')
-    .replace(/\?[^?]*$/, '');
-  // If the result is meaningful (more than a hash), use it; otherwise fall
-  // back to the sourceId so the UI is never blank.
-  return stripped.trim().length >= 3 ? stripped : sourceId;
+  return formatUserVisibleSourceLabel(ref, sourceId);
 }
 
 /**

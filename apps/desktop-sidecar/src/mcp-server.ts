@@ -8,6 +8,7 @@ import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import { proposeCorrection, applyCorrection, type GnnCandidateExpander } from './correction.js';
 import { ingestClip } from './ingest.js';
+import { augmentMemoryWithTemporalContext } from './ghampus-temporal-parse.js';
 import { withEmbedding } from './embedding-queue.js';
 import {
   GHAMPUS_RECALL_OP_TIMEOUT_MS,
@@ -220,6 +221,21 @@ const ApplyInput = z.object({
  * telling the AI to populate previews next time. Once the field has been
  * available for a release or two we may flip this to a hard requirement.
  */
+const ResolveContradictionInput = z.object({
+  action: z.enum(['mark_debate', 'keep_a', 'keep_b']),
+  items: z.array(z.object({
+    pairId: z.string().min(1),
+    preview: z.string().min(1).max(280),
+  })).min(1).max(20),
+  reason: z.string().max(500).optional(),
+});
+
+const SuppressedContradictionsInput = z.object({
+  engram: z.string().optional(),
+  reason: z.enum(['insufficient-entities', 'low-severity', 'negation-artifact', 'temporal-supersession', 'ingest-gate']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
 const ForgetInput = z.object({
   graphId: z.string(),
   // Preferred shape — each entry carries its own preview.
@@ -1135,6 +1151,11 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     return resolveActingClientName() === GHAMPUS_MCP_CLIENT_ID;
   }
 
+  /** Ghampus already builds purpose-built recall queries — skip redundant LLM rewrite. */
+  function shouldSkipRecallEnrichment(args: { skip_enrichment?: boolean | undefined }): boolean {
+    return args.skip_enrichment === true || isInternalGhampusCaller();
+  }
+
   /** Ghampus user turns get queue + op timeouts so a long ingest cannot wedge chat for minutes. */
   function withRecallEmbedding<T>(fn: () => Promise<T>, label: string): Promise<T> {
     if (!isInternalGhampusCaller()) return withEmbedding(fn, label);
@@ -2021,6 +2042,58 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         },
       },
       {
+        name: 'resolve_contradiction',
+        description: 'DETERMINISM — Deterministic write: applies the user-chosen resolution to a flagged contradiction pair. No LLM, no randomness. Keep A/Keep B soft-delete the losing memory (recoverable from the op-log); Mark debate keeps both.\n\nResolve or dismiss a contradiction Graphnosis has flagged between two of the user\'s memories. CRITICAL — THE USER ADJUDICATES, NOT YOU. Graphnosis never resolves a contradiction on behalf of the user; this tool only carries out a resolution the user has decided on. Most MCP clients show your request payload to the user for approval before running the tool, so ALWAYS fill each item `preview` with the two conflicting snippets (from `contradiction_pairs`) — that preview is what the user reads to approve. Never resolve a pair the user has not seen.\n\nLANGUAGE: Works in any language. Trigger on the "clear this conflict / these don\'t actually clash / keep the newer one" intent regardless of phrasing.\n\nACTIONS:\n• `mark_debate` — NON-destructive. Both memories stay; the pair leaves the review queue. Use for false positives (the two memories do not actually conflict) and for genuine context-dependent both-true cases. This is the safe default — nothing is lost.\n• `keep_a` — supersede memory B: B is soft-deleted (recoverable), A remains. Use only when the user has decided A is correct and B is outdated.\n• `keep_b` — supersede memory A: A is soft-deleted (recoverable), B remains.\n\nHOW TO USE:\n1. Call `contradiction_pairs` to list flagged pairs (each has `id`, `snippetA`, `snippetB`).\n2. Show the user the conflicting memories and let THEM choose: dismiss (`mark_debate`) or which side wins (`keep_a`/`keep_b`).\n3. Call `resolve_contradiction` with `action` and `items: [{pairId, preview}]` where `preview` is like "A: <snippetA> ⟷ B: <snippetB>".\n\nNever guess a pairId. Never supersede a memory the user has not explicitly chosen to retire — when in doubt, use `mark_debate` (nothing is lost) or leave it for in-app review.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['mark_debate', 'keep_a', 'keep_b'],
+              description: 'mark_debate = keep both, leave the queue (false positive / both-true). keep_a = supersede B (soft-delete B). keep_b = supersede A (soft-delete A).',
+            },
+            items: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 20,
+              description: 'The pairs to resolve. Each entry needs a pairId from contradiction_pairs and a preview of the two snippets, which is what the user reads in the consent prompt.',
+              items: {
+                type: 'object',
+                properties: {
+                  pairId: { type: 'string', description: 'The `id` of a pair from contradiction_pairs. Never guess.' },
+                  preview: { type: 'string', description: 'Both conflicting snippets, e.g. "A: <snippetA> ⟷ B: <snippetB>" (≤280 chars). The user reads this to approve.' },
+                },
+                required: ['pairId', 'preview'],
+              },
+            },
+            reason: { type: 'string', description: 'Optional note recorded with the resolution (e.g. why the user dismissed it).' },
+          },
+          required: ['action', 'items'],
+        },
+        annotations: {
+          title: 'Resolve a flagged contradiction',
+          readOnlyHint: false,
+          destructiveHint: true,
+        },
+      },
+      {
+        name: 'suppressed_contradictions',
+        description: 'DETERMINISM — Deterministic read: a direct read of the triage audit ring; identical calls return identical data, no LLM, no randomness.\n\nList contradiction pairs the deterministic triage DETECTED but held back from the review queue — the audit lane that guarantees nothing is silently dropped. Each row carries the reason it was held: `insufficient-entities` (too few meaningful shared anchors — usually date/number/common-term noise), `low-severity`, `negation-artifact`, `temporal-supersession` (a memory legitimately superseded over time — the "superseded over time" lane), or `ingest-gate`. Use this to audit what the false-positive filter caught, or to surface temporal supersessions the user may want to confirm. These pairs are NOT in the active queue and are not resolvable via `resolve_contradiction` (only queued pairs are).\n\nPARAMETERS:\n• `engram` — optional engram slug to scope to one graph.\n• `reason` — optional filter to a single suppression reason.\n• `limit` — optional cap on rows returned (newest first).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Optional engram slug to scope to one graph.' },
+            reason: { type: 'string', enum: ['insufficient-entities', 'low-severity', 'negation-artifact', 'temporal-supersession', 'ingest-gate'], description: 'Optional filter to a single suppression reason.' },
+            limit: { type: 'number', description: 'Optional cap on number of rows (newest first).' },
+          },
+        },
+        annotations: {
+          title: 'Audit suppressed contradiction triage',
+          readOnlyHint: true,
+          destructiveHint: false,
+        },
+      },
+      {
         name: 'stats',
         description: 'DETERMINISM — Deterministic: a direct read of ground-truth graph state; identical calls return identical data, no LLM, no randomness.\n\nInspect the ground-truth state of the user\'s graphs — total/active/soft-deleted node counts per graph, plus a sample of node contents. Use this when the user asks "show me my graph" or to debug why `recall` returned nothing.',
         inputSchema: {
@@ -2515,6 +2588,23 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         },
         annotations: {
           title: 'Contradiction pairs',
+          readOnlyHint: true,
+        },
+      },
+      {
+        name: 'compare_sources',
+        description: 'DETERMINISM — Deterministic reflection pass across two ingested sources; no LLM.\n\nCompare two source documents in an engram and return severity-ranked contradiction pairs (with temporal verdict heuristics). Use when the user asks "does doc A contradict doc B?" or as part of a consistency audit. Requires Pro (foresight). In-app compare is free via the Memory Integrity Workbench.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram id or display name.' },
+            sourceA: { type: 'string', description: 'First source id.' },
+            sourceB: { type: 'string', description: 'Second source id.' },
+          },
+          required: ['engram', 'sourceA', 'sourceB'],
+        },
+        annotations: {
+          title: 'Compare sources (Pro)',
           readOnlyHint: true,
         },
       },
@@ -3076,7 +3166,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const sub = await withRecallEmbedding(() => deps.host.recall(args.query, {
           budget,
           recallPriority: WorkPriority.P1_USER,
-          ...(args.skip_enrichment ? { skipEnrichment: true } : {}),
+          ...(shouldSkipRecallEnrichment(args) ? { skipEnrichment: true } : {}),
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
           // Explicitly-named engrams that passed consent (or all in-scope
@@ -3183,7 +3273,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const sub = await withRecallEmbedding(() => deps.host.digDeeper(args.query, {
           budget,
           recallPriority: WorkPriority.P1_USER,
-          ...(args.skip_enrichment ? { skipEnrichment: true } : {}),
+          ...(shouldSkipRecallEnrichment(args) ? { skipEnrichment: true } : {}),
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
           ...((): { consentedGraphIds?: string[] } => {
@@ -3348,6 +3438,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // remember/correct flows from user-driven ingest.
         const addedBy = resolveActingClientName();
         const sourceKind = args.kind ?? 'clip';
+        const rememberText = augmentMemoryWithTemporalContext(args.text).text;
         const obligationOpt = args.obligation
           ? {
               obligationType: args.obligation.obligationType,
@@ -3358,7 +3449,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             }
           : undefined;
         const rec = await withEmbedding(() =>
-          ingestClip(deps.host, graphId, args.text, args.label, {
+          ingestClip(deps.host, graphId, rememberText, args.label, {
             ...(addedBy ? { addedBy } : {}),
             sourceKind,
             triggeredBy: 'mcp:remember',
@@ -3490,6 +3581,100 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             'The user (and the developer) will thank you._'
           );
         }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+      case 'resolve_contradiction': {
+        {
+          // Memory Integrity (entry Pro) — same tier as contradiction_pairs /
+          // compare_sources, NOT the higher Foresight (LLM) tier. The programmatic
+          // contradiction surface is Pro; free users review and resolve in the
+          // in-app Memory Integrity Workbench.
+          const licenseToken = await getEffectiveLicenseToken(deps);
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'resolve_contradiction requires a Graphnosis Pro subscription (Memory Integrity) — the same tier as contradiction_pairs. ' +
+              'Free users can review and resolve contradictions in the Graphnosis app Memory Integrity Workbench. ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not running — open the Graphnosis app to review and resolve contradictions.');
+        }
+        const args = ResolveContradictionInput.parse(rawInput);
+        const ACTION_MAP = { mark_debate: 'mark-debate', keep_a: 'keep-a', keep_b: 'keep-b' } as const;
+        const brainAction = ACTION_MAP[args.action];
+        const byId = new Map(deps.brainEngine.getContradictionPairs().map((p) => [p.id, p]));
+        const done: string[] = [];
+        const missing: string[] = [];
+        for (const item of args.items) {
+          if (!byId.has(item.pairId)) { missing.push(item.pairId); continue; }
+          await deps.brainEngine.resolveContradictionPair(item.pairId, brainAction, {
+            triggeredBy: 'mcp:resolve_contradiction',
+          });
+          const oneLine = item.preview.replace(/\s+/g, ' ').trim().slice(0, 160);
+          if (args.action === 'mark_debate') {
+            done.push(`  • [${item.pairId}] marked as debate — both memories kept: ${oneLine}`);
+          } else {
+            const kept = args.action === 'keep_a' ? 'A' : 'B';
+            const gone = args.action === 'keep_a' ? 'B' : 'A';
+            done.push(`  • [${item.pairId}] kept ${kept}, superseded ${gone} (soft-deleted, recoverable): ${oneLine}`);
+          }
+        }
+        const out: string[] = [];
+        out.push(`${args.action === 'mark_debate' ? 'Dismissed' : 'Resolved'} ${done.length} contradiction pair${done.length === 1 ? '' : 's'}${args.reason ? ` (${args.reason})` : ''}:`);
+        out.push(...done);
+        if (missing.length) {
+          out.push('');
+          out.push(`⚠️ ${missing.length} pairId${missing.length === 1 ? '' : 's'} not in the active queue (already resolved or stale): ${missing.join(', ')}. Re-run \`contradiction_pairs\` to refresh.`);
+        }
+        if (args.action !== 'mark_debate' && done.length > 0) {
+          out.push('');
+          out.push('_The superseded side is soft-deleted with lineage preserved — recoverable via the Graphnosis app\'s Recover flow._');
+        }
+        return { content: [{ type: 'text', text: out.join('\n') }] };
+      }
+      case 'suppressed_contradictions': {
+        {
+          const licenseToken = await getEffectiveLicenseToken(deps);
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'suppressed_contradictions requires a Graphnosis Pro subscription (Memory Integrity) — the same tier as contradiction_pairs. Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not running — open the Graphnosis app to review contradiction triage.');
+        }
+        const args = SuppressedContradictionsInput.parse(rawInput);
+        let scopedGraphId: string | undefined;
+        if (args.engram) {
+          const res = requireEngram(deps.host, args.engram);
+          if ('error' in res) return res.error;
+          scopedGraphId = res.graphId;
+        }
+        const all = deps.brainEngine.getSuppressedContradictions(scopedGraphId, args.reason);
+        if (all.length === 0) {
+          return { content: [{ type: 'text', text: `No suppressed contradiction pairs recorded${args.reason ? ` for reason "${args.reason}"` : ''}${args.engram ? ` in "${args.engram}"` : ''}. The triage holds nothing back here when ingest/scan find no near-conflicts to filter.` }] };
+        }
+        const byReason: Record<string, number> = {};
+        for (const s of all) byReason[s.reason] = (byReason[s.reason] ?? 0) + 1;
+        const rows = args.limit ? all.slice(-args.limit) : all;
+        const clip = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 120);
+        const lines: string[] = [];
+        lines.push(`${rows.length} of ${all.length} suppressed contradiction pair${all.length === 1 ? '' : 's'} (audit lane — detected, held back from the review queue, never silently dropped):`);
+        lines.push(`By reason: ${Object.entries(byReason).map(([r, n]) => `${r}=${n}`).join(', ')}`);
+        lines.push('');
+        for (const s of rows) {
+          lines.push(`• [${s.reason} · ${s.severity} · ${s.temporalVerdict}]${s.fromIngest ? ' (ingest)' : ''}`);
+          lines.push(`    A: ${clip(s.snippetA)}`);
+          lines.push(`    B: ${clip(s.snippetB)}`);
+          if (s.sharedEntities.length) lines.push(`    shared: ${s.sharedEntities.slice(0, 4).join(', ')}`);
+        }
+        lines.push('');
+        lines.push('_`temporal-supersession` rows are the "superseded over time" lane. These pairs are not in the active queue and are not resolvable via `resolve_contradiction` (only queued pairs are)._');
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
       case 'stats': {
@@ -3763,7 +3948,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const sorted = [...sources].sort((a, b) => b.ingestedAt - a.ingestedAt).slice(0, limit);
         const rows = sorted.map(s => {
           const label = deps.host.getGraphMetadata(s.graphId)?.displayName ?? s.graphId;
-          return `• ${new Date(s.ingestedAt).toISOString()}  [${s.kind}]  ${s.ref}  (${label})`;
+          return `• ${new Date(s.ingestedAt).toISOString()}  [${s.kind}]  ${s.ref}  (${label})  |  graph: ${s.graphId}  |  id: ${s.sourceId}`;
         }).join('\n');
         const scope = graphIdFilter
           ? (deps.host.getGraphMetadata(graphIdFilter)?.displayName ?? graphIdFilter)

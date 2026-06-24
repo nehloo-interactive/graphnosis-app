@@ -215,6 +215,34 @@ export interface IpcDeps {
   };
 }
 
+function clearContradictionQueueAfterCorrection(
+  deps: IpcDeps,
+  diff: CorrectionDiff,
+): void {
+  const nodeIds = (diff.edits ?? []).map((e) => e.nodeId);
+  if (nodeIds.length > 0) deps.brainEngine?.purgeContradictionPairsForNodes(nodeIds);
+}
+
+function notifyBrainAfterIngest(deps: IpcDeps, graphId: string, sourceId: string): void {
+  const rec = deps.host.getSourceRecord(graphId, sourceId) as {
+    contradictions?: Array<{
+      nodeA: string;
+      nodeB: string;
+      sharedEntities?: string[];
+      description?: string;
+    }>;
+  } | undefined;
+  const raw = rec?.contradictions ?? [];
+  const pairs = raw.map((c) => ({
+    nodeA: c.nodeA,
+    nodeB: c.nodeB,
+    ...(c.sharedEntities ? { sharedEntities: c.sharedEntities } : {}),
+    ...(c.description ? { description: c.description } : {}),
+    sourceA: sourceId,
+  }));
+  deps.brainEngine?.notifyIngestComplete(graphId, pairs.length > 0 ? pairs : undefined);
+}
+
 /** Returns true when socketPath is a TCP address like "127.0.0.1:PORT". */
 function isTcpAddress(socketPath: string): boolean {
   return /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(socketPath);
@@ -1109,6 +1137,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           triggeredBy: 'user:ingest',
         }),
       );
+      notifyBrainAfterIngest(deps, args.graphId, rec.sourceId);
       return {
         ok: true,
         graphId: args.graphId,
@@ -1171,6 +1200,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           reason: args.reason ?? 'Direct edit from Graphnosis App',
         }],
       }, { triggeredBy: 'user:correct' });
+      deps.brainEngine?.purgeContradictionPairsForNodes([args.nodeId]);
       return { ok: true };
     }
     case 'node.softDelete': {
@@ -1995,7 +2025,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         text: z.string(),
         label: z.string().default('Clip'),
       }).parse(params);
-      return withEmbedding(() => ingestClip(deps.host, graphId, text, label, { triggeredBy: 'user:ingest' }));
+      return withEmbedding(async () => {
+        const rec = await ingestClip(deps.host, graphId, text, label, { triggeredBy: 'user:ingest' });
+        notifyBrainAfterIngest(deps, graphId, rec.sourceId);
+        return rec;
+      });
     }
     case 'stats.summary': {
       // Used by the Tauri inspector — lighter than `stats` with `includeNodes`.
@@ -2122,6 +2156,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const pending = deps.pendingDiffs.get(diffId);
       if (!pending) throw new Error(`No pending diff ${diffId}. It may have been applied or rejected already.`);
       await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
+      clearContradictionQueueAfterCorrection(deps, pending.diff);
       deps.pendingDiffs.delete(diffId);
       return { ok: true, graphId: pending.graphId };
     }
@@ -2631,12 +2666,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const p = getAdminPolicy();
       const ALL_CONNECTOR_KINDS = ['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context'];
       const clientTypes = deps.host.getSettings().ai.clientTypes ?? {};
+      const isPolicyClientName = (name: string): boolean =>
+        name.length >= 2 && name !== 'chat' && name !== 'agent';
       // Always offer the supported clients as blockable, even before they've
       // ever connected, unioned with any others the registry has seen.
       const SUPPORTED_CLIENTS = ['Claude Desktop', 'Claude Code', 'Cursor', 'Copilot', 'Claude Skills agent'];
-      const knownClients = Array.from(new Set([...SUPPORTED_CLIENTS, ...Object.keys(clientTypes)]));
+      const knownClients = Array.from(new Set([
+        ...SUPPORTED_CLIENTS,
+        ...Object.keys(clientTypes).filter(isPolicyClientName),
+      ]));
+      const disabledClients = (p.disabledClients ?? []).filter(isPolicyClientName);
       return {
         ...p,
+        disabledClients,
         connectorKinds: ALL_CONNECTOR_KINDS,
         knownClients,
       };
@@ -2829,10 +2871,66 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return deps.brainEngine.getContradictionPairs();
     }
 
+    case 'brain:getSuppressedContradictions': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.getSuppressedContradictions();
+    }
+
     case 'brain:dismissContradictionPair': {
       const { id } = z.object({ id: z.string() }).parse(params);
       deps.brainEngine?.dismissContradictionPair(id);
       return { ok: true };
+    }
+
+    case 'brain:resolveContradictionPair': {
+      const { id, action } = z.object({
+        id: z.string(),
+        action: z.enum(['keep-a', 'keep-b', 'mark-debate', 'dismiss']),
+      }).parse(params);
+      await deps.brainEngine?.resolveContradictionPair(id, action);
+      return { ok: true };
+    }
+
+    case 'brain:compareSources': {
+      const args = z.object({
+        graphId: z.string(),
+        sourceA: z.string(),
+        sourceB: z.string(),
+      }).parse(params);
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.compareSources(args);
+    }
+
+    case 'brain:runContradictionScan': {
+      const args = z.object({
+        graphId: z.string().optional(),
+        deep: z.boolean().optional(),
+      }).parse(params ?? {});
+      if (!deps.brainEngine) return { added: 0 };
+      return deps.brainEngine.runContradictionScanNow({
+        ...(args.graphId !== undefined ? { graphId: args.graphId } : {}),
+        ...(args.deep !== undefined ? { deep: args.deep } : {}),
+      });
+    }
+
+    case 'brain:getAttentionCounts': {
+      const corrections = deps.pendingDiffs.size;
+      const brain = deps.brainEngine?.getAttentionCounts() ?? {
+        duplicates: 0,
+        contradictions: 0,
+        total: 0,
+      };
+      return {
+        corrections,
+        duplicates: brain.duplicates,
+        contradictions: brain.contradictions,
+        total: corrections + brain.total,
+      };
+    }
+
+    case 'brain:getContradictionHistory': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.getContradictionHistory();
     }
 
     case 'brain:getHealingJournal': {
@@ -3726,13 +3824,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         label: z.string().optional(),
         kind: z.enum(['clip', 'ai-conversation']).optional(),
       }).parse(params ?? {});
-      const result = await withEmbedding(() => ingestClip(
-        deps.host,
-        args.graphId,
-        args.text,
-        args.label ?? 'MemoryStudio note',
-        { addedBy: 'memory-studio', sourceKind: args.kind ?? 'clip' },
-      ));
+      const result = await withEmbedding(async () => {
+        const rec = await ingestClip(
+          deps.host,
+          args.graphId,
+          args.text,
+          args.label ?? 'MemoryStudio note',
+          { addedBy: 'memory-studio', sourceKind: args.kind ?? 'clip' },
+        );
+        notifyBrainAfterIngest(deps, args.graphId, rec.sourceId);
+        return rec;
+      });
       return { ok: true, sourceId: result.sourceId, nodeCount: result.nodeIds.length };
     }
 
@@ -4213,6 +4315,131 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return { ok: true };
     }
 
+    case 'ghampus:input:assist': {
+      const args = z.object({
+        text: z.string(),
+        selectedText: z.string().optional(),
+        lastGhampusSnippet: z.string().optional(),
+        threadTurnCount: z.number().optional(),
+        hoursSinceActive: z.number().optional(),
+        pinnedEngramGraphId: z.string().nullable().optional(),
+      }).parse(params ?? {});
+      const { buildGhampusComposeAssist } = await import('./ghampus-compose-assist.js');
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const proFeatures = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+      return buildGhampusComposeAssist(
+        {
+          host: deps.host,
+          brainEngine: deps.brainEngine ?? null,
+          skillTrainer: deps.skillTrainer ?? null,
+          proFeatures,
+        },
+        args.text,
+        {
+          ...(args.selectedText !== undefined ? { selectedText: args.selectedText } : {}),
+          ...(args.lastGhampusSnippet !== undefined ? { lastGhampusSnippet: args.lastGhampusSnippet } : {}),
+          ...(args.threadTurnCount !== undefined ? { threadTurnCount: args.threadTurnCount } : {}),
+          ...(args.hoursSinceActive !== undefined ? { hoursSinceActive: args.hoursSinceActive } : {}),
+          ...(args.pinnedEngramGraphId !== undefined ? { pinnedEngramGraphId: args.pinnedEngramGraphId } : {}),
+        },
+      );
+    }
+
+    case 'ghampus:input:assist-refine': {
+      const args = z.object({
+        text: z.string(),
+        selectedText: z.string().optional(),
+        lastGhampusSnippet: z.string().optional(),
+        threadTurnCount: z.number().optional(),
+        hoursSinceActive: z.number().optional(),
+        pinnedEngramGraphId: z.string().nullable().optional(),
+      }).parse(params ?? {});
+      const { buildGhampusComposeAssist, detectComposePrimaryIntent } = await import('./ghampus-compose-assist.js');
+      const {
+        needsComposeLlmRefine,
+        refineComposeIntentWithLlm,
+      } = await import('./ghampus-compose-intent-llm.js');
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const proFeatures = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+      const assistDeps = {
+        host: deps.host,
+        brainEngine: deps.brainEngine ?? null,
+        skillTrainer: deps.skillTrainer ?? null,
+        proFeatures,
+      };
+      const ctx = {
+        ...(args.selectedText !== undefined ? { selectedText: args.selectedText } : {}),
+        ...(args.lastGhampusSnippet !== undefined ? { lastGhampusSnippet: args.lastGhampusSnippet } : {}),
+        ...(args.threadTurnCount !== undefined ? { threadTurnCount: args.threadTurnCount } : {}),
+        ...(args.hoursSinceActive !== undefined ? { hoursSinceActive: args.hoursSinceActive } : {}),
+        ...(args.pinnedEngramGraphId !== undefined ? { pinnedEngramGraphId: args.pinnedEngramGraphId } : {}),
+      };
+      const heuristicIntent = detectComposePrimaryIntent(args.text);
+      if (!needsComposeLlmRefine(args.text, heuristicIntent.primaryIntent)) {
+        return { refined: false as const };
+      }
+      const llm = deps.llm?.() ?? null;
+      const refine = await refineComposeIntentWithLlm({ host: deps.host, llm }, args.text);
+      if (!refine.refined || !refine.fields) {
+        return { refined: false as const, llmConfidence: refine.llmConfidence ?? null };
+      }
+      const merged = await buildGhampusComposeAssist(
+        assistDeps,
+        args.text,
+        ctx,
+        {
+          intentOverride: refine.fields,
+          intentSource: 'llm',
+          llmConfidence: refine.llmConfidence ?? null,
+        },
+      );
+      return { refined: true as const, assist: merged };
+    }
+
+    case 'ghampus:session:summarize': {
+      const { summarizeActiveGhampusSession } = await import('./ghampus-session-summary.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) {
+        return {
+          summary: '',
+          turnCount: 0,
+          hasSubstantive: false,
+          usedLlm: false,
+          defaultEngramId: 'personal',
+        };
+      }
+      const llm = deps.llm?.() ?? null;
+      return summarizeActiveGhampusSession(cortexDir, deps.host, llm);
+    }
+
+    case 'ghampus:session:clear': {
+      const args = z.object({
+        rememberSummary: z.boolean().optional(),
+        engramId: z.string().min(1).optional(),
+        summaryText: z.string().min(1).optional(),
+      }).parse(params ?? {});
+      const { clearGhampusSession, ensureActiveGhampusSession } = await import('./ghampus-session-store.js');
+      const { invalidateGhampusHistoryCache } = await import('./ghampus-history-cache.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { ok: false as const };
+      const activeSessionId = await ensureActiveGhampusSession(cortexDir);
+      let remembered: { engramId: string; sourceId: string } | undefined;
+      if (args.rememberSummary && args.engramId && args.summaryText?.trim()) {
+        const { rememberGhampusSessionSummary } = await import('./ghampus-session-summary.js');
+        const saved = await rememberGhampusSessionSummary(
+          deps.host,
+          args.engramId,
+          args.summaryText.trim(),
+          activeSessionId,
+        );
+        notifyBrainAfterIngest(deps, args.engramId, saved.sourceId);
+        remembered = { engramId: args.engramId, sourceId: saved.sourceId };
+      }
+      const result = await clearGhampusSession(cortexDir);
+      invalidateGhampusHistoryCache();
+      return { ok: true as const, ...result, ...(remembered ? { remembered } : {}) };
+    }
+
     case 'ghampus:inbox:list': {
       const watcher = deps.proactiveWatcher;
       return { cards: watcher ? watcher.listCards() : [] };
@@ -4341,15 +4568,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const sinceMs = args.sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
       const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
       if (!cortexDir) return { emitted: false };
-      const histPath = `${cortexDir}/ghampus-history.jsonl`;
-      const { readFile, appendFile } = await import('node:fs/promises');
+      const { readGhampusSessionRaw } = await import('./ghampus-session-store.js');
+      const { appendGhampusHistoryMessage } = await import('./ghampus-history-cache.js');
       const {
         hasRecentAwayDigest,
         buildAwayDigestText,
       } = await import('./away-digest.js');
 
       type HistMsg = { kind?: string; text?: string; ts?: number };
-      const tail: HistMsg[] = (await readFile(histPath, 'utf8').catch(() => ''))
+      const tail: HistMsg[] = (await readGhampusSessionRaw(cortexDir))
         .trim().split('\n').filter(Boolean).slice(-40)
         .map((line) => { try { return JSON.parse(line) as HistMsg; } catch { return null; } })
         .filter((m): m is HistMsg => m != null);
@@ -4364,17 +4591,32 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }
 
       const llm = deps.llm?.() ?? null;
-      const text = await buildAwayDigestText(notifications, totalAvailable, llm);
+      let text = await buildAwayDigestText(notifications, totalAvailable, llm);
+      const brain = deps.brainEngine?.getAttentionCounts();
+      const corrections = deps.pendingDiffs.size;
+      if (brain && (brain.contradictions > 0 || brain.duplicates > 0 || corrections > 0)) {
+        text += `\n\n**Memory Integrity:** ${corrections} correction(s), ${brain.contradictions} contradiction(s), ${brain.duplicates} duplicate pair(s) awaiting review — open Foresight → Memory Integrity.`;
+      }
 
       const digestMsg = { kind: 'ghampus', text, ts: Date.now() };
-      await appendFile(histPath, JSON.stringify(digestMsg) + '\n').catch(() => {});
-      const { appendGhampusHistoryCacheMessage } = await import('./ghampus-history-cache.js');
-      appendGhampusHistoryCacheMessage(digestMsg);
+      await appendGhampusHistoryMessage(cortexDir, digestMsg);
       return { emitted: true };
     }
     case 'ghampus:send': {
       const { runGhampusSend } = await import('./ghampus-send-flow.js');
-      return runGhampusSend(deps, params, {
+      return runGhampusSend({
+        host: deps.host,
+        ...(deps.cortexDir !== undefined ? { cortexDir: deps.cortexDir } : {}),
+        ...(deps.llm !== undefined ? { llm: deps.llm } : {}),
+        ...(deps.callMcpTool !== undefined ? { callMcpTool: deps.callMcpTool } : {}),
+        broadcastRaw: deps.broadcastRaw,
+        ...(deps.brainEngine !== undefined ? { brainEngine: deps.brainEngine } : {}),
+        ...(deps.skillTrainer !== undefined ? { skillTrainer: deps.skillTrainer } : {}),
+        hasSkillTrainingLicense: async () => {
+          const token = await getEffectiveLicenseToken(deps);
+          return deps.licenseValidator?.hasFeature(token, 'skill-training') ?? false;
+        },
+      }, params, {
         getPendingClarification: () => ghampusPendingClarification,
         setPendingClarification: (v) => { ghampusPendingClarification = v; },
         getPendingEngram: () => ghampusPendingEngram,
@@ -5203,6 +5445,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const pending = deps.pendingDiffs.get(diffId);
       if (!pending) throw new Error(`No pending diff with id "${diffId}". It may have expired or already been applied.`);
       await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
+      clearContradictionQueueAfterCorrection(deps, pending.diff);
       deps.pendingDiffs.delete(diffId);
       return { ok: true };
     }

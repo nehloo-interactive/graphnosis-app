@@ -1206,6 +1206,8 @@ export interface AppSettings {
       /** Duplicate-pair count at compute time — used for the coherence term
        *  on the next boot until the post-boot duplicate scan finishes. */
       pendingDuplicatePairs?: number;
+      /** Contradiction-pair count at compute time — same role as duplicates. */
+      pendingContradictionPairs?: number;
     };
   };
 
@@ -1781,11 +1783,13 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ? (ai.dataAccessConsents as unknown[]).filter(isConsentRecord)
     : undefined;
 
-  // Client type map — pass through, validate values.
+  // Client type map — pass through, validate values and keys.
+  const CLIENT_TYPE_VALUES = new Set(['chat', 'agent']);
   const clientTypes = (ai.clientTypes && typeof ai.clientTypes === 'object')
     ? Object.fromEntries(
         Object.entries(ai.clientTypes)
-          .filter(([, v]) => v === 'chat' || v === 'agent') as [string, 'chat' | 'agent'][]
+          .filter(([k, v]) => k.length >= 2 && !CLIENT_TYPE_VALUES.has(k)
+            && (v === 'chat' || v === 'agent')) as [string, 'chat' | 'agent'][]
       )
     : undefined;
 
@@ -1977,6 +1981,15 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
                     pendingDuplicatePairs: Math.max(
                       0,
                       Math.floor(b.lastVitality.pendingDuplicatePairs),
+                    ),
+                  }
+                : {}),
+              ...(typeof b.lastVitality.pendingContradictionPairs === 'number'
+                && Number.isFinite(b.lastVitality.pendingContradictionPairs)
+                ? {
+                    pendingContradictionPairs: Math.max(
+                      0,
+                      Math.floor(b.lastVitality.pendingContradictionPairs),
                     ),
                   }
                 : {}),
