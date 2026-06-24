@@ -85,10 +85,20 @@ export function buildGroupedDigestBody(
     const label = ORIGIN_KIND_LABELS[kind] ?? kind;
     const previews = items.slice(0, 3).map((n) => formatPreview(n)).join('; ');
     const more = items.length > 3 ? ` (+${items.length - 3} more)` : '';
-    groupLines.push(`• **${items.length}** from ${label}: ${previews}${more}`);
+    groupLines.push(`- **${items.length}** from ${label}: ${previews}${more}`);
   }
 
   return `${header}\n\n${groupLines.join('\n')}`;
+}
+
+/** Strip markdown wrappers LLMs often add — Ghampus renders plain + **bold** only. */
+export function sanitizeDigestSummaryLine(raw: string): string {
+  let line = raw.trim().split('\n')[0]?.trim() ?? '';
+  line = line.replace(/^["']|["']$/g, '');
+  line = line.replace(/^\*\*(.+)\*\*$/, '$1');
+  line = line.replace(/^_(.+)_$/, '$1');
+  line = line.replace(/[*_`]/g, '');
+  return line.trim();
 }
 
 /** Optional local-LLM one-liner over grouped counts — no sensitive content in prompt. */
@@ -109,14 +119,21 @@ export async function maybeSummarizeDigest(
 
   try {
     const output = await llm.complete({
-      system: 'You write concise activity digests. Never invent details beyond the counts given.',
+      system:
+        'You write concise activity digests in plain text only. No markdown, no underscores, no bold, no quotes.',
       user: prompt,
     });
-    const line = output.trim().split('\n')[0]?.trim();
-    return line && line.length > 10 ? line : null;
+    const line = sanitizeDigestSummaryLine(output);
+    return line.length > 10 ? line : null;
   } catch {
     return null;
   }
+}
+
+/** Strip LLM markdown wrappers from away-digest lines (legacy _italics_ one-liners). */
+export function sanitizeAwayDigestBody(text: string): string {
+  if (!text.startsWith(AWAY_DIGEST_PREFIX)) return text;
+  return text.replace(/(?<![\w/])_([^_\n]+?)_(?![\w/])/g, '$1');
 }
 
 /** Full away digest text for ghampus-history.jsonl. */
@@ -132,7 +149,7 @@ export async function buildAwayDigestText(
   const body = buildGroupedDigestBody(notifications, totalAvailable);
   const [headline, ...groupLines] = body.split('\n');
   const summary = await maybeSummarizeDigest(llm ?? null, notifications);
-  const summaryBlock = summary ? `\n\n_${summary}_` : '';
+  const summaryBlock = summary ? `\n\n${summary}` : '';
   const groupsBlock = groupLines.filter(Boolean).join('\n');
-  return `${AWAY_DIGEST_PREFIX} — ${headline}${summaryBlock}\n\n${groupsBlock}`;
+  return sanitizeAwayDigestBody(`${AWAY_DIGEST_PREFIX} — ${headline}${summaryBlock}\n\n${groupsBlock}`);
 }

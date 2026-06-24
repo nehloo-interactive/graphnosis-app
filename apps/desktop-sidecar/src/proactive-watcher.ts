@@ -405,7 +405,7 @@ export class ProactiveWatcher {
             skillSourceId: bestMatch.sourceId,
             skillGraphId: bestMatch.graphId,
             skillLabel,
-            why: `**${skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}** ${desc.what}. Running it now ${desc.benefit}.`,
+            why: `**${skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}** ${desc.what}. Preview the SOP in chat — ${desc.benefit}.`,
             status: 'pending',
           });
         }
@@ -441,7 +441,7 @@ export class ProactiveWatcher {
         skillSourceId: skill.sourceId,
         skillGraphId: skill.graphId,
         skillLabel,
-        why: `**${skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}** ${desc.what}. Running it now ${desc.benefit}.`,
+        why: `**${skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}** ${desc.what}. Preview the SOP in chat — ${desc.benefit}.`,
         status: 'pending',
       });
       this.lastTimeBasedProposal.set(rule.skillLabelFragment, now);
@@ -506,7 +506,7 @@ export class ProactiveWatcher {
       skillSourceId: taskSkill.sourceId,
       skillGraphId: taskSkill.graphId,
       skillLabel,
-      why: `**Temporal obligations** — ${due.length} active deadline/renewal/review-by item(s) need attention. Run **task-todo-management** or call \`recall_obligations(due_within_days=7)\` for the full list.`,
+      why: `**Temporal obligations** — ${due.length} active deadline/renewal/review-by item(s) need attention. Preview **task-todo-management** with \`/preview task-todo-management\` or call \`recall_obligations(due_within_days=7)\` for the full list.`,
       status: 'pending',
     });
     proposedSkillIds.add(taskSkill.sourceId);

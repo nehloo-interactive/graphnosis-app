@@ -59,12 +59,19 @@ export const HealingJournalInput = z.object({
   limit: z.coerce.number().int().positive().max(50).optional(),
 });
 
+export const CompareSourcesInput = z.object({
+  engram: z.string(),
+  sourceA: z.string(),
+  sourceB: z.string(),
+});
+
 export const AUDIT_MCP_TOOL_NAMES = new Set([
   'recall_as_of',
   'audit_memory',
   'check_duplicate',
   'duplicate_pairs',
   'contradiction_pairs',
+  'compare_sources',
   'healing_journal',
 ]);
 
@@ -126,7 +133,7 @@ export async function dispatchAuditMcpTool(
     }
     case 'audit_memory': {
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
       if (!licensed) {
         return mcpError(
           'audit_memory requires a Graphnosis Pro subscription. ' +
@@ -216,7 +223,7 @@ export async function dispatchAuditMcpTool(
         return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
       }
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
       if (!licensed) {
         return mcpError(
           'duplicate_pairs requires a Graphnosis Pro subscription. ' +
@@ -256,7 +263,7 @@ export async function dispatchAuditMcpTool(
         return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
       }
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
       if (!licensed) {
         return mcpError(
           'contradiction_pairs requires a Graphnosis Pro subscription. ' +
@@ -292,6 +299,42 @@ export async function dispatchAuditMcpTool(
             'To resolve: call edit to supersede the OUTDATED side (newer attested wins) — ' +
             'do NOT add a third conflicting note. If both are still true, they may be context-dependent; ' +
             'surface to the user to adjudicate.',
+        }],
+      };
+    }
+    case 'compare_sources': {
+      if (!deps.brainEngine) {
+        return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
+      }
+      const licenseToken = await helpers.getEffectiveLicenseToken(deps);
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
+      if (!licensed) {
+        return mcpError(
+          'compare_sources requires a Graphnosis Pro subscription. ' +
+          'Subscribe at https://graphnosis.com/upgrade.',
+        );
+      }
+      const args = CompareSourcesInput.parse(rawInput);
+      const req = helpers.requireEngram(deps.host, args.engram);
+      if ('error' in req) return req.error;
+      const pairs = await deps.brainEngine.compareSources({
+        graphId: req.graphId,
+        sourceA: args.sourceA,
+        sourceB: args.sourceB,
+      });
+      if (!pairs.length) {
+        return { content: [{ type: 'text', text: 'No contradictions detected between these two sources.' }] };
+      }
+      const rows = pairs.map((p) =>
+        `• [${p.severity ?? 'medium'}] ${p.temporalVerdict ?? 'genuine_contradiction'}\n` +
+        `  A: "${p.snippetA.slice(0, 100)}"\n` +
+        `  B: "${p.snippetB.slice(0, 100)}"\n` +
+        `  shared: ${(p.sharedEntities ?? []).join(', ')}`,
+      ).join('\n\n');
+      return {
+        content: [{
+          type: 'text',
+          text: `${pairs.length} conflicting pair(s) between sources:\n\n${rows}`,
         }],
       };
     }

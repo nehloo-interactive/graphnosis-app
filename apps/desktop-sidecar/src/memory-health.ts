@@ -48,16 +48,16 @@ export class MemoryHealthScorer {
     private readonly reinforcement: ReinforcementEngine,
   ) {}
 
-  async compute(): Promise<MemoryHealth> {
+  async compute(pendingQueueContradictions = 0): Promise<MemoryHealth> {
     if (this.cache && Date.now() < this.cacheExpireAt) return this.cache;
-    return this.recompute();
+    return this.recompute(pendingQueueContradictions);
   }
 
   invalidate(): void {
     this.cache = null;
   }
 
-  private recompute(): MemoryHealth {
+  private recompute(pendingQueueContradictions = 0): MemoryHealth {
     const now = Date.now();
     let totalActive = 0;
     let confidenceSum = 0;
@@ -112,9 +112,9 @@ export class MemoryHealthScorer {
     const integration = clamp(
       (crossEngramConnections + inferredEdges) / Math.max(1, totalActive * 0.25),
     );
-    const coherence = unresolvedContradictions === 0
+    const coherence = (unresolvedContradictions + pendingQueueContradictions) === 0
       ? 1
-      : clamp(1 - unresolvedContradictions / Math.max(1, totalActive));
+      : clamp(1 - (unresolvedContradictions + pendingQueueContradictions) / Math.max(1, totalActive));
     const reinforcementActivity = clamp(
       (this.reinforcement.sessionReinforced + this.reinforcement.sessionConnectionsFormed) / 50,
     );

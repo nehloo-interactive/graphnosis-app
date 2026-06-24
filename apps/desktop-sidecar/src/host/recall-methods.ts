@@ -2,6 +2,7 @@ import { settings as settingsMod } from '@graphnosis-app/core';
 import { federation, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { HostOptions } from '../host.js';
 import { cachedExtractQueryEntities } from '../query-enrichment-cache.js';
+import { dbg } from '../log-redact.js';
 const { federatedQuery } = federation;
 import {
   WorkPriority,
@@ -115,7 +116,12 @@ export async function hostRecall(
               return null;
             }
             // Non-fatal — recall must still work when the LLM is slow or down.
-            console.error(`[host] recall enrichment failed, using raw query: ${msg}`);
+            // Timeouts are expected on busy/slow Ollama; keep them debug-only.
+            if (msg.includes('enrichment timed out')) {
+              dbg(`[host] recall enrichment timed out, using raw query: ${msg}`);
+            } else {
+              console.error(`[host] recall enrichment failed, using raw query: ${msg}`);
+            }
             return null;
           })
           .finally(() => slot.release());

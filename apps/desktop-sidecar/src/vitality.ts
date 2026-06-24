@@ -53,6 +53,7 @@ export interface VitalityReport {
 
 export interface VitalityDetailedReport extends VitalityReport {
   pendingDuplicatePairs: number;
+  pendingContradictionPairs: number;
   byGraphBreakdown: Record<string, VitalityEngramBreakdown>;
   cortexFactors: VitalityFactorScores;
   fixes: string[];
@@ -72,7 +73,7 @@ export interface VitalityDetailedReport extends VitalityReport {
  *   connectivity = connectedActiveNodes / activeNodes        × 0.40
  *   confidence   = clamp((avgConfidence − 0.35) / 0.6)       × 0.25
  *   activity     = clamp(recentOps / 40)  (ops in last 7d)   × 0.20
- *   coherence    = clamp(1 − pendingDuplicatePairs × 0.05)   × 0.15
+ *   coherence    = clamp(1 − pendingDuplicatePairs × 0.05 − pendingContradictionPairs × 0.05) × 0.15
  *   graphScore   = round(clamp(weighted sum) × 100)
  *
  * overall = active-node–weighted average across graphs.
@@ -84,28 +85,31 @@ export class VitalityScorer {
   /** Fingerprint of listGraphs() at last compute — stale when the resident set grows mid-boot. */
   private cachedGraphKey = '';
   private cachedPendingDups = 0;
+  private cachedPendingContra = 0;
   private static readonly TTL_MS = 5 * 60 * 1000;
 
   constructor(private readonly host: GraphnosisHost) {}
 
-  async compute(pendingDuplicatePairs: number): Promise<VitalityReport> {
-    const detailed = await this.computeDetailed(pendingDuplicatePairs);
+  async compute(pendingDuplicatePairs: number, pendingContradictionPairs = 0): Promise<VitalityReport> {
+    const detailed = await this.computeDetailed(pendingDuplicatePairs, pendingContradictionPairs);
     return detailed;
   }
 
-  async computeDetailed(pendingDuplicatePairs: number): Promise<VitalityDetailedReport> {
+  async computeDetailed(pendingDuplicatePairs: number, pendingContradictionPairs = 0): Promise<VitalityDetailedReport> {
     const graphKey = this.graphSetKey();
     if (
       this.detailedCache
       && Date.now() < this.cacheExpireAt
       && this.cachedGraphKey === graphKey
       && this.cachedPendingDups === pendingDuplicatePairs
+      && this.cachedPendingContra === pendingContradictionPairs
     ) {
       return this.detailedCache;
     }
-    const report = this.recomputeDetailed(pendingDuplicatePairs);
+    const report = this.recomputeDetailed(pendingDuplicatePairs, pendingContradictionPairs);
     this.cachedGraphKey = graphKey;
     this.cachedPendingDups = pendingDuplicatePairs;
+    this.cachedPendingContra = pendingContradictionPairs;
     return report;
   }
 
@@ -114,13 +118,14 @@ export class VitalityScorer {
     this.detailedCache = null;
     this.cachedGraphKey = '';
     this.cachedPendingDups = 0;
+    this.cachedPendingContra = 0;
   }
 
   private graphSetKey(): string {
     return this.host.listGraphs().slice().sort().join('\0');
   }
 
-  private recomputeDetailed(pendingDuplicatePairs: number): VitalityDetailedReport {
+  private recomputeDetailed(pendingDuplicatePairs: number, pendingContradictionPairs = 0): VitalityDetailedReport {
     const byGraph: Record<string, number> = {};
     const byGraphBreakdown: Record<string, VitalityEngramBreakdown> = {};
     let totalWeight = 0;
@@ -129,7 +134,9 @@ export class VitalityScorer {
     let cfConn = 0, cfConf = 0, cfAct = 0;
 
     const recentOpsByGraph = this.host.recentOpsByGraph();
-    const coherenceRaw = clamp(1 - pendingDuplicatePairs * 0.05);
+    const coherenceRaw = clamp(
+      1 - pendingDuplicatePairs * 0.05 - pendingContradictionPairs * 0.05,
+    );
 
     for (const graphId of this.host.listGraphs()) {
       const nodes = this.host.listNodes(graphId);
@@ -229,11 +236,13 @@ export class VitalityScorer {
       computedAt: Date.now(),
       trust,
       pendingDuplicatePairs,
+      pendingContradictionPairs,
       byGraphBreakdown,
       cortexFactors,
       fixes: suggestVitalityFixes({
         overall,
         pendingDuplicatePairs,
+        pendingContradictionPairs,
         byGraphBreakdown,
         trust,
         cortexFactors,
@@ -273,6 +282,7 @@ export function formatFactorPct(n: number): string {
 export function suggestVitalityFixes(input: {
   overall: number;
   pendingDuplicatePairs: number;
+  pendingContradictionPairs?: number;
   byGraphBreakdown: Record<string, VitalityEngramBreakdown>;
   trust?: VitalityReport['trust'];
   cortexFactors: VitalityFactorScores;
@@ -280,11 +290,17 @@ export function suggestVitalityFixes(input: {
 }): string[] {
   const fixes: string[] = [];
   const dupes = input.pendingDuplicatePairs;
+  const contras = input.pendingContradictionPairs ?? 0;
   if (dupes > 0) {
     fixes.push(
       dupes > 5
         ? `Clear **${dupes} duplicate pairs** in Check-in — coherence (15% weight) is dragging every engram's score.`
         : `Review **${dupes} pending duplicate pair${dupes === 1 ? '' : 's'}** in Check-in to lift coherence.`,
+    );
+  }
+  if (contras > 0) {
+    fixes.push(
+      `Resolve **${contras} contradiction${contras === 1 ? '' : 's'}** in Memory Integrity — conflicting memories lower coherence until you Keep A, Keep B, or mark as debate.`,
     );
   }
   const orphans = input.trust?.orphans ?? 0;
@@ -297,7 +313,7 @@ export function suggestVitalityFixes(input: {
     fixes.push('Recent activity is low — **remember** or **ingest** this week\'s notes to lift the activity factor (20% weight).');
   }
   if (input.cortexFactors.confidence < 0.45) {
-    fixes.push('Average confidence is soft — review low-confidence nodes in **Memory Studio** and edit or forget stale entries.');
+    fixes.push('Average confidence is soft — review low-confidence nodes in **Brain** or **Check-in** and edit or forget stale entries.');
   }
   if (input.cortexFactors.connectivity < 0.55) {
     fixes.push('Connectivity is weak — link related memories in the **3D engram view** or let the brain pass auto-link overnight.');
