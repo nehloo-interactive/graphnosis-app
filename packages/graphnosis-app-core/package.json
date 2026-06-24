@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/core",
-  "version": "1.13.0",
+  "version": "1.23.0",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@nehloo-interactive/graphnosis-secure-sync": "https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.2.1"
+    "@nehloo-interactive/graphnosis-secure-sync": "https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.3.0"
   },
   "devDependencies": {
     "@types/libsodium-wrappers-sumo": "^0.7.8",

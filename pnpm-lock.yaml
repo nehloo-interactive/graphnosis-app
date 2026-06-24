@@ -98,11 +98,11 @@ importers:
         specifier: ^0.6.0
         version: 0.6.0
       '@nehloo-interactive/graphnosis-secure-sync':
-        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.2.2
-        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/2cfac87666a169eed3853976968bdb0fd0d1d6e8
+        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.3.0
+        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4
       '@nehloo/graphnosis':
-        specifier: ^0.6.1
-        version: 0.6.1
+        specifier: ^0.7.0
+        version: 0.7.0
       '@scure/bip39':
         specifier: ^1.4.0
         version: 1.6.0
@@ -211,8 +211,8 @@ importers:
   packages/graphnosis-app-core:
     dependencies:
       '@nehloo-interactive/graphnosis-secure-sync':
-        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.2.1
-        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/1eaf9c8f57d6f3316a6e817565bd5a6e59699f50
+        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.3.0
+        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4
     devDependencies:
       '@types/libsodium-wrappers-sumo':
         specifier: ^0.7.8
@@ -223,6 +223,8 @@ importers:
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
+
+  packages/graphnosis-mcp-relay: {}
 
 packages:
 
@@ -2034,16 +2036,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/1eaf9c8f57d6f3316a6e817565bd5a6e59699f50':
-    resolution: {tarball: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/1eaf9c8f57d6f3316a6e817565bd5a6e59699f50}
-    version: 0.2.1
+  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4':
+    resolution: {tarball: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4}
+    version: 0.3.0
 
-  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/2cfac87666a169eed3853976968bdb0fd0d1d6e8':
-    resolution: {tarball: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/2cfac87666a169eed3853976968bdb0fd0d1d6e8}
-    version: 0.2.2
-
-  '@nehloo/graphnosis@0.6.1':
-    resolution: {integrity: sha512-KSUW6aBTSJlgb22m1665ocR+b7ztVjGKyRKf3GV4t0Lf4c8N9g0JwLn4/jifG+xqxL+tQu8yV6RoYmrI8VgshQ==}
+  '@nehloo/graphnosis@0.7.0':
+    resolution: {integrity: sha512-hxGGmiw4d0w2zMWpKg1iQ/uQ2gPWrYaJK9U2k+bd0OQSCSX8/QddtUJeR+H4s/HpSo4osktsKose5omuuLwcag==}
     peerDependencies:
       '@ai-sdk/openai': '>=3.0.0'
       ai: '>=6.0.0'
@@ -7397,15 +7395,11 @@ snapshots:
   '@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4':
     optional: true
 
-  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/1eaf9c8f57d6f3316a6e817565bd5a6e59699f50':
+  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4':
     dependencies:
       libsodium-wrappers-sumo: 0.7.16(patch_hash=da53431d2a81810a70c17c15ac5454840c9f42daf0a3fab0968df8c896f11123)
 
-  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/2cfac87666a169eed3853976968bdb0fd0d1d6e8':
-    dependencies:
-      libsodium-wrappers-sumo: 0.7.16(patch_hash=da53431d2a81810a70c17c15ac5454840c9f42daf0a3fab0968df8c896f11123)
-
-  '@nehloo/graphnosis@0.6.1':
+  '@nehloo/graphnosis@0.7.0':
     dependencies:
       cheerio: 1.2.0
       exifr: 7.1.3

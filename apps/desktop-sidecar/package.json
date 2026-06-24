@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/desktop-sidecar",
-  "version": "1.22.0",
+  "version": "1.23.0",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
@@ -24,8 +24,8 @@
     "@graphnosis-app/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.6.0",
-    "@nehloo-interactive/graphnosis-secure-sync": "https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.2.2",
-    "@nehloo/graphnosis": "^0.6.1",
+    "@nehloo-interactive/graphnosis-secure-sync": "https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.3.0",
+    "@nehloo/graphnosis": "^0.7.0",
     "@scure/bip39": "^1.4.0",
     "@simplewebauthn/server": "^13.3.1",
     "fastembed": "^2.1.0",
