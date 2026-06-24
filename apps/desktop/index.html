@@ -2240,6 +2240,82 @@
         font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
         color: var(--fg-dim); opacity: 0.85; margin: 0 0 14px; padding: 0;
       }
+      /* Collapsible groups — Settings pane + Preferences modal */
+      .settings-group {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        margin-bottom: 12px;
+        background: var(--bg-elev);
+        overflow: hidden;
+      }
+      .settings-group > summary {
+        padding: 12px 16px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        flex-wrap: wrap;
+        user-select: none;
+      }
+      .settings-group > summary::-webkit-details-marker { display: none; }
+      .settings-group > summary::after {
+        content: '›';
+        margin-left: auto;
+        font-size: 18px;
+        color: var(--fg-dim);
+        transform: rotate(90deg);
+        transition: transform 0.15s;
+        flex-shrink: 0;
+      }
+      .settings-group[open] > summary::after { transform: rotate(-90deg); }
+      .settings-group-hint {
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--fg-dim);
+      }
+      .settings-group-body {
+        padding: 0 12px 12px;
+        border-top: 1px solid var(--border);
+      }
+      .settings-group-body > .panel {
+        margin: 10px 0 0;
+        border: none;
+        padding: 0;
+        background: transparent;
+      }
+      .settings-group-body > .panel .panel-title:first-child { margin-top: 0; }
+      #settings-body > .settings-group {
+        background: transparent;
+        border: none;
+        margin-bottom: 10px;
+        overflow: visible;
+      }
+      #settings-body > .settings-group > summary {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      #settings-body > .settings-group[open] > summary {
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+        border-bottom: none;
+      }
+      #settings-body > .settings-group .settings-group-body {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-top: none;
+        border-radius: 0 0 8px 8px;
+        padding: 4px 16px 14px;
+      }
+      #settings-body > .settings-group .settings-section {
+        margin-bottom: 0;
+        border: none;
+        padding: 0;
+        background: transparent;
+      }
       /* Settings → Access control (admin policy toggles). */
       .policy-managed-note {
         font-size: 13px; margin: 0 0 12px; padding: 8px 12px; border-radius: 8px;
@@ -4398,6 +4474,13 @@
         flex: 1;
         min-height: 0;
       }
+      /* Foresight rail — show only the tile dashboard, not the legacy brain vitals. */
+      body.goals-mode #living-brain > .lb-hero,
+      body.goals-mode #living-brain > .lb-scope-note,
+      body.goals-mode #living-brain > .lb-section:not(.lb-section-goals) {
+        display: none !important;
+      }
+      body.goals-mode .lb-section-goals .lb-section-title { margin-top: 0; }
       /* Your Cortex home (body.atlas-home-mode) — force the checkin dashboard
          visible even when graphnosisActiveTab is stale 'brain' after the
          retired Consolidation tab; hide every other inner g-tab-pane. */
@@ -4807,9 +4890,11 @@
       }
       @keyframes ghampus-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
       .home-ghampus-tagline {
-        text-align: right; font-style: italic; font-weight: 600;
-        font-size: 12.5px; line-height: 1.35; color: var(--fg-dim);
+        text-align: right; font-weight: 600;
+        font-size: 15px; line-height: 1.3;
+        color: color-mix(in oklab, var(--accent) 85%, var(--fg));
       }
+      .home-ghampus:hover .home-ghampus-tagline { text-decoration: underline; }
       .home-engram-card {
         flex: 0 1 240px; margin-bottom: 0;
         display: flex; flex-direction: column; gap: 8px;
@@ -4839,6 +4924,33 @@
 
       /* "Needs you" lane — actionable rows. */
       .home-needs-body { display: flex; flex-direction: column; gap: 8px; }
+      .home-integrity-body { display: flex; flex-direction: column; gap: 8px; }
+      .home-integrity-summary { font-size: 13px; line-height: 1.45; color: var(--fg-dim); margin: 0; }
+      .home-attention-strip {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+        padding: 12px 16px; margin-bottom: 12px; border-radius: 12px;
+        border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+        background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+      }
+      .home-attention-strip.hidden { display: none; }
+      .home-attention-text { font-size: 14px; flex: 1; min-width: 200px; }
+      .home-attention-cta { font-size: 13px; font-weight: 600; color: var(--accent); background: none; border: none; cursor: pointer; padding: 0; }
+      .home-attention-cta:hover { text-decoration: underline; }
+      .home-attention-link { font-size: 12px; color: var(--fg-dim); background: none; border: none; cursor: pointer; }
+      .mi-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+      .mi-tab-body { display: flex; flex-direction: column; gap: 12px; }
+      .mi-pair-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+      .mi-pair-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+      .mi-pair-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+      .mi-sev { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; }
+      .mi-sev-high { background: color-mix(in srgb, var(--error) 20%, transparent); color: var(--error); }
+      .mi-sev-medium { background: color-mix(in srgb, var(--warn, orange) 20%, transparent); color: var(--warn, orange); }
+      .mi-sev-low { background: color-mix(in srgb, var(--fg-dim) 15%, transparent); color: var(--fg-dim); }
+      .mi-verdict { font-size: 11px; color: var(--fg-dim); }
+      .mi-sources-form, .mi-actions-row, .mi-entity-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .mi-select { min-width: 180px; }
+      .mi-summary-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .mi-entity-hit { padding: 8px 0; border-bottom: 1px solid var(--border); }
       .home-need-row {
         -webkit-appearance: none; appearance: none;
         display: flex; align-items: center; gap: 12px; width: 100%;
@@ -4942,10 +5054,152 @@
          Cards moved in from the old Brainstorming page get the .home-card class
          at runtime (buildForesightGrid); zero their stock margins so the grid
          gap owns the spacing. */
-      .foresight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; width: 100%; align-items: start; margin-top: 14px; }
-      .foresight-grid > * { margin: 0 !important; }
-      .foresight-grid > .home-card { position: relative; }
-      @media (max-width: 760px) { .foresight-grid { grid-template-columns: 1fr; } }
+      /* Foresight dashboard — uniform tiles + detail modal */
+      #foresight-overview { margin-top: 14px; }
+      .foresight-tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 12px;
+        width: 100%;
+      }
+      .foresight-tile {
+        display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+        min-height: 148px; padding: 14px 16px; text-align: left;
+        border: 1px solid var(--border); border-radius: 14px;
+        background: color-mix(in srgb, var(--bg) 95%, var(--fg) 5%);
+        cursor: pointer; transition: border-color 120ms, background 120ms;
+        font: inherit; color: inherit; width: 100%;
+      }
+      .foresight-tile:hover {
+        border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+        background: color-mix(in srgb, var(--bg) 92%, var(--accent) 8%);
+      }
+      .foresight-tile--wide {
+        grid-column: 1 / -1; cursor: default; min-height: 0;
+      }
+      .foresight-tile--wide:hover { background: color-mix(in srgb, var(--bg) 95%, var(--fg) 5%); border-color: var(--border); }
+      .foresight-tile--warn { border-color: color-mix(in oklab, var(--error) 35%, var(--border)); }
+      .foresight-tile--ok { border-color: color-mix(in oklab, var(--ok) 30%, var(--border)); }
+      .foresight-tile-icon { font-size: 18px; line-height: 1; }
+      .foresight-tile-title { font-size: 13px; font-weight: 700; }
+      .foresight-tile-stat { font-size: 12px; font-weight: 600; color: var(--accent); }
+      .foresight-tile-body { font-size: 12px; line-height: 1.45; color: var(--fg-dim); flex: 1; }
+      .foresight-tile-cta { font-size: 11px; font-weight: 600; color: var(--accent); margin-top: auto; }
+      .foresight-tile-wide-head {
+        display: flex; align-items: center; gap: 10px; width: 100%; margin-bottom: 10px;
+      }
+      .foresight-tile-wide-head .foresight-tile-title { display: block; }
+      .foresight-tile-wide-head .foresight-tile-stat { display: block; font-weight: 500; color: var(--fg-dim); }
+      .foresight-tile-open-btn { margin-left: auto; flex-shrink: 0; }
+      .foresight-insight-preview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 10px; width: 100%;
+      }
+      .foresight-tile-more { font-size: 11px; color: var(--fg-dim); margin: 8px 0 0; }
+      .foresight-tile-more-btn {
+        display: inline-block; padding: 0; border: none; background: none;
+        font: inherit; color: var(--accent); cursor: pointer; text-align: left;
+      }
+      .foresight-tile-more-btn:hover { text-decoration: underline; }
+      .foresight-tile-preview--empty p { font-size: 12px; color: var(--fg-dim); margin: 0; }
+      .foresight-insight-card {
+        display: flex; flex-direction: column; gap: 6px;
+        min-height: 132px; padding: 12px 14px;
+        border: 1px solid var(--border); border-radius: 12px;
+        background: var(--bg-elev, color-mix(in srgb, var(--bg) 94%, var(--fg) 6%));
+      }
+      .foresight-insight-card--compact { min-height: 120px; }
+      .foresight-insight-card-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      .foresight-insight-kind {
+        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+        padding: 2px 7px; border-radius: 4px;
+      }
+      .foresight-insight-kind--gap { background: color-mix(in oklab, var(--error) 18%, transparent); color: var(--error); }
+      .foresight-insight-kind--opportunity { background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); }
+      .foresight-insight-kind--pattern { background: color-mix(in oklab, var(--accent) 18%, transparent); color: var(--accent); }
+      .foresight-insight-kind--risk { background: color-mix(in oklab, #d6a728 18%, transparent); color: #d6a728; }
+      .foresight-insight-kind--default { background: color-mix(in oklab, var(--fg-dim) 12%, transparent); color: var(--fg-dim); }
+      .foresight-insight-engram { font-size: 10px; color: var(--fg-dim); }
+      .foresight-insight-card-title {
+        font-size: 13px; font-weight: 600; margin: 0; line-height: 1.35;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+      }
+      .foresight-insight-card-body {
+        font-size: 12px; line-height: 1.45; color: var(--fg-dim); margin: 0; flex: 1;
+        display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+      }
+      .foresight-insight-card--compact .foresight-insight-card-body { -webkit-line-clamp: 2; }
+      .foresight-insight-footnote {
+        font-size: 11px; line-height: 1.4; color: var(--fg-dim); margin: 0;
+        padding-top: 4px; border-top: 1px solid color-mix(in oklab, var(--fg-dim) 12%, transparent);
+      }
+      .foresight-insight-dismiss { align-self: flex-start; margin-top: 4px; }
+      .foresight-insight-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+        align-items: center;
+      }
+      .foresight-insight-footnote {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin: 6px 0 0;
+        line-height: 1.4;
+      }
+      #foresight-insights-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 12px;
+      }
+      .foresight-detail-pool {
+        position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden;
+        visibility: hidden; pointer-events: none;
+      }
+      body.foresight-modal-open { overflow: hidden; }
+      .foresight-modal {
+        position: fixed; inset: 0; z-index: 900;
+        display: flex; align-items: stretch; justify-content: center;
+        padding: 24px 16px;
+        background: var(--color-modal-scrim-deep);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .foresight-modal-backdrop {
+        position: absolute; inset: 0;
+      }
+      .foresight-modal.hidden { display: none; }
+      .foresight-modal-panel {
+        display: flex; flex-direction: column;
+        position: relative; z-index: 1;
+        width: min(920px, 100%); max-height: calc(100vh - 48px);
+        border: 1px solid var(--border); border-radius: 16px;
+        background: var(--bg); box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+        overflow: hidden;
+      }
+      .foresight-modal-header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 14px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+      }
+      .foresight-modal-header h3 { margin: 0; font-size: 16px; font-weight: 700; flex: 1; }
+      .foresight-modal-close {
+        border: none; background: transparent; color: var(--fg-dim);
+        font-size: 22px; line-height: 1; cursor: pointer; padding: 4px 8px; border-radius: 8px;
+      }
+      .foresight-modal-close:hover { background: color-mix(in oklab, var(--fg) 8%, transparent); color: var(--fg); }
+      #foresight-modal-body {
+        flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 24px;
+      }
+      #foresight-modal-body .foresight-detail-card,
+      #foresight-modal-body .home-card {
+        border: none; padding: 0; margin: 0; background: transparent;
+      }
+      #foresight-modal-body .foresight-lane-label,
+      #foresight-modal-body .lb-section-title { font-size: 12px; margin: 0 0 12px; }
+      @media (max-width: 760px) {
+        .foresight-insight-preview-grid { grid-template-columns: 1fr; }
+      }
       /* Each Foresight section sits in its own card. */
       .foresight-card { padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; margin-top: 14px; background: color-mix(in srgb, var(--bg) 96%, var(--fg) 4%); position: relative; }
       .foresight-card > .foresight-lane-label:first-child { margin-top: 0; }
@@ -5031,8 +5285,34 @@
       .home-bar-factor-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; font-size: 10px; }
       .home-bar-factor-val { font-size: 13px; font-weight: 700; color: var(--fg); }
 
-      .ghampus-vitality-nudge-card .ghampus-tip-badge { background: color-mix(in srgb, var(--ok) 25%, transparent); }
+      .ghampus-vitality-nudge-card .ghampus-tip-badge { background: none; }
+      .ghampus-vitality-nudge-card .ghampus-tip-body { background: none; }
       .ghampus-vitality-nudge-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+      .ghampus-tip-actions {
+        display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px;
+      }
+      .ghampus-tip-fill-prompt { font-size: 12px; margin-top: 6px; }
+
+      /* Ghampus /insights preview — reuses foresight insight cards */
+      .ghampus-insights-preview {
+        background: color-mix(in srgb, var(--ai-accent) 6%, var(--bg-elev, rgba(255,255,255,.06)));
+        border: 1px solid color-mix(in oklab, var(--ai-accent) 20%, var(--g-border, rgba(255,255,255,.1)));
+        border-radius: 14px 14px 14px 4px;
+        padding: 12px 14px;
+        max-width: 100%;
+      }
+      .ghampus-insights-preview-header {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 10px; gap: 8px;
+      }
+      .ghampus-insights-preview-title { font-size: 13px; font-weight: 600; }
+      .ghampus-insights-preview-stat { font-size: 11px; opacity: .55; }
+      .ghampus-insights-preview-grid {
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      .ghampus-insights-preview-grid .foresight-insight-card { margin: 0; }
+      .ghampus-insights-more { margin: 8px 0 0; font-size: 12px; opacity: .6; }
+      .ghampus-insights-preview-footer { margin-top: 10px; display: flex; gap: 6px; }
 
       /* "Disabled by IT" governance card. */
       .home-policy-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -5865,6 +6145,27 @@
         display: flex; flex-direction: column;
         flex: 1; min-height: 0;
         position: relative;
+        --ghampus-chat-zoom: 1;
+        --ghampus-chat-avatar-size: 40px;
+        --ghampus-chat-avatar-gap: 10px;
+      }
+      /* Chat text zoom — keyboard only: ⌘/Ctrl + +/−/0 (no scroll-wheel zoom).
+         Never apply zoom on .ghampus-thread (the scrollport) — WebKit/Chromium
+         fail to repaint during fast scroll when zoom + overflow-y:auto share one
+         element; zoom the inner message column instead. */
+      #ghampus-chat-wrap #ghampus-chat-messages,
+      #ghampus-chat-wrap .ghampus-input-stack,
+      #ghampus-chat-wrap #ghampus-sections-strip {
+        zoom: var(--ghampus-chat-zoom, 1);
+      }
+      /* Readable column on wide windows — input/footer only; thread scrolls edge-to-edge */
+      .ghampus-input-stack,
+      .ghampus-quiet-footer {
+        width: 100%;
+        max-width: min(960px, calc(100% - 32px));
+        margin-left: auto;
+        margin-right: auto;
+        box-sizing: border-box;
       }
 
       /* Ghampus pane header — row 1: brand (logo + title + tagline) | meta
@@ -6097,14 +6398,17 @@
       .ghampus-quiet-footer a { color: var(--accent, #6366f1); text-decoration: none; }
       .ghampus-quiet-footer a:hover { text-decoration: underline; }
 
-      /* Thread */
+      /* Thread — full-width scroll; scrollbar flush to window edge */
       .ghampus-thread {
-        flex: 1; min-height: 0;
+        flex: 1; min-height: 0; min-width: 0;
+        width: 100%;
         overflow-y: auto;
+        overflow-x: hidden;
         display: flex; flex-direction: column;
-        padding: 14px 14px 6px;
+        padding: 14px 0 6px;
         gap: 10px;
-        scroll-behavior: smooth;
+        /* auto — smooth only when set inline for programmatic scroll-to-bottom */
+        scroll-behavior: auto;
       }
       .ghampus-thread-empty {
         flex: 1; display: flex; flex-direction: column;
@@ -6113,8 +6417,14 @@
       }
 
       /* Message bubbles */
-      /* Allow text selection inside the chat thread */
+      /* Centered message column inside full-width scroll track */
       #ghampus-chat-messages {
+        width: 100%;
+        max-width: min(960px, calc(100% - 32px));
+        margin-left: auto;
+        margin-right: auto;
+        box-sizing: border-box;
+        padding: 0 14px;
         -webkit-user-select: text !important;
         user-select: text !important;
       }
@@ -6123,10 +6433,12 @@
       .ghampus-thread-entry {
         display: flex;
         flex-direction: column;
+        min-width: 0;
+        max-width: 100%;
       }
 
       .chat-msg {
-        display: flex; gap: 8px; align-items: flex-end;
+        display: flex; gap: var(--ghampus-chat-avatar-gap, 10px); align-items: flex-end;
         font-size: 15px; position: relative;
         -webkit-user-select: text !important;
         user-select: text !important;
@@ -6135,17 +6447,18 @@
         align-self: flex-start;
         width: fit-content;
         max-width: 85%;
+        align-items: flex-end;
       }
       /* Right-align user bubbles; pad-left mirrors avatar+gap offset on Ghampus side */
       .chat-msg.user {
         align-self: flex-end;
         flex-direction: row-reverse;
-        padding-left: 32px;
+        padding-left: calc(var(--ghampus-chat-avatar-size, 40px) + var(--ghampus-chat-avatar-gap, 10px));
         width: fit-content;
         max-width: 85%;
       }
 
-      .chat-msg-wrap { display: flex; flex-direction: column; max-width: 100%; min-width: 0; }
+      .chat-msg-wrap { display: flex; flex-direction: column; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
       .chat-msg.ghampus .chat-msg-wrap { flex: 1 1 auto; }
 
       /* Meta row: time + copy side by side, hidden until hover (space always reserved) */
@@ -6310,13 +6623,165 @@
         padding: 0 4px;
       }
 
+      /* Fragment comments on Ghampus answers */
+      .ghampus-fragment-mark {
+        text-decoration: underline;
+        text-decoration-color: var(--g-border, rgba(255,255,255,.35));
+        text-underline-offset: 3px;
+        background: rgba(99,102,241,.08);
+        border-radius: 2px;
+      }
+      .ghampus-selection-affordance {
+        position: fixed;
+        z-index: 50;
+        display: none;
+        padding: 4px 10px;
+        font-size: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.15));
+        background: var(--bg-elev, #1e1e22);
+        color: var(--fg, #fff);
+        box-shadow: 0 4px 16px var(--color-modal-scrim, rgba(0,0,0,.3));
+        cursor: pointer;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .ghampus-selection-affordance.visible { display: block; }
+      .ghampus-comment-popover {
+        position: fixed;
+        z-index: 51;
+        width: min(320px, calc(100vw - 24px));
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.15));
+        background: var(--bg-elev, #1e1e22);
+        box-shadow: 0 8px 28px var(--color-modal-scrim, rgba(0,0,0,.35));
+        display: none;
+      }
+      .ghampus-comment-popover.open { display: block; }
+      .ghampus-comment-popover-quote {
+        font-size: 12px;
+        opacity: .75;
+        margin: 0 0 8px;
+        line-height: 1.45;
+        max-height: 4.5em;
+        overflow: hidden;
+      }
+      .ghampus-comment-popover-input {
+        width: 100%;
+        box-sizing: border-box;
+        min-height: 56px;
+        resize: vertical;
+        font-family: inherit;
+        font-size: 13px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        background: var(--bg, rgba(255,255,255,.04));
+        color: var(--fg, #fff);
+      }
+      .ghampus-comment-popover-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 8px;
+      }
+      .ghampus-comments-bar {
+        margin: 0 14px 6px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        background: var(--bg-elev, rgba(255,255,255,.05));
+        font-size: 12px;
+      }
+      .ghampus-comments-bar.hidden { display: none; }
+      .ghampus-comments-bar-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .ghampus-comments-bar-toggle {
+        border: none;
+        background: transparent;
+        color: var(--accent, #6366f1);
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 0;
+      }
+      .ghampus-comments-bar-list {
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 160px;
+        overflow-y: auto;
+      }
+      .ghampus-comments-bar-list.open { display: flex; }
+      .ghampus-comments-bar-item {
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: rgba(255,255,255,.04);
+        border: 1px solid var(--g-border, rgba(255,255,255,.08));
+      }
+      .ghampus-comments-bar-quote {
+        opacity: .7;
+        font-style: italic;
+        margin-bottom: 4px;
+        line-height: 1.4;
+      }
+      .ghampus-comments-bar-note { line-height: 1.45; }
+      .ghampus-comments-bar-remove {
+        margin-top: 4px;
+        border: none;
+        background: transparent;
+        color: var(--fg-dim, rgba(255,255,255,.5));
+        cursor: pointer;
+        font-size: 11px;
+        padding: 0;
+      }
+      .ghampus-skill-preview-improve-card {
+        margin-top: 8px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        background: rgba(255,255,255,.04);
+        font-size: 13px;
+      }
+      .ghampus-skill-preview-improve-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+        align-items: center;
+      }
+      .ghampus-skill-preview-upgrade {
+        font-size: 12px;
+        opacity: .75;
+        line-height: 1.45;
+      }
+
       .chat-msg-avatar {
-        width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+        width: var(--ghampus-chat-avatar-size, 40px);
+        height: var(--ghampus-chat-avatar-size, 40px);
+        border-radius: 50%; flex-shrink: 0;
         background: var(--color-surface-2, #f1f5f9);
         display: flex; align-items: center; justify-content: center;
         overflow: hidden;
+        align-self: flex-end;
       }
       .chat-msg-avatar img { width: 100%; height: 100%; object-fit: contain; }
+      /* Face the seahorse toward Ghampus bubbles (avatar sits left of the thread) */
+      .chat-msg.ghampus .chat-msg-avatar img { transform: scaleX(-1); }
+      @media (max-width: 768px) {
+        #ghampus-chat-wrap {
+          --ghampus-chat-avatar-size: 36px;
+          --ghampus-chat-avatar-gap: 8px;
+        }
+      }
 
       .chat-msg-bubble {
         padding: 10px 14px; border-radius: 14px;
@@ -6342,20 +6807,75 @@
       :root[data-theme="dark"] .chat-msg.user .chat-msg-bubble { background: var(--color-brand-turquoise-bright, #67e8f9); color: #0f2028; }
       @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chat-msg.user .chat-msg-bubble { background: var(--color-brand-turquoise-bright, #67e8f9); color: #0f2028; } }
 
-      /* Markdown inside Ghampus bubbles */
-      .chat-msg-bubble--markdown p { margin: 0 0 6px; }
+      /* Markdown inside Ghampus bubbles — hierarchy via size/weight/spacing only */
+      .chat-msg-bubble--markdown .gh-md-p,
+      .chat-msg-bubble--markdown p {
+        margin: 0 0 1.05rem; font-size: 0.9375rem; line-height: 1.7;
+        color: var(--fg, inherit);
+      }
+      .chat-msg-bubble--markdown .gh-md-p:last-child,
       .chat-msg-bubble--markdown p:last-child { margin-bottom: 0; }
-      .chat-msg-bubble--markdown h1,
-      .chat-msg-bubble--markdown h2 { font-size: 14px; font-weight: 600; margin: 8px 0 4px; }
-      .chat-msg-bubble--markdown h3 { font-size: 13px; font-weight: 600; margin: 6px 0 3px; }
-      .chat-msg-bubble--markdown ul { margin: 4px 0 6px 16px; padding: 0; }
-      .chat-msg-bubble--markdown li { margin-bottom: 3px; }
+      .chat-msg-bubble--markdown .gh-md-h1,
+      .chat-msg-bubble--markdown h1 {
+        font-size: 1.45rem; font-weight: 600; margin: 0 0 1rem; line-height: 1.25;
+        letter-spacing: -0.015em; color: var(--fg, inherit);
+      }
+      .chat-msg-bubble--markdown .gh-md-h2,
+      .chat-msg-bubble--markdown h2 {
+        font-size: 1.12rem; font-weight: 600; margin: 1.75rem 0 0.75rem; padding-top: 0.75rem;
+        line-height: 1.3; color: var(--fg, inherit);
+        border-top: 1px solid var(--g-border, rgba(255,255,255,.1));
+      }
+      .chat-msg-bubble--markdown .gh-md-h1 + .gh-md-h2,
+      .chat-msg-bubble--markdown h1 + h2,
+      .chat-msg-bubble--markdown .gh-md-h2:first-child,
+      .chat-msg-bubble--markdown h2:first-child {
+        border-top: none; padding-top: 0; margin-top: 0;
+      }
+      .chat-msg-bubble--markdown .gh-md-h3,
+      .chat-msg-bubble--markdown h3 {
+        font-size: 1rem; font-weight: 600; margin: 1.25rem 0 0.5rem; line-height: 1.35;
+        color: var(--fg, inherit);
+      }
+      .chat-msg-bubble--markdown .gh-md-step {
+        margin-block: 0.75rem 1.35rem;
+      }
+      .chat-msg-bubble--markdown .gh-md-step .gh-md-h3,
+      .chat-msg-bubble--markdown .gh-md-step h3 {
+        font-size: 1.22rem; font-weight: 700; margin: 0 0 0.75rem; line-height: 1.3;
+        letter-spacing: -0.01em; color: var(--fg, inherit);
+      }
+      .chat-msg-bubble--markdown .gh-md-step + .gh-md-step {
+        margin-top: 1.35rem;
+        padding-top: 0.5rem;
+      }
+      .chat-msg-bubble--markdown .gh-md-h1:first-child,
+      .chat-msg-bubble--markdown h1:first-child { margin-top: 0; }
+      .chat-msg-bubble--markdown .gh-md-h3 + .gh-md-p,
+      .chat-msg-bubble--markdown h3 + p,
+      .chat-msg-bubble--markdown .gh-md-step > .gh-md-h3 + .gh-md-p {
+        margin-top: 0.125rem;
+      }
+      .chat-msg-bubble--markdown .gh-md-h2 + .gh-md-p,
+      .chat-msg-bubble--markdown h2 + p { margin-top: 0.25rem; }
+      .chat-msg-bubble--markdown .gh-md-h2 + ul,
+      .chat-msg-bubble--markdown h2 + ul,
+      .chat-msg-bubble--markdown .gh-md-h3 + ul,
+      .chat-msg-bubble--markdown h3 + ul { margin-top: 0.25rem; }
+      .chat-msg-bubble--markdown ul,
+      .chat-msg-bubble--markdown ol { margin: 0.5rem 0 1.15rem 1.25rem; padding: 0; }
+      .chat-msg-bubble--markdown li { margin-bottom: 0.55rem; line-height: 1.65; font-size: 0.9375rem; }
+      .chat-msg-bubble--markdown li:last-child { margin-bottom: 0; }
+      .chat-msg-bubble--markdown li > p { margin: 0; font-size: inherit; }
       .chat-msg-bubble--markdown code {
-        font-family: var(--font-mono, monospace); font-size: 13px;
+        font-family: var(--font-mono, monospace); font-size: 0.8125rem;
         background: rgba(255,255,255,.08); border-radius: 4px; padding: 1px 5px;
       }
       .chat-msg-bubble--markdown strong { font-weight: 600; }
-      .chat-msg-bubble--markdown hr { border: none; border-top: 1px solid var(--g-border, rgba(255,255,255,.1)); margin: 8px 0; }
+      .chat-msg-bubble--markdown hr {
+        border: none; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));
+        margin: 1.25rem 0;
+      }
 
       /* Proactive card — rendered as a Ghampus chat bubble in the thread */
       .proactive-card {
@@ -6445,7 +6965,10 @@
       .ghampus-tip-example-prompt {
         font-family: var(--font-mono, monospace); font-size: 12px;
         word-break: break-word; white-space: pre-wrap;
+        display: block; max-width: 100%; overflow-wrap: anywhere;
       }
+      .ghampus-trace-steps { max-width: 100%; overflow-x: hidden; }
+      .proactive-card-why { overflow-wrap: anywhere; }
       .ghampus-tip-outcome-text { opacity: .85; }
 
       .ghampus-memory-suggestion-card {
@@ -6833,6 +7356,198 @@
         font-size: 13px; opacity: .55;
       }
       .ghampus-walk-picker-empty.hidden { display: none; }
+
+      .ghampus-engram-picker-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-width: 0;
+        flex: 1;
+      }
+      .ghampus-engram-chip {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.14));
+        background: var(--bg, rgba(255,255,255,.04));
+        color: var(--fg-dim, #9a9a9c);
+        cursor: pointer;
+        white-space: nowrap;
+        font-family: inherit;
+        line-height: 1.3;
+      }
+      .ghampus-engram-chip:hover {
+        border-color: color-mix(in oklab, var(--accent, #6366f1) 55%, transparent);
+        color: var(--fg, #fff);
+      }
+      .ghampus-engram-chip.is-selected {
+        border-color: var(--accent, #6366f1);
+        background: rgba(99,102,241,.18);
+        color: var(--accent, #6366f1);
+      }
+      .ghampus-engram-chip.is-pending-create {
+        border-style: dashed;
+        opacity: .92;
+      }
+      .ghampus-compose-tier-btn--sensitive {
+        border-color: color-mix(in oklab, var(--color-status-error, #ef4444) 45%, transparent);
+        color: var(--color-status-error, #ef4444);
+      }
+      .ghampus-compose-tier-btn--sensitive:hover {
+        background: color-mix(in oklab, var(--color-status-error, #ef4444) 12%, transparent);
+      }
+      .ghampus-engram-picker-select {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.14));
+        background: var(--bg, rgba(255,255,255,.04));
+        color: var(--fg-dim, #9a9a9c);
+        max-width: 140px;
+        flex-shrink: 0;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .ghampus-compose-rail {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        border-top: 1px solid var(--g-border, rgba(255,255,255,.08));
+        background: var(--bg-elev, rgba(255,255,255,.02));
+        flex-shrink: 0;
+        max-height: min(42vh, 320px);
+        overflow-y: auto;
+      }
+      .ghampus-compose-rail.hidden { display: none; }
+      .ghampus-compose-strips {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+      .ghampus-compose-strip {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--g-border, rgba(255,255,255,.05));
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .ghampus-compose-strip-engrams { align-items: flex-start; }
+      .ghampus-compose-strip-engrams-col {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .ghampus-engram-chip-new {
+        border-style: dashed;
+        color: var(--accent, #6366f1);
+        border-color: color-mix(in oklab, var(--accent, #6366f1) 45%, transparent);
+      }
+      .ghampus-engram-chip-new.is-active,
+      .ghampus-engram-chip-new:hover {
+        background: rgba(99,102,241,.12);
+        border-color: var(--accent, #6366f1);
+        color: var(--accent, #6366f1);
+      }
+      .ghampus-new-engram-guide {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid color-mix(in oklab, var(--accent, #6366f1) 35%, transparent);
+        background: color-mix(in oklab, var(--accent, #6366f1) 8%, transparent);
+      }
+      .ghampus-new-engram-guide-hint {
+        margin: 0 0 8px;
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--fg-dim, #9a9a9c);
+      }
+      .ghampus-new-engram-guide-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+      .ghampus-new-engram-name {
+        flex: 1;
+        min-width: 140px;
+        font-size: 12px;
+        padding: 5px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.14));
+        background: var(--bg, rgba(0,0,0,.2));
+        color: var(--fg, #fff);
+        font-family: inherit;
+      }
+      .ghampus-new-engram-name:focus {
+        outline: none;
+        border-color: var(--accent, #6366f1);
+      }
+      .ghampus-new-engram-slug {
+        font-size: 10px;
+        opacity: .7;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(255,255,255,.06);
+      }
+      .ghampus-new-engram-guide-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .ghampus-compose-strip-label {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        opacity: .5;
+        flex-shrink: 0;
+        min-width: 52px;
+      }
+      .ghampus-compose-detected {
+        font-size: 10px;
+        font-weight: 600;
+        opacity: .65;
+        text-transform: none;
+        letter-spacing: normal;
+      }
+      .ghampus-compose-strip-body {
+        flex: 1;
+        min-width: 0;
+        color: var(--fg-dim, #9a9a9c);
+      }
+      .ghampus-compose-strip-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-left: auto;
+      }
+      .ghampus-compose-mcp {
+        font-size: 10px;
+        opacity: .65;
+        margin-left: 6px;
+      }
+
+      /* New-chat summary — studio-textarea sets overflow-y:hidden globally; override here. */
+      #ghampus-new-chat-summary.studio-textarea {
+        min-height: 140px;
+        max-height: min(320px, 42vh);
+        overflow-y: auto !important;
+        resize: vertical;
+        line-height: 1.5;
+      }
+      #ghampus-new-chat-modal .modal-body {
+        max-height: min(90vh, 640px);
+        overflow-y: auto;
+      }
 
       .ghampus-input-row {
         position: relative;
@@ -12223,11 +12938,22 @@
                         <button type="button" id="home-coherence-banner-open" class="home-coherence-banner-link">Open Check-in</button>
                         <button type="button" id="home-coherence-banner-dismiss" class="home-coherence-banner-dismiss" aria-label="Dismiss">×</button>
                       </div>
+                      <div id="home-attention-strip" class="home-attention-strip hidden" role="status" aria-live="polite"></div>
                       <!-- Hero: time-aware greeting + one CORTEX-WIDE sentence. -->
                       <div class="home-hero">
                         <div id="home-greeting" class="home-greeting">Welcome back</div>
                         <div id="home-pulse" class="home-pulse" data-pres="surface:stats">Loading your memory…</div>
                       </div>
+
+                      <!-- Connections — first dashboard card so reachability is
+                           visible immediately on Home entry. -->
+                      <section class="home-card home-getconnected-card" id="home-getconnected">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title" id="home-getconnected-title">Connections</h3>
+                          <span class="home-card-hint" id="home-getconnected-hint">Online · reading — Offline &amp; online · feeding</span>
+                        </div>
+                        <div id="home-getconnected-body" class="home-getconnected-body" data-pres="surface:mcpClients"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                      </section>
 
                       <!-- Cortex-wide Trust & Vitality + the active engram as a
                            compact card. Both are grid items in #home-overview
@@ -12239,7 +12965,7 @@
                                or Trust rows. Click = "Who is Ghampus?". -->
                           <div class="home-ghampus" id="home-ghampus-btn" role="button" tabindex="0" title="Who is Ghampus?">
                             <img class="home-ghampus-img" src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" />
-                            <span class="home-ghampus-tagline">Safe to trust Ghampus,<br>your second hippocampus</span>
+                            <span class="home-ghampus-tagline">Chat with Ghampus</span>
                           </div>
                           <div class="home-card-head">
                             <h3 class="home-card-title">Trust &amp; Vitality</h3>
@@ -12278,16 +13004,6 @@
                           </div>
                         </section>
 
-                      <!-- Get Connected teaser (3rd card) — always-available
-                           nudge to grow the cortex; opens the full page. -->
-                      <section class="home-card home-getconnected-card" id="home-getconnected">
-                        <div class="home-card-head">
-                          <h3 class="home-card-title" id="home-getconnected-title">Connections</h3>
-                          <span class="home-card-hint" id="home-getconnected-hint">Online · reading — Offline &amp; online · feeding</span>
-                        </div>
-                        <div id="home-getconnected-body" class="home-getconnected-body" data-pres="surface:mcpClients"><div class="home-skel"></div><div class="home-skel w70"></div></div>
-                      </section>
-
                       <!-- Memory health — the richer 7-factor retrieval-quality
                            breakdown (brain:getMemoryHealth), cortex-wide. -->
                       <section class="home-card home-mhealth-card" id="home-mhealth">
@@ -12306,6 +13022,15 @@
                           <span class="home-card-hint">duplicates merged automatically — nothing is ever lost</span>
                         </div>
                         <div id="home-selfheal-body" class="home-selfheal-body" data-pres="surface:stats"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                      </section>
+
+                      <!-- Contradictions — always visible; opens Memory Integrity. -->
+                      <section class="home-card home-integrity-card" id="home-integrity">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Contradictions</h3>
+                          <span class="home-card-hint">verified memory pairs — Keep A / Keep B</span>
+                        </div>
+                        <div id="home-integrity-body" class="home-integrity-body"><p class="home-card-empty">Checking for contradictions…</p></div>
                       </section>
 
                       <!-- Needs you — what's waiting on the user (actionable lane).
@@ -12387,9 +13112,7 @@
                       </section>
 
                       <!-- Disabled by IT — governance transparency. Only shown when
-                           a connector or AI client is blocked by policy. Placed near
-                           the end so hiding it (the common case) never reflows the
-                           cards above. -->
+                           a connector or AI client is blocked by policy. -->
                       <section class="home-card home-policy-card" id="home-policy" style="display:none">
                         <div class="home-card-head">
                           <h3 class="home-card-title" id="home-policy-title">Disabled by policy</h3>
@@ -13272,17 +13995,16 @@
                       <div class="lb-section lb-section-goals">
                         <p class="lb-section-title">Foresight</p>
                         <p class="brain-subtitle">
-                          Your goals, projected forward by your growing memory — predict what's
-                          ahead, surface risks &amp; opportunities, see the patterns the brain found,
-                          and review the non-deterministic neural-network &amp; local-LLM layers.
+                          Scan the tiles below — tap any lane for the full workbench, setup, or review queue.
                         </p>
 
-                        <!-- Foresight card grid. The non-deterministic cards (Neural Network,
-                             Local Layer, Insights, Local LLM) are moved in here at runtime by
-                             buildForesightGrid() in main.ts, reclassed to .home-card. -->
-                        <div id="foresight-overview" class="foresight-grid">
+                        <!-- Foresight dashboard: compact tiles + modal detail (foresight-page.ts).
+                             Lane cards live in #foresight-detail-pool until opened. -->
+                        <div id="foresight-overview">
+                          <div id="foresight-tiles" class="foresight-tiles"></div>
+                          <div id="foresight-detail-pool" class="foresight-detail-pool" aria-hidden="true">
                           <!-- Goals card (deterministic; per-goal redaction lives on each goal card) -->
-                          <div class="foresight-card" id="fcard-goals">
+                          <div class="foresight-card foresight-detail-card" id="fcard-goals">
                             <p class="foresight-lane-label">Your goals</p>
                             <div id="lb-goals" class="lb-block"></div>
                             <div id="lb-goal-form" class="lb-goal-form hidden">
@@ -13298,7 +14020,6 @@
                               </div>
                             </div>
                             <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
-                            <!-- develop MCP tool — moved here from the shared AI-clients card -->
                             <div class="lb-mcp-tools-hint">
                               <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
                               <div class="lb-mcp-tool-row">
@@ -13308,9 +14029,13 @@
                             </div>
                           </div>
 
-                          <!-- Predict card — title/description stay visible; only the output
-                               redacts ("Predict" surface). LLM-gated via #foresight-llm-gate. -->
-                          <div class="foresight-card" id="fcard-predict">
+                          <div class="foresight-card foresight-detail-card" id="fcard-memory-integrity">
+                            <p class="foresight-lane-label">Memory Integrity</p>
+                            <p class="brain-subtitle" style="margin:-2px 0 8px;">Deterministic contradiction pairs, duplicates, and corrections — review and resolve here. Separate from LLM conflict hints in Insights.</p>
+                            <div id="memory-integrity-workbench" class="mi-workbench"></div>
+                          </div>
+
+                          <div class="foresight-card foresight-detail-card" id="fcard-predict">
                             <p class="foresight-lane-label">Predict</p>
                             <p class="brain-subtitle" style="margin:-2px 0 8px;">Before you act, see the risks &amp; opportunities your memory implies.</p>
                             <div id="foresight-llm-gate" class="foresight-gate hidden">
@@ -13324,7 +14049,6 @@
                               </div>
                               <div id="foresight-predict-out" class="foresight-out" data-pres="surface:predict"></div>
                             </div>
-                            <!-- predict MCP tool — moved here from the shared AI-clients card -->
                             <div class="lb-mcp-tools-hint">
                               <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
                               <div class="lb-mcp-tool-row">
@@ -13332,6 +14056,17 @@
                                 <span class="lb-mcp-tool-desc">Before taking an action, Graphnosis checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
                               </div>
                             </div>
+                          </div>
+                          </div><!-- /#foresight-detail-pool -->
+                        </div>
+                        <div id="foresight-modal" class="foresight-modal hidden" role="dialog" aria-modal="true" aria-labelledby="foresight-modal-title">
+                          <div id="foresight-modal-backdrop" class="foresight-modal-backdrop" aria-hidden="true"></div>
+                          <div class="foresight-modal-panel">
+                            <header class="foresight-modal-header">
+                              <h3 id="foresight-modal-title">Foresight</h3>
+                              <button type="button" id="foresight-modal-close" class="foresight-modal-close" aria-label="Close">×</button>
+                            </header>
+                            <div id="foresight-modal-body"></div>
                           </div>
                         </div>
                       </div>
@@ -13372,7 +14107,7 @@
                         when you approve a correction yourself.
                       </p>
 
-                      <div class="lb-section" id="fcard-gnn">
+                      <div class="lb-section foresight-detail-card" id="fcard-gnn">
                         <p class="lb-section-title">🧠 Graphnosis Neural Network (.GNN)</p>
                         <p class="layer-hero"><span class="layer-emoji">🔮</span> A little neural net learns the shape of your graph and <b>guesses connections you might've missed</b> — hunches, not facts.</p>
                         <div class="layer-stack">
@@ -13388,7 +14123,7 @@
                         <div id="lb-neural-network" class="lb-block"></div>
                       </div>
 
-                      <div class="lb-section" id="fcard-gll">
+                      <div class="lb-section foresight-detail-card" id="fcard-gll">
                         <p class="lb-section-title">✨ Graphnosis Local Layer (.GLL)</p>
                         <p class="layer-hero"><span class="layer-emoji">💡</span> Your on-device LLM quietly proposes links between related memories. <b>You decide what sticks.</b></p>
                         <div class="layer-stack">
@@ -13428,15 +14163,17 @@
                         </div>
                       </div>
 
-                      <div class="lb-section" id="fcard-insights">
+                      <div class="lb-section foresight-detail-card" id="fcard-insights">
                         <p class="lb-section-title">Insights</p>
                         <p class="brain-subtitle">
-                          Patterns, gaps, and opportunities surfaced from your knowledge. Requires a local LLM.
+                          Patterns, gaps, opportunities, and conflict hints from your local LLM scan — informational, not the Memory Integrity review queue.
                         </p>
-                        <div id="lb-insights" class="lb-block" data-pres="surface:foresight"></div>
+                        <div id="lb-insights" class="lb-block" data-pres="surface:foresight">
+                          <div id="foresight-insights-grid"></div>
+                        </div>
                       </div>
 
-                      <div class="lb-section" id="fcard-llm">
+                      <div class="lb-section foresight-detail-card" id="fcard-llm">
                         <p class="lb-section-title">Local LLM</p>
                         <p class="brain-subtitle">
                           Graphnosis' smartest features — forming new connections,
@@ -13661,13 +14398,15 @@ ollama list</code></pre>
                           <span class="ghampus-header-name">Ghampus<span class="ghampus-header-tier"> Hush</span></span>
                           <span class="ghampus-header-tagline">Your confidential AI. Already on it.</span>
                         </h2>
-                        <span id="ghampus-notif-badge" class="ghampus-notif-badge hidden"></span>
+                        <span id="ghampus-notif-badge" class="ghampus-notif-badge hidden"
+                              data-pres="surface:ghampusPanels"></span>
                         <span id="ghampus-walk-chip" class="ghampus-walk-chip hidden"></span>
                       </div>
                       <div class="ghampus-header-meta">
                         <span id="ghampus-active-engram"
                               class="ghampus-header-right ghampus-header-engram hidden">
-                          Active: <code id="ghampus-active-engram-name" class="ghampus-header-engram-code"></code>
+                          Active: <code id="ghampus-active-engram-name" class="ghampus-header-engram-code"
+                                        data-pres="surface:ghampusPanels"></code>
                         </span>
                         <span id="ghampus-model-badge"
                               class="ghampus-header-right ghampus-header-model">
@@ -13682,6 +14421,9 @@ ollama list</code></pre>
                             <option value="">No local LLM</option>
                           </select>
                         </span>
+                        <button id="btn-ghampus-new-chat" class="g-btn" type="button"
+                                style="font-size: 11px; padding: 2px 9px;"
+                                title="Archive this thread — optionally save a summary to memory first">New chat</button>
                         <button id="btn-ghampus-kill" class="g-btn hidden" type="button"
                                 style="font-size: 11px; padding: 2px 9px;"
                                 title="Disable Ghampus entirely (stops all tool calls and skill walks)">Stop all</button>
@@ -13689,7 +14431,8 @@ ollama list</code></pre>
                                 style="font-size: 11px; padding: 2px 9px;">Resume</button>
                         <span id="ghampus-plan-chip" class="ghampus-plan-chip">—</span>
                         <span id="ghampus-usage-counter"
-                              class="ghampus-header-right ghampus-header-usage hidden"></span>
+                              class="ghampus-header-right ghampus-header-usage hidden"
+                              data-pres="surface:ghampusPanels"></span>
                       </div>
                     </div>
                     <p id="ghampus-kill-banner" class="subtitle hidden"
@@ -13845,11 +14588,27 @@ ollama list</code></pre>
 
                     <!-- Input stack — walk picker above input so typing continues -->
                     <div class="ghampus-input-stack">
+                    <div id="ghampus-comments-bar" class="ghampus-comments-bar hidden" aria-live="polite">
+                      <div class="ghampus-comments-bar-header">
+                        <button type="button" id="btn-ghampus-comments-toggle" class="ghampus-comments-bar-toggle">0 comments</button>
+                        <button type="button" id="btn-ghampus-review-comments" class="g-btn primary btn-sm" disabled>Review comments</button>
+                      </div>
+                      <ul id="ghampus-comments-list" class="ghampus-comments-bar-list"></ul>
+                    </div>
+                    <div id="ghampus-selection-affordance" class="ghampus-selection-affordance" role="button" tabindex="0">Add comment</div>
+                    <div id="ghampus-comment-popover" class="ghampus-comment-popover" role="dialog" aria-label="Comment on selection">
+                      <p id="ghampus-comment-popover-quote" class="ghampus-comment-popover-quote"></p>
+                      <textarea id="ghampus-comment-popover-input" class="ghampus-comment-popover-input" placeholder="Your note on this passage…" rows="2"></textarea>
+                      <div class="ghampus-comment-popover-actions">
+                        <button type="button" class="g-btn" id="btn-ghampus-comment-cancel">Cancel</button>
+                        <button type="button" class="g-btn primary" id="btn-ghampus-comment-save">Add comment</button>
+                      </div>
+                    </div>
                     <div id="ghampus-walk-picker" class="ghampus-walk-picker-backdrop hidden"
                          role="dialog" aria-modal="false" aria-labelledby="ghampus-walk-picker-title">
                       <div class="ghampus-walk-picker">
                         <div class="ghampus-walk-picker-header">
-                          <h3 id="ghampus-walk-picker-title">Walk a skill</h3>
+                          <h3 id="ghampus-walk-picker-title">Preview a skill</h3>
                           <button type="button" id="btn-ghampus-walk-picker-close"
                                   class="ghampus-walk-picker-close" aria-label="Close">×</button>
                         </div>
@@ -13868,6 +14627,9 @@ ollama list</code></pre>
                         </div>
                       </div>
                     </div>
+                    <div id="ghampus-compose-rail" class="ghampus-compose-rail hidden" aria-live="polite">
+                      <div id="ghampus-compose-strips" class="ghampus-compose-strips"></div>
+                    </div>
                     <div class="ghampus-input-row">
                       <textarea id="ghampus-input" class="ghampus-input"
                                 placeholder="Ask anything — type / to save, recall, or run a skill"
@@ -13875,7 +14637,7 @@ ollama list</code></pre>
                       <button id="btn-ghampus-cancel" class="ghampus-cancel-btn hidden" type="button"
                               title="Stop the current reply">Stop</button>
                       <button id="btn-ghampus-send" class="ghampus-send-btn" type="button"
-                              title="Send (Enter · Cmd+Enter for new line)">
+                              title="Send (Enter · ⌘/Ctrl+Enter for new line · ⌘/Ctrl + +/−/0 to zoom chat)">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                           <path d="M2 8L14 2L10 8L14 14L2 8Z" fill="currentColor"/>
                         </svg>
@@ -14441,8 +15203,8 @@ ollama list</code></pre>
             <!-- SETTINGS pane: actions + entry to settings modal -->
             <section class="mode-pane hidden" data-pane="settings">
               <header class="pane-header">
-                <h2>Settings & actions</h2>
-                <p class="brain-subtitle">Tune your autonomous cortex.</p>
+                <h2>Settings</h2>
+                <p class="brain-subtitle">Per-cortex options — expand a section when you need it.</p>
               </header>
               <!-- Pro license launcher — relocated from inside the Settings
                    modal up to the top of the Settings pane itself, so the
@@ -14463,7 +15225,7 @@ ollama list</code></pre>
               <div class="panel">
                 <p class="panel-title">Preferences</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Caching policy, forget behavior, MCP relay timings, inspector detail level.
+                  Memory cache, ingest, consent, and background activity — per cortex.
                 </p>
                 <button id="btn-settings" class="primary">Open preferences…</button>
               </div>
@@ -14499,10 +15261,13 @@ ollama list</code></pre>
                    skill walker. Provider toggles + routing strategy +
                    monthly budget. Custom rate editor (enterprise
                    negotiated pricing) is a later iteration. -->
+              <details class="settings-group">
+                <summary>Models &amp; LLM <span class="settings-group-hint">routing · providers · budget</span></summary>
+                <div class="settings-group-body">
               <div class="panel" id="settings-panel-models">
                 <p class="panel-title">Models</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Configure which LLMs Ghampus and the Autonomous Skill Trainer can use. Skills are recipes — they declare capabilities; the right model is picked per step.
+                  Which LLMs Ghampus and the skill walker may use — picked per step from capabilities.
                 </p>
 
                 <div style="margin-bottom: 14px;">
@@ -14539,7 +15304,36 @@ ollama list</code></pre>
                 </div>
 
                 <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border, rgba(255,255,255,.08));">
-                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Ghampus skill maintenance</p>
+                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Savings baseline</p>
+                  <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
+                    Counterfactual for the Ghampus savings dashboard.
+                  </p>
+                  <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <select id="models-savings-baseline" style="padding: 6px 10px; border: 1px solid var(--border, #ccc); border-radius: 6px; background: transparent; color: inherit; font-size: 14px;">
+                      <option value="sonnet">Claude Sonnet 4.6 (default)</option>
+                      <option value="gpt4o">GPT-4o</option>
+                      <option value="opus">Claude Opus 4.6</option>
+                      <option value="haiku">Claude Haiku 4.5</option>
+                    </select>
+                    <button id="btn-models-save-savings-baseline" class="g-btn" type="button">Save</button>
+                    <span id="models-savings-baseline-label" class="subtitle" style="font-size: 12px;">—</span>
+                  </div>
+                </div>
+              </div>
+                </div>
+              </details>
+
+              <details class="settings-group">
+                <summary>Ghampus &amp; agent <span class="settings-group-hint">maintenance · tips · reminders</span></summary>
+                <div class="settings-group-body">
+              <div class="panel" id="settings-panel-ghampus">
+                <p class="panel-title">Ghampus</p>
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                  Proactive cards and background skill upkeep — in-app only unless noted.
+                </p>
+
+                <div style="margin-bottom: 14px;">
+                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Skill maintenance</p>
                   <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
                     When source memories change, Ghampus can retrain affected skills during idle time.
                   </p>
@@ -14614,31 +15408,13 @@ ollama list</code></pre>
                     <span class="subtitle" style="font-size: 12px;">Set 0 for an immediate first scan.</span>
                   </div>
                 </div>
-
-                <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border, rgba(255,255,255,.08));">
-                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Savings baseline</p>
-                  <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
-                    Counterfactual model for the Ghampus savings dashboard — what you would have paid without local recall and routing.
-                  </p>
-                  <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                    <select id="models-savings-baseline" style="padding: 6px 10px; border: 1px solid var(--border, #ccc); border-radius: 6px; background: transparent; color: inherit; font-size: 14px;">
-                      <option value="sonnet">Claude Sonnet 4.6 (default)</option>
-                      <option value="gpt4o">GPT-4o</option>
-                      <option value="opus">Claude Opus 4.6</option>
-                      <option value="haiku">Claude Haiku 4.5</option>
-                    </select>
-                    <button id="btn-models-save-savings-baseline" class="g-btn" type="button">Save</button>
-                    <span id="models-savings-baseline-label" class="subtitle" style="font-size: 12px;">—</span>
-                  </div>
-                </div>
               </div>
+                </div>
+              </details>
 
-              <!-- AI Client Integration panel removed from Settings — the AI
-                   client chips on the Get Connected page configure each client.
-                   Mobile & Remote Access moved to Get Connected → App posture. -->
-              <!-- Connectors panel removed from Settings — it now lives on the
-                   Get Connected page (chips, recipe cards, the per-instance list,
-                   and the default + per-connector check interval). -->
+              <details class="settings-group">
+                <summary>Access control <span class="settings-group-hint">block connectors or AI clients</span></summary>
+                <div class="settings-group-body">
               <!-- Access control: which connector kinds + AI clients are allowed
                    to touch this cortex. Enforced in the sidecar. Editable when the
                    sidecar is yours (you're admin); read-only when IT manages it. -->
@@ -14646,14 +15422,17 @@ ollama list</code></pre>
                 <p class="panel-title">Access control</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Block connector kinds or AI clients from reaching this cortex.
-                  Enforced in the sidecar — a blocked item can't read or write your
-                  memory, no matter what the app shows.
                 </p>
                 <div id="settings-policy-body" aria-live="polite"></div>
               </div>
+                </div>
+              </details>
 
+              <details class="settings-group" id="settings-group-enterprise">
+                <summary>Enterprise <span class="settings-group-hint">SSO · compliance</span></summary>
+                <div class="settings-group-body">
               <!-- Enterprise SSO — full config when licensed; upsell stub otherwise -->
-              <div class="panel" id="settings-panel-sso" style="display:none;">
+              <div class="panel" id="settings-panel-sso">
                 <p class="panel-title">Enterprise SSO</p>
 
                 <div id="settings-panel-sso-upsell" class="hidden">
@@ -14758,7 +15537,7 @@ ollama list</code></pre>
               </div>
 
               <!-- Enterprise Compliance -->
-              <div class="panel" id="settings-panel-compliance" style="display:none;">
+              <div class="panel" id="settings-panel-compliance">
                 <p class="panel-title">Compliance</p>
                 <div id="settings-panel-compliance-upsell" class="hidden">
                   <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
@@ -14802,11 +15581,16 @@ ollama list</code></pre>
                   </div>
                 </div>
               </div>
+                </div>
+              </details>
 
+              <details class="settings-group">
+                <summary>Cortex maintenance <span class="settings-group-hint">recovery · snapshots · tools</span></summary>
+                <div class="settings-group-body">
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Reconstruct lost memories from the encrypted op-log, refresh state, peek at cortex files.
+                  Reconstruct from the op-log, refresh stats, open the cortex folder.
                 </p>
                 <button id="btn-recover">Recover from op-log…</button>
                 <button id="btn-refresh" style="margin-left: 6px;">Refresh stats</button>
@@ -14841,6 +15625,8 @@ ollama list</code></pre>
                 <button id="btn-regenerate-recovery-phrase" type="button">Regenerate recovery phrase…</button>
                 <span id="recovery-phrase-settings-hint" class="subtitle" style="font-size: 15px; margin-left: 8px;">Shows the new phrase once — write it down before dismissing.</span>
               </div>
+                </div>
+              </details>
 
             </section>
           </div>
@@ -15293,14 +16079,13 @@ ollama list</code></pre>
     <div id="settings-modal" class="modal-backdrop hidden">
       <div class="modal">
         <div class="modal-header">
-          <h2>Settings</h2>
-          <p class="subtitle">Per-cortex preferences. Stored at <code>&lt;cortex&gt;/settings.json</code>.</p>
+          <h2>Preferences</h2>
+          <p class="subtitle">Per-cortex options in <code>&lt;cortex&gt;/settings.json</code>. Expand a section when you need it.</p>
         </div>
         <div class="modal-body" id="settings-body">
-          <!-- The Pro-license launcher used to live here; it's been moved
-               up to the Settings pane itself (first panel under the
-               header) so the subscription affordance isn't buried behind
-               a "Preferences" modal. -->
+          <details class="settings-group" open>
+            <summary>Memory &amp; storage <span class="settings-group-hint">cache · forget behavior</span></summary>
+            <div class="settings-group-body">
           <div class="settings-section no-top-border">
           <p class="settings-section-label">Sync</p>
           <div id="settings-sync-panel" class="hidden">
@@ -15349,7 +16134,12 @@ ollama list</code></pre>
           </div>
 
           </div><!-- /section: memory storage -->
+            </div>
+          </details>
 
+          <details class="settings-group">
+            <summary>Search model <span class="settings-group-hint">embeddings · re-embed</span></summary>
+            <div class="settings-group-body">
           <div class="settings-section">
           <p class="settings-section-label">Search model</p>
           <p class="subtitle" style="margin-bottom: 12px;">
@@ -15371,7 +16161,12 @@ ollama list</code></pre>
                  [ Apply ]   (status text on right) -->
           </div>
           </div><!-- /section: search model -->
+            </div>
+          </details>
 
+          <details class="settings-group">
+            <summary>Ingest &amp; capture <span class="settings-group-hint">chunking · clipboard · reingest</span></summary>
+            <div class="settings-group-body">
           <div class="settings-section">
           <p class="settings-section-label">Ingest</p>
           <p class="subtitle" style="margin-bottom: 12px;">
@@ -15476,12 +16271,18 @@ ollama list</code></pre>
             </label>
           </div>
 
-          <p class="panel-title" style="margin-top: 18px;">Background activity</p>
+          </div><!-- /section: ingest (clipboard) -->
+            </div>
+          </details>
+
+          <details class="settings-group">
+            <summary>Performance <span class="settings-group-hint">background CPU · low power</span></summary>
+            <div class="settings-group-body">
+          <div class="settings-section">
+          <p class="settings-section-label">Background activity</p>
           <p class="subtitle" style="margin-bottom: 10px;">
-            Controls how aggressively the sidecar runs background work after unlock —
-            embedding workers, docs re-ingest, brain scans, and Ghampus reminders.
-            Use <strong>Low impact</strong> or <strong>Low power</strong> if the Mac runs
-            hot or you're on battery. Recall, ingest, and saves are unaffected.
+            Sidecar background work after unlock — embedding, brain scans, Ghampus reminders.
+            Recall and saves are unaffected.
           </p>
           <div class="row">
             <label for="setting-background-activity" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
@@ -15494,21 +16295,18 @@ ollama list</code></pre>
             </select>
           </div>
           <p class="subtitle" style="margin-top: 8px; font-size: 12px;">
-            <strong>Normal:</strong> up to 4 embed workers (2 default on Apple Silicon), boot tasks may overlap.<br />
-            <strong>Low impact:</strong> max 2 workers, 2–3 min docs deferral, Ghampus/brain serialized.<br />
-            <strong>Low power:</strong> 1 worker, brain duplicate/synapse/insight passes paused (3D animation unchanged).
+            <strong>Normal:</strong> up to 4 embed workers (2 default on Apple Silicon).<br />
+            <strong>Low impact:</strong> max 2 workers, longer deferrals.<br />
+            <strong>Low power:</strong> 1 worker, brain duplicate/synapse/insight passes paused.
           </p>
-
-          <!-- Legacy checkbox kept for status-bar sync; hidden — driven by select above. -->
           <input type="checkbox" id="setting-low-power" hidden />
+          </div><!-- /section: background activity -->
+            </div>
+          </details>
 
-          <!-- NOTE: Graphs management, Recovery phrase regeneration, and the
-               Quarantined files cleanup have all moved out of this modal
-               into the main Settings tab (side rail) so they're surfaced
-               without requiring a popup. See <section data-pane="settings">. -->
-
-          </div><!-- /section: ingest -->
-
+          <details class="settings-group">
+            <summary>AI clients <span class="settings-group-hint">MCP relay · routing</span></summary>
+            <div class="settings-group-body">
           <div class="settings-section">
           <p class="settings-section-label">AI client</p>
           <p class="panel-title" style="margin-top: 0;">MCP relay timings</p>
@@ -15557,7 +16355,12 @@ ollama list</code></pre>
           </div>
 
           </div><!-- /section: AI client -->
+            </div>
+          </details>
 
+          <details class="settings-group">
+            <summary>Privacy &amp; consent <span class="settings-group-hint">phrases · session caps</span></summary>
+            <div class="settings-group-body">
           <div class="settings-section">
           <p class="settings-section-label">AI access & consent</p>
           <p class="subtitle" style="margin-bottom: 10px;">
@@ -15699,11 +16502,12 @@ ollama list</code></pre>
           </p>
 
           </div><!-- /section: active consents -->
+            </div>
+          </details>
 
-          <!-- Graphnosis Pro license — moved out of the per-cortex Settings
-               into its own modal. See #license-modal below. The button to
-               open it lives at the top of the Settings body. -->
-
+          <details class="settings-group">
+            <summary>Support <span class="settings-group-hint">diagnostics</span></summary>
+            <div class="settings-group-body">
           <div class="settings-section">
           <p class="settings-section-label">Support</p>
           <p class="subtitle" style="margin-bottom: 12px;">
@@ -15716,6 +16520,8 @@ ollama list</code></pre>
             </label>
           </div>
           </div><!-- /section: support -->
+            </div>
+          </details>
         </div>
         <div class="modal-footer">
           <span class="filler" id="settings-footer-note"></span>
@@ -16886,6 +17692,38 @@ ollama list</code></pre>
           <div style="display:flex; gap:10px; justify-content:flex-end;">
             <button id="g-confirm-cancel" style="min-width:80px;">Cancel</button>
             <button id="g-confirm-ok" class="primary" style="min-width:80px;">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ghampus "New chat" — optional remember thread summary before archive -->
+    <div id="ghampus-new-chat-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="ghampus-new-chat-title">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2 id="ghampus-new-chat-title">Start a fresh chat?</h2>
+        </div>
+        <div class="modal-body" style="padding:20px 28px 24px;">
+          <p id="ghampus-new-chat-body" style="margin:0 0 14px; font-size:14px; line-height:1.6; color:var(--fg-dim);">
+            The current thread stays archived under ghampus/sessions/. Save a summary to memory first, or start fresh without saving.
+          </p>
+          <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
+            <label for="ghampus-new-chat-summary" style="font-size:12px; opacity:.7;">Thread summary</label>
+            <button id="ghampus-new-chat-skip" type="button" class="g-btn btn-sm" style="font-size:11px; padding:2px 8px;">Skip summary &amp; start fresh</button>
+          </div>
+          <textarea id="ghampus-new-chat-summary" class="studio-textarea" rows="7"
+                    style="width:100%; box-sizing:border-box; margin-bottom:12px; font-size:13px;"
+                    placeholder="Summarizing thread…"></textarea>
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:20px; flex-wrap:wrap;">
+            <label for="ghampus-new-chat-engram" style="font-size:12px; opacity:.7;">Save to</label>
+            <select id="ghampus-new-chat-engram" class="studio-select" style="min-width:160px; flex:1;" aria-busy="true">
+              <option value="" disabled selected>Loading engrams…</option>
+            </select>
+          </div>
+          <div style="display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;">
+            <button id="ghampus-new-chat-cancel" type="button" style="min-width:80px;">Cancel</button>
+            <button id="ghampus-new-chat-fresh" type="button" style="min-width:120px;">Skip &amp; start fresh</button>
+            <button id="ghampus-new-chat-remember" type="button" class="primary" style="min-width:160px;">Remember &amp; start fresh</button>
           </div>
         </div>
       </div>

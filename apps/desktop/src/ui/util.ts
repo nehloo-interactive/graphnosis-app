@@ -9,6 +9,43 @@ export function presSourceAttr(sourceId: string | undefined): string {
   return sourceId ? ` data-pres-source="${escape(sourceId)}"` : '';
 }
 
+/** Ghampus Presentation Mode surfaces (see main.ts PresSurface). */
+export const PRES_GHAMPUS_CHAT = 'ghampusChat';
+export const PRES_GHAMPUS_PANELS = 'ghampusPanels';
+
+export type PresTagKind = 'engram' | 'source' | 'node' | 'skill' | 'goal' | 'surface';
+
+/** Build a ` data-pres="…"` attribute (plus optional engram/source scoping). */
+export function presAttr(
+  kind: PresTagKind,
+  id: string,
+  extras?: { engram?: string; source?: string },
+): string {
+  let s = ` data-pres="${kind}:${escape(id)}"`;
+  if (extras?.engram) s += ` data-pres-engram="${escape(extras.engram)}"`;
+  if (extras?.source) s += ` data-pres-source="${escape(extras.source)}"`;
+  return s;
+}
+
+export function presSurfaceAttr(surface: string): string {
+  return presAttr('surface', surface);
+}
+
+export function presEngramAttr(graphId: string): string {
+  return presAttr('engram', graphId);
+}
+
+export function presSkillAttr(sourceId: string, graphId?: string): string {
+  return presAttr('skill', sourceId, graphId ? { engram: graphId } : undefined);
+}
+
+export function presNodeAttr(nodeId: string, graphId?: string, sourceId?: string): string {
+  const extras: { engram?: string; source?: string } = {};
+  if (graphId) extras.engram = graphId;
+  if (sourceId) extras.source = sourceId;
+  return presAttr('node', nodeId, extras);
+}
+
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');

@@ -147,10 +147,11 @@ export async function refreshComplianceSettingsPanel(): Promise<void> {
   const panel = document.getElementById('settings-panel-compliance');
   const upsell = document.getElementById('settings-panel-compliance-upsell');
   const config = document.getElementById('settings-panel-compliance-config');
+  const enterpriseGroup = document.getElementById('settings-group-enterprise');
   if (!panel) return;
+  if (enterpriseGroup) enterpriseGroup.style.display = '';
   try {
     const data = await ipcCall<ComplianceGetResult>('compliance.get', {});
-    panel.style.display = '';
     if (!data.enterprise) {
       upsell?.classList.remove('hidden');
       config?.classList.add('hidden');
@@ -176,7 +177,7 @@ export async function refreshComplianceSettingsPanel(): Promise<void> {
       status.textContent = parts.filter(Boolean).join(' · ');
     }
   } catch {
-    panel.style.display = '';
+    if (enterpriseGroup) enterpriseGroup.style.display = '';
     upsell?.classList.remove('hidden');
     config?.classList.add('hidden');
   }

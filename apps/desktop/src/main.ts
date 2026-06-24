@@ -62,6 +62,27 @@ import {
   stopGhampusLlmStatusPoll,
 } from './ui/ghampus';
 import {
+  mountMemoryIntegrityWorkbench,
+  openMemoryIntegrityWorkbench,
+  fetchAttentionCounts,
+  renderAttentionStrip,
+  refreshMemoryIntegrityWorkbench,
+  setMemoryIntegrityBootstrap,
+} from './ui/memory-integrity-workbench';
+import {
+  initForesightPage,
+  renderForesightTiles,
+  stashForesightDetailCards,
+  renderInsightCard,
+  wireInsightDismiss,
+  wireInsightActions,
+  type InsightPrimaryAction,
+  openForesightLaneModal,
+  closeForesightModal,
+  setForesightBootstrap,
+  setForesightLaneOpenHandler,
+} from './ui/foresight-page';
+import {
   initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
   offerSidecarRecovery, configureSsoUnlockButton,
 } from './ui/unlock';
@@ -1096,6 +1117,8 @@ interface BrainContradictionPair {
   snippetA: string; snippetB: string;
   sharedEntities: string[]; description: string; detectedAt: number;
   kind?: 'semantic' | 'policy';
+  severity?: 'low' | 'medium' | 'high';
+  temporalVerdict?: 'genuine_contradiction' | 'temporal_supersession' | 'negation_artifact';
 }
 // One autonomous-heal event from the healing journal — rendered in the
 // Autonomous Brain "Self-healing" log. The llm* fields are filled in
@@ -1900,6 +1923,8 @@ function render(status: StatusSnapshot): void {
       void refreshCortexScopedStats();
       void refreshBrainStatus(); // cheap sync IPC — feeds Autonomous Brain home card
       kickHomeBrainCardLoads(); // memory-health + self-healing IPC head start (eeb2f0b7 pattern)
+      void refreshHomeIntegrity();
+      window.setTimeout(() => { if (isHomeDashboardView()) void refreshHomeIntegrity(); }, 2500);
       void refreshConnectorsList();
       void applyMdmCatalogAutoInstall();
       void maybeOfferCatalogPackages();
@@ -1934,6 +1959,10 @@ function render(status: StatusSnapshot): void {
         } catch { /* non-fatal */ }
       })();
       activateMode(currentMode);
+      if (currentMode === 'atlas') {
+        void refreshHomePolicy();
+        window.setTimeout(() => { if (isHomeDashboardView()) void refreshHomePolicy(); }, 2500);
+      }
     };
 
     // Load engrams, then evaluate the Graphnosis-docs ingest offer — the
@@ -2007,6 +2036,8 @@ function render(status: StatusSnapshot): void {
     // duplicate-id rewrite above.
     showError(null);
     homePrefetchDone = false; // allow re-prefetch on next unlock
+    cachedHomePolicy = null;
+    cachedHomeContradictionCount = null;
     ghampusThreadPrefetchScheduled = false;
     resetGhampusThreadCache();
     stopMcpPolling();
@@ -2292,10 +2323,6 @@ function renderRailGetConnected(): void {
     b.addEventListener('click', onClick);
     return b;
   };
-  const openNonDeterministic = (): void => {
-    activateMode('goals'); // Foresight now hosts the GNN / Local-LLM layers
-  };
-
   const llmOn = brainLlmReady;
   const gnnOn = brainNeuralNetworkStatus?.enabled === true;
 
@@ -3297,6 +3324,17 @@ document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
   });
 });
 
+els.railCorrectionsBadge?.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  ev.preventDefault();
+  openMemoryIntegrity('queue');
+});
+
+document.addEventListener('graphnosis:attention-changed', () => {
+  void refreshUnifiedAttentionBadge();
+  if (isHomeDashboardView()) void refreshHomeNeeds();
+});
+
 // ── Mobile bottom nav ────────────────────────────────────────────────────────
 // The 4-slot mobile bar: Home · MCP · Skills · More. The first three carry a
 // data-mode; "More" (data-nav="more") opens a bottom sheet with the overflow
@@ -3944,11 +3982,10 @@ async function fetchPendingCorrections(): Promise<void> {
     const changed = r.pending.length !== prevCount
       || r.pending.some((d) => !prevIds.has(d.diffId));
     if (changed && currentMode === 'atlas') {
-      // New diff arrived (or one was applied/rejected externally) → fold
-      // it into the deck queue and re-render the card.
       rebuildDeckQueue();
       renderDeck();
     }
+    if (changed && isHomeDashboardView()) void refreshHomeNeeds();
   } catch {
     // cortex locked / sidecar gone — clear pending state silently.
     graphnosisPendingDiffs = [];
@@ -5146,6 +5183,7 @@ function renderMarkdownLite(md: string): string {
   const inline = (s: string): string => esc(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(?<![\\w/])_([^_\n]+?)_(?![\\w/])/g, '<em>$1</em>')
     // Link rendering. `esc` already escaped &<> in the URL; additionally neutralize
     // quotes (attribute context) and allow only safe schemes, so a malicious URL
     // can't break out of href or smuggle a javascript:/file: scheme. This renderer
@@ -5158,18 +5196,43 @@ function renderMarkdownLite(md: string): string {
     });
   const out: string[] = [];
   let inList = false;
+  let inStep = false;
   const closeList = (): void => { if (inList) { out.push('</ul>'); inList = false; } };
-  for (const raw of md.split('\n')) {
-    const line = raw.trimEnd();
+  const closeStep = (): void => {
+    closeList();
+    if (inStep) { out.push('</div>'); inStep = false; }
+  };
+  const mdLines = md.split('\n');
+  for (let i = 0; i < mdLines.length; i++) {
+    const line = mdLines[i]!.trimEnd();
     const h = line.match(/^(#{1,3})\s+(.*)$/);
-    if (h) { closeList(); out.push(`<h${h[1]!.length}>${inline(h[2]!)}</h${h[1]!.length}>`); continue; }
-    const li = line.match(/^\s*[-*]\s+(.*)$/);
+    if (h) {
+      const level = h[1]!.length;
+      if (level === 3) {
+        closeStep();
+        out.push('<div class="gh-md-step">');
+        inStep = true;
+      } else {
+        closeStep();
+      }
+      closeList();
+      out.push(`<h${level} class="gh-md-h${level}">${inline(h[2]!)}</h${level}>`);
+      continue;
+    }
+    const li = line.match(/^\s*(?:[-*•]|\u2022)\s+(.*)$/);
     if (li) { if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${inline(li[1]!)}</li>`); continue; }
-    if (!line.trim()) { closeList(); continue; }
-    if (line === '---') { closeList(); out.push('<hr/>'); continue; }
-    closeList(); out.push(`<p>${inline(line)}</p>`);
+    if (!line.trim()) {
+      let j = i + 1;
+      while (j < mdLines.length && !mdLines[j]!.trim()) j++;
+      const next = mdLines[j]?.trimEnd() ?? '';
+      if (inList && /^\s*(?:[-*•]|\u2022)\s+/.test(next)) continue;
+      closeList();
+      continue;
+    }
+    if (line === '---') { closeStep(); out.push('<hr/>'); continue; }
+    closeList(); out.push(`<p class="gh-md-p">${inline(line)}</p>`);
   }
-  closeList();
+  closeStep();
   return out.join('\n');
 }
 
@@ -7480,12 +7543,57 @@ function updateStatusBar(connections: McpConnection[]): void {
 // Surfaces the same count the deck queue is about to show as the first
 // few cards; clicking the rail item routes the user there directly.
 function updatePendingBadge(count: number): void {
-  if (count > 0) {
-    els.railCorrectionsBadge.classList.remove('hidden');
-    els.railCorrectionsBadge.textContent = String(count);
-  } else {
-    els.railCorrectionsBadge.classList.add('hidden');
+  void refreshUnifiedAttentionBadge(count);
+}
+
+async function refreshUnifiedAttentionBadge(correctionCount?: number): Promise<void> {
+  try {
+    const counts = await fetchAttentionCounts({ ipcCall });
+    if (typeof correctionCount === 'number') counts.corrections = correctionCount;
+    counts.total = counts.corrections + counts.duplicates + counts.contradictions;
+    if (counts.total > 0) {
+      els.railCorrectionsBadge.classList.remove('hidden');
+      els.railCorrectionsBadge.textContent = String(counts.total);
+      const tip: string[] = [];
+      if (counts.corrections > 0) tip.push(`${counts.corrections} correction${counts.corrections === 1 ? '' : 's'}`);
+      if (counts.contradictions > 0) tip.push(`${counts.contradictions} contradiction${counts.contradictions === 1 ? '' : 's'}`);
+      if (counts.duplicates > 0) tip.push(`${counts.duplicates} duplicate${counts.duplicates === 1 ? '' : 's'}`);
+      els.railCorrectionsBadge.title = tip.join(' · ') || 'Items need your review';
+    } else {
+      els.railCorrectionsBadge.classList.add('hidden');
+      els.railCorrectionsBadge.title = 'Nothing needs attention';
+    }
+    renderAttentionStrip(counts, { escapeHtml, openTrivia });
+  } catch {
+    if ((correctionCount ?? 0) > 0) {
+      els.railCorrectionsBadge.classList.remove('hidden');
+      els.railCorrectionsBadge.textContent = String(correctionCount);
+    } else {
+      els.railCorrectionsBadge.classList.add('hidden');
+    }
   }
+}
+
+function openGhampusWalk(prompt: string): void {
+  closeForesightModal();
+  activateMode('ghampus');
+  const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
+  if (input) {
+    input.value = prompt;
+    input.focus();
+  }
+}
+
+function handleForesightInsightAction(action: InsightPrimaryAction): void {
+  if (action.kind === 'open-integrity') {
+    openMemoryIntegrity('queue');
+    return;
+  }
+  if (action.prompt) openGhampusWalk(action.prompt);
+}
+
+function openMemoryIntegrity(tab: 'queue' | 'entity' | 'sources' | 'history' | 'filtered' | 'actions' = 'queue'): void {
+  openMemoryIntegrityWorkbench(tab);
 }
 
 // ── Graphnosis view (list-first + tabbed; 3D Atlas is one tab) ──────
@@ -8245,6 +8353,9 @@ function renderHomeDashboard(): void {
 
   renderHomeEngramBars();
   renderHomeCoherenceBanner();
+  if (cachedHomePolicy) paintHomePolicyCard(cachedHomePolicy);
+  if (cachedHomeContradictionCount != null) paintHomeIntegrityBody(cachedHomeContradictionCount, false);
+  else paintHomeIntegrityChecking();
   refreshHomeStranded();   // dedicated stranded-memories card (cheap, sync)
   refreshHomeOnPremise();  // sovereignty/egress ledger (cheap, sync)
   renderHomeBrainActivity(); // sync from brainStatus — must not wait on scheduleHomeDataLoad
@@ -8258,6 +8369,7 @@ function renderHomeDashboard(): void {
 const HOME_HELP: Record<string, string> = {
   'Trust & Vitality': 'An at-a-glance 0–100 health score for this cortex — how connected, active, and consistent your memories are. Higher is healthier.',
   'Connections': 'Which AI clients are reading your memory right now, and which data sources are feeding it.',
+  'Contradictions': 'Memories that conflict with each other — review and keep the current one, retire the outdated one.',
   'Memory health': 'Retrieval-quality signals: how many memories are decaying (losing trust over time), when the next decay happens, and how densely they\'re linked (synapses).',
   'Self-healing': 'Duplicate memories the autonomous brain merged on its own — no action needed from you.',
   'Needs you': 'Items waiting on your decision: duplicate pairs to merge, contradicting memories to reconcile, and AI-proposed corrections to confirm or reject.',
@@ -8547,7 +8659,12 @@ async function refreshHomeDigest(): Promise<void> {
       // 25s covers a cold full op-log read (~16s on a large cortex); warm = instant.
       const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since: anchor, limit: 5000 }, 25_000);
       since = r.events ?? [];
-    } catch { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Couldn’t load recent activity right now.</p>'; return; }
+    } catch {
+      card.style.display = '';
+      body.innerHTML = homeCardEmptyHtml('Couldn’t load recent activity right now.', { retry: () => scheduleHomeDataLoad() });
+      wireHomeCardRetry(body, () => scheduleHomeDataLoad());
+      return;
+    }
   }
   if (whenEl) whenEl.textContent = firstLook ? 'your first look' : `since ${relTimeShort(anchor)}`;
 
@@ -8569,7 +8686,7 @@ async function refreshHomeDigest(): Promise<void> {
     body.innerHTML = `<p class="home-digest-quiet">${
       firstLook
         ? 'Welcome. As your AI writes to your memory and the brain consolidates it in the background, this is where you’ll see exactly what changed since your last visit.'
-        : 'All quiet since your last visit — nothing changed.'
+        : 'Nothing needs attention right now — all quiet since your last visit.'
     }</p>`;
     card.style.display = '';
     return;
@@ -8581,11 +8698,69 @@ async function refreshHomeDigest(): Promise<void> {
       `<span class="home-digest-chip"><strong>${n}</strong> ${escapeHtml(plural(n, tmpl))}</span>`,
     )
     .join('');
-  body.innerHTML =
-    `<div class="home-digest-chips">${chips}</div>` +
-    `<button type="button" class="home-digest-link" data-go-audit>See the full trail in Activity →</button>`;
+  if (!chips) {
+    body.innerHTML = `<p class="home-digest-quiet">Background activity ran, but nothing in the usual categories changed since your last visit.</p>` +
+      `<button type="button" class="home-digest-link" data-go-audit>See the full trail in Activity →</button>`;
+  } else {
+    body.innerHTML =
+      `<div class="home-digest-chips">${chips}</div>` +
+      `<button type="button" class="home-digest-link" data-go-audit>See the full trail in Activity →</button>`;
+  }
   card.style.display = '';
   body.querySelector('[data-go-audit]')?.addEventListener('click', () => activateMode('activity'));
+}
+
+// ── Home: "Contradictions" card ───────────────────────────────────────────
+// Always visible on Your Cortex — surfaces the Memory Integrity queue even
+// when "Needs you" is empty (corrections/duplicates may be zero).
+function paintHomeIntegrityChecking(): void {
+  const body = document.getElementById('home-integrity-body');
+  if (!body || body.dataset['integrityReady'] === '1') return;
+  body.innerHTML = '<p class="home-card-empty">Checking for contradictions…</p>';
+}
+
+function paintHomeIntegrityBody(contradictions: number, failed: boolean): void {
+  const body = document.getElementById('home-integrity-body');
+  if (!body) return;
+  if (failed) {
+    if (cachedHomeContradictionCount != null) {
+      body.dataset['integrityReady'] = '1';
+      paintHomeIntegrityBody(cachedHomeContradictionCount, false);
+      return;
+    }
+    body.dataset['integrityReady'] = '1';
+    body.innerHTML = homeCardEmptyHtml('Couldn’t check for contradictions right now.', { retry: () => scheduleHomeDataLoad() });
+    wireHomeCardRetry(body, () => scheduleHomeDataLoad());
+    return;
+  }
+  cachedHomeContradictionCount = contradictions;
+  body.dataset['integrityReady'] = '1';
+  if (contradictions === 0) {
+    body.innerHTML = homeCardEmptyHtml(
+      'No verified contradiction pairs queued — deterministic scans found nothing to resolve here. '
+      + 'LLM Insights may still flag semantic tensions; those are hints, not this review queue.',
+      { ok: true },
+    );
+    return;
+  }
+  const label = contradictions === 1 ? 'contradiction' : 'contradictions';
+  body.innerHTML =
+    `<p class="home-integrity-summary">${contradictions.toLocaleString()} ${label} waiting for review.</p>` +
+    `<button type="button" class="home-need-row" data-integrity-review title="Memories that conflict — keep the current one, retire the outdated one">` +
+    `<span class="home-need-count">${contradictions.toLocaleString()}</span>` +
+    `<span class="home-need-label">Review in Memory Integrity</span>` +
+    `<span class="home-need-go">Review →</span></button>`;
+  body.querySelector<HTMLButtonElement>('[data-integrity-review]')?.addEventListener('click', () => openMemoryIntegrity('queue'));
+}
+
+async function refreshHomeIntegrity(): Promise<void> {
+  let contradictions = 0;
+  let failed = false;
+  try {
+    const counts = await ipcCallTimeout<{ contradictions: number }>('brain:getAttentionCounts', {}, 5000);
+    contradictions = typeof counts?.contradictions === 'number' ? counts.contradictions : 0;
+  } catch { failed = true; }
+  paintHomeIntegrityBody(contradictions, failed);
 }
 
 // ── Home: "Needs you" lane ────────────────────────────────────────────────
@@ -8599,17 +8774,39 @@ async function refreshHomeNeeds(): Promise<void> {
   const body = document.getElementById('home-needs-body');
   if (!card || !body) return;
 
-  const corrections = graphnosisPendingDiffs.length;
+  let corrections = graphnosisPendingDiffs.length;
   let duplicates = 0;
+  let dupesFailed = false;
+  let contradictions = cachedHomeContradictionCount ?? 0;
+  let contraFailed = false;
+
+  // Cheap count first — paint the Contradictions card before duplicate-pair IPC.
   try {
-    const pairs = await ipcCallTimeout<unknown[]>('brain:getDuplicatePairs', {});
+    const counts = await ipcCallTimeout<{ contradictions: number; duplicates: number }>('brain:getAttentionCounts', {}, 5000);
+    contradictions = typeof counts?.contradictions === 'number' ? counts.contradictions : 0;
+    duplicates = typeof counts?.duplicates === 'number' ? counts.duplicates : 0;
+    paintHomeIntegrityBody(contradictions, false);
+  } catch {
+    contraFailed = true;
+    paintHomeIntegrityBody(contradictions, true);
+  }
+
+  try {
+    const pairs = await ipcCallTimeout<unknown[]>('brain:getDuplicatePairs', {}, 12_000);
     duplicates = Array.isArray(pairs) ? pairs.length : 0;
-  } catch { /* leave 0 */ }
-  let contradictions = 0;
-  try {
-    const pairs = await ipcCallTimeout<unknown[]>('brain:getContradictionPairs', {});
-    contradictions = Array.isArray(pairs) ? pairs.length : 0;
-  } catch { /* leave 0 */ }
+  } catch { dupesFailed = true; }
+
+  if (contraFailed) {
+    try {
+      const pairs = await ipcCallTimeout<unknown[]>('brain:getContradictionPairs', {}, 12_000);
+      contradictions = Array.isArray(pairs) ? pairs.length : 0;
+      paintHomeIntegrityBody(contradictions, false);
+      contraFailed = false;
+    } catch { /* keep failed state */ }
+  }
+
+  corrections = graphnosisPendingDiffs.length;
+  void refreshUnifiedAttentionBadge(corrections);
 
   // Stranded memories have their own dedicated card (refreshHomeStranded); keep
   // this lane to corrections + duplicates + contradictions so we don't double-surface.
@@ -8619,9 +8816,15 @@ async function refreshHomeNeeds(): Promise<void> {
   if (duplicates > 0) rows.push({ n: duplicates, label: duplicates === 1 ? 'duplicate pair' : 'duplicate pairs', tip: 'near-identical memories to merge or keep', kind: 'duplicates' });
   if (contradictions > 0) rows.push({ n: contradictions, label: contradictions === 1 ? 'contradiction' : 'contradictions', tip: 'memories that conflict — keep the current one, retire the outdated one', kind: 'contradictions' });
 
+  if (rows.length === 0 && (dupesFailed || contraFailed)) {
+    card.style.display = '';
+    body.innerHTML = homeCardEmptyHtml('Couldn’t check what needs review right now.', { retry: () => scheduleHomeDataLoad() });
+    wireHomeCardRetry(body, () => scheduleHomeDataLoad());
+    return;
+  }
   if (rows.length === 0) {
     card.style.display = '';
-    body.innerHTML = '<p class="home-card-empty home-ok">You’re all caught up — nothing needs your attention. ✓</p>';
+    body.innerHTML = homeCardEmptyHtml('Nothing needs attention right now.', { ok: true });
     return;
   }
   body.innerHTML = rows.map((r) =>
@@ -8633,11 +8836,8 @@ async function refreshHomeNeeds(): Promise<void> {
   card.style.display = '';
   body.querySelectorAll<HTMLButtonElement>('.home-need-row').forEach((el) => {
     el.addEventListener('click', () => {
-      // Duplicate pairs → the merge overlay (Keep both / Merge); contradictions
-      // → the contradictions review overlay; pending corrections → the review
-      // deck (where AI diffs sit at the top).
-      if (el.dataset['needKind'] === 'duplicates') void renderNeedsReview();
-      else if (el.dataset['needKind'] === 'contradictions') void renderContradictionsReview();
+      if (el.dataset['needKind'] === 'duplicates') openMemoryIntegrity('queue');
+      else if (el.dataset['needKind'] === 'contradictions') openMemoryIntegrity('queue');
       else openTrivia();
     });
   });
@@ -8722,7 +8922,12 @@ async function refreshHomeGrowth(): Promise<void> {
     // cheap, won't hit the cap), giving a meaningful, spread-out daily chart.
     const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since, ops: ['ingestSource'], limit: 10000 }, 25_000);
     events = r.events ?? [];
-  } catch { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Couldn’t load growth right now.</p>'; return; }
+  } catch {
+    card.style.display = '';
+    body.innerHTML = homeCardEmptyHtml('Couldn’t load growth right now.', { retry: () => scheduleHomeDataLoad() });
+    wireHomeCardRetry(body, () => scheduleHomeDataLoad());
+    return;
+  }
   const adds = events.filter((e) => e.op === 'ingestSource');
   if (adds.length === 0) {
     card.style.display = '';
@@ -8787,19 +8992,37 @@ function refreshHomeOnPremise(): void {
     `<p class="home-onprem-note">Graphnosis never transmits your memory on its own. The only outbound traffic: AI clients you connected (they pull memory on demand), data sources you connected (inbound), and app update checks (no memory data).</p>`;
 }
 
+/** Plain empty-state copy for Home async cards; optional Retry wires scheduleHomeDataLoad. */
+function homeCardEmptyHtml(message: string, opts?: { ok?: boolean; retry?: () => void }): string {
+  const cls = opts?.ok ? 'home-card-empty home-ok' : 'home-card-empty';
+  const retry = opts?.retry
+    ? '<button type="button" class="home-digest-link home-card-retry">Retry</button>'
+    : '';
+  return `<p class="${cls}">${escapeHtml(message)}</p>${retry}`;
+}
+function wireHomeCardRetry(body: HTMLElement, retry: () => void): void {
+  body.querySelector<HTMLButtonElement>('.home-card-retry')?.addEventListener('click', () => void retry());
+}
+
 // Show a loading skeleton in every async Home card BEFORE its fetch resolves,
 // so cards fade from a placeholder rather than popping in from nothing.
 function showHomeSkeletons(): void {
   const SKEL = '<div class="home-skel"></div><div class="home-skel w70"></div>';
-  // Every async card gets a skeleton in its FINAL slot up front, so the grid
-  // order is fixed before any data lands (cards fade in place, never reorder).
+  // Always reset async card bodies on Home entry — stale partial content from a
+  // cancelled prior load left titled cards with empty bodies on some machines.
   for (const id of ['home-needs', 'home-stranded', 'home-digest', 'home-foresight', 'home-brainact', 'home-growth', 'home-mhealth', 'home-selfheal']) {
     const card = document.getElementById(id);
     const body = document.getElementById(`${id}-body`);
-    if (card && body && !body.querySelector(':not(.home-skel)')) {
+    if (card && body) {
       card.style.display = '';
       body.innerHTML = SKEL;
     }
+  }
+  const integrityBody = document.getElementById('home-integrity-body');
+  if (integrityBody) {
+    delete integrityBody.dataset['integrityReady'];
+    if (cachedHomeContradictionCount != null) paintHomeIntegrityBody(cachedHomeContradictionCount, false);
+    else paintHomeIntegrityChecking();
   }
   // The per-engram breakdown shows its loading progress from the very start too.
   const bars = document.getElementById('home-engram-bars');
@@ -8819,6 +9042,40 @@ function showHomeSkeletons(): void {
 // happen here; the render functions are left to the normal `scheduleHomeDataLoad`
 // path when the user actually opens the page.
 let homePrefetchDone = false;
+type HomePolicySnapshot = {
+  disabledConnectorKinds: string[];
+  disabledClients: string[];
+  disabledProviders: string[];
+  managed: boolean;
+};
+let cachedHomePolicy: HomePolicySnapshot | null = null;
+let cachedHomeContradictionCount: number | null = null;
+
+function paintHomePolicyCard(p: HomePolicySnapshot | null): void {
+  const card = document.getElementById('home-policy');
+  const body = document.getElementById('home-policy-body');
+  const title = document.getElementById('home-policy-title');
+  const source = document.getElementById('home-policy-source');
+  if (!card || !body) return;
+  const kinds = p?.disabledConnectorKinds ?? [];
+  const clients = p?.disabledClients ?? [];
+  const providers = p?.disabledProviders ?? [];
+  blockedClientNames = new Set(clients.map((s) => s.toLowerCase()));
+  refreshGetConnectedStatus();
+  if (!p || (kinds.length === 0 && clients.length === 0 && providers.length === 0)) {
+    card.style.display = 'none';
+    return;
+  }
+  if (title) title.textContent = p.managed ? 'Disabled by IT' : 'Disabled by policy';
+  if (source) source.textContent = p.managed ? 'managed by your administrator' : 'set on this device';
+  const chips = (items: string[]): string => items.map((i) => `<span class="home-policy-chip">${escapeHtml(i)}</span>`).join('');
+  const rows: string[] = [];
+  if (kinds.length) rows.push(`<div class="home-policy-row"><span class="home-policy-label">Connectors</span><div class="home-policy-chips">${chips(kinds)}</div></div>`);
+  if (clients.length) rows.push(`<div class="home-policy-row"><span class="home-policy-label">AI clients</span><div class="home-policy-chips">${chips(clients)}</div></div>`);
+  if (providers.length) rows.push(`<div class="home-policy-row"><span class="home-policy-label">Providers</span><div class="home-policy-chips">${chips(providers)}</div></div>`);
+  body.innerHTML = `${rows.join('')}<p class="home-card-empty">Enforced in the sidecar — blocked items can’t read or write your memory.</p>`;
+  card.style.display = '';
+}
 function scheduleHomePrefetch(): void {
   if (homePrefetchDone) return;
   // Wait until primary boot tasks (engram load, brain state, LLM probe) have
@@ -8826,6 +9083,18 @@ function scheduleHomePrefetch(): void {
   // without imposing a perceptible delay on sidecar responsiveness.
   setTimeout(async () => {
     try {
+      const policy = await ipcCallTimeout<HomePolicySnapshot>('policy.get', {}, 8000).catch(() => null);
+      if (policy) {
+        cachedHomePolicy = policy;
+        if (isHomeDashboardView()) paintHomePolicyCard(policy);
+      }
+
+      const counts = await ipcCallTimeout<{ contradictions: number }>('brain:getAttentionCounts', {}, 5000).catch(() => null);
+      if (counts && typeof counts.contradictions === 'number') {
+        cachedHomeContradictionCount = counts.contradictions;
+        if (isHomeDashboardView()) paintHomeIntegrityBody(counts.contradictions, false);
+      }
+
       // Each await yields the event loop to the sidecar between calls.
       const hj = await ipcCallTimeout('brain:getHealingJournal', {}, 10_000).catch(() => null);
       if (hj) brainHealingJournal = (hj as BrainHealingRecord[]) ?? brainHealingJournal;
@@ -8883,6 +9152,8 @@ function scheduleHomeDataLoad(): void {
   // not sit behind ensureActiveEngramLoadedForHome + digest/growth — that chain
   // could take minutes and left the Autonomous Brain card on skeleton placeholders.
   kickHomeBrainCardLoads();
+  void refreshHomePolicy(); // parallel — don’t wait behind Needs-you IPC chain
+  void refreshHomeIntegrity();
   // Run the loads SEQUENTIALLY (≤1 sidecar call in flight at a time) so they
   // don't hammer the single-threaded sidecar all at once — and so an engram
   // switch's nodes.list waits behind at most ONE Home call, not six. No
@@ -8892,18 +9163,15 @@ function scheduleHomeDataLoad(): void {
   // Order: cheap/cached + visible first; the heaviest (memory-health graph
   // walk) last. digest+growth share one op-log read (first warms, second is
   // instant). Each fn is timeout-bounded → no step can stall the chain.
+  // Active-engram graph load can take tens of seconds — never block the Home
+  // cards behind it (Needs you / digest / growth only need sidecar IPC).
+  void ensureActiveEngramLoadedForHome();
   void (async () => {
-    const steps = [ensureActiveEngramLoadedForHome, refreshHomeNeeds, refreshHomePolicy, refreshHomeForesight, refreshHomeDigest, refreshHomeGrowth];
+    const steps = [refreshHomeNeeds, refreshHomePolicy, refreshHomeForesight, refreshHomeDigest, refreshHomeGrowth];
     for (const step of steps) {
       if (!stillHome()) return;
       try {
-        // Graph load is plain IPC — never under P0 (orchestration is LLM-only).
-        // Home card fetches get a short P0 burst so Ghampus classify/enrichment defer.
-        if (step === ensureActiveEngramLoadedForHome) {
-          await step();
-        } else {
-          await withUiWorkScope(() => step());
-        }
+        await withUiWorkScope(() => step());
       } catch { /* per-card fns own their errors */ }
     }
   })();
@@ -9071,55 +9339,76 @@ async function refreshHomePolicy(): Promise<void> {
   const card = document.getElementById('home-policy');
   const body = document.getElementById('home-policy-body');
   const title = document.getElementById('home-policy-title');
-  const source = document.getElementById('home-policy-source');
   if (!card || !body) return;
-  let p: { disabledConnectorKinds: string[]; disabledClients: string[]; managed: boolean } | null = null;
-  try { p = await ipcCallTimeout('policy.get', {}, 8000); } catch { card.style.display = 'none'; return; }
-  blockedClientNames = new Set((p?.disabledClients ?? []).map((s) => s.toLowerCase()));
-  refreshGetConnectedStatus(); // re-mark blocked clients in the Connections card
-  if (!p || (p.disabledConnectorKinds.length === 0 && p.disabledClients.length === 0)) {
-    card.style.display = 'none';
+  let p: HomePolicySnapshot | null = null;
+  try { p = await ipcCallTimeout('policy.get', {}, 8000); } catch {
+    if (cachedHomePolicy) {
+      paintHomePolicyCard(cachedHomePolicy);
+      return;
+    }
+    body.innerHTML = homeCardEmptyHtml('Couldn’t load access-control policy.', { retry: () => scheduleHomeDataLoad() });
+    wireHomeCardRetry(body, () => scheduleHomeDataLoad());
+    if (title) title.textContent = 'Disabled by policy';
+    const source = document.getElementById('home-policy-source');
+    if (source) source.textContent = '';
+    card.style.display = '';
     return;
   }
-  if (title) title.textContent = p.managed ? 'Disabled by IT' : 'Disabled by policy';
-  if (source) source.textContent = p.managed ? 'managed by your administrator' : 'set on this device';
-  const chips = (items: string[]): string => items.map((i) => `<span class="home-policy-chip">${escapeHtml(i)}</span>`).join('');
-  const rows: string[] = [];
-  if (p.disabledConnectorKinds.length) rows.push(`<div class="home-policy-row"><span class="home-policy-label">Connectors</span><div class="home-policy-chips">${chips(p.disabledConnectorKinds)}</div></div>`);
-  if (p.disabledClients.length) rows.push(`<div class="home-policy-row"><span class="home-policy-label">AI clients</span><div class="home-policy-chips">${chips(p.disabledClients)}</div></div>`);
-  body.innerHTML = `${rows.join('')}<p class="home-card-empty">Enforced in the sidecar — blocked items can’t read or write your memory.</p>`;
-  card.style.display = '';
+  cachedHomePolicy = p;
+  paintHomePolicyCard(p);
 }
 
 // ── Foresight (the Goals rail destination) ────────────────────────────────
 // Goals (deterministic) always show above. These LLM-grounded lanes — Predict
 // + Insights — gate on the local LLM; when it's off, a single CTA replaces them
 // (Goals stays usable). Called on entry to the 'goals' rail mode.
+function initMemoryIntegrityWorkbenchDeps(): void {
+  mountMemoryIntegrityWorkbench({
+    ipcCall,
+    escapeHtml,
+    engramName,
+    openTrivia,
+    openGhampusWalk,
+    activateMode,
+    openForesightLane: openForesightLaneModal,
+  });
+}
+
+setMemoryIntegrityBootstrap(initMemoryIntegrityWorkbenchDeps);
+setForesightLaneOpenHandler((lane) => {
+  if (lane === 'insights') renderLbInsights();
+  if (lane === 'integrity') refreshMemoryIntegrityWorkbench();
+});
+
 async function renderForesight(): Promise<void> {
+  buildForesightGrid();
+  paintForesightDashboard(); // sync paint before IPC — avoids blank dashboard
+  initMemoryIntegrityWorkbenchDeps();
+  try {
+    foresightAttentionCounts = await fetchAttentionCounts({ ipcCall });
+  } catch {
+    foresightAttentionCounts = { corrections: 0, duplicates: 0, contradictions: 0, total: 0 };
+  }
+  stashForesightDetailCards();
+
   const gate = document.getElementById('foresight-llm-gate');
   const fbody = document.getElementById('foresight-body');
-  if (!gate && !fbody) return;
   let llmReady = false;
+  let llmEnabled = false;
+  let llmSetupDone = false;
   try {
     const s = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; enabled: boolean }>('llm:status', {});
     llmReady = !!(s.ollamaReachable && s.installedModels?.length && s.enabled);
+    llmEnabled = !!s.enabled;
+    llmSetupDone = !!(s.ollamaReachable && s.installedModels?.length);
   } catch { llmReady = false; }
+  foresightLlmReady = llmReady;
+  foresightLlmEnabled = llmEnabled;
+  foresightLlmSetupDone = llmSetupDone;
   gate?.classList.toggle('hidden', llmReady);
   if (fbody) fbody.style.display = llmReady ? '' : 'none';
-  if (!llmReady) return;
 
-  const insEl = document.getElementById('foresight-insights');
-  if (insEl) {
-    insEl.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div>';
-    try {
-      const ins = await ipcCallTimeout<typeof brainInsights>('brain:getInsights', {});
-      brainInsights = ins ?? brainInsights;
-    } catch { /* keep prior */ }
-    const active = brainInsights.filter((i) => !i.dismissed);
-    insEl.innerHTML = active.length
-      ? active.slice(0, 6).map((i) => `<div class="foresight-insight"><strong>${escapeHtml(i.title)}</strong><p>${escapeHtml(i.body)}</p></div>`).join('')
-      : '<p class="home-card-empty">No insights yet — they surface as your memory grows.</p>';
-  }
+  paintForesightDashboard();
 }
 
 async function runForesightPredict(): Promise<void> {
@@ -9147,21 +9436,65 @@ async function runForesightPredict(): Promise<void> {
  *  Idempotent — guarded by the grid's data-built flag. */
 function buildForesightGrid(): void {
   const grid = document.getElementById('foresight-overview');
-  if (!grid || grid.dataset['built'] === '1') return;
-  // The develop/predict MCP-tool hints now live inside the Goals and Predict
-  // cards (each in its own .lb-mcp-tools-hint box), so there's no standalone
-  // AI-hint card to order anymore.
-  const order = ['fcard-goals', 'fcard-predict', 'fcard-insights', 'fcard-llm', 'fcard-gll', 'fcard-gnn'];
-  for (const id of order) {
-    const el = document.getElementById(id);
-    if (!el) continue;
-    el.classList.remove('lb-section', 'foresight-card');
-    el.classList.add('home-card');
-    grid.appendChild(el); // appendChild relocates; iterating `order` sets sequence
-  }
+  if (!grid) return;
+  ensureForesightPageInit();
+  stashForesightDetailCards();
+  if (grid.dataset['built'] === '1') return;
   document.querySelector('section[data-gpane="nondeterministic"]')?.remove();
   grid.dataset['built'] = '1';
 }
+
+let foresightAttentionCounts = { corrections: 0, duplicates: 0, contradictions: 0, total: 0 };
+let foresightLlmReady = false;
+let foresightLlmEnabled = false;
+let foresightLlmSetupDone = false;
+
+/** Opens Foresight (goals mode) — GNN / GLL / Local LLM lanes live there now. */
+function openNonDeterministic(): void {
+  activateMode('goals');
+}
+
+function ensureForesightPageInit(): void {
+  initForesightPage(
+    () => ({
+      insights: brainInsights.filter((i) => !i.dismissed),
+      goalsCount: brainGoals.length,
+      llmReady: foresightLlmReady,
+      llmEnabled: foresightLlmEnabled,
+      llmSetupDone: foresightLlmSetupDone,
+      gllPending: (() => {
+        const t = document.getElementById('gll-predicted-count')?.textContent ?? '';
+        const m = t.match(/(\d+) pending/);
+        return m ? Number(m[1]) : 0;
+      })(),
+      gnnEnabled: brainNeuralNetworkStatus?.enabled === true,
+      gnnEdgeCount: brainNeuralNetworkStatus?.gnnEdgeCount ?? 0,
+      attention: foresightAttentionCounts,
+    }),
+    {
+      escapeHtml,
+      engramName,
+      openNonDeterministic,
+      onDismissInsight: async (id) => {
+        try { await ipcCall('brain:dismissInsight', { id }); } catch { /* ignore */ }
+        brainInsights = brainInsights.filter((i) => i.id !== id);
+        renderLbInsights();
+      },
+      onInsightAction: (action) => {
+        handleForesightInsightAction(action);
+      },
+    },
+  );
+}
+
+/** Always init deps before painting — insights/GLL refresh paths call this without renderForesight(). */
+function paintForesightDashboard(): void {
+  ensureForesightPageInit();
+  renderForesightTiles();
+}
+
+setForesightBootstrap(ensureForesightPageInit);
+ensureForesightPageInit();
 
 // Home "Foresight" teaser card (the 12th card — the FUTURE dimension). Top
 // insight + a door into the Foresight page. LLM-gated like the page.
@@ -9171,22 +9504,32 @@ async function refreshHomeForesight(): Promise<void> {
   if (!card || !body) return;
   card.style.display = '';
   let llmReady = false;
+  let llmStatusFailed = false;
   try {
     const s = await ipcCallTimeout<{ ollamaReachable: boolean; installedModels: string[]; enabled: boolean }>('llm:status', {}, 8000);
     llmReady = !!(s.ollamaReachable && s.installedModels?.length && s.enabled);
-  } catch { llmReady = false; }
+  } catch { llmStatusFailed = true; }
   const door = '<button type="button" class="home-foresight-go" data-foresight-open>Open Foresight →</button>';
-  if (!llmReady) {
+  if (llmStatusFailed) {
+    body.innerHTML = homeCardEmptyHtml('Couldn’t reach the Local LLM status.', { retry: () => scheduleHomeDataLoad() }) + door;
+    wireHomeCardRetry(body, () => scheduleHomeDataLoad());
+  } else if (!llmReady) {
     body.innerHTML = `<p class="home-card-empty">Turn on the Local LLM to see what's ahead — predictions &amp; insights from your memory.</p>${door}`;
   } else {
+    let insightsFailed = false;
     try {
-      const ins = await ipcCallTimeout<typeof brainInsights>('brain:getInsights', {});
+      const ins = await ipcCallTimeout<typeof brainInsights>('brain:getInsights', {}, 12_000);
       brainInsights = ins ?? brainInsights;
-    } catch { /* keep prior */ }
+    } catch { insightsFailed = true; }
     const top = brainInsights.filter((i) => !i.dismissed)[0];
-    body.innerHTML = top
-      ? `<p class="home-foresight-title">${escapeHtml(top.title)}</p><p class="home-foresight-text">${escapeHtml(top.body)}</p><button type="button" class="home-foresight-go" data-foresight-open>Explore Foresight →</button>`
-      : `<p class="home-card-empty">No predictions yet — develop a goal or run a prediction in Foresight.</p>${door}`;
+    if (top) {
+      body.innerHTML = `<p class="home-foresight-title">${escapeHtml(top.title)}</p><p class="home-foresight-text">${escapeHtml(top.body)}</p><button type="button" class="home-foresight-go" data-foresight-open>Explore Foresight →</button>`;
+    } else if (insightsFailed) {
+      body.innerHTML = homeCardEmptyHtml('Insights aren’t available right now.', { retry: () => scheduleHomeDataLoad() }) + door;
+      wireHomeCardRetry(body, () => scheduleHomeDataLoad());
+    } else {
+      body.innerHTML = `<p class="home-card-empty">No insights yet — develop a goal or run a prediction in Foresight.</p>${door}`;
+    }
   }
   body.querySelector('[data-foresight-open]')?.addEventListener('click', () => activateMode('goals'));
 }
@@ -9774,7 +10117,7 @@ function mcpToolsOnboardingHtml(): string {
             </div>
           </div>
         </div>
-        <p class="g-deck-cmd-note">47 tools total. Deterministic and approximate tools work without any AI model. Foresight tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave. Tools marked <strong style="display:inline-block; padding:0 5px; font-size:9px; font-weight:800; letter-spacing:0.05em; border-radius:3px; background:var(--color-status-warn-gold, #b8860b); color:#000; vertical-align: 1px;">PRO</strong> require a <a href="https://graphnosis.com/upgrade" target="_blank">Graphnosis Pro subscription</a>.</p>
+        <p class="g-deck-cmd-note">Deterministic and approximate tools work without any AI model. Foresight tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave. Tools marked <strong style="display:inline-block; padding:0 5px; font-size:9px; font-weight:800; letter-spacing:0.05em; border-radius:3px; background:var(--color-status-warn-gold, #b8860b); color:#000; vertical-align: 1px;">PRO</strong> require a <a href="https://graphnosis.com/upgrade" target="_blank">Graphnosis Pro subscription</a>.</p>
       </div>
     </div>`;
 }
@@ -13107,6 +13450,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     void refreshStudioLlmBadge();
   } else if (tab === 'brain') {
     buildForesightGrid(); // one-time: pull the merged Brainstorming cards into the grid
+    paintForesightDashboard();
     neuronField.start();
     startScanTicker();
     void renderLivingBrain();
@@ -15247,6 +15591,7 @@ function stopOllamaStatusPoll(): void {
 const BRAIN_PHASE_LABELS: Record<string, string> = {
   fullscan: 'Running a full self-scan',
   'duplicate-scan': 'Scanning for duplicate memories',
+  'contradiction-scan': 'Scanning for contradicting memories',
   'auto-heal': 'Merging a duplicate',
   'auto-link': 'Weaving connections',
   'healing-review': 'Re-checking past merges',
@@ -15276,6 +15621,7 @@ const BRAIN_PHASE_LABELS: Record<string, string> = {
 interface PhaseLine { prefix: string; verb: string; tone: 'det' | 'gll' | 'gnn' | 'llm' }
 const PHASE_LINE: Record<string, PhaseLine> = {
   'duplicate-scan': { prefix: 'Self-healing', verb: 'scanning for duplicates',   tone: 'det' },
+  'contradiction-scan': { prefix: 'Self-healing', verb: 'scanning for contradictions', tone: 'det' },
   'auto-heal':      { prefix: 'Self-healing', verb: 'merging a duplicate',       tone: 'det' },
   'auto-link':      { prefix: 'Self-healing', verb: 'weaving connections',       tone: 'det' },
   'healing-review': { prefix: 'Self-healing', verb: 're-checking past merges',   tone: 'llm' },
@@ -15526,7 +15872,8 @@ const PRESENTATION_KEY = 'graphnosis:presentationConfig';
 // allowlist, so it reveals only for the engrams/sources the user picked.
 type PresSurface =
   | 'cortexPath' | 'stats' | 'vitality' | 'mcpClients' | 'connectors'
-  | 'recents' | 'studioResults' | 'predict' | 'foresight' | 'remoteAccess' | 'statusProcess' | 'appVersion' | 'license';
+  | 'recents' | 'studioResults' | 'predict' | 'foresight' | 'remoteAccess' | 'statusProcess' | 'appVersion' | 'license'
+  | 'ghampusChat' | 'ghampusPanels';
 const PRES_SURFACE_DEFS: Array<{ key: PresSurface; label: string; hint: string }> = [
   { key: 'stats',          label: 'Stats & counts',     hint: 'Node / source / engram totals, growth bars' },
   { key: 'vitality',       label: 'Vitality & health',  hint: 'Cortex grade, memory-health figures' },
@@ -15534,13 +15881,15 @@ const PRES_SURFACE_DEFS: Array<{ key: PresSurface; label: string; hint: string }
   { key: 'mcpClients',     label: 'AI clients',         hint: 'Connected MCP client names (status bar, Home, MCP Tools)' },
   { key: 'connectors',     label: 'Data sources / connectors', hint: 'Connector names + file paths in Get Connected' },
   { key: 'recents',        label: 'Recents',            hint: 'Recently-touched memory previews' },
-  { key: 'studioResults',  label: 'Memory Studio results', hint: 'Recall / dig-deeper output (per-engram sections still follow your engram picks)' },
+  { key: 'studioResults',  label: 'Recall results', hint: 'Recall / dig-deeper output (per-engram sections still follow your engram picks)' },
   { key: 'predict',        label: 'Foresight — Predict',  hint: 'The Predict output (risks & opportunities) on the Foresight page' },
   { key: 'foresight',      label: 'Foresight — Insights', hint: 'The Insights output on the Foresight page and the Home Foresight teaser' },
   { key: 'remoteAccess',   label: 'Remote access (QR / URL / token)', hint: 'Mobile & Remote QR codes, server URL, and bearer token — leave OFF to keep credentials hidden' },
   { key: 'statusProcess',  label: 'Background process line', hint: 'The live "Self-healing…/GLL…" status-bar text' },
   { key: 'appVersion',     label: 'App version',        hint: 'The version pill in the status bar' },
   { key: 'license',        label: 'License / account',  hint: 'Subscription + account identifiers in Settings' },
+  { key: 'ghampusChat',    label: 'Ghampus chat',       hint: 'In-thread cards, compose hints, and trace previews (thread messages and input always visible)' },
+  { key: 'ghampusPanels',  label: 'Ghampus panels',     hint: 'Recent saves, skills, attachments, notifications, and header meta (model picker always visible)' },
 ];
 const presState = {
   active: false, // NEVER persisted — the app always boots un-masked.
@@ -16635,13 +16984,18 @@ function renderLbHealingLog(): void {
 async function refreshNeedsReviewBadge(): Promise<void> {
   if (!els.btnNeedsReview) return;
   try {
-    const pairs = await ipcCall<BrainDuplicatePair[]>('brain:getDuplicatePairs', {});
-    if (pairs.length === 0) {
+    const [pairs, contra] = await Promise.all([
+      ipcCall<BrainDuplicatePair[]>('brain:getDuplicatePairs', {}),
+      ipcCall<BrainContradictionPair[]>('brain:getContradictionPairs', {}),
+    ]);
+    const total = pairs.length + contra.length;
+    if (total === 0) {
       els.btnNeedsReview.classList.add('hidden');
     } else {
-      els.needsReviewCount.textContent = String(pairs.length);
+      els.needsReviewCount.textContent = String(total);
       els.btnNeedsReview.classList.remove('hidden');
     }
+    void refreshUnifiedAttentionBadge();
   } catch {
     els.btnNeedsReview.classList.add('hidden');
   }
@@ -16756,10 +17110,14 @@ async function renderContradictionsReview(): Promise<void> {
           <span class="brain-subtitle" title="Entities both memories mention">${escape((c.sharedEntities ?? []).slice(0, 3).join(', '))}</span>
         </span>
         <span class="g-nr-actions">
+          <button class="btn-sm primary" data-cr-action="keep-a" data-cr-id="${escape(c.id)}"
+            title="Keep memory A — retire B">Keep A</button>
+          <button class="btn-sm" data-cr-action="keep-b" data-cr-id="${escape(c.id)}"
+            title="Keep memory B — retire A">Keep B</button>
+          <button class="btn-sm" data-cr-action="mark-debate" data-cr-id="${escape(c.id)}"
+            title="Both are true — stop flagging this pair">Mark debate</button>
           <button class="btn-sm" data-cr-action="dismiss" data-cr-id="${escape(c.id)}"
-            title="Both are true (or context-dependent) — keep both, stop flagging this pair.">Both are true</button>
-          <button class="btn-sm primary" data-cr-action="resolve" data-cr-id="${escape(c.id)}"
-            title="Open Power Tools to supersede the outdated side via a reviewed edit.">Resolve with an edit →</button>
+            title="Dismiss without resolving">Dismiss</button>
         </span>
       </div>
     </div>`).join('');
@@ -16770,35 +17128,32 @@ async function renderContradictionsReview(): Promise<void> {
       const id = btn.dataset['crId'];
       const action = btn.dataset['crAction'];
       if (!id || !action) return;
-      if (action === 'dismiss') {
-        const card = btn.closest<HTMLElement>('.lb-dup-card');
-        if (card) {
-          card.style.maxHeight = `${card.scrollHeight}px`;
-          card.classList.add('lb-healing');
-          requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
-        }
-        try { await ipcCall('brain:dismissContradictionPair', { id }); } catch { /* ignore */ }
-        window.setTimeout(() => { void renderContradictionsReview(); }, card ? 560 : 0);
-      } else {
-        // Route to Power Tools (manual edit / correction flow) with the
-        // overlay closed — the user supersedes the outdated side there, or
-        // asks their AI client to do it via the `edit` MCP tool.
-        overlay.classList.add('hidden');
-        activateMode('power-tools');
+      const card = btn.closest<HTMLElement>('.lb-dup-card');
+      if (card) {
+        card.style.maxHeight = `${card.scrollHeight}px`;
+        card.classList.add('lb-healing');
+        requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
       }
+      if (action === 'dismiss') {
+        try { await ipcCall('brain:dismissContradictionPair', { id }); } catch { /* ignore */ }
+      } else if (action === 'keep-a' || action === 'keep-b' || action === 'mark-debate') {
+        try { await ipcCall('brain:resolveContradictionPair', { id, action }); } catch { /* ignore */ }
+      }
+      window.setTimeout(() => {
+        void renderContradictionsReview();
+        void refreshHomeNeeds();
+        void refreshNeedsReviewBadge();
+      }, card ? 560 : 0);
     });
   });
 }
 
 function renderLbInsights(): void {
-  const host = els.lbInsights;
+  const host = document.getElementById('foresight-insights-grid') ?? els.lbInsights;
   const active = brainInsights.filter((i) => !i.dismissed);
+  const insightDeps = { escapeHtml, engramName };
   if (active.length === 0) {
     if (brainLlmReady) {
-      // Honest diagnostic line based on the last insight run. If we've never
-      // run, fall back to the original "Graphnosis analyses every 6 hours" copy.
-      // If the last run failed (timeout / parse-error / no-llm), tell the user
-      // what happened AND that a retry is scheduled within 1 hour.
       const diag = brainStatus?.lastInsightResult;
       let diagLine: string;
       if (!diag) {
@@ -16826,39 +17181,33 @@ function renderLbInsights(): void {
         void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
       });
     } else {
-      // Honest empty state: insights + synapse formation are the only
-      // features that need a local model. Make clear this is expected,
-      // not a failure, and give a one-click route to set the model up.
       host.innerHTML =
         '<div class="lb-empty lb-needs-llm">'
         + '<p><strong>Insights need a local AI model — and none is set up yet.</strong> '
-        + 'This section staying empty is expected, not a bug. The same goes for '
-        + 'automatic <em>new-connection forming</em> (synapses).</p>'
-        + '<p>Everything else — vitality, duplicate detection, memory decay, '
-        + 'goal tracking — already works without it.</p>'
-        + '<p class="brain-subtitle">Set one up in the <strong>Local LLM</strong> section '
-        + 'below — free, a couple of minutes.</p>'
+        + 'This section staying empty is expected, not a bug.</p>'
+        + '<p>Open <strong>Local LLM</strong> from the Foresight dashboard to set one up — free, a couple of minutes.</p>'
         + '</div>';
     }
+    if (document.getElementById('foresight-tiles')) paintForesightDashboard();
     return;
   }
-  host.innerHTML = active.map((i) => `
-    <div class="lb-insight">
-      <span class="lb-insight-kind">${escape(i.kind)}</span>
-      <span class="lb-engram-chip" title="Engram">${escape(engramName(i.graphId))}</span>
-      <div class="lb-insight-title">${escape(i.title)}</div>
-      <div class="lb-insight-body">${escape(i.body)}</div>
-      <div style="margin-top:6px;"><button class="btn-sm" data-dismiss-insight="${escape(i.id)}">Dismiss</button></div>
-    </div>`).join('');
-  host.querySelectorAll<HTMLButtonElement>('[data-dismiss-insight]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset['dismissInsight'];
-      if (!id) return;
+  host.innerHTML = active.map((i) => renderInsightCard(i, insightDeps, { showDismiss: true, showAction: true })).join('');
+  const insightPageDeps = {
+    escapeHtml,
+    engramName,
+    openNonDeterministic,
+    onDismissInsight: async (id: string) => {
       try { await ipcCall('brain:dismissInsight', { id }); } catch { /* ignore */ }
       brainInsights = brainInsights.filter((i) => i.id !== id);
       renderLbInsights();
-    });
-  });
+    },
+    onInsightAction: (action: InsightPrimaryAction) => {
+      handleForesightInsightAction(action);
+    },
+  };
+  wireInsightDismiss(host, insightPageDeps);
+  wireInsightActions(host, insightPageDeps, active);
+  if (document.getElementById('foresight-tiles')) paintForesightDashboard();
 }
 
 function renderLbGoals(): void {
@@ -17845,12 +18194,14 @@ async function refreshGllPredictedEdges(): Promise<void> {
       ? 'No predictions yet.'
       : `${edges.length} pending`;
   }
+  if (document.getElementById('foresight-tiles')) paintForesightDashboard();
   if (edges.length === 0) {
     listEl.innerHTML = '<p class="brain-subtitle">Nothing predicted yet. Either prediction hasn\'t run, or the LLM didn\'t find anything worth proposing in the latest scan.</p>';
     return;
   }
+  const GLL_LIST_PREVIEW = 5;
   const trimPreview = (s: string): string => s.length > 90 ? s.slice(0, 87) + '…' : s;
-  listEl.innerHTML = edges.map((e) => {
+  const renderEdge = (e: GllPredictedEdgeRow): string => {
     const pct = Math.round(e.score * 100);
     const when = new Date(e.createdAt).toLocaleString();
     return `<div class="gll-edge-row" data-edge-id="${e.id}" data-score="${e.score}" data-relationship="${e.relationship.replace(/"/g, '&quot;')}" style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px;">`
@@ -17867,7 +18218,19 @@ async function refreshGllPredictedEdges(): Promise<void> {
       + `<div><strong>B:</strong> ${trimPreview(e.toPreview)}</div>`
       + `</div>`
       + `</div>`;
-  }).join('');
+  };
+  const previewEdges = edges.slice(0, GLL_LIST_PREVIEW);
+  const hiddenEdges = edges.slice(GLL_LIST_PREVIEW);
+  let html = previewEdges.map(renderEdge).join('');
+  if (hiddenEdges.length > 0) {
+    html += `<div id="gll-predicted-rest" class="hidden">${hiddenEdges.map(renderEdge).join('')}</div>`
+      + `<button type="button" id="btn-gll-show-all" class="btn-sm" style="margin-top:4px;">Show all ${edges.length} edges</button>`;
+  }
+  listEl.innerHTML = html;
+  document.getElementById('btn-gll-show-all')?.addEventListener('click', () => {
+    document.getElementById('gll-predicted-rest')?.classList.remove('hidden');
+    document.getElementById('btn-gll-show-all')?.remove();
+  }, { once: true });
 }
 /** Confidence below this triggers a confirmation dialog before promoting a
  *  predicted edge to .gai. High-confidence accepts go straight through —
@@ -18942,9 +19305,8 @@ interface CorrectionProposedPayload {
 }
 void listen<CorrectionProposedPayload>('graphnosis://correction-proposed', (ev) => {
   if (!ev.payload) return;
-  // Refresh the pending-corrections panel right away so the diff is
-  // visible the moment the user opens the App.
   void fetchPendingCorrections();
+  if (isHomeDashboardView()) void refreshHomeNeeds();
   const who = ev.payload.requestedBy ?? 'An AI client';
   const n = ev.payload.changeCount;
   const changes = n === 1 ? '1 change' : `${n} changes`;
@@ -21026,10 +21388,11 @@ async function refreshSsoSettingsPanel(): Promise<void> {
   const panel = document.getElementById('settings-panel-sso');
   const upsell = document.getElementById('settings-panel-sso-upsell');
   const config = document.getElementById('settings-panel-sso-config');
+  const enterpriseGroup = document.getElementById('settings-group-enterprise');
   if (!panel) return;
+  if (enterpriseGroup) enterpriseGroup.style.display = '';
   try {
     const data = await ipcCall<SsoGetResult>('sso:get', {});
-    panel.style.display = '';
     if (!data.enterprise) {
       upsell?.classList.remove('hidden');
       config?.classList.add('hidden');
@@ -21092,12 +21455,11 @@ async function refreshSsoSettingsPanel(): Promise<void> {
     }
     void updateSsoMappingPreview();
   } catch {
-    panel.style.display = '';
+    if (enterpriseGroup) enterpriseGroup.style.display = '';
     upsell?.classList.remove('hidden');
     config?.classList.add('hidden');
   }
 }
-
 function wireSsoSettingsPanel(): void {
   const addBtn = document.getElementById('btn-sso-add-mapping');
   addBtn?.addEventListener('click', () => {
