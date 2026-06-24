@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes its tools via the Model Context Protocol, organized into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same toolset. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes its tools via the Model Context Protocol, organized into functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same toolset. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
@@ -13,16 +13,16 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 
 | Category | Tools |
 |---|---|
-| **Core memory** (8) | [`recall`](#recall) · [`remind`](#remind) · [`dig_deeper`](#dig_deeper) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
-| **Engram discovery** (5) | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
-| **Structured recall** (5) | [`recall_structured`](#recall_structured) · [`recall_obligations`](#recall_obligations) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
-| **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
-| **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
-| **Brain maintenance** (5) | [`duplicate_pairs`](#duplicate_pairs) ★ · [`contradiction_pairs`](#contradiction_pairs) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
-| **Skills (SOPs)** (12) | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`delete_skill`](#delete_skill) · [`train_skill`](#train_skill) ★ · [`export_skill`](#export_skill) ★ · [`rollback_skill`](#rollback_skill) ★ · [`skill_history`](#skill_history) ★ · [`skill_vitality`](#skill_vitality) ★ · [`save_skill_run`](#save_skill_run) ★ · [`resume_skill_run`](#resume_skill_run) ★ |
-| **Approximate** (2) | [`audit_memory`](#audit_memory) ★ · [`check_duplicate`](#check_duplicate) |
-| **Conditional** (1) | [`edit`](#edit) |
-| **Foresight** (6) | [`develop`](#develop) ★ · [`predict`](#predict) ★ · [`insights`](#insights) ★ · [`gnn_neighbors`](#gnn_neighbors) ★ · [`llm_query`](#llm_query) ★ · [`llm_distill`](#llm_distill) ★ |
+| **Core memory** | [`recall`](#recall) · [`remind`](#remind) · [`dig_deeper`](#dig_deeper) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
+| **Engram discovery** | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
+| **Structured recall** | [`recall_structured`](#recall_structured) · [`recall_obligations`](#recall_obligations) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
+| **Source operations** | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
+| **Engram operations** | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
+| **Brain maintenance** | [`duplicate_pairs`](#duplicate_pairs) ★ · [`contradiction_pairs`](#contradiction_pairs) ★ · [`compare_sources`](#compare_sources) ★ · [`resolve_contradiction`](#resolve_contradiction) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
+| **Skills (SOPs)** | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`delete_skill`](#delete_skill) · [`train_skill`](#train_skill) ★ · [`export_skill`](#export_skill) ★ · [`rollback_skill`](#rollback_skill) ★ · [`skill_history`](#skill_history) ★ · [`skill_vitality`](#skill_vitality) ★ · [`save_skill_run`](#save_skill_run) ★ · [`resume_skill_run`](#resume_skill_run) ★ |
+| **Approximate** | [`audit_memory`](#audit_memory) ★ · [`check_duplicate`](#check_duplicate) |
+| **Conditional** | [`edit`](#edit) |
+| **Foresight** | [`develop`](#develop) ★ · [`predict`](#predict) ★ · [`insights`](#insights) ★ · [`gnn_neighbors`](#gnn_neighbors) ★ · [`llm_query`](#llm_query) ★ · [`llm_distill`](#llm_distill) ★ |
 
 ★ = requires a [Graphnosis Pro subscription](https://graphnosis.com/upgrade). Returns a license error on the free plan.
 
@@ -863,6 +863,28 @@ Contradicting memory pairs the periodic reflection scan has flagged — two memo
 Resolve by superseding the outdated side via `edit` — the supersede keeps the old memory recoverable while the current one wins recall. Never resolve a contradiction by adding a third note. If both sides are genuinely true (context-dependent), dismiss the pair in the app's **Needs you** review.
 
 - **Try saying:** *"Is anything in my memory contradictory?"*
+
+**In-app (Free):** Review and resolve contradictions in **Foresight → Memory Integrity** without Pro — Keep A, Keep B, Mark debate, and compare two sources in the Workbench. MCP queue tools remain Pro for external AI clients.
+
+### `compare_sources` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
+
+Compare two ingested sources in an engram and return severity-ranked contradiction pairs with temporal verdict heuristics (`genuine_contradiction`, `temporal_supersession`, `negation_artifact`). The same audit is available **free in-app** via the Memory Integrity Workbench; this MCP tool is for Claude/Cursor automation.
+
+- **Parameters:** `engram`, `sourceA`, `sourceB`
+- **Try saying:** *"Compare my meeting notes from January vs March for conflicts."*
+
+### `resolve_contradiction` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
+
+Carry out the user's chosen resolution for a pair from `contradiction_pairs`. **The user always adjudicates** — most MCP clients show your request to the user for approval before running the tool, so pass the two conflicting snippets as each item's `preview`. `mark_debate` keeps both memories and clears the pair from the queue (use for false positives or genuinely both-true cases); `keep_a` / `keep_b` supersede the losing memory (soft-deleted, recoverable, lineage preserved). Graphnosis never resolves a contradiction on the user's behalf — this tool only executes a decision the user has made.
+
+- **Parameters:** `action` (`mark_debate` | `keep_a` | `keep_b`), `items: [{ pairId, preview }]`, optional `reason`
+- **Try saying:** *"Walk me through my contradictions and clear the false positives."*
+
+**In-app (Free):** Keep A / Keep B / Mark debate in the **Memory Integrity Workbench** — no Pro needed. This MCP tool is the programmatic equivalent for external AI clients.
 
 ### `healing_journal`
 

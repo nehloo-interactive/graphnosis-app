@@ -170,9 +170,13 @@ Cross-skill orchestration syntax inside a step:
   review. Resolve via `edit` (merge) or `forget`.
 - `contradiction_pairs` — near-OPPOSITE pairs: memories sharing entities but
   asserting conflicting content, flagged by the periodic reflection scan.
-  Resolve by superseding the outdated side via `edit` — NEVER by adding a
-  third note. If both are true (context-dependent), tell the user to dismiss
-  the pair in the app's Needs-you review.
+  Resolve them directly with **`resolve_contradiction`** (Pro; the user
+  adjudicates — pass the two conflicting snippets as `preview` so they approve
+  from a clear prompt): `mark_debate` keeps both (false positives or genuinely
+  both-true), `keep_a` / `keep_b` supersede the losing side (soft-deleted,
+  recoverable). NEVER resolve by adding a third note, and never supersede a
+  memory the user has not explicitly chosen to retire — Graphnosis never
+  resolves a conflict on the user's behalf.
 - `healing_journal` — audit log of autonomous merges the brain applied.
 - `gnn_status` — Neural Network status (enabled, edge count, last run).
 - `confirm_data_access` — headless consent fallback (see the consent section).

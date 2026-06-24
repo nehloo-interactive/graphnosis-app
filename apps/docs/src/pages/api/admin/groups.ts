@@ -30,7 +30,7 @@ import {
 
 export const prerender = false;
 
-const DEFAULT_FEATURES = ['skill-training', 'gnn-exploration', 'foresight', 'connector-cadence', 'teams'];
+const DEFAULT_FEATURES = ['skill-training', 'gnn-exploration', 'foresight', 'connector-cadence', 'teams', 'memory-integrity'];
 const DEFAULT_TTL_DAYS = 90;
 
 export const POST: APIRoute = async ({ request, locals }) => {

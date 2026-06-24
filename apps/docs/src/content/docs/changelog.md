@@ -13,6 +13,45 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+---
+
+## v1.23.0 — Memory Integrity and Ghampus compose
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-24</p>
+
+Graphnosis catches when your memory disagrees with itself — surfaces it clearly, helps you fix it (with Ghampus), and never silently stores conflicting facts side by side. Ghampus gets a compose rail while you type, serialized send turns, multilingual save/recall, and session summaries when you start fresh.
+
+### Added
+
+- **Memory Integrity Workbench** (Foresight → Memory Integrity): unified queue for corrections, contradictions, and duplicates; Keep A / Keep B / Mark debate; compare two sources; resolution history; on-demand cortex scan.
+- **Attention strip** on Your Cortex when anything needs review; rail badge shows unified count (corrections + contradictions + duplicates).
+- **Persisted contradiction queue** — review pairs survive sidecar restart; dismissals stick.
+- **Ingest → queue** — SDK contradictions from new memories enter the Workbench immediately.
+- **MCP `compare_sources` (Pro)** — external agents can audit two source documents; in-app compare is free.
+- **Ghampus consistency walk** — phrases like “check my memory for contradictions” start a guided, approval-only review.
+- **Foresight insights dashboard** — tile grid for patterns, gaps, and opportunities; `/insights` preview in Ghampus chat.
+- **Ghampus compose rail** — proactive engram chips, intent hints, and integrity warnings while typing; optional local-LLM intent refinement.
+- **Remember & start fresh** — session summary promotes durable facts from an ephemeral chat thread before clearing it.
+- **Presentation mode** — demo-safe redaction config for talks and screenshots.
+- **New chat engram dropdown** — pick the target engram when starting a Ghampus thread.
+
+### Changed
+
+- **Coherence / Vitality** — unresolved contradictions in the queue lower coherence alongside duplicate pairs.
+- **Full scan** now includes contradiction scan (not 6h-only).
+- **Away digest** includes Memory Integrity counts when items are pending.
+- **Ghampus send queue** — turns serialize on the sidecar; new sends no longer preempt in-flight work.
+- **Multilingual save/recall** — Ghampus routes remember/recall in the language you type.
+- **Skill train & recall formatting** — cleaner step gutters and recall presentation for walk_skill output.
+- **Selection follow-up** — highlight text in chat for contextual Ghampus replies.
+
+### Fixed
+
+- **Needs you / rail badge sync** — badge count and Home “Needs you” card stay aligned when corrections arrive via MCP poll.
+- **Ghampus avatar & scroll** — mascot and thread scroll behavior stay stable on long conversations.
+
+---
+
 ## v1.22.0 — Ghampus Hush branding and proactive intelligence
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-21</p>

@@ -42,7 +42,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
   const memberRec = await getMember(kv, email);
   const group     = memberRec ? await getGroup(kv, memberRec.groupId) : null;
   const plan      = existing.plan;
-  const features  = group?.features ?? ['skill-training', 'gnn-exploration', 'foresight', 'connector-cadence', 'teams'];
+  const features  = group?.features ?? ['skill-training', 'gnn-exploration', 'foresight', 'connector-cadence', 'teams', 'memory-integrity'];
 
   // Compute new TTL from current exp, extended by addDays
   const currentExpSecs  = existing.exp;

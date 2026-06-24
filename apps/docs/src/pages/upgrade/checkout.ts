@@ -30,12 +30,12 @@ import {
 import { getEnv } from '../../server/env.js';
 
 const PLAN_CONFIGS = {
-  'monthly':              { tier: 'pro',        billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,mcp-tool-control' },
-  'annual':               { tier: 'pro',        billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,mcp-tool-control' },
-  'teams-monthly':        { tier: 'teams',      billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,mcp-tool-control' },
-  'teams-annual':         { tier: 'teams',      billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,mcp-tool-control' },
-  'enterprise-monthly':   { tier: 'enterprise', billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,enterprise,mcp-tool-control' },
-  'enterprise-annual':    { tier: 'enterprise', billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,enterprise,mcp-tool-control' },
+  'monthly':              { tier: 'pro',        billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,mcp-tool-control,memory-integrity' },
+  'annual':               { tier: 'pro',        billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,mcp-tool-control,memory-integrity' },
+  'teams-monthly':        { tier: 'teams',      billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,mcp-tool-control,memory-integrity' },
+  'teams-annual':         { tier: 'teams',      billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,mcp-tool-control,memory-integrity' },
+  'enterprise-monthly':   { tier: 'enterprise', billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,enterprise,mcp-tool-control,memory-integrity' },
+  'enterprise-annual':    { tier: 'enterprise', billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,enterprise,mcp-tool-control,memory-integrity' },
 } as const;
 
 type PlanKey = keyof typeof PLAN_CONFIGS;

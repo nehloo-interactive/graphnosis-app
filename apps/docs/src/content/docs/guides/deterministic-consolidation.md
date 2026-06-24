@@ -59,6 +59,14 @@ Plenty of pairs look alike but aren't *provably* the same: one has a number the 
 
 Instead they surface in the **Check-in** tab under **"Needs your review"**, side by side, and you make the call: **merge** them, or **keep both**. Graphnosis heals what's certain; you decide what's ambiguous.
 
+## Memory Integrity — contradictions (not duplicates)
+
+When two memories **share entities but assert conflicting facts** (not near-identical text), they land in the **Memory Integrity Workbench** under **Foresight**. The queue is persisted across restarts; dismissals stick.
+
+Resolve each pair with **Keep A**, **Keep B**, or **Mark debate** (both stay, stop flagging). Severity and temporal verdict labels (`genuine_contradiction`, `temporal_supersession`, `negation_artifact`) help you spot false alarms. Compare any two ingested sources on demand; MCP `compare_sources` is Pro for external AI clients — the in-app Workbench is free.
+
+**Your Cortex** shows an **Attention** strip and a unified rail badge when corrections, contradictions, or duplicates need review. Ask Ghampus to *"walk me through my contradictions"* for a guided, approval-only review.
+
 ## Weaving connections
 
 Isolated memories — ones with nothing linked to them — are a weak spot. Alongside duplicate detection, the same scan looks for memories that are **clearly related but genuinely distinct** and weaves an automatic **"related"** connection between them. This is deterministic and conservative: only strong matches are linked, and an already well-connected memory is left alone so the graph doesn't turn into noise.
