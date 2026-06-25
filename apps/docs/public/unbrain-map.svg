@@ -1,0 +1,84 @@
+<svg viewBox="0 0 900 478" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">The Un-Brain Map — brain region, Graphnosis analog, and the inversion</title>
+  <desc id="dsc">Graphnosis borrows the structure of human memory and inverts its lossy constraints. Hippocampus to deterministic encoding that never forgets; synapse to strengthen-never-weaken; neocortex to predicted overlays kept separate; prefrontal cortex to a bounded curated subgraph; anterior cingulate conflict monitoring to surfaced (not silently resolved) contradictions; amygdala to user-controlled consent gates.</desc>
+  <style>
+    .t{font-family:ui-sans-serif,system-ui,sans-serif;fill:#18181b;}
+    .lbl{font-weight:600;}
+    .sub{fill:#52525b;font-size:11px;}
+    .head{font-weight:700;font-size:12px;fill:#3f3f46;letter-spacing:.02em;}
+    .brain{fill:#faf5ff;stroke:#7c3aed;stroke-width:1.3;}
+    .ana{fill:#f4f4f5;stroke:#52525b;stroke-width:1.3;}
+    .inv{fill:#ecfdf5;stroke:#047857;stroke-width:1.3;}
+    .key{fill:#d1fae5;stroke:#047857;stroke-width:2.2;}
+  </style>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text class="t lbl" x="20" y="26" font-size="16">The Un-Brain Map</text>
+  <text class="t sub" x="20" y="44" font-size="12">Borrow the structure of memory; invert the constraints that make it lossy.</text>
+
+  <text class="t head" x="22" y="68">BRAIN REGION</text>
+  <text class="t head" x="282" y="68">GRAPHNOSIS ANALOG</text>
+  <text class="t head" x="562" y="68">THE UN-BRAIN INVERSION</text>
+
+  <!-- rows: y = 76 + i*64 -->
+  <!-- 1 Hippocampus -->
+  <rect class="brain" x="20" y="76" width="250" height="56" rx="6"/>
+  <text class="t lbl" x="32" y="100" font-size="12.5">Hippocampus</text>
+  <text class="t sub" x="32" y="117">encode episodes · consolidate in sleep</text>
+  <rect class="ana" x="280" y="76" width="270" height="56" rx="6"/>
+  <text class="t" x="292" y="108" font-size="12">ingest + binding → .gai</text>
+  <rect class="inv" x="560" y="76" width="320" height="56" rx="6"/>
+  <text class="t lbl" x="572" y="100" font-size="12" fill="#065f46">deterministic encoding</text>
+  <text class="t sub" x="572" y="117">no sleep · never forgets</text>
+
+  <!-- 2 Synapse -->
+  <rect class="brain" x="20" y="140" width="250" height="56" rx="6"/>
+  <text class="t lbl" x="32" y="164" font-size="12.5">Synapse (Hebbian)</text>
+  <text class="t sub" x="32" y="181">fire together, wire together · decays</text>
+  <rect class="ana" x="280" y="140" width="270" height="56" rx="6"/>
+  <text class="t" x="292" y="172" font-size="12">co-recall reinforcement</text>
+  <rect class="inv" x="560" y="140" width="320" height="56" rx="6"/>
+  <text class="t lbl" x="572" y="164" font-size="12" fill="#065f46">strengthen-never-weaken</text>
+  <text class="t sub" x="572" y="181">decay disabled (Prop. 1)</text>
+
+  <!-- 3 Neocortex -->
+  <rect class="brain" x="20" y="204" width="250" height="56" rx="6"/>
+  <text class="t lbl" x="32" y="228" font-size="12.5">Neocortex</text>
+  <text class="t sub" x="32" y="245">slow statistical knowledge</text>
+  <rect class="ana" x="280" y="204" width="270" height="56" rx="6"/>
+  <text class="t" x="292" y="236" font-size="12">predicted overlays .gnn / .gll</text>
+  <rect class="inv" x="560" y="204" width="320" height="56" rx="6"/>
+  <text class="t lbl" x="572" y="228" font-size="12" fill="#065f46">kept separate</text>
+  <text class="t sub" x="572" y="245">never merged into attested memory</text>
+
+  <!-- 4 Prefrontal cortex -->
+  <rect class="brain" x="20" y="268" width="250" height="56" rx="6"/>
+  <text class="t lbl" x="32" y="292" font-size="12.5">Prefrontal cortex</text>
+  <text class="t sub" x="32" y="309">working memory · recall</text>
+  <rect class="ana" x="280" y="268" width="270" height="56" rx="6"/>
+  <text class="t" x="292" y="300" font-size="12">curated subgraph recall</text>
+  <rect class="inv" x="560" y="268" width="320" height="56" rx="6"/>
+  <text class="t lbl" x="572" y="292" font-size="12" fill="#065f46">bounded ≤ 2,000-token excerpt</text>
+  <text class="t sub" x="572" y="309">deterministic, never the whole store</text>
+
+  <!-- 5 Anterior cingulate — THE KEY INVERSION -->
+  <rect class="brain" x="20" y="332" width="250" height="56" rx="6"/>
+  <text class="t lbl" x="32" y="356" font-size="12.5">Anterior cingulate</text>
+  <text class="t sub" x="32" y="373">conflict monitoring</text>
+  <rect class="ana" x="280" y="332" width="270" height="56" rx="6"/>
+  <text class="t" x="292" y="364" font-size="12">contradiction detection</text>
+  <rect class="key" x="560" y="332" width="320" height="56" rx="6"/>
+  <text class="t lbl" x="572" y="356" font-size="12.5" fill="#065f46">SURFACES the conflict</text>
+  <text class="t sub" x="572" y="373" fill="#065f46">routed to you, not resolved below awareness</text>
+
+  <!-- 6 Amygdala -->
+  <rect class="brain" x="20" y="396" width="250" height="56" rx="6"/>
+  <text class="t lbl" x="32" y="420" font-size="12.5">Amygdala</text>
+  <text class="t sub" x="32" y="437">salience / threat gating</text>
+  <rect class="ana" x="280" y="396" width="270" height="56" rx="6"/>
+  <text class="t" x="292" y="428" font-size="12">sensitivity-tier consent gate</text>
+  <rect class="inv" x="560" y="396" width="320" height="56" rx="6"/>
+  <text class="t lbl" x="572" y="420" font-size="12" fill="#065f46">user-controlled</text>
+  <text class="t sub" x="572" y="437">consent, not fear</text>
+
+  <text class="t sub" x="20" y="470" font-size="10.5" fill="#71717a">Brain-inspired, not brain-faithful — a conceptual correspondence, not a claim of neural mechanism.</text>
+</svg>

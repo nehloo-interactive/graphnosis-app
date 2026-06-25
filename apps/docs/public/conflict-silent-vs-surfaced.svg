@@ -1,0 +1,62 @@
+<svg viewBox="0 0 840 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">Silent resolution versus surfaced conflict</title>
+  <desc id="dsc">Faced with two conflicting memories, the brain reconciles them below awareness and hands consciousness one confident answer that may be false. The un-brain surfaces the conflict and routes it to the user, who decides; both memories are retained with lineage.</desc>
+  <style>
+    .t{font-family:ui-sans-serif,system-ui,sans-serif;fill:#18181b;}
+    .lbl{font-weight:600;}
+    .sub{fill:#52525b;font-size:11px;}
+    .head{font-weight:700;font-size:12.5px;}
+    .mem{fill:#eef2ff;stroke:#3730a3;stroke-width:1.3;}
+    .bad{fill:#fafafa;stroke:#9ca3af;stroke-width:1.4;}
+    .badout{fill:#fef2f2;stroke:#b91c1c;stroke-width:1.5;}
+    .good{fill:#ecfdf5;stroke:#047857;stroke-width:1.6;}
+    .garr{stroke:#047857;stroke-width:2;fill:none;}
+    .narr{stroke:#9ca3af;stroke-width:2;fill:none;}
+  </style>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <defs>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#047857"/></marker>
+    <marker id="an" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#9ca3af"/></marker>
+  </defs>
+
+  <text class="t lbl" x="20" y="26" font-size="15">Silent resolution vs. surfaced conflict</text>
+  <line x1="420" y1="44" x2="420" y2="326" stroke="#e4e4e7" stroke-width="1.5"/>
+
+  <!-- LEFT: the brain -->
+  <text class="t head" x="40" y="60" fill="#6b7280">THE BRAIN · hides the conflict</text>
+  <rect class="mem" x="40" y="74" width="150" height="40" rx="6"/>
+  <text class="t" x="52" y="99" font-size="12">Memory A: "Brașov"</text>
+  <rect class="mem" x="210" y="74" width="195" height="40" rx="6"/>
+  <text class="t" x="222" y="99" font-size="12">Memory B: "Piatra Neamț"</text>
+  <text class="t lbl" x="205" y="130" font-size="12" fill="#b91c1c" text-anchor="middle">✕ conflict</text>
+  <path class="narr" d="M115,114 L195,156" marker-end="url(#an)"/>
+  <path class="narr" d="M290,114 L215,156" marker-end="url(#an)"/>
+  <rect class="bad" x="55" y="160" width="300" height="46" rx="6"/>
+  <text class="t lbl" x="70" y="180" font-size="12" fill="#4b5563">Silent reconciliation</text>
+  <text class="t sub" x="70" y="197">resolved below awareness — no model, no user</text>
+  <path class="narr" d="M205,206 L205,250" marker-end="url(#an)"/>
+  <rect class="badout" x="55" y="254" width="300" height="58" rx="6"/>
+  <text class="t lbl" x="70" y="276" font-size="12" fill="#b91c1c">One confident answer — may be false</text>
+  <text class="t sub" x="70" y="294">the losing memory is overwritten and</text>
+  <text class="t sub" x="70" y="307">the conflict is never seen</text>
+
+  <!-- RIGHT: the un-brain -->
+  <text class="t head" x="460" y="60" fill="#065f46">THE UN-BRAIN · surfaces it</text>
+  <rect class="mem" x="460" y="74" width="150" height="40" rx="6"/>
+  <text class="t" x="472" y="99" font-size="12">Memory A: "Brașov"</text>
+  <rect class="mem" x="630" y="74" width="195" height="40" rx="6"/>
+  <text class="t" x="642" y="99" font-size="12">Memory B: "Piatra Neamț"</text>
+  <text class="t lbl" x="625" y="130" font-size="12" fill="#047857" text-anchor="middle">⚑ flagged</text>
+  <path class="garr" d="M535,114 L615,156" marker-end="url(#ag)"/>
+  <path class="garr" d="M710,114 L635,156" marker-end="url(#ag)"/>
+  <rect class="good" x="475" y="160" width="300" height="46" rx="6"/>
+  <text class="t lbl" x="490" y="180" font-size="12" fill="#065f46">Surfaced + flagged → routed to you</text>
+  <text class="t sub" x="490" y="197">deterministic, no model in the loop</text>
+  <path class="garr" d="M625,206 L625,250" marker-end="url(#ag)"/>
+  <rect class="good" x="475" y="254" width="300" height="58" rx="6"/>
+  <text class="t lbl" x="490" y="276" font-size="12" fill="#065f46">You decide</text>
+  <text class="t sub" x="490" y="294">keep one (supersedes) or mark a debate —</text>
+  <text class="t sub" x="490" y="307">both retained, lineage preserved</text>
+
+  <text class="t sub" x="20" y="356" font-size="11.5" fill="#3f3f46">The brain's most consequential failure isn't forgetting — it's resolving conflict invisibly. The un-brain inverts exactly that.</text>
+</svg>

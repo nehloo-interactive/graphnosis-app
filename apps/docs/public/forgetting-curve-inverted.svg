@@ -1,0 +1,44 @@
+<svg viewBox="0 0 620 410" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">The forgetting curve, inverted</title>
+  <desc id="dsc">Human memory follows Ebbinghaus's exponential forgetting curve — retention decays with time unless rehearsed. Graphnosis inverts this: an attested memory is retained at full strength and is reinforced, not weakened, when recalled.</desc>
+  <style>
+    .t{font-family:ui-sans-serif,system-ui,sans-serif;fill:#18181b;}
+    .lbl{font-weight:600;}
+    .sub{fill:#52525b;font-size:11.5px;}
+    .axis{stroke:#a1a1aa;stroke-width:1;}
+    .grid{stroke:#e4e4e7;stroke-width:1;}
+  </style>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text class="t lbl" x="20" y="26" font-size="15">The forgetting curve, inverted</text>
+  <text class="t sub" x="20" y="44" font-size="12">The brain forgets unless rehearsed; the un-brain retains, and strengthens on recall.</text>
+
+  <!-- axes -->
+  <line class="grid" x1="70" y1="60"  x2="560" y2="60"/>
+  <line class="grid" x1="70" y1="195" x2="560" y2="195"/>
+  <line class="axis" x1="70" y1="330" x2="560" y2="330"/>
+  <line class="axis" x1="70" y1="60"  x2="70"  y2="330"/>
+  <text class="t sub" x="60" y="64"  text-anchor="end">100%</text>
+  <text class="t sub" x="60" y="199" text-anchor="end">50%</text>
+  <text class="t sub" x="60" y="334" text-anchor="end">0%</text>
+  <text class="t sub" x="315" y="356" text-anchor="middle">time / recall events →</text>
+  <text class="t sub" x="24" y="200" transform="rotate(-90 24 200)" text-anchor="middle">retention / strength</text>
+
+  <!-- Ebbinghaus exponential decay -->
+  <polyline points="70,60 119,136 168,191 217,231 266,259 315,279 413,304 560,320"
+            fill="none" stroke="#9ca3af" stroke-width="2.5"/>
+  <text class="t sub" x="430" y="298" fill="#6b7280" font-weight="600">Human memory (Ebbinghaus)</text>
+
+  <!-- Graphnosis: retained + strengthens on recall (step up) -->
+  <polyline points="70,92 165,92 165,82 305,82 305,72 445,72 445,64 560,64"
+            fill="none" stroke="#047857" stroke-width="2.8"/>
+  <!-- recall markers -->
+  <circle cx="165" cy="82" r="3.5" fill="#047857"/>
+  <circle cx="305" cy="72" r="3.5" fill="#047857"/>
+  <circle cx="445" cy="64" r="3.5" fill="#047857"/>
+  <text class="t lbl" x="392" y="118" font-size="12" fill="#065f46">Graphnosis — strengthens on recall ●</text>
+
+  <!-- divergence annotation -->
+  <line x1="168" y1="92" x2="168" y2="191" stroke="#2563eb" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text class="t sub" x="176" y="150" fill="#2563eb" font-weight="600">the gap is what</text>
+  <text class="t sub" x="176" y="165" fill="#2563eb" font-weight="600">the un-brain keeps</text>
+</svg>

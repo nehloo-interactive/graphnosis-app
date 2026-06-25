@@ -53,6 +53,20 @@ When you see the seahorse, think: *this is the part of the AI stack that remembe
 | Synapse (signal pathway) | **Graphnosis synapse** (the local background process) | The bridge between your AI client and your cortex; only fires when the app is running and the cortex is unlocked |
 | Prefrontal cortex (reasoning) | Your **AI client** | Receives only the retrieved engrams it needs; reasons from there |
 
+Graphnosis borrows that division of labour — then **inverts the constraints** that make biological memory lossy. We call the result the *un-brain*:
+
+![The Un-Brain Map — brain region, Graphnosis analog, and the inversion](/unbrain-map.svg)
+
+Two inversions matter most. The brain's memory *decays* — the Ebbinghaus forgetting curve — while an attested Graphnosis memory is retained, and *strengthened* when you recall it:
+
+![The forgetting curve, inverted](/forgetting-curve-inverted.svg)
+
+And when the brain holds two conflicting memories, it reconciles them *below awareness* and hands you one confident answer that may be false. Graphnosis surfaces the conflict and lets you decide — it never resolves one on your behalf:
+
+![Silent resolution versus surfaced conflict](/conflict-silent-vs-surfaced.svg)
+
+The formal treatment — the theorems, proofs, and the LongMemEval evaluation behind these claims — is in the research paper: **[The Un-Brain (whitepaper)](https://github.com/nehloo/graphnosis-whitepaper)**.
+
 The **synapse** is what we call Graphnosis' local sidecar process — the small program that runs in the background whenever the app is open. In the brain, a synapse is the active connection that passes a signal from one neuron to the next; in Graphnosis it is the active connection that passes a recall query from your AI client into the cortex and the matched engrams back out. When the synapse is offline (app closed, cortex locked, or sidecar crashed), no memory flows. The app's error messages refer to it by name — e.g. "Another Graphnosis synapse is already holding this cortex's lock" — so it helps to recognize the term.
 
 When you ingest a PDF or document, Graphnosis doesn't hand the raw file to your AI — that's the old, expensive approach. It encodes the document into engrams: semantically compressed, binary-encrypted memory traces stored in the cortex. The original file stays on your disk, untouched.
