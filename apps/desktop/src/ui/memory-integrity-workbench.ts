@@ -280,6 +280,9 @@ const REASON_LABEL: Record<string, string> = {
   'negation-artifact': 'Negation artifact',
   'temporal-supersession': 'Superseded over time',
   'ingest-gate': 'Held at ingest',
+  'near-duplicate': 'Near-duplicate / paraphrase',
+  'complementary': 'Complementary facts',
+  'no-conflict-signal': 'No conflict signal',
 };
 
 function renderSuppressedCard(p: SuppressedPair, d: WorkbenchDeps): string {

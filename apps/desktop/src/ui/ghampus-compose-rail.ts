@@ -560,7 +560,7 @@ export function wireGhampusComposeRail(
       if (rSeq !== refineSeq || seq !== assistSeq || input.value !== text) return;
       if (!refine.refined || !refine.assist) return;
       lastAssist = refine.assist;
-      if (refine.assist.selectedEngramId) {
+      if (refine.assist.selectedEngramId && !pinnedEngramGraphId) {
         pinnedEngramGraphId = refine.assist.selectedEngramId;
       }
       if (!shouldShowRail(refine.assist, text)) {
@@ -612,7 +612,7 @@ export function wireGhampusComposeRail(
       });
       if (seq !== assistSeq || input.value !== text) return;
       lastAssist = assist;
-      if (assist.selectedEngramId) {
+      if (assist.selectedEngramId && !pinnedEngramGraphId) {
         pinnedEngramGraphId = assist.selectedEngramId;
       }
       if (

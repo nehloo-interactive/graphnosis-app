@@ -309,8 +309,27 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                 } else {
                     // No pending update cached — run a silent check now.
                     // run_update_check emits the event itself if an update is found.
-                    if let Err(e) = crate::run_update_check(app_clone).await {
-                        eprintln!("[updater] manual check failed: {}", e);
+                    match crate::run_update_check(app_clone.clone()).await {
+                        Ok(Some(_)) => { /* update-available already emitted */ }
+                        Ok(None) => {
+                            let _ = app_clone.emit(
+                                "graphnosis://update-check-result",
+                                serde_json::json!({
+                                    "status": "current",
+                                    "message": "You're on the latest version.",
+                                }),
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("[updater] manual check failed: {}", e);
+                            let _ = app_clone.emit(
+                                "graphnosis://update-check-result",
+                                serde_json::json!({
+                                    "status": "error",
+                                    "message": format!("Update check failed: {}", e),
+                                }),
+                            );
+                        }
                     }
                 }
             });

@@ -3642,10 +3642,28 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
 /// Also stores the result in UpdateState and refreshes the tray.
 #[tauri::command]
 async fn check_for_updates(app: AppHandle) -> Result<Option<String>, String> {
-    match run_update_check(app).await {
-        Ok(v) => Ok(v),
+    match run_update_check(app.clone()).await {
+        Ok(v) => {
+            if v.is_none() {
+                let _ = app.emit(
+                    "graphnosis://update-check-result",
+                    serde_json::json!({
+                        "status": "current",
+                        "message": "You're on the latest version.",
+                    }),
+                );
+            }
+            Ok(v)
+        }
         Err(e) => {
             eprintln!("[updater] check failed: {}", e);
+            let _ = app.emit(
+                "graphnosis://update-check-result",
+                serde_json::json!({
+                    "status": "error",
+                    "message": format!("Update check failed: {}", e),
+                }),
+            );
             Err(e.to_string())
         }
     }

@@ -1706,6 +1706,42 @@
       }
       .modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
       .modal-header .subtitle { margin: 4px 0 0; font-size: 14px; }
+      .ghampus-modal-logo {
+        display: block;
+        width: 64px; height: 64px;
+        max-width: 64px; max-height: 64px;
+        object-fit: contain;
+        flex-shrink: 0;
+        border-radius: 14px;
+      }
+      /* Update modal — title left, seahorse + wordmark pinned top-right. */
+      .modal-header.update-modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .modal-header.update-modal-header .update-modal-copy {
+        flex: 1;
+        min-width: 0;
+      }
+      .modal-header.update-modal-header .update-modal-brand {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        flex-shrink: 0;
+        margin-left: auto;
+      }
+      .modal-header.update-modal-header .update-modal-brand img {
+        border-radius: 8px;
+        opacity: 0.9;
+      }
+      .modal-header.update-modal-header .update-modal-brand span {
+        font-size: 10px;
+        color: var(--fg-dim);
+        letter-spacing: 0.04em;
+      }
       .modal-body { padding: 12px 16px; overflow-y: auto; flex: 1; }
       /* .gsk import destination picker — radio rows + pack badges. Used by
          #gsk-import-modal in main.ts/runGskImport. */
@@ -4607,6 +4643,24 @@
         text-transform: uppercase; letter-spacing: .05em;
       }
       .gc-section-hint { font-size: 13px; line-height: 1.55; color: var(--fg-dim); margin: 0 0 10px; max-width: 620px; }
+      /* Collapsible gc-sections — collapsed by default (no [open] on <details>) */
+      details.gc-section.gc-collapsible > summary {
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+      details.gc-section.gc-collapsible > summary::-webkit-details-marker { display: none; }
+      details.gc-section.gc-collapsible > summary::after {
+        content: '›';
+        margin-left: auto;
+        font-size: 18px;
+        color: var(--fg-dim);
+        transform: rotate(90deg);
+        transition: transform 0.15s;
+        flex-shrink: 0;
+      }
+      details.gc-section.gc-collapsible[open] > summary::after { transform: rotate(-90deg); }
+      details.gc-section.gc-collapsible[open] > summary { margin-bottom: 3px; }
       .gc-mobile-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
       .gc-mobile-title { font-size: 14px; font-weight: 700; }
       .gc-inline-link { color: var(--accent); text-decoration: none; font-weight: 600; white-space: nowrap; }
@@ -4885,7 +4939,11 @@
       }
       .home-ghampus:hover { transform: translateY(-1px); }
       .home-ghampus-img {
-        width: 76px; height: 76px; display: block;
+        display: block;
+        width: 76px; height: 76px;
+        max-width: 76px; max-height: 76px;
+        object-fit: contain;
+        flex-shrink: 0;
         animation: ghampus-bob 4s ease-in-out infinite;
       }
       @keyframes ghampus-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
@@ -6415,6 +6473,23 @@
         align-items: center; justify-content: center;
         text-align: center; padding: 24px;
       }
+      /* Sheet sizing (not inline) so prod Tauri bundles match dev — see ghampus-header. */
+      .ghampus-thread-empty-logo {
+        display: block;
+        width: 40px;
+        height: 40px;
+        max-width: 40px;
+        max-height: 40px;
+        object-fit: contain;
+        flex-shrink: 0;
+        opacity: 0.3;
+        margin-bottom: 10px;
+      }
+      .ghampus-thread-empty-copy {
+        margin: 0;
+        font-size: 13px;
+        opacity: 0.45;
+      }
 
       /* Message bubbles */
       /* Centered message column inside full-width scroll track */
@@ -7547,6 +7622,11 @@
       #ghampus-new-chat-modal .modal-body {
         max-height: min(90vh, 640px);
         overflow-y: auto;
+      }
+      #ghampus-new-chat-modal .modal-footer {
+        padding: 14px 28px;
+        gap: 10px;
+        flex-wrap: wrap;
       }
 
       .ghampus-input-row {
@@ -12963,7 +13043,7 @@
                                the card (absolute), right-aligned, so it never
                                shifts the vertical position of the title, Vitality,
                                or Trust rows. Click = "Who is Ghampus?". -->
-                          <div class="home-ghampus" id="home-ghampus-btn" role="button" tabindex="0" title="Who is Ghampus?">
+                          <div class="home-ghampus" id="home-ghampus-btn" role="button" tabindex="0" title="Chat with Ghampus">
                             <img class="home-ghampus-img" src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" />
                             <span class="home-ghampus-tagline">Chat with Ghampus</span>
                           </div>
@@ -13021,7 +13101,7 @@
                           <h3 class="home-card-title">Self-healing</h3>
                           <span class="home-card-hint">duplicates merged automatically — nothing is ever lost</span>
                         </div>
-                        <div id="home-selfheal-body" class="home-selfheal-body" data-pres="surface:stats"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                        <div id="home-selfheal-body" class="home-selfheal-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- Contradictions — always visible; opens Memory Integrity. -->
@@ -13036,12 +13116,12 @@
                       <!-- Needs you — what's waiting on the user (actionable lane).
                            Pending corrections · stranded memories · duplicate pairs
                            · conflicts. Hidden when there's nothing to do. -->
-                      <section class="home-card home-needs-card" id="home-needs" style="display:none">
+                      <section class="home-card home-needs-card" id="home-needs">
                         <div class="home-card-head">
                           <h3 class="home-card-title">Needs you</h3>
                           <span class="home-card-hint">a few minutes of tending</span>
                         </div>
-                        <div id="home-needs-body" class="home-needs-body" data-pres="surface:recents"></div>
+                        <div id="home-needs-body" class="home-needs-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- Stranded memories — its own card so the user always has a
@@ -13055,23 +13135,23 @@
                       </section>
 
                       <!-- Since you last opened — autonomy digest (op-log diff). -->
-                      <section class="home-card home-digest-card" id="home-digest" style="display:none">
+                      <section class="home-card home-digest-card" id="home-digest">
                         <div class="home-card-head">
                           <h3 class="home-card-title">Since you last opened</h3>
                           <span class="home-card-hint" id="home-digest-when"></span>
                         </div>
-                        <div id="home-digest-body" class="home-digest-body"></div>
+                        <div id="home-digest-body" class="home-digest-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- Foresight teaser — the FUTURE dimension (pairs with the
                            past-looking digest above). Surfaces the top insight +
                            a door into the Foresight page. LLM-gated. -->
-                      <section class="home-card home-foresight-card" id="home-foresight" style="display:none">
+                      <section class="home-card home-foresight-card" id="home-foresight">
                         <div class="home-card-head">
                           <h3 class="home-card-title">Foresight</h3>
                           <span class="home-card-hint">what's ahead, from your memory</span>
                         </div>
-                        <div id="home-foresight-body" class="home-foresight-body" data-pres="surface:foresight"></div>
+                        <div id="home-foresight-body" class="home-foresight-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- Recent brain activity — the background loops working while
@@ -13081,7 +13161,7 @@
                           <h3 class="home-card-title">Autonomous Brain <span class="home-deterministic-badge" title="Rule-based and reproducible — no LLM, no randomness. The same memory always yields the same connections, and every change is auditable.">deterministic</span></h3>
                           <span class="home-card-hint">your second brain — maintains your memory on its own · powered by Ghampus</span>
                         </div>
-                        <div id="home-brainact-body" class="home-brainact-body" data-pres="surface:stats"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                        <div id="home-brainact-body" class="home-brainact-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- Rediscover — a memory worth a second look (serendipity). -->
@@ -13090,12 +13170,12 @@
 
                       <!-- Growth — memories added per day over the last 90 days
                            (op-log, ops-filtered to adds). Click → Activity. -->
-                      <section class="home-card home-growth-card" id="home-growth" style="display:none">
+                      <section class="home-card home-growth-card" id="home-growth">
                         <div class="home-card-head">
                           <h3 class="home-card-title">Growth</h3>
                           <span class="home-card-hint" id="home-growth-when">last 90 days · tap for full history</span>
                         </div>
-                        <div id="home-growth-body" class="home-growth-body" data-pres="surface:stats"></div>
+                        <div id="home-growth-body" class="home-growth-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- On-Premise — sovereignty/egress ledger. HONEST: shows what
@@ -14569,9 +14649,9 @@ ollama list</code></pre>
                       <!-- Chat messages render here -->
                       <div id="ghampus-chat-messages">
                         <div id="ghampus-thread-empty" class="ghampus-thread-empty">
-                          <img src="/graphnosis-logo-transparent-bg.png" alt=""
-                               style="width: 40px; height: 40px; opacity: .3; margin-bottom: 10px;" />
-                          <p style="margin: 0; font-size: 13px; opacity: .45;">
+                          <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true"
+                               class="ghampus-thread-empty-logo" width="40" height="40" />
+                          <p class="ghampus-thread-empty-copy">
                             Start typing — or wait for Ghampus to pick up where you left off.
                           </p>
                         </div>
@@ -14928,9 +15008,9 @@ ollama list</code></pre>
                 </div>
               </section>
 
-              <!-- Organization Engram Catalog — IT publish + employee subscribe -->
-              <section class="gc-section" id="gc-section-compliance-schema">
-                <h3 class="gc-section-title">Compliance classification</h3>
+              <!-- Compliance classification — IT label palette (collapsed by default) -->
+              <details class="gc-section gc-collapsible" id="gc-section-compliance-schema">
+                <summary class="gc-section-title">Compliance classification</summary>
                 <p class="gc-section-hint">Define the label palette employees see when classifying engrams. Each label maps to an internal tier (public / personal / sensitive) and optional recall caps. Push via MDM bundle or edit here.</p>
                 <div id="gc-compliance-schema-admin">
                   <div id="gc-compliance-schema-upsell" class="panel hidden" style="padding:12px;margin-bottom:10px;">
@@ -14949,10 +15029,11 @@ ollama list</code></pre>
                     <p id="compliance-schema-status" class="subtitle" style="margin:0;font-size:12px;"></p>
                   </div>
                 </div>
-              </section>
+              </details>
 
-              <section class="gc-section" id="gc-section-org-catalog">
-                <h3 class="gc-section-title">Organization engram catalog</h3>
+              <!-- Organization Engram Catalog — IT publish + employee subscribe (collapsed by default) -->
+              <details class="gc-section gc-collapsible" id="gc-section-org-catalog">
+                <summary class="gc-section-title">Organization engram catalog</summary>
                 <p class="gc-section-hint">IT publishes engram packages (DevOps Skills, compliance baselines, etc.); employees add entitled packages to their cortex. IdP groups gate subscribe — not unlock. Org packages use explicit share only.</p>
 
                 <!-- IT admin CRUD -->
@@ -15063,7 +15144,7 @@ ollama list</code></pre>
                   <div id="employee-catalog-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px;"></div>
                   <p id="employee-catalog-empty" class="subtitle hidden" style="margin:0;">No organization packages published yet.</p>
                 </div>
-              </section>
+              </details>
 
               <!-- AI clients READ from the cortex -->
               <section class="gc-section">
@@ -15842,7 +15923,7 @@ ollama list</code></pre>
       <div class="modal" style="max-width: 620px;">
         <div class="modal-header" style="display:flex; align-items:center; gap:14px;">
           <img src="/graphnosis-logo-transparent-bg.png" alt=""
-               style="width:64px; height:64px; flex-shrink:0; border-radius:14px;"
+               class="ghampus-modal-logo"
                aria-hidden="true" />
           <div>
             <h2 style="margin:0 0 4px;">Hi again. I'm Ghampus.</h2>
@@ -17194,14 +17275,14 @@ ollama list</code></pre>
          "Install & Restart" calls install_update; "Later" dismisses. -->
     <div id="update-available-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 420px;">
-        <div class="modal-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
-          <div style="flex:1; min-width:0;">
+        <div class="modal-header update-modal-header">
+          <div class="update-modal-copy">
             <h2 style="font-size:16px; margin:0 0 4px;">Update available</h2>
             <p class="subtitle" id="update-available-version" style="margin:0;"></p>
           </div>
-          <div style="display:flex; flex-direction:column; align-items:center; gap:3px; flex-shrink:0;">
-            <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9;" />
-            <span style="font-size:10px; color:var(--fg-dim); letter-spacing:.04em;">Graphnosis</span>
+          <div class="update-modal-brand">
+            <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" />
+            <span>Graphnosis</span>
           </div>
         </div>
         <div class="modal-body">
@@ -17714,17 +17795,17 @@ ollama list</code></pre>
           <textarea id="ghampus-new-chat-summary" class="studio-textarea" rows="7"
                     style="width:100%; box-sizing:border-box; margin-bottom:12px; font-size:13px;"
                     placeholder="Summarizing thread…"></textarea>
-          <div style="display:flex; align-items:center; gap:8px; margin-bottom:20px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <label for="ghampus-new-chat-engram" style="font-size:12px; opacity:.7;">Save to</label>
             <select id="ghampus-new-chat-engram" class="studio-select" style="min-width:160px; flex:1;" aria-busy="true">
               <option value="" disabled selected>Loading engrams…</option>
             </select>
           </div>
-          <div style="display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;">
-            <button id="ghampus-new-chat-cancel" type="button" style="min-width:80px;">Cancel</button>
-            <button id="ghampus-new-chat-fresh" type="button" style="min-width:120px;">Skip &amp; start fresh</button>
-            <button id="ghampus-new-chat-remember" type="button" class="primary" style="min-width:160px;">Remember &amp; start fresh</button>
-          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="ghampus-new-chat-cancel" type="button" style="min-width:80px;">Cancel</button>
+          <button id="ghampus-new-chat-fresh" type="button" style="min-width:120px;">Skip &amp; start fresh</button>
+          <button id="ghampus-new-chat-remember" type="button" class="primary" style="min-width:160px;">Remember &amp; start fresh</button>
         </div>
       </div>
     </div>

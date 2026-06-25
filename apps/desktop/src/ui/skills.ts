@@ -3444,19 +3444,27 @@ function scrollSkillsPaneToTop(): void {
     });
   };
   wireHome('rail-logo-home');
-  // Ghampus header on the dashboard ("Ghampus / your memory seahorse." +
-  // mascot mark) opens the "Meet Ghampus" modal — funny + trust-building
-  // intro to the mascot. Click OR keyboard activation; backdrop click +
-  // Got it button + Esc all close.
+  // Home/Overview Trust & Vitality card — switch to Ghampus chat (not intro modal).
+  const openGhampusChat = (): void => {
+    app().activateMode('ghampus');
+  };
+  const wireGhampusChat = (id: string): void => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', openGhampusChat);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGhampusChat(); }
+    });
+  };
+  wireGhampusChat('home-ghampus-btn');
+  // Legacy header mark opens the "Meet Ghampus" intro modal (if present).
   const openGhampusModal = (): void => {
     document.getElementById('ghampus-modal')?.classList.remove('hidden');
   };
   const closeGhampusModal = (): void => {
     document.getElementById('ghampus-modal')?.classList.add('hidden');
   };
-  // "Meet Ghampus" entry points: the header mark (legacy) and the Home/Overview
-  // Trust & Vitality card mark (where it moved to).
-  for (const id of ['header-ghampus-btn', 'home-ghampus-btn']) {
+  for (const id of ['header-ghampus-btn']) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.addEventListener('click', openGhampusModal);

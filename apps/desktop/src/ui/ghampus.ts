@@ -2590,8 +2590,8 @@ function showThinkingBubble(): void {
     return;
   }
 
-  const thread = document.getElementById('ghampus-thread');
-  if (!thread) return;
+  const container = ghampusChatMessagesEl();
+  if (!container) return;
 
   resetGhampusThreadScrollPin();
   document.getElementById('ghampus-thread-empty')?.remove();
@@ -2619,7 +2619,7 @@ function showThinkingBubble(): void {
       <div id="ghampus-live-trace-steps" class="ghampus-trace-steps ghampus-trace-steps--live"></div>
     </div>
   </div>`;
-  thread.appendChild(entry);
+  container.appendChild(entry);
   scrollGhampusThreadToBottomIfPinned();
   if (liveTraceTurnId) {
     renderLiveTrace(liveTraceTurnId);
@@ -3039,18 +3039,18 @@ let ghampusThreadPrefetchInflight: Promise<void> | null = null;
 let ghampusHistoryPrefetchSupported: boolean | null = null;
 
 const GHAMPUS_THREAD_EMPTY_HTML = `<div id="ghampus-thread-empty" class="ghampus-thread-empty">
-  <img src="/graphnosis-logo-transparent-bg.png" alt=""
-       style="width: 40px; height: 40px; opacity: .3; margin-bottom: 10px;" />
-  <p style="margin: 0; font-size: 13px; opacity: .45;">
+  <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true"
+       class="ghampus-thread-empty-logo" width="40" height="40" />
+  <p class="ghampus-thread-empty-copy">
     Start typing — or use <strong>New chat</strong> to archive this thread and begin fresh.
     Use Remember for anything worth keeping in memory.
   </p>
 </div>`;
 
 const GHAMPUS_THREAD_LOADING_HTML = `<div id="ghampus-thread-loading" class="ghampus-thread-empty ghampus-thread-loading">
-  <img src="/graphnosis-logo-transparent-bg.png" alt=""
-       style="width: 40px; height: 40px; opacity: .3; margin-bottom: 10px;" />
-  <p style="margin: 0; font-size: 13px; opacity: .45;">Loading conversation…</p>
+  <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true"
+       class="ghampus-thread-empty-logo" width="40" height="40" />
+  <p class="ghampus-thread-empty-copy">Loading conversation…</p>
 </div>`;
 
 function ghampusChatMessagesEl(): HTMLElement | null {
@@ -4637,10 +4637,10 @@ const SLASH_COMMANDS = [
   { name: 'compare', icon: '', args: '[topic]',             desc: 'Compare sources (Pro)', template: '/compare '      },
   { name: 'create',  icon: '', args: '[engram name]',       desc: 'Create a new engram',   template: '/create '       },
   { name: 'engrams', icon: '', args: '',                    desc: 'List your engrams',     template: '/engrams'       },
-  { name: 'skills',  icon: '', args: '[filter]',            desc: 'List your skills',      template: '/skills '       },
+  { name: 'skills',  icon: '', args: '[filter]',            desc: 'List your skills',      template: '/skills'        },
   { name: 'preview', icon: '', args: '[skill name]',        desc: 'Preview a skill SOP',   template: '/preview '      },
   { name: 'train',   icon: '', args: '[skill name]',        desc: 'Retrain a skill (Pro)', template: '/train '        },
-  { name: 'forget',  icon: '', args: '',                    desc: 'Manage / delete memories', template: '/forget'     },
+  { name: 'forget',  icon: '', args: '[topic]',             desc: 'Find memories to remove', template: '/forget '     },
   { name: 'insights', icon: '', args: '',                   desc: 'Preview Foresight insights', template: '/insights' },
   { name: 'help',    icon: '', args: '',                    desc: 'Show all commands',     template: '/help'          },
 ] as const;

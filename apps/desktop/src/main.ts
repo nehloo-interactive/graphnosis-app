@@ -34,7 +34,7 @@ import {
 // ── UI domain modules (ui-modularize pass) ──────────────────────────────
 import { $, isTauriRuntime } from './ui/dom';
 import { escape, escapeHtml, formatBytes } from './ui/util';
-import { ipcCall, ipcCallTimeout, withTimeout, invokeRetry, withUiWorkScope } from './ui/ipc';
+import { ipcCall, ipcCallTimeout, withTimeout, invokeRetry } from './ui/ipc';
 import { initDialogs, gConfirm, gAlert } from './ui/dialogs';
 import { bindAppContext } from './ui/app-context';
 import {
@@ -1961,6 +1961,10 @@ function render(status: StatusSnapshot): void {
       activateMode(currentMode);
       if (currentMode === 'atlas') {
         void refreshHomePolicy();
+        // activateMode → switchGraphnosisTab already schedules Home IPC; belt-and-
+        // suspenders kick + retry for cold boot while the sidecar socket is still up.
+        scheduleHomeDataLoad();
+        window.setTimeout(() => { if (isHomeDashboardView()) scheduleHomeDataLoad(); }, 2500);
         window.setTimeout(() => { if (isHomeDashboardView()) void refreshHomePolicy(); }, 2500);
       }
     };
@@ -8949,8 +8953,8 @@ async function refreshHomeGrowth(): Promise<void> {
     return `<span class="home-spark-bar${c > 0 ? '' : ' empty'}" style="--bar-h:${pctH}%" title="${day.toLocaleDateString()}: ${c}"></span>`;
   }).join('');
   body.innerHTML =
-    `<div class="home-growth-stat"><strong>${adds.length.toLocaleString()}</strong> source${adds.length === 1 ? '' : 's'} added in the last ${DAYS} days</div>` +
-    `<div class="home-spark" aria-hidden="true">${bars}</div>`;
+    `<div class="home-growth-stat" data-pres="surface:stats"><strong>${adds.length.toLocaleString()}</strong> source${adds.length === 1 ? '' : 's'} added in the last ${DAYS} days</div>` +
+    `<div class="home-spark" data-pres="surface:stats" aria-hidden="true">${bars}</div>`;
   card.style.display = '';
 }
 
@@ -9018,6 +9022,7 @@ function showHomeSkeletons(): void {
       body.innerHTML = SKEL;
     }
   }
+  if (isHomeDashboardView()) armHomeCardsWatchdog();
   const integrityBody = document.getElementById('home-integrity-body');
   if (integrityBody) {
     delete integrityBody.dataset['integrityReady'];
@@ -9136,7 +9141,62 @@ let homeLoadToken = 0;
 
 /** True when the Your Cortex home dashboard (not search/skills/power-tools) is the active surface. */
 function isHomeDashboardView(): boolean {
-  return document.body.classList.contains('atlas-home-mode');
+  return graphnosisActiveTab === 'checkin'
+    && currentMode === 'atlas'
+    && !document.body.classList.contains('search-mode')
+    && !document.body.classList.contains('skills-studio-mode')
+    && !document.body.classList.contains('powertools-mode');
+}
+
+const HOME_ASYNC_CARD_IDS = ['home-needs', 'home-digest', 'home-foresight', 'home-growth'] as const;
+
+const HOME_ASYNC_CARD_EMPTY: Record<(typeof HOME_ASYNC_CARD_IDS)[number], string> = {
+  'home-needs': 'Couldn’t check what needs review right now.',
+  'home-digest': 'Couldn’t load recent activity right now.',
+  'home-foresight': 'Couldn’t reach the Local LLM status.',
+  'home-growth': 'Couldn’t load growth right now.',
+};
+
+function homeCardBodyHasSkeleton(body: HTMLElement | null): boolean {
+  return !!body?.querySelector('.home-skel');
+}
+
+/** Replace one async Home card still on boot skeleton with honest empty/retry copy. */
+function finalizeSingleHomeAsyncCard(id: (typeof HOME_ASYNC_CARD_IDS)[number]): void {
+  const body = document.getElementById(`${id}-body`);
+  if (!homeCardBodyHasSkeleton(body)) return;
+  body!.innerHTML = homeCardEmptyHtml(HOME_ASYNC_CARD_EMPTY[id], { retry: () => scheduleHomeDataLoad() });
+  wireHomeCardRetry(body!, () => scheduleHomeDataLoad());
+  document.getElementById(id)?.style.setProperty('display', '');
+}
+
+/** Replace any async Home card still showing boot skeletons with honest empty/retry copy. */
+function finalizeHomeAsyncCardsIfStale(): void {
+  if (!isHomeDashboardView()) return;
+  for (const id of HOME_ASYNC_CARD_IDS) finalizeSingleHomeAsyncCard(id);
+}
+
+/** Last-resort guard — cards must never stay on skeleton forever (IPC hang / cancelled chain). */
+const HOME_CARDS_WATCHDOG_MS = 8_000;
+let _homeCardsWatchdog: ReturnType<typeof setTimeout> | null = null;
+function armHomeCardsWatchdog(): void {
+  if (_homeCardsWatchdog) clearTimeout(_homeCardsWatchdog);
+  _homeCardsWatchdog = window.setTimeout(() => {
+    _homeCardsWatchdog = null;
+    if (!isHomeDashboardView()) return;
+    const stale = HOME_ASYNC_CARD_IDS.filter((id) =>
+      homeCardBodyHasSkeleton(document.getElementById(`${id}-body`)));
+    if (stale.length === 0) return;
+    console.error('[home] watchdog finalizing stale async cards:', stale.join(', '));
+    finalizeHomeAsyncCardsIfStale();
+  }, HOME_CARDS_WATCHDOG_MS);
+}
+function disarmHomeCardsWatchdogIfClear(): void {
+  if (!HOME_ASYNC_CARD_IDS.every((id) => !homeCardBodyHasSkeleton(document.getElementById(`${id}-body`)))) return;
+  if (_homeCardsWatchdog) {
+    clearTimeout(_homeCardsWatchdog);
+    _homeCardsWatchdog = null;
+  }
 }
 
 /** Re-enter Your Cortex home: correct inner tab + repaint dashboard cards. */
@@ -9145,36 +9205,43 @@ function showAtlasHomeDashboard(): void {
 }
 
 function scheduleHomeDataLoad(): void {
-  const token = ++homeLoadToken;
-  const stillHome = (): boolean =>
-    token === homeLoadToken && isHomeDashboardView();
+  ++homeLoadToken;
+  if (isHomeDashboardView()) {
+    console.error('[home] scheduleHomeDataLoad — kicking async card IPC');
+  }
   // Brain autonomy cards (Autonomous Brain / Self-healing / Memory health) must
   // not sit behind ensureActiveEngramLoadedForHome + digest/growth — that chain
   // could take minutes and left the Autonomous Brain card on skeleton placeholders.
   kickHomeBrainCardLoads();
+  kickHomeAsyncCardLoads(); // parallel per-card IPC — each .finally() clears its skeleton
   void refreshHomePolicy(); // parallel — don’t wait behind Needs-you IPC chain
   void refreshHomeIntegrity();
-  // Run the loads SEQUENTIALLY (≤1 sidecar call in flight at a time) so they
-  // don't hammer the single-threaded sidecar all at once — and so an engram
-  // switch's nodes.list waits behind at most ONE Home call, not six. No
-  // artificial gaps (the earlier requestIdleCallback delays were the "cards
-  // drag" slowness). The stillHome() check before each step CANCELS the rest
-  // the moment the user navigates or switches engrams (which bumps the token).
-  // Order: cheap/cached + visible first; the heaviest (memory-health graph
-  // walk) last. digest+growth share one op-log read (first warms, second is
-  // instant). Each fn is timeout-bounded → no step can stall the chain.
-  // Active-engram graph load can take tens of seconds — never block the Home
-  // cards behind it (Needs you / digest / growth only need sidecar IPC).
   void ensureActiveEngramLoadedForHome();
-  void (async () => {
-    const steps = [refreshHomeNeeds, refreshHomePolicy, refreshHomeForesight, refreshHomeDigest, refreshHomeGrowth];
-    for (const step of steps) {
-      if (!stillHome()) return;
-      try {
-        await withUiWorkScope(() => step());
-      } catch { /* per-card fns own their errors */ }
-    }
-  })();
+  armHomeCardsWatchdog();
+}
+
+/** Parallel IPC for the four async Home cards — mirrors kickHomeBrainCardLoads. */
+let homeAsyncCardsFetchGen = 0;
+function kickHomeAsyncCardLoads(): void {
+  const gen = ++homeAsyncCardsFetchGen;
+  const cards: Array<{ id: (typeof HOME_ASYNC_CARD_IDS)[number]; fn: () => Promise<void> }> = [
+    { id: 'home-needs', fn: refreshHomeNeeds },
+    { id: 'home-digest', fn: refreshHomeDigest },
+    { id: 'home-foresight', fn: refreshHomeForesight },
+    { id: 'home-growth', fn: refreshHomeGrowth },
+  ];
+  for (const { id, fn } of cards) {
+    void fn()
+      .catch((e) => {
+        console.error(`[home] ${id} refresh failed:`, e instanceof Error ? e.message : e);
+      })
+      .finally(() => {
+        if (gen !== homeAsyncCardsFetchGen || !isHomeDashboardView()) return;
+        finalizeSingleHomeAsyncCard(id);
+        disarmHomeCardsWatchdogIfClear();
+        if (id === 'home-growth' && presActive()) schedulePresSweep();
+      });
+  }
 }
 
 // ── Home autonomy cards (Self-healing · Memory health · Recent brain activity)
@@ -9523,7 +9590,7 @@ async function refreshHomeForesight(): Promise<void> {
     } catch { insightsFailed = true; }
     const top = brainInsights.filter((i) => !i.dismissed)[0];
     if (top) {
-      body.innerHTML = `<p class="home-foresight-title">${escapeHtml(top.title)}</p><p class="home-foresight-text">${escapeHtml(top.body)}</p><button type="button" class="home-foresight-go" data-foresight-open>Explore Foresight →</button>`;
+      body.innerHTML = `<p class="home-foresight-title" data-pres="surface:foresight">${escapeHtml(top.title)}</p><p class="home-foresight-text" data-pres="surface:foresight">${escapeHtml(top.body)}</p><button type="button" class="home-foresight-go" data-foresight-open>Explore Foresight →</button>`;
     } else if (insightsFailed) {
       body.innerHTML = homeCardEmptyHtml('Insights aren’t available right now.', { retry: () => scheduleHomeDataLoad() }) + door;
       wireHomeCardRetry(body, () => scheduleHomeDataLoad());
@@ -14499,6 +14566,7 @@ void listen<{ step: string; detail: string }>('graphnosis://sidecar-boot-status'
     // runs on engrams-loading completion / showApp.
     if (!els.viewApp.classList.contains('hidden')) {
       scheduleDebouncedFederatedStats();
+      if (isHomeDashboardView()) scheduleHomeDataLoad();
     }
     // Socket is up — hide the status line shortly after, BUT only if the
     // boot sequence hasn't already taken over (unlockPending = true means
@@ -14962,6 +15030,15 @@ const CONSENT_BODY_EXTERNAL = `Your selected memories will be sent <strong>from 
   laterBtn?.addEventListener('click', () => {
     modal?.classList.add('hidden');
   });
+
+  void listen<{ status: 'current' | 'error'; message?: string; version?: string }>(
+    'graphnosis://update-check-result',
+    (evt) => {
+      const p = evt.payload;
+      const id = addIngestToast('Update check', p.message ?? '');
+      finishIngestToast(id, p.status === 'error' ? 'error' : 'success', p.message);
+    },
+  );
 }
 
 let activeConsentPromptId: string | null = null;
