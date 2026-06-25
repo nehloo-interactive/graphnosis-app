@@ -15,6 +15,40 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.23.2 — Ghampus memory commands and Home dashboard reliability
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-25</p>
+
+Ghampus gets first-class slash commands for editing, comparing, and forgetting memories — with guardrails that stop fabricated “based on your memory” claims when recall is empty. Your Cortex home cards load in parallel and never stay stuck on skeleton placeholders. Contradiction triage is hardened with a shipped eval harness.
+
+### Added
+
+- **Ghampus `/edit [correction]`** — propose a memory correction from chat; review and approve the diff in Check-in before anything is saved.
+- **Ghampus `/compare [topic]`** — find sources and check for contradictions from chat; full compare workbench remains in Foresight → Memory Integrity.
+- **Ghampus `/forget [topic]`** — search for memories to remove, with scoped engram hints and candidate previews.
+- **Recall honesty guardrails** — Ghampus strips fabricated attested-memory claims when recall was empty or thin; advice queries prefer your saved facts over general-knowledge defaults.
+- **Memory search retry** — phrases like “search my memory” re-run the prior question instead of treating the phrase literally.
+- **Contradiction eval harness** — deterministic 71-pair routing gate (`test:contradiction`) ships in the source tree; triage hardening reduces false-positive surfacing (supersession, negation artifacts, complementary facts).
+- **Docs: un-brain overview** — three diagrams on the Getting Started overview (un-brain map, inverted forgetting curve, silent vs surfaced conflict) with a link to the whitepaper.
+- **Landing: Claude disclosure** — restored “Built in the open, with Claude” origin story and mid-build quote on graphnosis.org.
+
+### Changed
+
+- **Home dashboard card loading** — Needs you, digest, Foresight, and growth cards load in parallel IPC; an 8-second watchdog replaces stuck skeletons with honest empty/retry copy.
+- **Trust & Vitality card** — clicking the Home Ghampus card opens Ghampus chat (header mark still opens the intro modal).
+- **Get Connected** — Organization catalog and Compliance schema sections are collapsible by default.
+- **Ghampus empty-thread logo** — CSS classes replace inline styles so production Tauri bundles match dev sizing.
+- **Update modal** — title left, seahorse + wordmark pinned top-right; fresh-chat modal footer spacing improved.
+- **Updater feedback** — manual “Check for updates” (menu or tray) shows a toast when you’re already on the latest version or when the check fails.
+- **SDK** — sidecar pins `@nehloo/graphnosis` ^0.7.2.
+
+### Fixed
+
+- **Home card skeleton hang** — cold boot and slow sidecar no longer leave async cards on loading placeholders indefinitely.
+- **`/skills` filter** — keyword normalization handles trailing spaces and partial matches more reliably.
+
+---
+
 ## v1.23.1 — Ghampus send queue after /insights
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-24</p>
