@@ -526,7 +526,56 @@ export function isScopedTaskListQuery(msg: string): boolean {
     || /^(?:todos?|tasks?|sarcini(?:le)?|t[aâ]ches?|tareas?|aufgaben)\b/i.test(m)
     || /^(?:ce|care|what|which|quoi|qué|que|was)\s+(?:task|todo|sarcin|t[aâ]che|tarea|aufgab)/i.test(m)
     || /\b(?:what|which)\s+(?:are\s+)?(?:my\s+)?(?:the\s+)?(?:todos?|tasks?)\b/i.test(m)
+    || /\bwhat'?s\s+(?:the\s+)?(?:todo|task|todos?|tasks?)\b/i.test(m)
+    || /\b(?:todo|task|todos?|tasks?)\s+(?:on|in|for|from|at)\s+\S/i.test(m)
     || /\b(?:todos?|tasks?)\s+(?:due|overdue|past due)\b/i.test(m)
+  );
+}
+
+/** User wants cortex searched again — retry the prior question, not a literal recall query. */
+export function isMemorySearchRetryCommand(msg: string): boolean {
+  const t = msg.trim().replace(/[?.!]+$/, '');
+  if (t.split(/\s+/).length > 8) return false;
+  return (
+    /^(?:search|check|look(?:\s+(?:in|at|through|up))?|consult|use|try)\s+(?:my\s+)?(?:memory|memories|cortex|the cortex)$/i.test(t)
+    || /^search\s+memory$/i.test(t)
+    || /^(?:caut[aă]|verific[aă]|uit[aă]-te)\s+(?:în\s+)?(?:memor(?:ie|ii)|cortex)$/i.test(t)
+    || /^(?:please\s+)?(?:search|check)\s+(?:my\s+)?memory$/i.test(t)
+  );
+}
+
+/** Comparative / procedural advice — prefer attested memory over general-knowledge direct answer. */
+export function isProceduralAdviceQuery(text: string): boolean {
+  const t = text.trim().replace(/[?.!]+$/, '');
+  if (t.split(/\s+/).length > 24) return false;
+  if (/\b(?:capital of|define|what is the speed of)\b/i.test(t)) return false;
+  return (
+    /\b(?:vs\.?|versus|or)\b/i.test(t)
+    || /\bwhich (?:is|way|method|approach)\b/i.test(t)
+    || (
+      /\b(?:walk|drive|wash|rinse|dry|step|procedure|sop)\b/i.test(t)
+      && /\b(?:better|should|recommend|prefer)\b/i.test(t)
+    )
+  );
+}
+
+/** Advice, recommendation, or decision — must recall attested memory before answering. */
+export function isAdviceOrDecisionQuery(text: string): boolean {
+  const t = text.trim().replace(/[?.!]+$/, '');
+  if (t.split(/\s+/).length > 28) return false;
+  if (/\b(?:capital of|define|what is the speed of)\b/i.test(t)) return false;
+  if (isProceduralAdviceQuery(t)) return true;
+  return (
+    /\bshould I\b/i.test(t)
+    || /\b(?:is it|would it be) (?:better|ok(?:ay)?|safe|wise|worth)\b/i.test(t)
+    || /\b(?:do you|would you) recommend\b/i.test(t)
+    || /\bwhat (?:do you|would you) recommend\b/i.test(t)
+    || /\b(?:better to|best to|prefer to)\b/i.test(t)
+    || (
+      /\b(?:can|could|may) I\b/i.test(t)
+      && /\b(?:without|before|after|when|if|while)\b/i.test(t)
+    )
+    || /\bhow should I\b/i.test(t)
   );
 }
 
@@ -597,9 +646,10 @@ export function isPersonalMemoryLookupQuery(text: string): boolean {
   ) {
     return true;
   }
-  if (/\b(?:unpublished|writings|team|project|todo|task|sarcin|obligation|deadline)\b/i.test(t)) {
+  if (/\b(?:unpublished|writings|team|project|todo|task|sarcin|obligation|deadline|dashboard)\b/i.test(t)) {
     return true;
   }
+  if (isAdviceOrDecisionQuery(t)) return true;
   return false;
 }
 
@@ -724,4 +774,18 @@ export function detectGhampusMetaCategory(text: string): GhampusMetaCategory | n
 /** True when the user question should skip recall tools and answer directly. */
 export function isNonMemoryQuestion(text: string): boolean {
   return detectGhampusMetaCategory(text) !== null;
+}
+
+/** User-facing copy when `/insights` has nothing pending yet. */
+export function buildInsightsEmptyGuidance(): string {
+  return (
+    'No pending **Foresight insights** yet.\n\n'
+    + 'Insights appear when the background brain loop runs (about every 6 hours with Local LLM enabled). '
+    + 'They surface non-obvious patterns, gaps, and conflicts across your engrams.\n\n'
+    + '**What you can do now:**\n'
+    + '- Open **Foresight → Insights** to watch for new items\n'
+    + '- Run a **consistency audit** (`/compare` or ask me to check contradictions)\n'
+    + '- Enable Local LLM in **Settings → AI → Models** if it is off\n'
+    + '- Ask me for **proactive tips** after you ingest new memories'
+  );
 }

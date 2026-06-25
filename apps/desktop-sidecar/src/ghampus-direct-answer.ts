@@ -10,6 +10,8 @@ import {
   detectGhampusMetaCategory,
   isConversationContextQuery,
   isMetaChallengeQuery,
+  isMemorySearchRetryCommand,
+  isPersonalMemoryLookupQuery,
   matchResponseLanguageInstruction,
   buildResponseLanguageRulesBlock,
   type GhampusMetaCategory,
@@ -326,8 +328,10 @@ export function detectDirectAnswerKind(
   text: string,
   history: GhampusHistTurn[] = [],
 ): DirectAnswerKind | null {
-  if (isHealthCheckRequest(text)) return 'health_check';
+  if (isMemorySearchRetryCommand(text)) return null;
   if (isMetaChallengeQuery(text)) return 'process_critique';
+  if (isPersonalMemoryLookupQuery(text)) return null;
+  if (isHealthCheckRequest(text)) return 'health_check';
   if (isTranslationRequest(text)) return 'translation';
   if (isConversationContextQuery(text)) return 'conversation_context';
   const metaCategory = detectGhampusMetaCategory(text);

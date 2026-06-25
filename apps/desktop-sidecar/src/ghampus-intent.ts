@@ -20,7 +20,9 @@ import {
   isScopedTaskListQuery,
   stripMultilingualSavePhrasePrefix,
   isTemporalTodoQuery,
+  isMemorySearchRetryCommand,
   isConversationContextQuery,
+  isAdviceOrDecisionQuery,
   wantsExpandedAnswerText,
   MULTILINGUAL_QUESTION_OPENERS,
   MULTILINGUAL_RECALL_QUESTION_RE,
@@ -127,6 +129,8 @@ export interface GhampusQueryHints {
   wantsConversationContext: boolean;
   /** Short/ambiguous message continues the current chat thread — ground in recent turns. */
   wantsThreadGrounding: boolean;
+  /** Advice / decision / recommendation — recall attested memory before answering. */
+  wantsAdviceRecall: boolean;
   /** Prior user question from getThreadContext — for recall query expansion. */
   threadPriorUserQuestion: string | null;
   directAnswerKind: DirectAnswerKind | null;
@@ -756,10 +760,11 @@ export function detectGhampusQueryHints(
     );
   const hasQuotedSearch = extractQuotedPhrases(text).length > 0;
   const wantsConversationContext = isConversationContextQuery(text);
+  const wantsAdviceRecall = isAdviceOrDecisionQuery(text);
   const threadCtx = getThreadContext(opts?.history ?? []);
   const wantsThreadGrounding = threadCtx !== null && isThreadContinuationMessage(text, opts?.history ?? []);
   let directAnswerKind = detectDirectAnswerKind(text, opts?.history ?? []);
-  if (wantsThreadGrounding && wantsThreadGroundedRecall(text)) {
+  if (wantsThreadGrounding && wantsThreadGroundedRecall(text) && directAnswerKind !== 'process_critique') {
     directAnswerKind = null;
   }
   // Topic pivots ("what about Anca?") are cortex lookups — not chat-only follow-ups like "si, pero donde?"
@@ -834,6 +839,7 @@ export function detectGhampusQueryHints(
     skipMemoryTools,
     wantsConversationContext,
     wantsThreadGrounding,
+    wantsAdviceRecall,
     threadPriorUserQuestion: threadCtx?.priorUserQuestion ?? null,
     directAnswerKind,
     recallMaxNodes,
@@ -844,6 +850,33 @@ export function detectGhampusQueryHints(
   if (implicitMatch) {
     hintsDraft.wantsImplicitSkillWalk = true;
     hintsDraft.implicitSkillSlug = implicitMatch.skillSlug;
+  }
+  if (
+    hintsDraft.wantsImplicitSkillWalk
+    && (
+      hintsDraft.wantsProjectTaskList
+      || hintsDraft.wantsTeamTaskList
+      || hintsDraft.wantsTemporalTodos
+      || isScopedTaskListQuery(text)
+      || (TASK_NOUN_RE.test(text) && !hintsDraft.wantsExplicitSkillWalk)
+    )
+  ) {
+    hintsDraft.wantsImplicitSkillWalk = false;
+    hintsDraft.implicitSkillSlug = null;
+  }
+  if (
+    hintsDraft.directAnswerKind !== null
+    && hintsDraft.directAnswerKind !== 'process_critique'
+    && (
+      hintsDraft.wantsProjectTaskList
+      || hintsDraft.wantsTeamTaskList
+      || hintsDraft.wantsTemporalTodos
+      || isScopedTaskListQuery(text)
+      || isMemorySearchRetryCommand(text)
+    )
+  ) {
+    hintsDraft.directAnswerKind = null;
+    hintsDraft.skipMemoryTools = false;
   }
   return hintsDraft;
 }
@@ -1164,6 +1197,11 @@ export function coerceRecallIfTaskListQuery(intent: GhampusIntent, msg: string):
   }
   if (intent.action !== 'remember' && intent.action !== 'edit') return intent;
   if (intent.action === 'edit') return intent;
+  if (intent.action === 'remember' && !intent.content?.trim()) {
+    if (hasExplicitSaveVerb(msg) || stripMultilingualSavePhrasePrefix(msg).matched) {
+      return intent;
+    }
+  }
   if (isSaveConfirmationQuestion(msg)) return { action: 'recall' };
   if (wouldSaveQuestionTextAsContent(msg, intent.content)) return { action: 'recall' };
   if (hasExplicitSaveVerb(msg)) return intent;

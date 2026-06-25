@@ -322,6 +322,55 @@ export function buildThinRecallGroundingBlock(): string {
   return `THIN RECALL WARNING: Your memory search found little on this topic — do NOT invent setup steps, product features, URLs, dates, or milestones. Say honestly what is missing from memory and suggest the user save notes or try a more specific recall/search query.`;
 }
 
+/** Advice/decision queries — attested memory overrides general-knowledge defaults. */
+export function buildAdviceRecallGroundingBlock(): string {
+  return `ADVICE MODE: The user asked for advice, a recommendation, or a decision. Attested memory in <cortex_data> overrides general knowledge and common-sense defaults.
+- If memory states a constraint or SOP (e.g. car must be on-site, rinse before soap), recommend ONLY what matches attested facts — even when common sense suggests otherwise.
+- If attested memory is silent on their specific question, say you found nothing saved on this — do NOT invent procedures, preferences, or "based on your memory" claims.
+- Never cite attested memory unless the fact appears verbatim in <cortex_data>.`;
+}
+
+const FALSE_ATTESTED_CLAIM_RES: RegExp[] = [
+  /\b(?:based on|according to|from|in)\s+(?:your\s+)?(?:attested\s+)?(?:memory|memories|cortex|saved notes?|what you saved)\b[^.!?\n]*/gi,
+  /\b(?:I found in your cortex|your attested memory shows|what you saved says)\b[^.!?\n]*/gi,
+  /\b(?:you(?:'ve| have) saved|you told me|you wrote down)\b[^.!?\n]*/gi,
+];
+
+export type RecallHonestyOpts = {
+  recallContext?: string;
+  isAdviceQuery?: boolean;
+  recallHasHits?: boolean;
+};
+
+/** Strip fabricated attested-memory claims when recall was empty or thin. */
+export function applyRecallHonestyGuardrails(text: string, opts: RecallHonestyOpts = {}): string {
+  let out = text.trim();
+  if (!out) return out;
+
+  const ctx = (opts.recallContext ?? '').trim();
+  const thin = !ctx || ctx.length < 48;
+  const noHits = opts.recallHasHits === false;
+
+  if (!thin && !noHits) return out;
+
+  for (const re of FALSE_ATTESTED_CLAIM_RES) {
+    out = out.replace(re, '').trim();
+  }
+  out = out.replace(/^[,.\s:;—–-]+|[,.\s:;—–-]+$/g, '').trim();
+
+  if (!out || out.length < 8) {
+    return opts.isAdviceQuery
+      ? "I didn't find anything saved in your cortex on this — I can't recommend a specific approach without your notes on this topic."
+      : "I didn't find anything saved in your cortex on this topic.";
+  }
+
+  if (opts.isAdviceQuery && !/\b(?:don't have|do not have|couldn't find|nothing saved|no attested|not in your memory|didn't find)\b/i.test(out)) {
+    out = `I didn't find anything saved in your cortex on this — ${out.charAt(0).toLowerCase()}${out.slice(1)}`;
+  }
+
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /** Whether structured recall + dig_deeper still returned sparse context. */
 export function isThinRecallContext(
   structuredNodeCount: number,

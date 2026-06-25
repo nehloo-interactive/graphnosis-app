@@ -144,14 +144,14 @@ export function extractFragmentQuoteContext(
   fullText: string,
   quoted: string,
   startOffset: number,
-): { before?: string; after?: string } {
+): Pick<FragmentQuoteLocateOpts, 'contextBefore' | 'contextAfter'> {
   const idx = findFragmentQuoteOffset(fullText, quoted, { startOffset });
   if (idx < 0) return {};
-  const before = fullText.slice(Math.max(0, idx - FRAGMENT_CONTEXT_WINDOW), idx);
-  const after = fullText.slice(idx + quoted.length, idx + quoted.length + FRAGMENT_CONTEXT_WINDOW);
+  const contextBefore = fullText.slice(Math.max(0, idx - FRAGMENT_CONTEXT_WINDOW), idx);
+  const contextAfter = fullText.slice(idx + quoted.length, idx + quoted.length + FRAGMENT_CONTEXT_WINDOW);
   return {
-    ...(before ? { before } : {}),
-    ...(after ? { after } : {}),
+    ...(contextBefore ? { contextBefore } : {}),
+    ...(contextAfter ? { contextAfter } : {}),
   };
 }
 

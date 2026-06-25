@@ -63,8 +63,8 @@ const STATIC_IMPLICIT_ROUTES: StaticRoute[] = [
   {
     skillSlug: 'runtime-diagnosis',
     patterns: [
-      /\b(sidecar|mcp|boot|startup)\b[\s\S]{0,32}\b(broken|fail|crash|error|won't|wont|not starting)\b/i,
-      /\b(app|sidecar|mcp)\b[\s\S]{0,24}\b(won't start|not starting|doesn't start|failed to start)\b/i,
+      /\b(sidecar|mcp|boot|startup)\b[\s\S]{0,32}\b(broken|fail|crash|error|won't|wont|not start(?:ing)?|will not start)\b/i,
+      /\b(app|sidecar|mcp)\b[\s\S]{0,24}\b(won't start|will not start|not starting|doesn't start|failed to start)\b/i,
     ],
   },
   {

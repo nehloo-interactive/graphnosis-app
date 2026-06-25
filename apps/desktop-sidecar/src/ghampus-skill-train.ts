@@ -10,6 +10,7 @@ import {
   normalizeSkillDisplayLabel,
   skillMatchesFilter,
 } from './ghampus-recall-format.js';
+import { sanitizeGhampusResponse } from './ghampus-glossary.js';
 import {
   askGhampusClarification,
   formatMcpErrorForUser,
@@ -311,7 +312,7 @@ export async function runGhampusSkillPreview(
       tool: 'walk_skill',
       preview: displayLabel,
     });
-    await runner.emitGhampusMsg(body.slice(0, 12000));
+    await runner.emitGhampusMsg(sanitizeGhampusResponse(body.slice(0, 12000)));
     if (runner.emitSkillPreviewCard && shouldOfferSkillImproveCard(originalText)) {
       const licensed = runner.isSkillTrainingLicensed
         ? await runner.isSkillTrainingLicensed()

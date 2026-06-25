@@ -17,6 +17,8 @@ import {
   detectLikelyHallucination,
   formatGroundingVerifyFeedback,
   GHAMPUS_GROUNDING_RULES_BLOCK,
+  applyRecallHonestyGuardrails,
+  type RecallHonestyOpts,
 } from './ghampus-grounding.js';
 import { isHowToQuestionText, wantsBriefAnswerText, matchResponseLanguageInstruction, buildRomanianContentRulesBlock, buildResponseLanguageRulesBlock, answerLanguageMismatchUserQuery, shouldDefaultBriefAnswer } from './ghampus-language.js';
 import {
@@ -33,6 +35,8 @@ export type FinalizeAnswerHints = {
   queryHints?: GhampusQueryHints;
   /** Attested recall sections — used to verify answers stay grounded. */
   recallContext?: string;
+  /** Whether recall-family tools returned attested hits — for honesty guardrails. */
+  recallHasHits?: boolean;
 };
 
 const RAW_DUMP_HEADER_RE = /^Found \*\*\d+\*\* matching memor/i;
@@ -509,12 +513,19 @@ function applyFinalFormatting(text: string, hints?: FinalizeGhampusAnswerOpts): 
     stepKey: 'format',
   });
   const formatted = sanitizeGhampusResponse(stripRecallAuditTrail(text));
+  const honestyOpts: RecallHonestyOpts = {};
+  if (hints?.recallContext !== undefined) honestyOpts.recallContext = hints.recallContext;
+  if (hints?.queryHints?.wantsAdviceRecall !== undefined) {
+    honestyOpts.isAdviceQuery = hints.queryHints.wantsAdviceRecall;
+  }
+  if (hints?.recallHasHits !== undefined) honestyOpts.recallHasHits = hints.recallHasHits;
+  const honest = applyRecallHonestyGuardrails(formatted, honestyOpts);
   emitFinalizeTrace(hints, {
     label: 'Formatting answer',
     status: 'ok',
     stepKey: 'format',
   });
-  return formatted;
+  return honest;
 }
 
 async function polishGhampusAnswerDraft(

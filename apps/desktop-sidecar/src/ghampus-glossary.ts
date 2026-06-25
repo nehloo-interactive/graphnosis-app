@@ -70,6 +70,26 @@ const LEGACY_SKILL_SECTION_RES: Array<{ re: RegExp; heading: string }> = [
   { re: /^GOALS:\s*$/gim, heading: '## Goals' },
 ];
 
+/** Internal skill-walk / dispatch markers that must never appear in chat replies. */
+const SKILL_INTERNAL_MARKER_RES: RegExp[] = [
+  /@loop(?:\s*:\s*\d+|\s+max=\d+)/gi,
+  /\[(?:verify|dispatch-safe|requires|produces):\s*[^\]]+\]/gi,
+  /^\s*[◆▹✗✓⚡]\s*(?:Prerequisites|Trigger|Produces|Success|Out of scope):.*$/gim,
+  /^\s*PROOF RULE:.*$/gim,
+  /^\s*ENGRAM MAP\b.*$/gim,
+  /^\s*walk_skill_structured\b.*$/gim,
+  /^\s*\[gll[·\s][^\]]+\]\s*$/gim,
+  /^\s*\[gnn[·\s][^\]]+\]\s*$/gim,
+];
+
+function stripSkillInternalMarkers(text: string): string {
+  let out = text;
+  for (const re of SKILL_INTERNAL_MARKER_RES) {
+    out = out.replace(re, '');
+  }
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 type CodePlaceholder = { token: string; value: string };
 
 /** Preserve fenced and inline code while transforming surrounding prose. */
@@ -156,6 +176,7 @@ export function sanitizeGhampusResponse(text: string): string {
   }
   out = out.replace(MCP_WRONG_EXPANSION_RE, 'MCP (Model Context Protocol)');
   out = out.replace(WRONG_MCP_PHRASE_RE, 'Model Context Protocol');
+  out = stripSkillInternalMarkers(out);
   out = stripLeakedSourceRefsFromUserText(out);
   out = stripInternalRecallWireFormat(out);
   out = formatGhampusReadableMarkdown(out);

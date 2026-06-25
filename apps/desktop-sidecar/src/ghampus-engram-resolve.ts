@@ -10,6 +10,7 @@ export const MAX_ENGRAM_HINT_CHARS = 60;
 const ENGRAM_CONTENT_SPLIT_RES = [
   /\s+that\s+/i,
   /\s+c[aă]\s+/i,
+  /\s+to\s+/i,
   /\s*:\s+/,
   /\s+[–—-]\s+/,
   /\n/,
@@ -204,7 +205,9 @@ export function parseRememberInToPattern(afterVerb: string): { engram: string; c
 
 /** Parse "CONTENT to/in ENGRAM" — engram at end. */
 export function parseRememberContentFirstPattern(afterVerb: string): { engram: string; content: string } | null {
-  const m = afterVerb.trim().match(
+  const rest = afterVerb.trim();
+  if (ENGRAM_PREP_RE.test(rest)) return null;
+  const m = rest.match(
     /^(.+?)\s+(?:to|in|into|în|in)\s+(?:(?:my|the|meu|mea)\s+)?["']?([^"'\n]+?)["']?\s*(?:engram)?$/i,
   );
   if (!m?.[1]?.trim() || !m[2]?.trim()) return null;

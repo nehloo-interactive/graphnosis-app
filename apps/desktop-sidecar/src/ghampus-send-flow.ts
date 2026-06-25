@@ -23,6 +23,7 @@ import {
   keywordIntent,
   LLM_PLACEHOLDERS,
   parseClassifyIntent,
+  parseEditIntent,
   parseSkillTrainIntent,
   questionIntent,
   recallContextMatchesQuery,
@@ -53,6 +54,7 @@ import {
   fetchGhampusLlmStatus,
   formatGhampusIdentityDirectAnswer,
   formatModelStatusDirectAnswer,
+  getThreadContext,
   rewriteGhampusSelfReferenceFirstPerson,
   resolveGhampusAppVersion,
 } from './ghampus-direct-answer.js';
@@ -80,6 +82,7 @@ import {
   formatRecentIngestsSection,
   formatSkillList,
   filterSkillsByKeyword,
+  normalizeSkillFilterKeyword,
   looksGroupedResponse,
   normalizeSkillDisplayLabel,
   parseRecentIngestMcpText,
@@ -99,8 +102,11 @@ import {
   buildGhampusBrevityRulesBlock,
   buildThinRecallGroundingBlock,
   isThinRecallContext,
+  buildAdviceRecallGroundingBlock,
+  applyRecallHonestyGuardrails,
 } from './ghampus-grounding.js';
 import {
+  buildInsightsEmptyGuidance,
   buildResponseLanguageRulesBlock,
   buildRomanianContentRulesBlock,
   detectUserMessageLanguage,
@@ -153,6 +159,7 @@ import {
 import { enqueueGhampusSendTurn } from './ghampus-send-queue.js';
 import {
   GHAMPUS_TURN_TIMEOUT_MS,
+  GHAMPUS_LLM_TIMEOUT_MS,
   ghampusTimeoutUserMessage,
   isGhampusTimeoutError,
   llmCompleteBounded,
@@ -568,6 +575,8 @@ export async function runGhampusSend(
     let turnSuggestionMeta: TurnSuggestionMeta = {};
     let recentUserTextsForSuggest: string[] = [];
 
+    let queryText = text;
+
     const emitGhampusMsg = async (responseText: string) => {
       finishPlanning();
       const trace = buildTraceSnapshot();
@@ -794,6 +803,14 @@ export async function runGhampusSend(
         .filter(Boolean)
         .slice(-6);
 
+      const { isMemorySearchRetryCommand } = await import('./ghampus-language.js');
+      if (isMemorySearchRetryCommand(text)) {
+        const threadCtx = getThreadContext(histForHints);
+        if (threadCtx?.priorUserQuestion?.trim()) {
+          queryText = threadCtx.priorUserQuestion.trim();
+        }
+      }
+
       // ── Pending clarification ───────────────────────────────────────────
       const pendingClar = state.getPendingClarification();
       if (pendingClar) {
@@ -925,7 +942,9 @@ export async function runGhampusSend(
             '- `/preview [skill name]` — view a skill SOP (markdown)\n' +
             '- `/walk [skill name]` — alias for `/preview`\n' +
             '- `/train [skill name]` — retrain a skill (Pro)\n' +
-            '- `/forget` — tips for editing or removing memories\n' +
+            '- `/forget [topic]` — find memories to remove\n' +
+            '- `/compare [topic]` — compare sources for contradictions\n' +
+            '- `/edit [correction]` — propose a memory correction\n' +
             '- `/insights` — preview Foresight insights in chat\n' +
             '- `/help` — show this list',
           );
@@ -941,7 +960,7 @@ export async function runGhampusSend(
         }
         if (cmd === 'skills') {
           const res = await ghampusTool('list_skills', {}) as { skills?: Array<{ label: string; vitality?: number; trainedAt?: string }> };
-          const keyword = argsStr || null;
+          const keyword = normalizeSkillFilterKeyword(argsStr || null);
           const skills = filterSkillsByKeyword(res.skills ?? [], keyword);
           await emitGhampusMsg(formatSkillList(skills, text, keyword));
           return;
@@ -991,10 +1010,160 @@ export async function runGhampusSend(
           return;
         }
         if (cmd === 'forget') {
+          if (!argsStr) {
+            const engList = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string }> };
+            const names = (engList.engrams ?? []).slice(0, 8).map((e) => `**${e.displayName}**`).join(', ');
+            await emitGhampusMsg(
+              '**Forget a memory** — describe what to remove, optionally scoped to an engram:\n\n'
+              + '- `/forget washing a car` — search across all engrams\n'
+              + '- `/forget dashboard todo about launch` — narrow by topic\n'
+              + '- Or open **Brain → Sources** for surgical node deletion\n\n'
+              + (names ? `Your engrams include: ${names}.` : 'Create an engram first if you have none yet.'),
+            );
+            return;
+          }
+          const forgetQ = argsStr.trim();
+          const engList = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string }> };
+          const scoped = extractEngramScopeFromQuery(forgetQ, (engList.engrams ?? []).map((e) => e.graphId));
+          const structRes = await ghampusTool('recall_structured', {
+            query: forgetQ,
+            maxNodes: 15,
+            ...(scoped.length === 1 ? { only_engrams: scoped } : {}),
+          }) as { nodes?: StructuredRecallNode[] };
+          const nodes = filterStructuredRecallNodes(structRes?.nodes ?? [], forgetQ);
+          if (nodes.length === 0) {
+            await emitGhampusMsg(
+              `No matching memories for **${forgetQ}**. Try a shorter phrase, name the engram, or open **Brain → Sources**.`,
+            );
+            return;
+          }
+          const preview = nodes.slice(0, 5).map((n, i) => `${i + 1}. ${(n.text ?? '').trim().slice(0, 120)}`).join('\n');
           await emitGhampusMsg(
-            'To delete or edit memories, open **Brain** or **Sources** for the engram, '
-            + 'or use **Check-in** for duplicates. You can also ask me to **recall** a topic first to find the right source.',
+            `Found **${nodes.length}** candidate${nodes.length === 1 ? '' : 's'} to forget:\n\n${preview}\n\n`
+            + 'Open **Brain → Sources** or **Check-in** to remove nodes, or tell me which number to target.',
           );
+          return;
+        }
+        if (cmd === 'edit') {
+          if (!argsStr) {
+            await emitGhampusMsg(
+              '**Edit memory** — describe the correction in plain language:\n\n'
+              + '- `/edit washing a car requires rinse before soap` — I will propose a diff for your approval\n'
+              + '- Add `in ENGRAM` when you know the target: `/edit in dashboard …`\n\n'
+              + 'Nothing is written until you approve the diff in **Check-in**.',
+            );
+            return;
+          }
+          const editParsed = parseEditIntent(argsStr) ?? { correction: argsStr, engram: null };
+          const engList = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string; tier: string }> };
+          const allEngrams = engList.engrams ?? [];
+          let graphId: string | undefined;
+          if (editParsed.engram) {
+            const resolved = resolveEngramFromUserHint(editParsed.engram, allEngrams);
+            if (resolved) graphId = resolved.graphId;
+          }
+          if (!graphId) {
+            const scoped = extractEngramScopeFromQuery(editParsed.correction, allEngrams.map((e) => e.graphId));
+            if (scoped.length === 1) graphId = scoped[0];
+          }
+          if (!graphId && allEngrams.length > 1) {
+            await emitGhampusMsg(
+              'Which **engram** should I edit? Add `in ENGRAM` to your correction, or name the engram in the text '
+              + `(e.g. \`/edit in dashboard …\`). Known engrams: ${allEngrams.slice(0, 6).map((e) => e.displayName).join(', ')}.`,
+            );
+            return;
+          }
+          try {
+            const editRes = await ghampusTool('edit', {
+              correction: editParsed.correction,
+              ...(graphId ? { graphId } : {}),
+            }) as { rawText?: string };
+            const raw = editRes.rawText ?? '';
+            let diffId: string | null = null;
+            let changeCount = 0;
+            try {
+              const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? '{}') as {
+                diffId?: string;
+                preview?: { edits?: unknown[]; adds?: unknown[] };
+              };
+              diffId = parsed.diffId ?? null;
+              changeCount = (parsed.preview?.edits?.length ?? 0) + (parsed.preview?.adds?.length ?? 0);
+            } catch { /* prose fallback */ }
+            if (diffId) {
+              await emitGhampusMsg(
+                `Proposed **${changeCount || 'a'}** change${changeCount === 1 ? '' : 's'} — review and approve in **Check-in** `
+                + `(diff \`${diffId}\`). Nothing is saved until you approve.`,
+              );
+            } else {
+              await emitGhampusMsg(
+                'Edit proposal ready — open **Check-in** to review the diff. Nothing is saved until you approve.',
+              );
+            }
+          } catch (e) {
+            await emitGhampusMsg(formatMcpErrorForUser(e instanceof Error ? e.message : String(e), 'Could not propose edit'));
+          }
+          return;
+        }
+        if (cmd === 'compare') {
+          if (!argsStr) {
+            await emitGhampusMsg(
+              '**Compare sources** — give a topic or two source names:\n\n'
+              + '- `/compare car wash` — find sources and check for contradictions\n'
+              + '- Or open **Foresight → Memory Integrity** for the full compare workbench (free in-app).',
+            );
+            return;
+          }
+          const topic = argsStr.trim();
+          const engList = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string }> };
+          const scoped = extractEngramScopeFromQuery(topic, (engList.engrams ?? []).map((e) => e.graphId));
+          const findRes = await ghampusTool('find_source', { content: topic, limit: 6 }) as {
+            sources?: Array<{ sourceId?: string; graphId?: string; label?: string; engramName?: string }>;
+          };
+          const sources = (findRes.sources ?? []).filter((s) => s.sourceId && s.graphId);
+          if (sources.length < 2) {
+            await emitGhampusMsg(
+              `Need at least **two sources** about "${topic}" to compare. `
+              + `${sources.length === 1 ? 'Only one match so far — save or ingest another doc on this topic, or ' : ''}`
+              + 'try **Foresight → Memory Integrity → Compare** for manual source pick.',
+            );
+            return;
+          }
+          const byEngram = new Map<string, typeof sources>();
+          for (const s of sources) {
+            const gid = s.graphId!;
+            if (!byEngram.has(gid)) byEngram.set(gid, []);
+            byEngram.get(gid)!.push(s);
+          }
+          let compared = false;
+          for (const [graphId, group] of byEngram) {
+            if (group.length < 2) continue;
+            const a = group[0]!;
+            const b = group[1]!;
+            try {
+              const cmp = await ghampusTool('compare_sources', {
+                engram: graphId,
+                sourceA: a.sourceId!,
+                sourceB: b.sourceId!,
+              }) as { rawText?: string };
+              const body = (cmp.rawText ?? '').trim().slice(0, 4000);
+              await emitGhampusMsg(
+                body
+                  ? `**Compare: ${topic}** (${a.label ?? a.sourceId} vs ${b.label ?? b.sourceId})\n\n${body}`
+                  : `Compared **${a.label ?? 'source A'}** and **${b.label ?? 'source B'}** — no contradictions flagged.`,
+              );
+              compared = true;
+              break;
+            } catch (e) {
+              await emitGhampusMsg(formatMcpErrorForUser(e instanceof Error ? e.message : String(e), 'Compare failed'));
+              return;
+            }
+          }
+          if (!compared) {
+            await emitGhampusMsg(
+              `Found sources in different engrams — pick two in **Foresight → Memory Integrity → Compare**, `
+              + `or scope your query to one engram (e.g. \`/compare dashboard car wash\`).`,
+            );
+          }
           return;
         }
         if (cmd === 'save') {
@@ -1041,10 +1210,7 @@ export async function runGhampusSend(
           const INSIGHTS_PREVIEW_N = 5;
           const all = deps.brainEngine?.getInsights() ?? [];
           if (all.length === 0) {
-            await emitGhampusMsg(
-              'No pending **Foresight insights** yet — patterns surface as the brain loop runs '
-              + '(about every 6 hours when the Local LLM is on). Open **Foresight → Insights** to check later.',
-            );
+            await emitGhampusMsg(buildInsightsEmptyGuidance());
             return;
           }
           finishPlanning();
@@ -1095,7 +1261,7 @@ export async function runGhampusSend(
       }
 
       // ── Intent classification ─────────────────────────────────────────────
-      const keywordResult = questionIntent(text) ?? keywordIntent(text);
+      const keywordResult = questionIntent(queryText) ?? keywordIntent(queryText);
       let intent: GhampusIntent = keywordResult ?? { action: 'recall' };
       let llmConfidence: number | null = null;
 
@@ -1115,7 +1281,7 @@ export async function runGhampusSend(
               const engramList = (engList.engrams ?? []).map((e) => `${e.graphId}="${e.displayName}"`).join(', ');
               const classifyRaw = await llmCompleteBounded(llm, {
                 system: buildClassifySystemPrompt(engramList, recentContext),
-                user: text,
+                user: queryText,
                 signal: turnSignal,
               });
               throwIfCancelled();
@@ -1131,7 +1297,7 @@ export async function runGhampusSend(
         }
       }
 
-      const hints = detectGhampusQueryHints(text, [], { history: histForHints });
+      const hints = detectGhampusQueryHints(queryText, [], { history: histForHints });
       if (!hints.implicitSkillSlug) {
         const triggerLines = loadDispatchTriggerLines(deps.host, deps.skillTrainer);
         let skillsForFuzzy: GhampusListedSkill[] = [];
@@ -1141,13 +1307,13 @@ export async function runGhampusSend(
             skillsForFuzzy = skillListRes.skills ?? [];
           } catch { /* optional fuzzy path */ }
         }
-        const implicitMatch = resolveImplicitSkillFull(text, hints, triggerLines, skillsForFuzzy);
+        const implicitMatch = resolveImplicitSkillFull(queryText, hints, triggerLines, skillsForFuzzy);
         if (implicitMatch) {
           hints.wantsImplicitSkillWalk = true;
           hints.implicitSkillSlug = implicitMatch.skillSlug;
         }
       }
-      intent = finalizeGhampusIntent(text, intent, hints);
+      intent = finalizeGhampusIntent(queryText, intent, hints);
 
       if (intent.action === 'remember') {
         turnSuggestionMeta = { skip: true, alreadySaved: true };
@@ -1192,9 +1358,60 @@ export async function runGhampusSend(
         return;
       }
 
+      if (intent.action === 'edit') {
+        turnSuggestionMeta = { skip: true, skipReason: 'clarification' };
+        const editParsed = parseEditIntent(queryText) ?? {
+          correction: intent.correction,
+          engram: intent.engram,
+        };
+        const engList = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string; tier: string }> };
+        const allEngrams = engList.engrams ?? [];
+        let graphId: string | undefined;
+        if (editParsed.engram) {
+          const resolved = resolveEngramFromUserHint(editParsed.engram, allEngrams);
+          if (resolved) graphId = resolved.graphId;
+        }
+        if (!graphId) {
+          const scoped = extractEngramScopeFromQuery(editParsed.correction, allEngrams.map((e) => e.graphId));
+          if (scoped.length === 1) graphId = scoped[0];
+        }
+        if (!graphId && allEngrams.length > 1) {
+          await emitGhampusMsg(
+            'Which **engram** should I edit? Mention it in your correction (`in dashboard …`) '
+            + `or reply with the engram name. Known: ${allEngrams.slice(0, 6).map((e) => e.displayName).join(', ')}.`,
+          );
+          return;
+        }
+        try {
+          const editRes = await ghampusTool('edit', {
+            correction: editParsed.correction,
+            ...(graphId ? { graphId } : {}),
+          }) as { rawText?: string };
+          const raw = editRes.rawText ?? '';
+          let diffId: string | null = null;
+          let changeCount = 0;
+          try {
+            const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? '{}') as {
+              diffId?: string;
+              preview?: { edits?: unknown[]; adds?: unknown[] };
+            };
+            diffId = parsed.diffId ?? null;
+            changeCount = (parsed.preview?.edits?.length ?? 0) + (parsed.preview?.adds?.length ?? 0);
+          } catch { /* prose fallback */ }
+          await emitGhampusMsg(
+            diffId
+              ? `Proposed **${changeCount || 'a'}** change${changeCount === 1 ? '' : 's'} — approve in **Check-in** (\`${diffId}\`).`
+              : 'Edit proposal ready in **Check-in** — nothing is saved until you approve.',
+          );
+        } catch (e) {
+          await emitGhampusMsg(formatMcpErrorForUser(e instanceof Error ? e.message : String(e), 'Could not propose edit'));
+        }
+        return;
+      }
+
       if (intent.action === 'train_skill') {
         turnSuggestionMeta = { skip: true, skipReason: 'skill_train' };
-        const trainParsed = parseSkillTrainIntent(text) ?? {
+        const trainParsed = parseSkillTrainIntent(queryText) ?? {
           skillName: intent.skillName,
           targetEngram: intent.targetEngram,
           emptyRecall: intent.emptyRecall,
@@ -1230,7 +1447,7 @@ export async function runGhampusSend(
         ?.text
         ?.trim()
         .slice(0, 200);
-      let scopedEngrams = extractEngramScopeFromQuery(text, allEngramIds);
+      let scopedEngrams = extractEngramScopeFromQuery(queryText, allEngramIds);
       if (scopedEngrams.length === 0) {
         const priorScopeText = [priorUserQuestion, priorGhampusSnippet].filter(Boolean).join(' ');
         if (priorScopeText) {
@@ -1238,7 +1455,7 @@ export async function runGhampusSend(
         }
       }
       const engramListStr = allEngrams.map((e) => `${e.graphId}="${e.displayName}"`).join(', ');
-      const plan = await planGhampusToolsWithLlm(text, hints, llm, {
+      const plan = await planGhampusToolsWithLlm(queryText, hints, llm, {
         scopedEngrams,
         allEngramIds,
         crossSearchEngramIds,
@@ -1298,9 +1515,13 @@ export async function runGhampusSend(
         }
         const directStepId = stableTraceStepId('direct');
         emitTrace({ stepId: directStepId, status: 'running', label: traceLabel });
-        const system = buildDirectAnswerSystemPrompt(kind, text, injectedFacts);
-        const userPrompt = buildDirectAnswerUserPrompt(text, recentHistory, kind);
-        let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
+        const system = buildDirectAnswerSystemPrompt(kind, queryText, injectedFacts);
+        const userPrompt = buildDirectAnswerUserPrompt(queryText, recentHistory, kind);
+        let answer = await llmCompleteBounded(llm, {
+          system,
+          user: userPrompt,
+          signal: turnSignal,
+        }, kind === 'general_knowledge_offline' || kind === 'chitchat' ? 45_000 : GHAMPUS_LLM_TIMEOUT_MS).catch(() => null);
         throwIfCancelled();
         answer = sanitizeResponse(answer ?? '');
         if (kind === 'ghampus_identity') {
@@ -1310,7 +1531,12 @@ export async function runGhampusSend(
           }
         }
         emitTrace({ stepId: directStepId, status: 'ok', label: traceLabel });
-        await emitGhampusMsg(answer.trim() || "I couldn't answer that without searching memory — try rephrasing.");
+        await emitGhampusMsg(
+          answer.trim()
+            || (getThreadContext(histForHints)
+              ? "I couldn't answer from the chat thread alone. Say **search memory** or repeat your question — I'll search your cortex."
+              : "I couldn't answer that without searching memory. Try your question again with the topic or engram name."),
+        );
         return;
       }
 
@@ -1365,7 +1591,7 @@ export async function runGhampusSend(
 
       if (plan.earlyRoute === 'skill-train') {
         turnSuggestionMeta = { skip: true, skipReason: 'skill_train' };
-        const trainParsed = parseSkillTrainIntent(text);
+        const trainParsed = parseSkillTrainIntent(queryText);
         if (trainParsed) {
           await runGhampusSkillTrain(
             trainParsed,
@@ -1469,7 +1695,7 @@ export async function runGhampusSend(
         }
       }
 
-      const phase1StructuredCount = countStructuredNodesFromResults(phase1Results, text);
+      const phase1StructuredCount = countStructuredNodesFromResults(phase1Results, queryText);
       const phase1RecallMetrics = extractRecallMetricsFromResults(phase1Results);
       appendPostRecallEscalation(
         plan,
@@ -1519,7 +1745,7 @@ export async function runGhampusSend(
         }
       }
 
-      const structuredFilterQuery = plan.recallContextQuery ?? text;
+      const structuredFilterQuery = plan.recallContextQuery ?? queryText;
       let structuredNodes: StructuredRecallNode[] = [];
       for (const r of allResults) {
         if (r.tool === 'recall_structured') {
@@ -1555,12 +1781,12 @@ export async function runGhampusSend(
         }
       }
 
-      const asksForRoles = hints.wantsPersonRole || /\brol(e|uri)\b/i.test(text);
+      const asksForRoles = hints.wantsPersonRole || /\brol(e|uri)\b/i.test(queryText);
 
       const obResult = allResults.find((r) => r.tool === 'recall_obligations');
       if (obResult) {
         const obData = obResult.result as { obligations?: Parameters<typeof formatObligationsAnswer>[0] };
-        const obAnswer = formatObligationsAnswer(obData?.obligations ?? [], text);
+        const obAnswer = formatObligationsAnswer(obData?.obligations ?? [], queryText);
         if (obAnswer) {
           await finalizeAndEmitGhampusMsg(obAnswer, {
             polishSource: 'formatter',
@@ -1572,7 +1798,7 @@ export async function runGhampusSend(
       }
 
       const formatterAnswer = tryFormatterFallback({
-        text,
+        text: queryText,
         hints,
         nodes: structuredNodes,
         asksForRoles,
@@ -1591,7 +1817,7 @@ export async function runGhampusSend(
 
       const { attested: attestedRaw } = splitAttestedInferred(primaryRecallRaw);
       const primaryRecall = cleanRecallPromptAttested(attestedRaw);
-      const recallContextQuery = plan.recallContextQuery ?? text;
+      const recallContextQuery = plan.recallContextQuery ?? queryText;
       const recallHasHits = hasRecallHitsFromResults(allResults);
       const recentIngestSources = (allResults.find((r) => r.tool === 'recent')?.result as { sources?: RecentIngestSource[] })?.sources ?? [];
       const hasRecentIngests = recentIngestSources.length > 0;
@@ -1663,23 +1889,26 @@ If attested memory does not address the thread topic, say what is missing — do
         ? `\n\n<cortex_data>\n${sections.join('\n\n')}\n</cortex_data>`
         : '';
 
-      const langBlock = buildResponseLanguageRulesBlock(text);
-      const roRules = buildRomanianContentRulesBlock(text);
+      const langBlock = buildResponseLanguageRulesBlock(queryText);
+      const roRules = buildRomanianContentRulesBlock(queryText);
       const thinRecallBlock = isThinRecallContext(structuredNodes.length, digDeeperRan)
         ? `\n${buildThinRecallGroundingBlock()}\n`
         : '';
-      const briefMode = shouldDefaultBriefAnswer(text, hints);
+      const adviceRecallBlock = hints.wantsAdviceRecall
+        ? `\n${buildAdviceRecallGroundingBlock()}\n`
+        : '';
+      const briefMode = shouldDefaultBriefAnswer(queryText, hints);
       const brevityBlock = buildGhampusBrevityRulesBlock({
         expanded: !briefMode,
-        simplePersonLookup: isSimplePersonLookupQuestion(text) || hints.wantsPersonRole,
-        howTo: isHowToQuestionText(text),
+        simplePersonLookup: isSimplePersonLookupQuestion(queryText) || hints.wantsPersonRole,
+        howTo: isHowToQuestionText(queryText),
       });
 
       const system = `You are Ghampus — the AI built into Graphnosis.
 
 ${GHAMPUS_DOMAIN_GLOSSARY_BLOCK}
 ${GHAMPUS_GROUNDING_RULES_BLOCK}
-${threadGroundingBlock}${roRules ? `\n${roRules}\n` : ''}${thinRecallBlock}
+${threadGroundingBlock}${roRules ? `\n${roRules}\n` : ''}${thinRecallBlock}${adviceRecallBlock}
 ${brevityBlock}
 
 ${langBlock}
@@ -1697,7 +1926,7 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
 
       const synthStepId = stableTraceStepId('synth');
       emitTrace({ stepId: synthStepId, status: 'running', label: 'Synthesizing answer with local LLM' });
-      let draft = await llmCompleteBounded(llm, { system, user: text, signal: turnSignal }).catch(() => null);
+      let draft = await llmCompleteBounded(llm, { system, user: queryText, signal: turnSignal }).catch(() => null);
       throwIfCancelled();
       draft = sanitizeResponse(draft ?? '');
       emitTrace({ stepId: synthStepId, status: 'ok', label: 'Synthesizing answer with local LLM' });
@@ -1718,8 +1947,8 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
 
       if (hasLeakedIDs(draft)) {
         const retry = await llmCompleteBounded(llm, {
-          system: system + `\n\nRewrite in ${responseLanguageLabel(detectUserMessageLanguage(text))} only — no IDs or pipe characters.`,
-          user: text,
+          system: system + `\n\nRewrite in ${responseLanguageLabel(detectUserMessageLanguage(queryText))} only — no IDs or pipe characters.`,
+          user: queryText,
           signal: turnSignal,
         }).catch(() => null);
         if (retry?.trim()) draft = sanitizeResponse(retry);
@@ -1728,7 +1957,7 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
       if (hints.wantsGrouped && !looksGroupedResponse(draft)) {
         const retry = await llmCompleteBounded(llm, {
           system: system + '\n\nReformat with markdown ### headings grouped as requested.',
-          user: text,
+          user: queryText,
           signal: turnSignal,
         }).catch(() => null);
         if (retry?.trim()) draft = sanitizeResponse(retry);
@@ -1738,9 +1967,9 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
       // Verify against the user's question — not buildRecallQueryForTool expansion tokens
       // (e.g. "role rol team echipa owners" added for search ranking need not appear in hits).
       const recallVerifyQuery = (() => {
-        const topic = extractTopicAboutFromQuery(text);
+        const topic = extractTopicAboutFromQuery(queryText);
         if (topic && (hints.wantsTopicAbout || hints.wantsDefinitional)) return topic;
-        return text;
+        return queryText;
       })();
       if (primaryRecall && !recallContextMatchesQuery(primaryRecall, recallVerifyQuery)) {
         recallDbg(
@@ -1749,14 +1978,21 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
         );
       }
 
-      const finalAnswer = await finalizeGhampusAnswerWithVerification(llm, text, draft, {
+      const finalAnswer = await finalizeGhampusAnswerWithVerification(llm, queryText, draft, {
         queryHints: hints,
         recallContext: recallContextForVerify,
+        recallHasHits,
         polishSource: 'synthesis',
         emitTrace: emitFinalizeTrace,
       });
 
-      await emitGhampusMsg(finalAnswer.trim() || draft);
+      const honestAnswer = applyRecallHonestyGuardrails(finalAnswer.trim() || draft, {
+        recallContext: recallContextForVerify,
+        isAdviceQuery: hints.wantsAdviceRecall,
+        recallHasHits,
+      });
+
+      await emitGhampusMsg(honestAnswer.trim() || draft);
     } catch (err) {
       if (isGhampusTurnCancelled(traceTurnId, turnSignal)
           || (err instanceof DOMException && err.name === 'AbortError')) {

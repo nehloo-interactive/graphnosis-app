@@ -1081,17 +1081,40 @@ export function skillSearchHaystack(skill: SkillListEntry) {
 export function skillMatchesFilter(skill: SkillListEntry, keyword: string | null) {
   if (!keyword) return true;
   const hay = skillSearchHaystack(skill);
-  const needle = keyword.toLowerCase();
+  const needle = normalizeSkillFilterKeyword(keyword)?.toLowerCase() ?? keyword.toLowerCase();
   if (hay.includes(needle)) return true;
+  const slugNeedle = needle.replace(/\s+/g, '-');
+  if (skillSlugVariants(skill.label).some((v) => v.includes(slugNeedle) || slugNeedle.includes(v))) {
+    return true;
+  }
   const tokens = needle.split(/\s+/).filter((t) => t.length >= 2);
   return tokens.length > 0 && tokens.every((t) => hay.includes(t));
 }
 export function filterSkillsByKeyword(skills: SkillListEntry[], keyword: string | null) {
-  if (!keyword) return skills;
-  return skills.filter((s) => skillMatchesFilter(s, keyword));
+  const normalized = normalizeSkillFilterKeyword(keyword);
+  if (!normalized) return skills;
+  return skills.filter((s) => skillMatchesFilter(s, normalized));
 }
 export function normalizeSkillDisplayLabel(label: string) {
   return label.replace(/^skill:\d+:/, "").replace(/-/g, " ").trim();
+}
+
+/** Strip trained-date suffixes and skill prefixes from user-entered skill filters. */
+export function normalizeSkillFilterKeyword(keyword: string | null): string | null {
+  if (!keyword?.trim()) return keyword;
+  let k = keyword.trim();
+  k = k.replace(/[-_]?\(trained-\d{4}-\d{2}-\d{2}\)\s*/gi, '').trim();
+  k = k.replace(/-(trained-\d{4}-\d{2}-\d{2})$/i, '').trim();
+  k = k.replace(/^skill:\d+:/i, '').trim();
+  k = k.replace(/[-_\s]+$/g, '').trim();
+  return k || keyword.trim();
+}
+
+function skillSlugVariants(label: string): string[] {
+  const display = normalizeSkillDisplayLabel(label).toLowerCase();
+  const compact = display.replace(/\s+/g, '-');
+  const withoutTrained = compact.replace(/-(trained-\d{4}-\d{2}-\d{2})$/i, '');
+  return [...new Set([display, compact, withoutTrained].filter(Boolean))];
 }
 export function formatSkillList(skills: SkillListEntry[], query: string, keyword: string | null) {
   const fmt = formatterStrings(query);
@@ -1178,7 +1201,7 @@ export function parseRecentIngestMcpText(rawText: string): RecentIngestSource[] 
   for (const line of rawText.split('\n')) {
     if (!line.startsWith('•')) continue;
     const withIds = line.match(
-      /^•\s+(\S+)\s+\[([^\]]+)\]\s+(.+?)\s+\(([^)]+)\)\s+\|\s+graph:\s+(\S+)\s+\|\s+id:\s+(\S+)\s*$/,
+      /^•\s+(\S+)\s+\[([^\]]+)\]\s+(.+?)\s+\(([^)]+)\)\s+\|\s+graph:\s+(\S+)\s+\|\s+id:\s+(.+)\s*$/,
     );
     if (withIds) {
       const label = stripInternalSourceRefPrefix(withIds[3].trim());

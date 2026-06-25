@@ -160,10 +160,14 @@ export function resolveComposeSaveEngramHint(
   text: string,
   keyword: ReturnType<typeof keywordIntent>,
 ): string | null {
-  const parsed = parseEngramHintFromText(text);
   const afterVerb = stripLeadingVerb(text.trim());
   const usesInToLeading = /^(?:in|to|into|în|in)\s+/i.test(afterVerb);
-  if (usesInToLeading && parsed) return parsed;
+  if (usesInToLeading) {
+    const prep = afterVerb.match(/^(?:in|to|into|în|in)\s+(?:(?:my|the|meu|mea)\s+)?(.+)$/i);
+    const segment = prep?.[1]?.trim();
+    if (segment) return segment.toLowerCase();
+  }
+  const parsed = parseEngramHintFromText(text);
   if (keyword?.action === 'remember' && keyword.engram) {
     return keyword.engram.toLowerCase();
   }
@@ -367,7 +371,9 @@ export function detectComposePrimaryIntent(text: string): {
       create: { label: 'Creating engram', mcp: 'list_engrams' },
       train: { label: 'Training skill', mcp: 'train_skill' },
       preview: { label: 'Previewing skill', mcp: 'walk_skill_structured' },
-      forget: { label: 'Memory management', mcp: 'forget' },
+      walk: { label: 'Previewing skill', mcp: 'walk_skill_structured' },
+      forget: { label: 'Removing from memory', mcp: 'forget' },
+      skills: { label: 'Listing skills', mcp: 'list_skills' },
       insights: { label: 'Foresight insights', mcp: 'insights' },
     };
     const meta = slashMap[cmd];
@@ -384,6 +390,7 @@ export function detectComposePrimaryIntent(text: string): {
       };
     }
     if (meta) {
+      const rest = cmd === 'forget' ? t.slice(1 + cmd.length) : '';
       return {
         primaryIntent: cmd === 'compare' || cmd === 'insights' ? 'foresight' : cmd === 'train' || cmd === 'preview' ? 'skill' : 'slash',
         intentLabel: meta.label,
@@ -391,7 +398,7 @@ export function detectComposePrimaryIntent(text: string): {
         saveIntent: false,
         slashSave: false,
         slashCommand: cmd,
-        selectedEngramHint: null,
+        selectedEngramHint: cmd === 'forget' && rest.trim() ? parseEngramHintFromText(rest) : null,
       };
     }
     return { ...idle, primaryIntent: 'slash', intentLabel: 'Slash command', slashCommand: cmd };
@@ -487,6 +494,10 @@ export function detectComposePrimaryIntent(text: string): {
   }
 
   if (saveIntent) {
+    const rememberContent = keyword?.action === 'remember' ? keyword.content : '';
+    if (isVagueRememberContent(rememberContent || t.replace(/^\S+\s+/, ''))) {
+      return idle;
+    }
     const hint = resolveComposeSaveEngramHint(t, keyword);
     return {
       primaryIntent: 'save',
@@ -606,19 +617,10 @@ export async function buildGhampusComposeAssist(
   }));
 
   let selectedEngramHint = intent.selectedEngramHint;
-  if (selectedEngramHint && intent.saveIntent) {
-    selectedEngramHint = refinePartialEngramHint(selectedEngramHint, engramEntries);
-  }
-
   if (ctx.pinnedEngramGraphId && intent.saveIntent && allEngrams.some((e) => e.graphId === ctx.pinnedEngramGraphId)) {
-    const explicitHint = resolveComposeSaveEngramHint(text, keywordIntent(text));
-    const explicitRefined = explicitHint ? refinePartialEngramHint(explicitHint, engramEntries) : null;
-    const explicitResolved = explicitRefined
-      ? resolveEngramFromUserHint(explicitRefined, engramEntries)
-      : null;
-    if (!explicitResolved || explicitResolved.graphId === ctx.pinnedEngramGraphId) {
-      selectedEngramHint = ctx.pinnedEngramGraphId;
-    }
+    selectedEngramHint = ctx.pinnedEngramGraphId;
+  } else if (selectedEngramHint && intent.saveIntent) {
+    selectedEngramHint = refinePartialEngramHint(selectedEngramHint, engramEntries);
   }
 
   const resolvedSelected = resolveSelectedEngramFromHint(selectedEngramHint, allEngrams);
