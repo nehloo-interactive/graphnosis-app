@@ -13,6 +13,7 @@ import {
   type InsightPrimaryAction,
 } from './foresight-page';
 import { openMemoryIntegrityWorkbench } from './memory-integrity-workbench';
+import type { AttentionCounts } from './memory-integrity-workbench';
 import { ipcCall } from './ipc';
 import { escapeHtml, presEngramAttr, presSkillAttr, presSurfaceAttr, PRES_GHAMPUS_CHAT, PRES_GHAMPUS_PANELS } from './util';
 
@@ -28,6 +29,9 @@ export function initGhampus(): void {
   wireGhampusFragmentComments();
   wireGhampusControls();
   wireGhampusModelSelect();
+  document.addEventListener('graphnosis:attention-snooze', () => {
+    dismissProactiveCardInSession('attention', ATTENTION_NUDGE_ID);
+  });
   wireSkillMaintenanceSettings();
   wireReminderSettings();
   wireTipSettings();
@@ -1075,6 +1079,7 @@ type GhampusChatMessage =
   | { kind: 'proactive-card'; card: ProactiveCardPayload; ts: number }
   | { kind: 'tip'; tip: TipCardPayload; ts: number }
   | { kind: 'vitality-nudge'; nudge: VitalityNudgeCardPayload; ts: number }
+  | { kind: 'attention-nudge'; counts: AttentionCounts; ts: number }
   | { kind: 'memory-suggestion'; suggestion: MemorySuggestionCardPayload; ts: number }
   | { kind: 'recovery-nudge'; nudge: RecoveryNudgePayload; ts: number }
   | { kind: 'skill-preview-improve'; card: SkillPreviewImproveCardPayload; ts: number; turnId?: string }
@@ -1144,6 +1149,68 @@ interface VitalityNudgeCardPayload {
   nudgeKind: string;
   examplePrompt?: string;
   walkSkillLabel?: string;
+}
+
+const ATTENTION_NUDGE_ID = 'memory-integrity-queue';
+const ATTENTION_DISMISS_SIG_KEY = 'graphnosis:attention-dismissed-sig';
+
+function isAttentionSnoozed(counts: AttentionCounts): boolean {
+  try {
+    const sig = `${counts.corrections}:${counts.duplicates}:${counts.contradictions}`;
+    return sessionStorage.getItem(ATTENTION_DISMISS_SIG_KEY) === sig;
+  } catch {
+    return false;
+  }
+}
+
+function attentionNudgeBody(counts: AttentionCounts): string {
+  const parts: string[] = [];
+  if (counts.corrections > 0) parts.push(`${counts.corrections} correction${counts.corrections === 1 ? '' : 's'}`);
+  if (counts.contradictions > 0) parts.push(`${counts.contradictions} contradiction${counts.contradictions === 1 ? '' : 's'}`);
+  if (counts.duplicates > 0) parts.push(`${counts.duplicates} duplicate${counts.duplicates === 1 ? '' : 's'}`);
+  return parts.join(' · ') || 'items need review';
+}
+
+function renderAttentionNudgeCard(counts: AttentionCounts, ts: number): string {
+  const summary = escapeHtml(attentionNudgeBody(counts));
+  const correctionsBtn = counts.corrections > 0
+    ? `<button type="button" class="g-btn ghampus-attention-corrections">Corrections deck</button>`
+    : '';
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="ghampus-tip-card ghampus-attention-nudge-card" data-attention-nudge="1">
+        <div class="ghampus-tip-header">
+          <span class="ghampus-tip-badge" style="background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent);">Memory Integrity</span>
+          <span class="ghampus-tip-category">Needs attention</span>
+        </div>
+        <p class="ghampus-tip-title"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${counts.total} item${counts.total === 1 ? '' : 's'} waiting for you</p>
+        <p class="ghampus-tip-body"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${summary} — review and approve before anything is written to your cortex.</p>
+        <div class="ghampus-vitality-nudge-actions">
+          <button type="button" class="g-btn primary ghampus-attention-review">Review in Memory Integrity</button>
+          ${correctionsBtn}
+          ${renderCardDismissButton('ghampus-attention-dismiss', 'attention', ATTENTION_NUDGE_ID)}
+        </div>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(ts)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** Inject, update, or remove the Memory Integrity attention card in the Ghampus thread. */
+export function syncGhampusAttentionNudge(counts: AttentionCounts, visible: boolean): void {
+  ghampusThreadMessages = ghampusThreadMessages.filter((m) => m.kind !== 'attention-nudge');
+  document.querySelectorAll('.ghampus-thread-entry .ghampus-attention-nudge-card')
+    .forEach((el) => el.closest('.ghampus-thread-entry')?.remove());
+
+  if (!visible || counts.total <= 0 || isProactiveCardDismissed('attention', ATTENTION_NUDGE_ID) || isAttentionSnoozed(counts)) return;
+
+  const msg: GhampusChatMessage = { kind: 'attention-nudge', counts: { ...counts }, ts: Date.now() };
+  appendToThread(msg);
 }
 
 interface ProactiveCardPayload {
@@ -1662,6 +1729,8 @@ function renderChatMessage(msg: GhampusChatMessage): string {
       return renderTipCard(msg.tip, msg.ts);
     case 'vitality-nudge':
       return renderVitalityNudgeCard(msg.nudge, msg.ts);
+    case 'attention-nudge':
+      return renderAttentionNudgeCard(msg.counts, msg.ts);
     case 'memory-suggestion':
       return renderMemorySuggestionCard(msg.suggestion, msg.ts);
     case 'recovery-nudge':
@@ -1725,6 +1794,39 @@ function isProactiveCardDismissed(kind: string, id: string): boolean {
 
 function dismissProactiveCardInSession(kind: string, id: string): void {
   sessionDismissedProactiveCards.add(proactiveCardDismissKey(kind, id));
+  purgeGhampusThreadDismissed(kind, id);
+}
+
+function proactiveDismissIdForMessage(msg: GhampusChatMessage): { kind: string; id: string } | null {
+  switch (msg.kind) {
+    case 'memory-suggestion':
+      return { kind: 'memory-suggestion', id: msg.suggestion.id };
+    case 'tip':
+      return { kind: 'tip', id: msg.tip.tipId };
+    case 'vitality-nudge':
+      return { kind: 'vitality', id: msg.nudge.nudgeId };
+    case 'attention-nudge':
+      return { kind: 'attention', id: ATTENTION_NUDGE_ID };
+    case 'recovery-nudge':
+      return { kind: 'recovery', id: msg.nudge.graphId };
+    case 'proactive-card':
+      return { kind: 'proactive', id: msg.card.id };
+    default:
+      return null;
+  }
+}
+
+function shouldSkipGhampusThreadMessage(msg: GhampusChatMessage): boolean {
+  const dismiss = proactiveDismissIdForMessage(msg);
+  if (!dismiss) return false;
+  return isProactiveCardDismissed(dismiss.kind, dismiss.id);
+}
+
+function purgeGhampusThreadDismissed(kind: string, id: string): void {
+  ghampusThreadMessages = ghampusThreadMessages.filter((msg) => {
+    const dismiss = proactiveDismissIdForMessage(msg);
+    return !(dismiss && dismiss.kind === kind && dismiss.id === id);
+  });
 }
 
 function fillGhampusPrompt(text: string): void {
@@ -2902,6 +3004,8 @@ function dequeueProactiveCard(): void {
     : randBetweenMs(5, 30);
   nextCardAllowedAt = now + gapMs;
 
+  if (isProactiveCardDismissed('proactive', card.id)) return;
+
   const msg: GhampusChatMessage = { kind: 'proactive-card', card, ts: card.createdAt };
   appendToThread(msg);
 }
@@ -3053,8 +3157,25 @@ const GHAMPUS_THREAD_LOADING_HTML = `<div id="ghampus-thread-loading" class="gha
   <p class="ghampus-thread-empty-copy">Loading conversation…</p>
 </div>`;
 
+/** Ensure the centered message column exists (reconcile used to wipe #ghampus-thread). */
+function ensureGhampusChatMessagesContainer(): HTMLElement | null {
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread) return null;
+  let container = document.getElementById('ghampus-chat-messages');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'ghampus-chat-messages';
+    thread.appendChild(container);
+    for (const orphan of Array.from(thread.querySelectorAll(':scope > .ghampus-thread-entry'))) {
+      container.appendChild(orphan);
+    }
+  }
+  return container;
+}
+
 function ghampusChatMessagesEl(): HTMLElement | null {
-  return document.getElementById('ghampus-chat-messages') ?? document.getElementById('ghampus-thread');
+  return ensureGhampusChatMessagesContainer()
+    ?? document.getElementById('ghampus-thread');
 }
 
 function showGhampusThreadLoading(): void {
@@ -3075,7 +3196,9 @@ function paintGhampusHistoryMessages(messages: GhampusChatMessage[]): void {
   hideGhampusThreadLoading();
   document.getElementById('ghampus-thread-empty')?.remove();
   container.innerHTML = '';
-  for (const msg of messages) appendToThread(msg);
+  for (const msg of messages) {
+    if (!shouldSkipGhampusThreadMessage(msg)) appendToThread(msg);
+  }
   applyGhampusFragmentMarks();
   scrollGhampusThreadToBottomIfPinned({ instant: true });
   sweepGhampusPres(container);
@@ -3349,8 +3472,9 @@ async function prefetchGhampusThreadInner(): Promise<void> {
 }
 
 function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean }): void {
+  if (shouldSkipGhampusThreadMessage(msg)) return;
   if (!opts?.skipCache) ghampusThreadMessages.push(msg);
-  const container = document.getElementById('ghampus-chat-messages') ?? document.getElementById('ghampus-thread');
+  const container = ghampusChatMessagesEl();
   if (!container) return;
   const empty = document.getElementById('ghampus-thread-empty');
   if (empty) empty.remove();
@@ -3447,6 +3571,17 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
       if (prompt) fillGhampusPrompt(prompt);
     });
     wireCardDismissButton(node);
+  }
+  if (msg.kind === 'attention-nudge') {
+    node.querySelector<HTMLButtonElement>('.ghampus-attention-review')?.addEventListener('click', () => {
+      openMemoryIntegrityWorkbench('queue');
+    });
+    node.querySelector<HTMLButtonElement>('.ghampus-attention-corrections')?.addEventListener('click', () => {
+      document.dispatchEvent(new CustomEvent('graphnosis:open-corrections-deck'));
+    });
+    wireCardDismissButton(node, () => {
+      document.dispatchEvent(new CustomEvent('graphnosis:attention-dismiss'));
+    });
   }
   if (msg.kind === 'recovery-nudge') {
     node.querySelector<HTMLButtonElement>('.ghampus-recovery-open')?.addEventListener('click', () => {
@@ -3811,6 +3946,8 @@ export async function refreshGhampusThread(): Promise<void> {
   if (refreshGhampusThreadInflight) return refreshGhampusThreadInflight;
   refreshGhampusThreadInflight = refreshGhampusThreadInner().finally(() => {
     refreshGhampusThreadInflight = null;
+    ensureGhampusChatMessagesContainer();
+    applyGhampusChatZoom(readGhampusChatZoom());
     reconcileGhampusThreadDom();
     syncGhampusLlmSetupGuide(lastGhampusLlmStatus);
     scrollGhampusThreadToBottomIfPinned({ instant: true });
@@ -3820,15 +3957,16 @@ export async function refreshGhampusThread(): Promise<void> {
 
 /** Paint any cached messages missing from the DOM (e.g. arrived while tab hidden). */
 function reconcileGhampusThreadDom(): void {
-  const thread = document.getElementById('ghampus-thread');
-  if (!thread) return;
-  const domCount = thread.querySelectorAll('.ghampus-thread-entry:not(#ghampus-thinking)').length;
-  if (ghampusThreadMessages.length <= domCount) {
+  const container = ensureGhampusChatMessagesContainer();
+  if (!container) return;
+  const visibleMessages = ghampusThreadMessages.filter((m) => !shouldSkipGhampusThreadMessage(m));
+  const domCount = container.querySelectorAll('.ghampus-thread-entry:not(#ghampus-thinking)').length;
+  if (visibleMessages.length <= domCount) {
     if (ghampusRunning && !document.getElementById('ghampus-thinking')) showThinkingBubble();
     return;
   }
-  thread.innerHTML = '';
-  for (const msg of ghampusThreadMessages) appendToThread(msg, { skipCache: true });
+  container.innerHTML = '';
+  for (const msg of visibleMessages) appendToThread(msg, { skipCache: true });
   applyGhampusFragmentMarks();
   if (ghampusRunning) showThinkingBubble();
 }
@@ -4698,7 +4836,13 @@ function applyGhampusChatZoom(zoom: number): void {
     Math.max(GHAMPUS_CHAT_ZOOM_MIN, Math.round(zoom * 100) / 100),
   );
   try { localStorage.setItem(GHAMPUS_CHAT_ZOOM_KEY, String(clamped)); } catch { /* ignore */ }
-  document.getElementById('ghampus-chat-wrap')?.style.setProperty('--ghampus-chat-zoom', String(clamped));
+  const wrap = document.getElementById('ghampus-chat-wrap');
+  if (!wrap) return;
+  wrap.style.setProperty('--ghampus-chat-zoom', String(clamped));
+  const avatarBase = window.matchMedia('(max-width: 768px)').matches ? 36 : 40;
+  const gapBase = window.matchMedia('(max-width: 768px)').matches ? 8 : 10;
+  wrap.style.setProperty('--ghampus-chat-avatar-size', `${Math.round(avatarBase * clamped)}px`);
+  wrap.style.setProperty('--ghampus-chat-avatar-gap', `${Math.round(gapBase * clamped)}px`);
 }
 
 function handleGhampusZoomKeydown(e: KeyboardEvent): boolean {
