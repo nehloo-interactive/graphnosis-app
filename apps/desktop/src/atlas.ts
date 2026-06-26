@@ -2994,12 +2994,15 @@ export class Atlas {
     this.graph.refresh();
   }
 
-  /** Reset every legend selection — all edge categories and all sources back
+  /** Reset every legend selection — all real edge categories and all sources back
    *  to visible, and clear any hover preview. Backs the toolbar Reset button
    *  so "Reset" clears legend filtering, not just node-selection emphasis.
+   *  The GNN "Predicted" overlay is excluded — it stays at whatever visibility
+   *  the user last chose (off by default).
    *  Visibility-only: node positions are preserved (no reheat). */
   resetLegendFilters(): void {
     (Object.keys(this.categoryVisible) as EdgeCategory[]).forEach((c) => {
+      if (c === 'predicted') return; // preserve user overlay preference
       if (!this.isCategoryHardLocked(c)) this.categoryVisible[c] = true;
     });
     for (const key of this.sourceVisible.keys()) this.sourceVisible.set(key, true);
