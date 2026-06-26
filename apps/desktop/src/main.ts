@@ -65,10 +65,13 @@ import {
   mountMemoryIntegrityWorkbench,
   openMemoryIntegrityWorkbench,
   fetchAttentionCounts,
-  renderAttentionStrip,
   refreshMemoryIntegrityWorkbench,
   setMemoryIntegrityBootstrap,
 } from './ui/memory-integrity-workbench';
+import {
+  initAttentionSurfaces,
+  syncAttentionSurfaces,
+} from './ui/attention-surfaces';
 import {
   initForesightPage,
   renderForesightTiles,
@@ -3220,6 +3223,7 @@ function activateMode(mode: Mode): void {
       setTimeout(() => (document.getElementById('g-search') as HTMLInputElement | null)?.focus(), 50);
     }
     if (mode === 'goals') void renderForesight(); // Foresight lanes (Predict + Insights)
+    void refreshUnifiedAttentionBadge();
     return;
   }
   // Lazy-load per standalone mode
@@ -3320,10 +3324,9 @@ document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     const m = btn.dataset.mode as Mode | undefined;
     if (m) {
+      // activateMode('atlas') already calls showAtlasHomeDashboard() — don't call twice
+      // (double switchGraphnosisTab reset skeletons mid-flight and bumped fetch gen).
       activateMode(m);
-      // Belt-and-suspenders (matches mobile nav): re-tap Your Cortex always
-      // restores the home dashboard, not whichever inner tab was last open.
-      if (m === 'atlas') showAtlasHomeDashboard();
     }
   });
 });
@@ -3400,9 +3403,7 @@ document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((btn) =>
       document.getElementById('g-search-results')?.classList.add('hidden');
     }
     activateMode(m);
-    // The Memory tab lands on MemoryStudio (the checkin sub-tab), not whatever
-    // inner tab (3D Engram, etc.) was last open.
-    if (m === 'atlas') showAtlasHomeDashboard();
+    // activateMode('atlas') already calls showAtlasHomeDashboard().
   });
 });
 
@@ -3985,9 +3986,9 @@ async function fetchPendingCorrections(): Promise<void> {
     updatePendingBadge(r.pending.length);
     const changed = r.pending.length !== prevCount
       || r.pending.some((d) => !prevIds.has(d.diffId));
-    if (changed && currentMode === 'atlas') {
+    if (changed) {
       rebuildDeckQueue();
-      renderDeck();
+      if (triviaOpen || currentMode === 'atlas') renderDeck();
     }
     if (changed && isHomeDashboardView()) void refreshHomeNeeds();
   } catch {
@@ -7567,7 +7568,7 @@ async function refreshUnifiedAttentionBadge(correctionCount?: number): Promise<v
       els.railCorrectionsBadge.classList.add('hidden');
       els.railCorrectionsBadge.title = 'Nothing needs attention';
     }
-    renderAttentionStrip(counts, { escapeHtml, openTrivia });
+    syncAttentionSurfaces(counts);
   } catch {
     if ((correctionCount ?? 0) > 0) {
       els.railCorrectionsBadge.classList.remove('hidden');
@@ -8365,6 +8366,7 @@ function renderHomeDashboard(): void {
   renderHomeBrainActivity(); // sync from brainStatus — must not wait on scheduleHomeDataLoad
   renderHomeSelfHealing();   // sync from cache — empty state beats infinite skeleton
   renderHomeMemoryHealth({ loading: !homeBrainCardsFetched }); // interim text until IPC lands
+  kickHomeAsyncCardLoadsIfStale(); // async cards — independent IPC like brain cards
   annotateHomeHelp();      // "?" explainers on each card (idempotent)
 }
 
@@ -8645,6 +8647,42 @@ const homeDigestSinceAnchor: number = (() => {
   return prev;
 })();
 
+/** Match Activity view: long budget + retries on cold op-log reads. */
+const HOME_ACTIVITY_IPC_TIMEOUT_MS = 60_000;
+const HOME_ACTIVITY_TRANSIENT_RE =
+  /connect to sidecar|ECONNREFUSED|ENOENT.*sock|cortex is locked|not running|timed out|did not respond/i;
+
+/** Serialize Home digest activity.list — parallel digest+growth doubled cold op-log I/O
+ *  and the second call often hit the 25s client timeout while queued behind the first.
+ *  Growth uses activity.growthStats instead (aggregates during scan, no queue). */
+let homeActivityListTail: Promise<unknown> = Promise.resolve();
+
+async function homeActivityList<T>(
+  params: Record<string, unknown>,
+  ms = HOME_ACTIVITY_IPC_TIMEOUT_MS,
+): Promise<T> {
+  const run = async (): Promise<T> => {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await ipcCallTimeout<T>('activity.list', params, ms);
+      } catch (e) {
+        lastErr = e;
+        const msg = e instanceof Error ? e.message : String(e);
+        if (attempt < 2 && HOME_ACTIVITY_TRANSIENT_RE.test(msg)) {
+          await new Promise<void>((r) => setTimeout(r, 750 * (attempt + 1)));
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw lastErr;
+  };
+  const chained = homeActivityListTail.then(run, run);
+  homeActivityListTail = chained.catch(() => {});
+  return chained;
+}
+
 async function refreshHomeDigest(): Promise<void> {
   const card = document.getElementById('home-digest');
   const body = document.getElementById('home-digest-body');
@@ -8660,8 +8698,7 @@ async function refreshHomeDigest(): Promise<void> {
   let since: OpLogEvent[] = [];
   if (!firstLook) {
     try {
-      // 25s covers a cold full op-log read (~16s on a large cortex); warm = instant.
-      const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since: anchor, limit: 5000 }, 25_000);
+      const r = await homeActivityList<{ events: OpLogEvent[] }>({ since: anchor, limit: 5000 });
       since = r.events ?? [];
     } catch {
       card.style.display = '';
@@ -8842,7 +8879,7 @@ async function refreshHomeNeeds(): Promise<void> {
     el.addEventListener('click', () => {
       if (el.dataset['needKind'] === 'duplicates') openMemoryIntegrity('queue');
       else if (el.dataset['needKind'] === 'contradictions') openMemoryIntegrity('queue');
-      else openTrivia();
+      else if (el.dataset['needKind'] === 'corrections') openMemoryIntegrity('queue');
     });
   });
 }
@@ -8906,56 +8943,96 @@ function refreshHomeStranded(): void {
 }
 
 // ── Home: "Growth" card ───────────────────────────────────────────────────
-// Memories added per day over the last 30 days — a sparkline from the op-log
-// (bounded via activity.list `since`, so it stays cheap on a large cortex).
+// Memories added per day over the last 90 days — sparkline from ingestSource
+// daily buckets (activity.growthStats aggregates during op-log scan; not queued
+// behind digest's activity.list).
+
+const HOME_GROWTH_DAYS = 90;
+const HOME_GROWTH_CACHE_KEY = 'graphnosis.homeGrowth.v1';
+const HOME_GROWTH_CACHE_TTL_MS = 5 * 60_000;
+const HOME_GROWTH_IPC_TIMEOUT_MS = 45_000;
+
+type HomeGrowthSnapshot = { total: number; buckets: number[]; days: number; at: number };
+
+function readHomeGrowthCache(days: number): HomeGrowthSnapshot | null {
+  try {
+    const raw = sessionStorage.getItem(HOME_GROWTH_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as HomeGrowthSnapshot;
+    if (
+      parsed.days !== days
+      || !Array.isArray(parsed.buckets)
+      || typeof parsed.total !== 'number'
+      || typeof parsed.at !== 'number'
+      || Date.now() - parsed.at > HOME_GROWTH_CACHE_TTL_MS
+    ) return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function writeHomeGrowthCache(snap: Omit<HomeGrowthSnapshot, 'at'>): void {
+  try {
+    sessionStorage.setItem(HOME_GROWTH_CACHE_KEY, JSON.stringify({ ...snap, at: Date.now() }));
+  } catch { /* quota / private mode */ }
+}
+
+function paintHomeGrowthBody(total: number, buckets: number[], days: number): void {
+  const card = document.getElementById('home-growth');
+  const body = document.getElementById('home-growth-body');
+  if (!card || !body) return;
+  if (total === 0) {
+    card.style.display = '';
+    body.innerHTML = `<p class="home-card-empty">No new sources in the last ${days} days.</p>`;
+    return;
+  }
+  const max = Math.max(...buckets, 1);
+  const todayStart = (() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  })();
+  const bars = buckets.map((c, i) => {
+    const pctH = c > 0 ? Math.max(8, Math.round((c / max) * 100)) : 2;
+    const day = new Date(todayStart - (days - 1 - i) * 864e5);
+    return `<span class="home-spark-bar${c > 0 ? '' : ' empty'}" style="--bar-h:${pctH}%" title="${day.toLocaleDateString()}: ${c}"></span>`;
+  }).join('');
+  body.innerHTML =
+    `<div class="home-growth-stat" data-pres="surface:stats"><strong>${total.toLocaleString()}</strong> source${total === 1 ? '' : 's'} added in the last ${days} days</div>` +
+    `<div class="home-spark" data-pres="surface:stats" aria-hidden="true">${bars}</div>`;
+  card.style.display = '';
+}
+
 async function refreshHomeGrowth(): Promise<void> {
   const card = document.getElementById('home-growth');
   const body = document.getElementById('home-growth-body');
   if (!card || !body) return;
-  // Clicking the card jumps to Activity, pre-filtered to ingests, for the full
-  // history. Wired idempotently (onclick replaces).
   card.style.cursor = 'pointer';
   card.onclick = () => { setActivityCat('ingested'); resetActivityWindow(); activateMode('activity'); };
-  const DAYS = 90;
-  const since = Date.now() - DAYS * 864e5;
-  let events: OpLogEvent[] = [];
-  try {
-    // Count SOURCES (ingestSource), not individual nodes: a single ingest emits
-    // many addNode events, so counting nodes makes the chart a recent spike with
-    // 89 empty days. `ops` pulls just the sources from the full op-log (accurate,
-    // cheap, won't hit the cap), giving a meaningful, spread-out daily chart.
-    const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since, ops: ['ingestSource'], limit: 10000 }, 25_000);
-    events = r.events ?? [];
-  } catch {
+
+  const cached = readHomeGrowthCache(HOME_GROWTH_DAYS);
+  if (cached) {
+    paintHomeGrowthBody(cached.total, cached.buckets, cached.days);
+  } else if (homeCardBodyHasSkeleton(body)) {
+    body.innerHTML = '<p class="home-card-empty home-growth-loading">Loading growth…</p>';
     card.style.display = '';
-    body.innerHTML = homeCardEmptyHtml('Couldn’t load growth right now.', { retry: () => scheduleHomeDataLoad() });
-    wireHomeCardRetry(body, () => scheduleHomeDataLoad());
-    return;
-  }
-  const adds = events.filter((e) => e.op === 'ingestSource');
-  if (adds.length === 0) {
-    card.style.display = '';
-    body.innerHTML = `<p class="home-card-empty">No new sources in the last ${DAYS} days.</p>`;
-    return;
   }
 
-  const dayStart = (ms: number): number => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
-  const todayStart = dayStart(Date.now());
-  const buckets = new Array(DAYS).fill(0) as number[];
-  for (const e of adds) {
-    const idx = DAYS - 1 - Math.floor((todayStart - dayStart(e.ts)) / 864e5);
-    if (idx >= 0 && idx < DAYS) buckets[idx] += 1;
+  let snap: { total: number; buckets: number[]; days: number };
+  try {
+    snap = await ipcCallTimeout<{ total: number; buckets: number[]; days: number }>(
+      'activity.growthStats',
+      { days: HOME_GROWTH_DAYS },
+      HOME_GROWTH_IPC_TIMEOUT_MS,
+    );
+  } catch {
+    if (cached) return; // keep stale cache visible
+    card.style.display = '';
+    body.innerHTML = homeCardEmptyHtml('Couldn’t load growth right now.', { retry: () => kickSingleHomeAsyncCard('home-growth') });
+    wireHomeCardRetry(body, () => kickSingleHomeAsyncCard('home-growth'));
+    return;
   }
-  const max = Math.max(...buckets, 1);
-  const bars = buckets.map((c, i) => {
-    const pctH = c > 0 ? Math.max(8, Math.round((c / max) * 100)) : 2;
-    const day = new Date(todayStart - (DAYS - 1 - i) * 864e5);
-    return `<span class="home-spark-bar${c > 0 ? '' : ' empty'}" style="--bar-h:${pctH}%" title="${day.toLocaleDateString()}: ${c}"></span>`;
-  }).join('');
-  body.innerHTML =
-    `<div class="home-growth-stat" data-pres="surface:stats"><strong>${adds.length.toLocaleString()}</strong> source${adds.length === 1 ? '' : 's'} added in the last ${DAYS} days</div>` +
-    `<div class="home-spark" data-pres="surface:stats" aria-hidden="true">${bars}</div>`;
-  card.style.display = '';
+  writeHomeGrowthCache(snap);
+  paintHomeGrowthBody(snap.total, snap.buckets, snap.days ?? HOME_GROWTH_DAYS);
 }
 
 // ── Home: "On-Premise" card ───────────────────────────────────────────────
@@ -9005,7 +9082,10 @@ function homeCardEmptyHtml(message: string, opts?: { ok?: boolean; retry?: () =>
   return `<p class="${cls}">${escapeHtml(message)}</p>${retry}`;
 }
 function wireHomeCardRetry(body: HTMLElement, retry: () => void): void {
-  body.querySelector<HTMLButtonElement>('.home-card-retry')?.addEventListener('click', () => void retry());
+  body.querySelector<HTMLButtonElement>('.home-card-retry')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void retry();
+  });
 }
 
 // Show a loading skeleton in every async Home card BEFORE its fetch resolves,
@@ -9139,10 +9219,13 @@ function scheduleGhampusThreadPrefetch(): void {
 // starved engram-switching + the 3D graph — the freezing the user saw.
 let homeLoadToken = 0;
 
-/** True when the Your Cortex home dashboard (not search/skills/power-tools) is the active surface. */
+/** True when the Your Cortex home dashboard (not search/skills/power-tools) is the active surface.
+ *  Must NOT require graphnosisActiveTab === 'checkin': body.atlas-home-mode CSS always
+ *  shows the checkin/#home-overview pane on the Your Cortex rail even when the inner
+ *  g-tab state is stale ('atlas' / 'nondeterministic'). Requiring checkin left cards
+ *  stuck on skeleton — watchdog + .finally() bailed while the user still saw home. */
 function isHomeDashboardView(): boolean {
-  return graphnosisActiveTab === 'checkin'
-    && currentMode === 'atlas'
+  return currentMode === 'atlas'
     && !document.body.classList.contains('search-mode')
     && !document.body.classList.contains('skills-studio-mode')
     && !document.body.classList.contains('powertools-mode');
@@ -9161,38 +9244,66 @@ function homeCardBodyHasSkeleton(body: HTMLElement | null): boolean {
   return !!body?.querySelector('.home-skel');
 }
 
+function homeCardBodyIsPending(body: HTMLElement | null): boolean {
+  return homeCardBodyHasSkeleton(body) || !!body?.querySelector('.home-growth-loading');
+}
+
 /** Replace one async Home card still on boot skeleton with honest empty/retry copy. */
 function finalizeSingleHomeAsyncCard(id: (typeof HOME_ASYNC_CARD_IDS)[number]): void {
   const body = document.getElementById(`${id}-body`);
-  if (!homeCardBodyHasSkeleton(body)) return;
-  body!.innerHTML = homeCardEmptyHtml(HOME_ASYNC_CARD_EMPTY[id], { retry: () => scheduleHomeDataLoad() });
-  wireHomeCardRetry(body!, () => scheduleHomeDataLoad());
+  if (!homeCardBodyIsPending(body)) return;
+  const retry = id === 'home-growth'
+    ? () => kickSingleHomeAsyncCard('home-growth')
+    : () => scheduleHomeDataLoad();
+  body!.innerHTML = homeCardEmptyHtml(HOME_ASYNC_CARD_EMPTY[id], { retry });
+  wireHomeCardRetry(body!, retry);
   document.getElementById(id)?.style.setProperty('display', '');
 }
 
 /** Replace any async Home card still showing boot skeletons with honest empty/retry copy. */
 function finalizeHomeAsyncCardsIfStale(): void {
-  if (!isHomeDashboardView()) return;
   for (const id of HOME_ASYNC_CARD_IDS) finalizeSingleHomeAsyncCard(id);
 }
 
 /** Last-resort guard — cards must never stay on skeleton forever (IPC hang / cancelled chain). */
-const HOME_CARDS_WATCHDOG_MS = 8_000;
+const HOME_ASYNC_CARD_WATCHDOG_MS: Record<(typeof HOME_ASYNC_CARD_IDS)[number], number> = {
+  'home-needs': 12_000,
+  'home-digest': 65_000,
+  'home-foresight': 12_000,
+  'home-growth': 50_000,
+};
+const HOME_CARDS_WATCHDOG_MS = Math.max(...Object.values(HOME_ASYNC_CARD_WATCHDOG_MS));
 let _homeCardsWatchdog: ReturnType<typeof setTimeout> | null = null;
+const _homeAsyncCardWatchdogs: Partial<Record<(typeof HOME_ASYNC_CARD_IDS)[number], ReturnType<typeof setTimeout>>> = {};
+
+function armSingleHomeAsyncCardWatchdog(id: (typeof HOME_ASYNC_CARD_IDS)[number], gen: number): void {
+  const prev = _homeAsyncCardWatchdogs[id];
+  if (prev) clearTimeout(prev);
+  const budgetMs = HOME_ASYNC_CARD_WATCHDOG_MS[id];
+  _homeAsyncCardWatchdogs[id] = window.setTimeout(() => {
+    delete _homeAsyncCardWatchdogs[id];
+    if (gen !== homeAsyncCardGen[id]) return;
+    const body = document.getElementById(`${id}-body`);
+    if (!homeCardBodyIsPending(body)) return;
+    console.error(`[home] ${id} watchdog — forcing empty/retry after ${budgetMs}ms`);
+    finalizeSingleHomeAsyncCard(id);
+    disarmHomeCardsWatchdogIfClear();
+  }, budgetMs);
+}
+
 function armHomeCardsWatchdog(): void {
   if (_homeCardsWatchdog) clearTimeout(_homeCardsWatchdog);
   _homeCardsWatchdog = window.setTimeout(() => {
     _homeCardsWatchdog = null;
-    if (!isHomeDashboardView()) return;
     const stale = HOME_ASYNC_CARD_IDS.filter((id) =>
-      homeCardBodyHasSkeleton(document.getElementById(`${id}-body`)));
+      homeCardBodyIsPending(document.getElementById(`${id}-body`)));
     if (stale.length === 0) return;
     console.error('[home] watchdog finalizing stale async cards:', stale.join(', '));
-    finalizeHomeAsyncCardsIfStale();
+    for (const id of stale) finalizeSingleHomeAsyncCard(id);
   }, HOME_CARDS_WATCHDOG_MS);
 }
 function disarmHomeCardsWatchdogIfClear(): void {
-  if (!HOME_ASYNC_CARD_IDS.every((id) => !homeCardBodyHasSkeleton(document.getElementById(`${id}-body`)))) return;
+  if (!HOME_ASYNC_CARD_IDS.every((id) => !homeCardBodyIsPending(document.getElementById(`${id}-body`)))) return;
   if (_homeCardsWatchdog) {
     clearTimeout(_homeCardsWatchdog);
     _homeCardsWatchdog = null;
@@ -9220,27 +9331,62 @@ function scheduleHomeDataLoad(): void {
   armHomeCardsWatchdog();
 }
 
-/** Parallel IPC for the four async Home cards — mirrors kickHomeBrainCardLoads. */
-let homeAsyncCardsFetchGen = 0;
-function kickHomeAsyncCardLoads(): void {
-  const gen = ++homeAsyncCardsFetchGen;
-  const cards: Array<{ id: (typeof HOME_ASYNC_CARD_IDS)[number]; fn: () => Promise<void> }> = [
-    { id: 'home-needs', fn: refreshHomeNeeds },
-    { id: 'home-digest', fn: refreshHomeDigest },
-    { id: 'home-foresight', fn: refreshHomeForesight },
-    { id: 'home-growth', fn: refreshHomeGrowth },
-  ];
-  for (const { id, fn } of cards) {
-    void fn()
-      .catch((e) => {
-        console.error(`[home] ${id} refresh failed:`, e instanceof Error ? e.message : e);
-      })
-      .finally(() => {
-        if (gen !== homeAsyncCardsFetchGen || !isHomeDashboardView()) return;
+/** Per-card fetch generation — re-kicking one card must not cancel another's .finally(). */
+const homeAsyncCardGen: Record<(typeof HOME_ASYNC_CARD_IDS)[number], number> = {
+  'home-needs': 0,
+  'home-digest': 0,
+  'home-foresight': 0,
+  'home-growth': 0,
+};
+/** Cards with an in-flight refresh — prevents renderHomeDashboard from resetting watchdog timers. */
+const homeAsyncCardInFlight = new Set<(typeof HOME_ASYNC_CARD_IDS)[number]>();
+const HOME_ASYNC_CARD_LOADERS: Record<(typeof HOME_ASYNC_CARD_IDS)[number], () => Promise<void>> = {
+  'home-needs': refreshHomeNeeds,
+  'home-digest': refreshHomeDigest,
+  'home-foresight': refreshHomeForesight,
+  'home-growth': refreshHomeGrowth,
+};
+
+/** Self-contained IPC + render for one async Home card (mirrors kickHomeBrainCardLoads). */
+function kickSingleHomeAsyncCard(id: (typeof HOME_ASYNC_CARD_IDS)[number]): void {
+  if (homeAsyncCardInFlight.has(id)) return;
+  const gen = ++homeAsyncCardGen[id];
+  const fn = HOME_ASYNC_CARD_LOADERS[id];
+  homeAsyncCardInFlight.add(id);
+  armSingleHomeAsyncCardWatchdog(id, gen);
+  void fn()
+    .catch((e) => {
+      console.error(`[home] ${id} refresh failed:`, e instanceof Error ? e.message : e);
+    })
+    .finally(() => {
+      homeAsyncCardInFlight.delete(id);
+      if (gen !== homeAsyncCardGen[id]) return;
+      const wd = _homeAsyncCardWatchdogs[id];
+      if (wd) { clearTimeout(wd); delete _homeAsyncCardWatchdogs[id]; }
+      const body = document.getElementById(`${id}-body`);
+      // Safety net when refresh returned early or IPC hung without painting.
+      if (homeCardBodyIsPending(body)) {
         finalizeSingleHomeAsyncCard(id);
-        disarmHomeCardsWatchdogIfClear();
-        if (id === 'home-growth' && presActive()) schedulePresSweep();
-      });
+      }
+      disarmHomeCardsWatchdogIfClear();
+      if (id === 'home-growth' && presActive()) schedulePresSweep();
+    });
+}
+
+/** Parallel IPC for the four async Home cards — mirrors kickHomeBrainCardLoads. */
+function kickHomeAsyncCardLoads(): void {
+  for (const id of HOME_ASYNC_CARD_IDS) kickSingleHomeAsyncCard(id);
+}
+
+/** Belt-and-suspenders: renderHomeDashboard repaints sync cards every entry — kick any
+ *  async card still on skeleton so a missed scheduleHomeDataLoad can't leave placeholders. */
+function kickHomeAsyncCardLoadsIfStale(): void {
+  if (!isHomeDashboardView()) return;
+  for (const id of HOME_ASYNC_CARD_IDS) {
+    const body = document.getElementById(`${id}-body`);
+    if (!homeCardBodyIsPending(body)) continue;
+    if (homeAsyncCardInFlight.has(id)) continue;
+    kickSingleHomeAsyncCard(id);
   }
 }
 
@@ -9819,19 +9965,23 @@ function updateTriviaBar(): void {
 
 function openTrivia(): void {
   if (triviaOpen) return;
+  void openTriviaAsync();
+}
+
+async function openTriviaAsync(): Promise<void> {
+  if (triviaOpen) return;
+  // The review deck lives in the checkin pane — not visible in Foresight/goals mode.
+  if (currentMode !== 'atlas') activateMode('atlas');
+  await fetchPendingCorrections();
+  rebuildDeckQueue();
   triviaOpen = true;
   triviaCardsSeen = true;
   const drawer = document.getElementById('trivia-drawer');
   drawer?.classList.add('trivia-open');
-  // connect-mode turns the deck into a focused MAIN-COLUMN view (not a fixed
-  // bottom drawer): the Home overview hides, the deck fills the content column,
-  // and the Inspector opens on the right via the normal grid (no overlap).
   document.body.classList.add('connect-mode');
   document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
-  // Reset green badge — user is now reviewing
   document.getElementById('trivia-bar-pill')?.classList.remove('new-cards');
-  // Select the current stranded node in the right-panel Node Inspector so
-  // the user sees full context the moment the deck opens.
+  renderDeck();
   const currentItem = graphnosisDeck[graphnosisDeckIndex];
   if (currentItem) selectGraphnosisNode(currentItem.node.id, { trace: true });
 }
@@ -14120,7 +14270,7 @@ els.btnAtlasReset.addEventListener('click', () => {
   mainAtlas?.resetEmphasis();
   mainAtlas?.resetLegendFilters(); // clear category/source legend selections too
   selectGraphnosisNode(null);
-  renderAtlasLegend(); // reflect the all-visible state in the legend UI
+  renderAtlasLegend(); // reflect cleared legend filters (Predicted overlay unchanged)
 });
 
 els.btnAtlasFit.addEventListener('click', () => {
@@ -22638,6 +22788,18 @@ document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach(
 });
 initConnectors();
 initGhampus();
+initAttentionSurfaces({
+  escapeHtml,
+  openTrivia,
+  isHomeDashboardView,
+  isGhampusMode: () => currentMode === 'ghampus',
+  isAppUnlocked: () => !document.getElementById('view-app')?.classList.contains('hidden'),
+});
+document.addEventListener('graphnosis:open-ghampus-attention', () => activateMode('ghampus'));
+document.addEventListener('graphnosis:open-corrections-deck', () => openTrivia());
+document.addEventListener('graphnosis:attention-dismiss', () => {
+  if (lastAttentionCounts) dismissAttentionFromEvent(lastAttentionCounts);
+});
 initUnlock({ cortexDir: els.cortexDir, btnUnlock: els.btnUnlock, btnLock: els.btnLock, bootStatusText: els.bootStatusText, unlockStatus: els.unlockStatus, passphrase: els.passphrase });
 initCloudOnboardingHandlers();
 initSkills();

@@ -4986,10 +4986,116 @@
       .home-integrity-summary { font-size: 13px; line-height: 1.45; color: var(--fg-dim); margin: 0; }
       .home-attention-strip {
         display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
-        padding: 12px 16px; margin-bottom: 12px; border-radius: 12px;
+        padding: 12px 16px; margin-bottom: 0; border-radius: 12px;
         border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
         background: color-mix(in srgb, var(--accent) 8%, var(--bg));
       }
+      body:not(.atlas-home-mode) .cortex-attention-anchor,
+      body.search-mode .cortex-attention-anchor,
+      body.skills-studio-mode .cortex-attention-anchor,
+      body.powertools-mode .cortex-attention-anchor,
+      body.connect-mode .cortex-attention-anchor {
+        display: none;
+      }
+      #view-app.hidden .ghampus-attention-bubble { display: none !important; }
+      .cortex-attention-anchor {
+        position: sticky;
+        top: 0;
+        z-index: 45;
+        flex-shrink: 0;
+        padding: 4px 2px 8px;
+        margin: 0;
+        background: linear-gradient(
+          to bottom,
+          var(--bg) 70%,
+          color-mix(in srgb, var(--bg) 85%, transparent) 100%
+        );
+      }
+      .cortex-attention-banner {
+        border-left: 3px solid var(--accent);
+        box-shadow: 0 2px 14px color-mix(in srgb, var(--accent) 18%, transparent);
+        animation: cortex-attention-in 0.28s ease-out;
+      }
+      @keyframes cortex-attention-in {
+        from { opacity: 0; transform: translateY(-6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .cortex-attention-icon {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+        font-size: 13px; font-weight: 800; line-height: 1;
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+        border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      }
+      .cortex-attention-actions {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+      }
+      .cortex-attention-primary { white-space: nowrap; }
+      .cortex-attention-dismiss {
+        border: none; background: transparent; color: var(--fg-dim);
+        font-size: 20px; line-height: 1; cursor: pointer; padding: 0 2px;
+        margin-left: auto;
+      }
+      .cortex-attention-dismiss:hover { color: var(--fg); }
+      .ghampus-attention-bubble {
+        position: fixed;
+        bottom: 48px;
+        right: 20px;
+        z-index: 120;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        max-width: min(360px, calc(100vw - var(--rail-width, 280px) - 32px));
+        padding: 12px 14px;
+        border-radius: 16px 16px 4px 16px;
+        border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+        background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+        box-shadow: 0 6px 24px color-mix(in srgb, var(--fg) 12%, transparent);
+        animation: ghampus-bubble-in 0.32s ease-out;
+      }
+      @keyframes ghampus-bubble-in {
+        from { opacity: 0; transform: translateY(10px) scale(0.96); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      .ghampus-attention-bubble.hidden { display: none; }
+      .ghampus-attention-bubble-avatar {
+        position: relative; flex-shrink: 0; width: 40px; height: 40px;
+      }
+      .ghampus-attention-bubble-avatar img {
+        width: 40px; height: 40px; object-fit: contain;
+        animation: ghampus-bob 4s ease-in-out infinite;
+      }
+      .ghampus-attention-bubble-badge {
+        position: absolute; top: -4px; right: -4px;
+        min-width: 18px; height: 18px; padding: 0 5px;
+        border-radius: 999px; font-size: 11px; font-weight: 800; line-height: 18px;
+        text-align: center; color: var(--bg);
+        background: var(--accent);
+        border: 2px solid var(--bg);
+      }
+      .ghampus-attention-bubble-body { flex: 1; min-width: 0; }
+      .ghampus-attention-bubble-text {
+        font-size: 13px; line-height: 1.45; margin: 0 0 8px; color: var(--fg);
+      }
+      .ghampus-attention-bubble-actions {
+        display: flex; flex-wrap: wrap; gap: 6px;
+      }
+      .ghampus-attention-bubble-actions button {
+        font-size: 12px; padding: 4px 10px; border-radius: 8px;
+        border: 1px solid var(--border); background: var(--bg);
+        color: var(--fg); cursor: pointer; font: inherit;
+      }
+      .ghampus-attention-bubble-actions button.primary {
+        background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600;
+      }
+      .ghampus-attention-bubble-actions button:hover { filter: brightness(1.05); }
+      .ghampus-attention-bubble-dismiss {
+        border: none; background: transparent; color: var(--fg-dim);
+        font-size: 18px; line-height: 1; cursor: pointer; padding: 0 0 0 4px;
+        flex-shrink: 0;
+      }
+      .ghampus-attention-nudge-card .ghampus-tip-badge { font-weight: 700; }
       .home-attention-strip.hidden { display: none; }
       .home-attention-text { font-size: 14px; flex: 1; min-width: 200px; }
       .home-attention-cta { font-size: 13px; font-weight: 600; color: var(--accent); background: none; border: none; cursor: pointer; padding: 0; }
@@ -6208,13 +6314,15 @@
         --ghampus-chat-avatar-gap: 10px;
       }
       /* Chat text zoom — keyboard only: ⌘/Ctrl + +/−/0 (no scroll-wheel zoom).
-         Never apply zoom on .ghampus-thread (the scrollport) — WebKit/Chromium
-         fail to repaint during fast scroll when zoom + overflow-y:auto share one
-         element; zoom the inner message column instead. */
-      #ghampus-chat-wrap #ghampus-chat-messages,
+         Never apply CSS zoom inside .ghampus-thread (the scrollport) — WebKit/Chromium
+         fail to repaint bubbles during scroll when a zoomed subtree is scrolled.
+         Scale the message column via font-size; keep zoom on compose chrome only. */
       #ghampus-chat-wrap .ghampus-input-stack,
       #ghampus-chat-wrap #ghampus-sections-strip {
         zoom: var(--ghampus-chat-zoom, 1);
+      }
+      #ghampus-chat-wrap #ghampus-chat-messages {
+        font-size: calc(15px * var(--ghampus-chat-zoom, 1));
       }
       /* Readable column on wide windows — input/footer only; thread scrolls edge-to-edge */
       .ghampus-input-stack,
@@ -6500,6 +6608,9 @@
         margin-right: auto;
         box-sizing: border-box;
         padding: 0 14px;
+        /* Size to content so the thread scrollport measures full history height */
+        flex: 0 0 auto;
+        min-height: 100%;
         -webkit-user-select: text !important;
         user-select: text !important;
       }
@@ -6514,7 +6625,7 @@
 
       .chat-msg {
         display: flex; gap: var(--ghampus-chat-avatar-gap, 10px); align-items: flex-end;
-        font-size: 15px; position: relative;
+        font-size: 1em; position: relative;
         -webkit-user-select: text !important;
         user-select: text !important;
       }
@@ -6859,8 +6970,8 @@
       }
 
       .chat-msg-bubble {
-        padding: 10px 14px; border-radius: 14px;
-        font-size: 15px; line-height: 1.6;
+        padding: 0.67em 0.93em; border-radius: 0.93em;
+        font-size: 1em; line-height: 1.6;
         max-width: 100%;
       }
       /* --color-surface-2 is defined for both themes: #f1f5f9 light, #2a2a2e dark */
@@ -7858,7 +7969,6 @@
       /* Chat messages container */
       #ghampus-chat-messages {
         display: flex; flex-direction: column; gap: 10px;
-        flex: 1;
       }
 
       .skills-train-progress-body {
@@ -12699,11 +12809,6 @@
           </div>
           <div id="g-toast-list" class="g-toast-list"></div>
         </div>
-        <!-- Engram-create suggestion banner. An AI client (via MCP `remember`
-             with target_engram=<name>) asked to save into an engram that
-             doesn't exist yet. The sidecar refuses the write and broadcasts
-             a suggestion; we surface it here so the *user* decides whether
-             to create the engram. Never auto-creates. -->
         <div id="engram-suggest-banner" class="engram-suggest hidden" role="dialog" aria-live="polite">
           <div class="engram-suggest-body">
             <div class="engram-suggest-title">
@@ -12766,6 +12871,22 @@
               <button type="button" class="btn-ghost" id="skill-demos-offer-dismiss">Not now</button>
             </div>
           </div>
+        </div>
+        <!-- Ghampus Memory Integrity bubble — synced with #home-attention-strip. -->
+        <div id="ghampus-attention-bubble" class="ghampus-attention-bubble hidden" role="alert" aria-live="assertive">
+          <div class="ghampus-attention-bubble-avatar">
+            <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" />
+            <span class="ghampus-attention-bubble-badge">0</span>
+          </div>
+          <div class="ghampus-attention-bubble-body">
+            <p class="ghampus-attention-bubble-text">Items need your review in Memory Integrity.</p>
+            <div class="ghampus-attention-bubble-actions">
+              <button type="button" class="primary" data-attention-bubble-review>Review</button>
+              <button type="button" data-attention-bubble-corrections>Corrections deck</button>
+              <button type="button" data-attention-bubble-ghampus>Ask Ghampus</button>
+            </div>
+          </div>
+          <button type="button" class="ghampus-attention-bubble-dismiss" data-attention-bubble-dismiss aria-label="Snooze">×</button>
         </div>
         <!-- Top header: cortex identity + global actions -->
         <header class="app-header" data-tauri-drag-region>
@@ -13008,6 +13129,11 @@
                       </div>
                     </div>
 
+                    <!-- Sticky Memory Integrity alert — stays visible while scrolling Home. -->
+                    <div id="cortex-attention-anchor" class="cortex-attention-anchor">
+                      <div id="home-attention-strip" class="home-attention-strip cortex-attention-banner hidden" role="alert" aria-live="assertive"></div>
+                    </div>
+
                     <!-- ── Home overview — visible ONLY on Home (hidden in search/skills
                          modes). Health gauge + federated stats lifted out of the old
                          header; the Mission-Control dashboard cards build out below
@@ -13018,7 +13144,6 @@
                         <button type="button" id="home-coherence-banner-open" class="home-coherence-banner-link">Open Check-in</button>
                         <button type="button" id="home-coherence-banner-dismiss" class="home-coherence-banner-dismiss" aria-label="Dismiss">×</button>
                       </div>
-                      <div id="home-attention-strip" class="home-attention-strip hidden" role="status" aria-live="polite"></div>
                       <!-- Hero: time-aware greeting + one CORTEX-WIDE sentence. -->
                       <div class="home-hero">
                         <div id="home-greeting" class="home-greeting">Welcome back</div>
