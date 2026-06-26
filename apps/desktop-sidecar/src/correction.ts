@@ -91,10 +91,19 @@ export interface LocalLlm {
   name: string;
 }
 
+/** Max recall-ranked candidates kept for edit targeting (LLM + deterministic). */
+const CORRECTION_CANDIDATE_POOL = 6;
+/** Max candidates shown to the local LLM in the edit prompt (smaller context → less scope creep). */
+const LLM_CANDIDATE_LIMIT = 4;
+/** Max edit ops after scope guardrails when the correction implies multiple targets. */
+const MAX_LLM_EDITS_MULTI = 2;
+/** Default max edit ops — most corrections target a single assertion. */
+const MAX_LLM_EDITS_SINGLE = 1;
+
 const SYSTEM_PROMPT = `You edit a personal knowledge graph on the user's behalf.
 You will be given:
   1. A user correction in natural language.
-  2. A small list of candidate nodes that may be wrong.
+  2. A small list of candidate nodes (best match first).
 
 Return a JSON object with this exact shape:
 {
@@ -108,13 +117,86 @@ Return a JSON object with this exact shape:
 }
 
 Rules:
+  - DEFAULT: change ONLY the single best-matching candidate (the first listed). Do not touch other candidates unless the correction explicitly names them or says "all", "both", "every", or lists multiple distinct fixes.
   - Prefer "supersede" over "edit" when the user is correcting factual content — supersede preserves audit lineage.
-  - Use "edit" only for trivial fixes (typos, formatting).
-  - Use "delete" when the user explicitly wants the memory removed.
-  - Use "adds" when the correction adds new information rather than fixing existing nodes.
+  - Use "edit" only for trivial fixes (typos, formatting) on that one node.
+  - Use "delete" ONLY when the user explicitly asked to remove, delete, or forget a memory.
+  - Use "adds" only when the correction adds new information that does not replace an existing node.
   - Never invent nodeIds; use only IDs from the candidate list.
-  - If unsure, return an empty diff rather than guessing.
+  - If unsure which node to change, return an empty diff rather than guessing or editing several nodes.
   - Output JSON only, no prose.`;
+
+/** User correction text signals they intend to fix more than one memory. */
+export function correctionImpliesMultiNodeEdit(correction: string): boolean {
+  const c = correction.toLowerCase();
+  if (/\b(all|both|every|each|multiple|several)\s+(of\s+)?(the\s+)?(memories|notes|entries|nodes|facts|records)\b/.test(c)) return true;
+  if (/\b(all|both|every)\b/.test(c) && /\b(and|also|,)\b/.test(c)) return true;
+  if (/\b(and also|as well as)\b/.test(c)) return true;
+  if (/\b(1\.|2\.|first|second)\b/.test(c) && /\b(and|also)\b/.test(c)) return true;
+  return false;
+}
+
+/** User correction text signals they want content removed, not superseded. */
+export function correctionImpliesDelete(correction: string): boolean {
+  const c = correction.toLowerCase();
+  return /\b(delete|remove|forget|drop|discard|erase|purge)\b/.test(c);
+}
+
+/**
+ * Post-process a local-LLM edit proposal so it cannot silently rewrite unrelated
+ * memories. Drops out-of-pool nodeIds, caps edit count, and strips deletes unless
+ * the user asked for removal.
+ */
+export function scopeLlmCorrectionDiff(
+  diff: CorrectionDiff,
+  candidates: CorrectionCandidate[],
+  correction: string,
+): { diff: CorrectionDiff; scopeWarnings: string[] } {
+  const warnings: string[] = [];
+  const candidateIds = new Set(candidates.map((c) => c.nodeId));
+  const primaryNodeId = candidates[0]?.nodeId;
+  const multiAllowed = correctionImpliesMultiNodeEdit(correction);
+  const deleteAllowed = correctionImpliesDelete(correction);
+  const maxEdits = multiAllowed ? MAX_LLM_EDITS_MULTI : MAX_LLM_EDITS_SINGLE;
+  const maxAdds = multiAllowed ? 2 : 1;
+
+  const validEdits: CorrectionDiff['edits'] = [];
+  for (const edit of diff.edits ?? []) {
+    if (!candidateIds.has(edit.nodeId)) {
+      warnings.push(`Dropped edit on ${edit.nodeId}: node was not in the candidate pool.`);
+      continue;
+    }
+    if (edit.kind === 'delete' && !deleteAllowed) {
+      warnings.push(`Dropped delete on ${edit.nodeId}: correction did not request removal.`);
+      continue;
+    }
+    if (!multiAllowed && primaryNodeId && edit.nodeId !== primaryNodeId) {
+      warnings.push(`Dropped edit on ${edit.nodeId}: scoped to top recall match only.`);
+      continue;
+    }
+    if (validEdits.length >= maxEdits) {
+      warnings.push(`Dropped edit on ${edit.nodeId}: capped at ${maxEdits} operation(s).`);
+      continue;
+    }
+    validEdits.push(edit);
+  }
+
+  const rawAdds = diff.adds ?? [];
+  const validAdds = rawAdds.slice(0, maxAdds);
+  if (rawAdds.length > maxAdds) {
+    warnings.push(`Trimmed adds from ${rawAdds.length} to ${maxAdds}.`);
+  }
+
+  const scopeNote = warnings.length > 0
+    ? `Scope guardrails applied: ${warnings.join(' ')}`
+    : undefined;
+  const reasoning = [diff.reasoning, scopeNote].filter(Boolean).join('\n\n') || undefined;
+
+  return {
+    diff: { reasoning, edits: validEdits, adds: validAdds },
+    scopeWarnings: warnings,
+  };
+}
 
 /** A memory the correction might target. `viaGnn` marks ones the Graphnosis
  *  Neural Network surfaced as predicted-related, rather than direct recall. */
@@ -229,7 +311,7 @@ export async function proposeCorrection(opts: {
   // engram only. Without this, cross-engram nodes out-rank the target and
   // the correction either lands in the wrong engram or misses entirely.
   const subgraph = await opts.host.recall(opts.correction, {
-    budget: { maxTokens: 1500, maxNodes: opts.candidateK ?? 8 },
+    budget: { maxTokens: 1200, maxNodes: opts.candidateK ?? 5 },
     ...(opts.graphIdHint ? { onlyGraphIds: [opts.graphIdHint] } : {}),
   });
   const recallCandidates: { graphId: string; nodeId: string; text: string }[] = [];
@@ -263,7 +345,7 @@ export async function proposeCorrection(opts: {
   // Best-first. With the Neural Network off this is exactly the recall order,
   // so the no-LLM path stays fully deterministic.
   scored.sort((a, b) => b.score - a.score);
-  const candidates: CorrectionCandidate[] = scored.slice(0, 12).map(c => ({
+  const candidates: CorrectionCandidate[] = scored.slice(0, CORRECTION_CANDIDATE_POOL).map(c => ({
     graphId: c.graphId, nodeId: c.nodeId, text: c.text, viaGnn: c.viaGnn,
   }));
 
@@ -284,22 +366,45 @@ export async function proposeCorrection(opts: {
   }
 
   // LLM-assisted path — non-deterministic. The model interprets the correction
-  // across every candidate (including any GNN-surfaced ones) and may propose
-  // several edits at once.
+  // across a small candidate shortlist; scope guardrails cap blast radius.
   if (candidates.length === 0) {
     return { diff: { edits: [], adds: [] }, candidates, mode: 'llm-assisted' };
   }
 
+  const candidatesForLlm = candidates.slice(0, LLM_CANDIDATE_LIMIT);
   const user = [
     `Correction: ${opts.correction}`,
     '',
-    'Candidate nodes:',
-    ...candidates.map(c =>
+    'Candidate nodes (best match first — edit ONLY the first unless the correction explicitly targets more):',
+    ...candidatesForLlm.map(c =>
       `- [${c.nodeId}] (graph: ${c.graphId})${c.viaGnn ? ' [neural-network-predicted]' : ''} ${c.text}`),
   ].join('\n');
 
   const raw = await opts.llm.complete({ system: SYSTEM_PROMPT, user });
-  const diff = DiffSchema.parse(extractJson(raw));
+  const parsed = DiffSchema.parse(extractJson(raw));
+  const scoped = scopeLlmCorrectionDiff(parsed, candidatesForLlm, opts.correction);
+  let diff = scoped.diff;
+
+  const hadLlmChanges = (parsed.edits?.length ?? 0) > 0 || (parsed.adds?.length ?? 0) > 0;
+  const strippedAll = scoped.scopeWarnings.length > 0
+    && diff.edits.length === 0
+    && diff.adds.length === 0
+    && hadLlmChanges;
+  if (strippedAll) {
+    const det = proposeDeterministicCorrection({
+      correction: opts.correction,
+      candidates,
+      gnnExpanded,
+      ...(opts.graphIdHint !== undefined ? { graphIdHint: opts.graphIdHint } : {}),
+    });
+    diff = {
+      ...det.diff,
+      reasoning: [
+        diff.reasoning,
+        'Local LLM proposed out-of-scope changes; fell back to superseding the top recall match only.',
+      ].filter(Boolean).join('\n\n'),
+    };
+  }
   return { diff, candidates, mode: 'llm-assisted' };
 }
 
