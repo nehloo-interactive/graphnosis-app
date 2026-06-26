@@ -31,6 +31,27 @@ export interface AttentionCounts {
   total: number;
 }
 
+interface DiffEdit {
+  kind: 'edit' | 'supersede' | 'delete';
+  nodeId: string;
+  content?: string;
+  reason: string;
+}
+
+interface DiffAdd {
+  text: string;
+  label?: string;
+}
+
+interface PendingCorrection {
+  diffId: string;
+  graphId: string;
+  createdAt: number;
+  reasoning: string | null;
+  edits: DiffEdit[];
+  adds: DiffAdd[];
+}
+
 type IpcFn = <T>(method: string, params?: Record<string, unknown>) => Promise<T>;
 
 export interface WorkbenchDeps {
@@ -73,6 +94,75 @@ function verdictLabel(v?: string): string {
   return '';
 }
 
+function renderDiffOp(d: WorkbenchDeps, op: DiffEdit): string {
+  const node = `<span class="mcp-meta">node <code>${d.escapeHtml(op.nodeId.slice(0, 12))}…</code></span>`;
+  const reason = `<div class="diff-op-reason">${d.escapeHtml(op.reason)}</div>`;
+  if (op.kind === 'delete') {
+    return `<div class="diff-op"><span class="diff-op-kind delete">DELETE</span>${node}${reason}</div>`;
+  }
+  const kindLabel = op.kind === 'supersede' ? 'SUPERSEDE' : 'EDIT';
+  return `<div class="diff-op">
+    <span class="diff-op-kind ${d.escapeHtml(op.kind)}">${kindLabel}</span>${node}
+    <div class="diff-op-content">${d.escapeHtml(op.content ?? '')}</div>
+    ${reason}
+  </div>`;
+}
+
+function renderCorrectionCard(c: PendingCorrection, d: WorkbenchDeps): string {
+  const when = new Date(c.createdAt).toLocaleString();
+  const reasoning = c.reasoning
+    ? `<p class="brain-subtitle">${d.escapeHtml(c.reasoning)}</p>`
+    : '';
+  const editRows = c.edits.map((op) => renderDiffOp(d, op)).join('');
+  const addRows = c.adds.map((a) => `
+    <div class="diff-op">
+      <span class="diff-op-kind add">ADD</span>
+      ${a.label ? `<span class="mcp-meta">${d.escapeHtml(a.label)}</span>` : ''}
+      <div class="diff-op-content">${d.escapeHtml(a.text)}</div>
+    </div>`).join('');
+  const ops = editRows || addRows
+    ? `<div class="g-pending-ops">${editRows}${addRows}</div>`
+    : '<p class="brain-subtitle">Empty diff — nothing to apply.</p>';
+  return `<div class="mi-pair-card mi-correction-card" data-correction-id="${d.escapeHtml(c.diffId)}" id="mi-correction-${d.escapeHtml(c.diffId)}">
+    <div class="mi-pair-head">
+      <span class="sgr-badge">Pending correction</span>
+      <span class="lb-engram-chip">${d.escapeHtml(d.engramName(c.graphId))}</span>
+    </div>
+    ${reasoning}
+    ${ops}
+    <p class="brain-subtitle">Proposed ${d.escapeHtml(when)} · <code>${d.escapeHtml(c.diffId.slice(0, 8))}…</code></p>
+    <div class="mi-pair-actions">
+      <button type="button" class="btn-sm primary" data-mi-correction-apply="${d.escapeHtml(c.diffId)}">Approve</button>
+      <button type="button" class="btn-sm" data-mi-correction-reject="${d.escapeHtml(c.diffId)}">Reject</button>
+    </div>
+  </div>`;
+}
+
+function wireCorrectionActions(host: ParentNode, d: WorkbenchDeps): void {
+  host.querySelectorAll<HTMLButtonElement>('[data-mi-correction-apply]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset['miCorrectionApply'];
+      if (!id) return;
+      try {
+        await d.ipcCall('corrections.apply', { diffId: id });
+      } catch { /* ignore */ }
+      void renderQueue(d);
+      document.dispatchEvent(new CustomEvent('graphnosis:attention-changed'));
+    });
+  });
+  host.querySelectorAll<HTMLButtonElement>('[data-mi-correction-reject]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset['miCorrectionReject'];
+      if (!id) return;
+      try {
+        await d.ipcCall('corrections.reject', { diffId: id });
+      } catch { /* ignore */ }
+      void renderQueue(d);
+      document.dispatchEvent(new CustomEvent('graphnosis:attention-changed'));
+    });
+  });
+}
+
 function renderPairCard(pair: IntegrityPair, d: WorkbenchDeps, actions = true): string {
   const verdict = verdictLabel(pair.temporalVerdict);
   return `<div class="mi-pair-card" data-pair-id="${d.escapeHtml(pair.id)}">
@@ -100,35 +190,43 @@ async function renderQueue(d: WorkbenchDeps): Promise<void> {
   const host = el('mi-tab-body');
   if (!host) return;
   host.innerHTML = '<p class="lb-empty">Loading queue…</p>';
-  const [pairs, dupes, counts] = await Promise.all([
+  const [pairs, dupes, counts, correctionsRes] = await Promise.all([
     d.ipcCall<IntegrityPair[]>('brain:getContradictionPairs', {}),
     d.ipcCall<Array<{ id: string; snippetA: string; snippetB: string; graphId: string }>>('brain:getDuplicatePairs', {}),
     d.ipcCall<AttentionCounts>('brain:getAttentionCounts', {}),
+    d.ipcCall<{ pending: PendingCorrection[] }>('corrections.list', {}).catch(() => ({ pending: [] as PendingCorrection[] })),
   ]);
+  const corrections = correctionsRes.pending ?? [];
   const parts: string[] = [];
-  if (counts.corrections > 0) {
-    parts.push(`<div class="mi-summary-row"><strong>${counts.corrections}</strong> pending correction${counts.corrections === 1 ? '' : 's'}
-      <button type="button" class="btn-sm primary" data-mi-open-corrections>Review corrections</button></div>`);
+  if (corrections.length > 0) {
+    parts.push(`<p class="mi-summary-row"><strong>${corrections.length}</strong> pending correction${corrections.length === 1 ? '' : 's'} — approve or reject below</p>`);
+    parts.push(`<div id="mi-corrections-section">${corrections.map((c) => renderCorrectionCard(c, d)).join('')}</div>`);
+  } else if (counts.corrections > 0) {
+    parts.push(`<p class="home-card-empty">Correction count (${counts.corrections}) is stale — refresh or reopen this tab.</p>`);
   }
   if (dupes.length > 0) {
     parts.push(`<div class="mi-summary-row"><strong>${dupes.length}</strong> duplicate pair${dupes.length === 1 ? '' : 's'} in Check-in</div>`);
   }
-  if (pairs.length === 0 && counts.corrections === 0 && dupes.length === 0) {
+  if (pairs.length === 0 && corrections.length === 0 && dupes.length === 0) {
     host.innerHTML = '<p class="home-card-empty">Nothing needs attention in this workbench — no verified pairs to resolve. '
       + 'Foresight Insights may still show CONFLICT hints from your local LLM; open Insights for those.</p>';
     return;
   }
   const QUEUE_PREVIEW = 3;
   const previewPairs = pairs.slice(0, QUEUE_PREVIEW);
-  parts.push(previewPairs.length
-    ? previewPairs.map((p) => renderPairCard(p, d)).join('')
-      + (pairs.length > QUEUE_PREVIEW
-        ? `<p class="brain-subtitle" style="margin-top:8px;">${pairs.length - QUEUE_PREVIEW} more in queue — scroll to review or resolve these first.</p>`
-        : '')
-    : '<p class="brain-subtitle">No verified contradiction pairs queued — only entity-linked conflicts that pass deterministic checks appear here. '
-      + 'See Foresight Insights for LLM conflict hints.</p>');
+  if (pairs.length > 0 || corrections.length === 0) {
+    parts.push(previewPairs.length
+      ? `<p class="mi-summary-row"><strong>Contradiction pairs</strong></p>${previewPairs.map((p) => renderPairCard(p, d)).join('')}`
+        + (pairs.length > QUEUE_PREVIEW
+          ? `<p class="brain-subtitle" style="margin-top:8px;">${pairs.length - QUEUE_PREVIEW} more in queue — scroll to review or resolve these first.</p>`
+          : '')
+      : (corrections.length === 0
+        ? '<p class="brain-subtitle">No verified contradiction pairs queued — only entity-linked conflicts that pass deterministic checks appear here. '
+          + 'See Foresight Insights for LLM conflict hints.</p>'
+        : '<p class="brain-subtitle">No verified contradiction pairs queued.</p>'));
+  }
   host.innerHTML = parts.join('');
-  host.querySelector('[data-mi-open-corrections]')?.addEventListener('click', () => d.openTrivia());
+  wireCorrectionActions(host, d);
   host.querySelectorAll<HTMLButtonElement>('[data-mi-resolve]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset['id'];
@@ -387,32 +485,5 @@ export async function fetchAttentionCounts(d: Pick<WorkbenchDeps, 'ipcCall'>): P
   }
 }
 
-export function renderAttentionStrip(
-  counts: AttentionCounts,
-  d: Pick<WorkbenchDeps, 'escapeHtml' | 'openTrivia'>,
-): void {
-  const strip = el('home-attention-strip');
-  if (!strip) return;
-  if (counts.total <= 0) {
-    strip.classList.add('hidden');
-    strip.innerHTML = '';
-    return;
-  }
-  const parts: string[] = [];
-  if (counts.corrections > 0) {
-    parts.push(`${counts.corrections} correction${counts.corrections === 1 ? '' : 's'}`);
-  }
-  if (counts.contradictions > 0) {
-    parts.push(`${counts.contradictions} contradiction${counts.contradictions === 1 ? '' : 's'}`);
-  }
-  if (counts.duplicates > 0) {
-    parts.push(`${counts.duplicates} duplicate${counts.duplicates === 1 ? '' : 's'}`);
-  }
-  strip.classList.remove('hidden');
-  strip.innerHTML =
-    `<span class="home-attention-text"><strong>Needs attention:</strong> ${d.escapeHtml(parts.join(' · '))}</span>` +
-    `<button type="button" class="home-attention-cta" data-attention-review>Review in Memory Integrity →</button>` +
-    (counts.corrections > 0 ? `<button type="button" class="home-attention-link" data-attention-corrections>Corrections deck</button>` : '');
-  strip.querySelector('[data-attention-review]')?.addEventListener('click', () => openMemoryIntegrityWorkbench('queue'));
-  strip.querySelector('[data-attention-corrections]')?.addEventListener('click', () => d.openTrivia());
-}
+export { syncAttentionSurfaces, initAttentionSurfaces } from './attention-surfaces';
+export { syncAttentionSurfaces as renderAttentionStrip } from './attention-surfaces';
