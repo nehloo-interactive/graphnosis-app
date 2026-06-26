@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/desktop-sidecar",
-  "version": "1.23.2",
+  "version": "1.23.3",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
@@ -19,6 +19,7 @@
     "smoke:brain": "node --enable-source-maps dist/smoketest-brain.js",
     "smoke:license": "node --enable-source-maps dist/smoketest-license.js",
     "test:contradiction": "node tests/contradiction-eval/run-eval.mjs",
+    "test:correction-scope": "node --test tests/correction-scope.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

@@ -15,6 +15,36 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.23.3 — Home growth, obligation deadlines, and Memory Integrity attention
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-26</p>
+
+Your Cortex home dashboard is more reliable — growth stats load from the op-log, cards stop resetting mid-fetch, and Memory Integrity nudges stay in sync between the sticky banner and Ghampus. Ghampus routes “what’s due” to deterministic obligation recall, auto-indexes deadlines from saved text, and correction proposals are scoped so a single fix cannot rewrite unrelated memories.
+
+### Added
+
+- **Home ingest growth sparkline** — daily `ingestSource` buckets via `activity.growthStats` IPC; Growth card shows real counts with an honest retry when the sidecar is slow.
+- **Obligation auto-extract** — `remember`, clip ingest, and Ghampus saves infer deadline / renewal / review-by dates from natural language (ISO dates, “due Friday”, month-day phrases, Romanian cues).
+- **`recall_obligations` routing** — Ghampus phrases like “what’s due this week” or “list due obligations” route to deterministic obligation recall instead of broad semantic search.
+- **Memory Integrity attention surfaces** — sticky home banner and floating Ghampus bubble share one dismiss signature; snooze clears both until the queue changes.
+- **Correction scope guardrails** — local-LLM edit proposals cap at the top recall match unless you explicitly name multiple targets; deletes require removal language; `test:correction-scope` ships in the sidecar tree.
+- **Docs: HeroDiagram contradiction examples** — in-diagram callouts on the Getting Started overview (not separate UnBrain diagrams).
+
+### Changed
+
+- **Memory Integrity Queue tab** — pending corrections appear alongside contradictions and duplicates in the unified workbench queue.
+- **Ghampus attention nudge** — tab switches and dismiss actions stay in sync with the home attention strip.
+- **Ghampus scroll rendering** — zoom/scroll layout fix for long threads in the Tauri webview.
+- **Standing instructions (`GRAPHNOSIS.md`)** — documents `obligation` metadata on `remember` / `ingest_batch` and the `recall_obligations` tool.
+
+### Fixed
+
+- **Home dashboard tab re-tap** — removed duplicate `showAtlasHomeDashboard()` calls that reset card skeletons mid-flight; `isHomeDashboardView()` gates attention rendering.
+- **Corrections oplog compaction** — concurrent sweep callers share one in-flight promise so compaction does not duplicate work or log spam.
+- **3D Engram Reset** — legend Reset restores real edge categories without forcing the GNN “Predicted” overlay back on.
+
+---
+
 ## v1.23.2 — Ghampus memory commands and Home dashboard reliability
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-25</p>
