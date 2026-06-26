@@ -19,6 +19,15 @@ into **10 groups** — pick by intent; the tool name shapes the audit footer.
    asked. Save in the user's language; never translate "for safekeeping".
    Route topical notes with `target_engram`; call `stats` if you don't know
    the engrams yet.
+   **Deadlines & dated todos:** when saving work with a due date, renewal, or
+   review-by date, pass structured `obligation` metadata on `remember` /
+   `ingest_batch` (`obligationType`: `deadline` | `renewal` | `review-by`,
+   `expiresAt`: Unix ms). Example: `Remember: finish Q2 budget review by
+   June 30 — obligation deadline expiresAt=<ms>`. If you omit it, the sidecar
+   **auto-extracts** high-confidence dates from the text (ISO dates, "due
+   Friday", "deadline: 30 June", etc.) — but explicit metadata is more
+   reliable. To list what's due, call `recall_obligations` (deterministic,
+   no LLM) instead of broad `recall`.
 
 ## Query well — recall quality lives or dies here
 
@@ -105,11 +114,16 @@ retry. If they type SKIP, do not retry and do not invent the phrase.
 - `recent` — most recently ingested sources, all engrams.
 - `get_engram_schema` — metadata (tier, template, display name).
 
-### Structured recall (4)
+### Structured recall (5)
 - `recall_structured` — `recall` as JSON node array.
 - `recall_with_citations` — inline per-fact source citations.
 - `compare_engrams` — same query, two engrams, side-by-side.
 - `cross_search` — federated recall over a hand-picked subset of engrams.
+- `recall_obligations` — deterministic list of deadline / renewal / review-by
+  items indexed from `remember` / `ingest_batch` obligation metadata (and
+  auto-extracted dates). Filter with `due_within_days`, `obligation_type`,
+  `target_engram`. Sorted by `expiresAt`. Use for "what's due this week?",
+  overdue renewals, etc. — not semantic `recall`.
 
 ### Source operations (3)
 - `find_source` — keyword search across source IDs / refs / kinds.
