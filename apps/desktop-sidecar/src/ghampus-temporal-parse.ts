@@ -3,6 +3,8 @@
  * No cloud LLM — regex + calendar math only.
  */
 
+import type { ObligationWriteInput } from './obligation-index.js';
+
 export interface ParsedDue {
   expiresAt: number;
   /** True when an explicit clock time was parsed (not midnight-only). */
@@ -180,7 +182,85 @@ export function extractDueDateFromLine(line: string, now = new Date()): ParsedDu
     return { expiresAt: withClock.date.getTime(), hasTime: withClock.hasTime };
   }
 
+  const weekdayDueRe = new RegExp(
+    `\\b(?:due|deadline|by|before|termen|scadent|p(?:â|a)n(?:ă|a)\\s+(?:pe|la))\\s*(${WEEKDAY_NAMES})\\b`,
+    'i',
+  );
+  const weekdayDue = text.match(weekdayDueRe);
+  if (weekdayDue) {
+    const idx = weekdayIndex(weekdayDue[1]!);
+    if (idx !== undefined) {
+      const base = upcomingWeekday(idx, now);
+      const withClock = applyClock(base, text);
+      return { expiresAt: withClock.date.getTime(), hasTime: withClock.hasTime };
+    }
+  }
+
+  const hasTemporalCue = /\b(?:due|deadline|renewal?|review|termen|scadent|todo|task|overdue)\b/i.test(text)
+    || lineLooksTemporalTodo(text);
+
+  if (hasTemporalCue) {
+    const monthFirst = text.match(
+      /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|ian(?:uarie)?|feb(?:ruarie)?|mar(?:tie)?|apr(?:ilie)?|mai|iun(?:ie)?|iul(?:ie)?|aug(?:ust)?|sep(?:tembrie)?|oct(?:ombrie)?|noi(?:embrie)?|dec(?:embrie)?)\s+(\d{1,2})(?:st|nd|rd|th)?\b/i,
+    );
+    if (monthFirst) {
+      const month = monthFromToken(monthFirst[1]!);
+      const day = parseInt(monthFirst[2]!, 10);
+      if (month !== undefined && day >= 1 && day <= 31) {
+        const base = new Date(resolveYear(month, day, now), month, day);
+        const withClock = applyClock(base, text);
+        return { expiresAt: withClock.date.getTime(), hasTime: withClock.hasTime };
+      }
+    }
+
+    const dayFirst = text.match(
+      /\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|ian(?:uarie)?|feb(?:ruarie)?|mar(?:tie)?|apr(?:ilie)?|mai|iun(?:ie)?|iul(?:ie)?|aug(?:ust)?|sep(?:tembrie)?|oct(?:ombrie)?|noi(?:embrie)?|dec(?:embrie)?)\b/i,
+    );
+    if (dayFirst) {
+      const day = parseInt(dayFirst[1]!, 10);
+      const month = monthFromToken(dayFirst[2]!);
+      if (month !== undefined && day >= 1 && day <= 31) {
+        const base = new Date(resolveYear(month, day, now), month, day);
+        const withClock = applyClock(base, text);
+        return { expiresAt: withClock.date.getTime(), hasTime: withClock.hasTime };
+      }
+    }
+  }
+
   return null;
+}
+
+function inferObligationType(text: string): ObligationWriteInput['obligationType'] {
+  const lower = text.toLowerCase();
+  if (/\b(review|revis|verific)\b/i.test(lower)) return 'review-by';
+  if (/\b(renew|reînno)/i.test(lower)) return 'renewal';
+  return 'deadline';
+}
+
+/**
+ * Deterministic obligation metadata from memory text when the client did not
+ * pass `obligation`. Idempotent — returns undefined when no high-confidence date.
+ */
+export function inferObligationFromText(
+  text: string,
+  now = new Date(),
+): ObligationWriteInput | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+
+  const candidates = [
+    trimmed,
+    ...trimmed.split('\n').map((l) => l.trim()).filter((l) => l.length > 0 && lineLooksTemporalTodo(l)),
+  ];
+  const seen = new Set<string>();
+  for (const line of candidates) {
+    if (seen.has(line)) continue;
+    seen.add(line);
+    const due = extractDueDateFromLine(line, now);
+    if (!due) continue;
+    return { obligationType: inferObligationType(line), expiresAt: due.expiresAt };
+  }
+  return undefined;
 }
 
 /** Resolved calendar window for a relative temporal phrase in memory text. */

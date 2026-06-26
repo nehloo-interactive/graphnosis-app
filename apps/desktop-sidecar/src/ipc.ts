@@ -1584,6 +1584,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       });
       return { events: enriched, actors, hasMore, nextCursor, lastCompaction: deps.host.getLastOplogCompaction() };
     }
+    case 'activity.growthStats': {
+      const a = z.object({
+        days: z.number().int().positive().max(365).optional(),
+      }).parse(params ?? {});
+      return deps.host.getIngestGrowthStats(a.days ?? 90);
+    }
     case 'activity.log': {
       const args = z.object({
         graphId: z.string(),

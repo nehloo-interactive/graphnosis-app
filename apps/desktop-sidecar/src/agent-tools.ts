@@ -15,7 +15,7 @@
 import type { GraphnosisHost } from './host.js';
 import type { SkillTrainer } from './skill-trainer.js';
 import type { AgentToolName } from './agent-types.js';
-import { augmentMemoryWithTemporalContext } from './ghampus-temporal-parse.js';
+import { augmentMemoryWithTemporalContext, inferObligationFromText } from './ghampus-temporal-parse.js';
 import { stripInternalSourceRefPrefix } from './ghampus-recall-format.js';
 
 export interface AgentToolDeps {
@@ -357,6 +357,7 @@ async function runRemember(deps: AgentToolDeps, args: RememberToolArgs): Promise
     ? `ghampus:${args.label.slice(0, 60).replace(/[^\w\s-]/g, '').trim()}-${Date.now().toString(36)}`
     : `ghampus:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const content = augmentMemoryWithTemporalContext(args.content).text;
+  const obligation = inferObligationFromText(content);
   // `ai-conversation` is the closest existing SourceRecord.kind for a
   // memory captured during an interactive turn. Ghampus saves are tagged
   // `addedBy: 'ghampus'` so listRecentSaves can filter without scanning
@@ -366,7 +367,10 @@ async function runRemember(deps: AgentToolDeps, args: RememberToolArgs): Promise
     'ai-conversation',
     ref,
     { kind: 'markdown', content, sourceRef: ref },
-    { addedBy: 'ghampus' },
+    {
+      addedBy: 'ghampus',
+      ...(obligation ? { obligation } : {}),
+    },
   );
   return {
     sourceId: result.sourceId,

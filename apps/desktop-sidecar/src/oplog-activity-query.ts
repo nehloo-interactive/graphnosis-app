@@ -34,6 +34,48 @@ export type ActivityOplogResult = {
   nextCursor?: ActivityOplogCursor;
 };
 
+export type IngestGrowthQuery = {
+  oplogDir: string;
+  key: Uint8Array;
+  readOpts: oplog.ReadOpLogOptions;
+  /** Number of calendar-day buckets ending today (default 90). */
+  days?: number;
+};
+
+export type IngestGrowthResult = {
+  total: number;
+  /** One count per day, oldest → newest (length === days). */
+  buckets: number[];
+  days: number;
+};
+
+function dayStartMs(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function ingestGrowthRange(days: number): { since: number; todayStart: number; buckets: number[] } {
+  const todayStart = dayStartMs(Date.now());
+  const since = todayStart - (days - 1) * 86_400_000;
+  return { since, todayStart, buckets: new Array(days).fill(0) as number[] };
+}
+
+function bucketIngestEvent(
+  ev: OpLogEvent,
+  days: number,
+  since: number,
+  todayStart: number,
+  buckets: number[],
+): boolean {
+  if (ev.op !== 'ingestSource') return false;
+  if (ev.ts <= since) return false;
+  const idx = days - 1 - Math.floor((todayStart - dayStartMs(ev.ts)) / 86_400_000);
+  if (idx < 0 || idx >= days) return false;
+  buckets[idx]! += 1;
+  return true;
+}
+
 function readU16(u8: Uint8Array, at: number): number {
   return u8[at]! | (u8[at + 1]! << 8);
 }
@@ -303,6 +345,76 @@ export async function queryOplogForActivity(q: ActivityOplogQuery): Promise<Acti
     hasMore,
     ...(last ? { nextCursor: { ts: last.ts, id: last.id } } : {}),
   };
+}
+
+/** Tail-first op-log scan that aggregates ingestSource into daily buckets — no event payload. */
+export async function queryOplogIngestGrowth(q: IngestGrowthQuery): Promise<IngestGrowthResult> {
+  const days = q.days ?? 90;
+  const { since, todayStart, buckets } = ingestGrowthRange(days);
+  let total = 0;
+  const now = q.readOpts.now ?? Date.now();
+  const maxSkew = q.readOpts.maxClockSkewMs ?? 86_400_000;
+
+  let entries: string[] = [];
+  try {
+    entries = await fs.readdir(q.oplogDir);
+  } catch {
+    return { total: 0, buckets, days };
+  }
+
+  outer:
+  for (const name of entries) {
+    if (!name.endsWith('.oplog')) continue;
+    const buf = await fs.readFile(path.join(q.oplogDir, name));
+    const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const isV2 = startsWith(u8, V2_MAGIC);
+    const v2Starts = isV2 ? indexV2ChunkStarts(u8) : [];
+    const v1Chunks = isV2 ? [] : indexV1Chunks(u8);
+    const chunkCount = isV2 ? v2Starts.length : v1Chunks.length;
+
+    for (let i = chunkCount - 1; i >= 0; i--) {
+      const chunkEvents = isV2
+        ? await decryptV2ChunkEvents(u8, v2Starts[i]!, q.key, q.readOpts, name)
+        : await decryptV1ChunkEvents(
+          u8.subarray(v1Chunks[i]!.ctAt, v1Chunks[i]!.ctAt + v1Chunks[i]!.ctLen),
+          q.key,
+        );
+
+      if (chunkEvents.length === 0) continue;
+
+      let maxTs = chunkEvents[0]!.ts;
+      let minTs = chunkEvents[0]!.ts;
+      for (const ev of chunkEvents) {
+        if (ev.ts > maxTs) maxTs = ev.ts;
+        if (ev.ts < minTs) minTs = ev.ts;
+      }
+
+      if (minTs > todayStart + 86_400_000) continue;
+      if (maxTs <= since) break outer;
+
+      for (let j = chunkEvents.length - 1; j >= 0; j--) {
+        const ev = chunkEvents[j]!;
+        if (typeof ev.ts === 'number' && ev.ts > now + maxSkew) continue;
+        if (ev.ts <= since) continue;
+        if (bucketIngestEvent(ev, days, since, todayStart, buckets)) total += 1;
+      }
+    }
+  }
+
+  return { total, buckets, days };
+}
+
+/** Aggregate ingest growth from a warm full op-log cache. */
+export function sliceOplogCacheForIngestGrowth(
+  all: OpLogEvent[],
+  days = 90,
+): IngestGrowthResult {
+  const { since, todayStart, buckets } = ingestGrowthRange(days);
+  let total = 0;
+  for (const ev of all) {
+    if (bucketIngestEvent(ev, days, since, todayStart, buckets)) total += 1;
+  }
+  return { total, buckets, days };
 }
 
 /** Slice a warm full op-log cache without re-reading disk. */

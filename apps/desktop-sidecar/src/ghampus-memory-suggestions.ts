@@ -13,7 +13,7 @@ import type { GraphnosisHost } from './host.js';
 import type { BroadcastRawFn } from './events.js';
 import type { LocalLlm } from './correction.js';
 import { listRecentSaves } from './agent-tools.js';
-import { extractDueDateFromLine, augmentMemoryWithTemporalContext } from './ghampus-temporal-parse.js';
+import { augmentMemoryWithTemporalContext, inferObligationFromText } from './ghampus-temporal-parse.js';
 import { extractEngramScopeFromQuery } from './ghampus-intent.js';
 import { isGhampusBusy } from './ghampus-busy.js';
 
@@ -162,13 +162,7 @@ function extractCandidateSnippet(userText: string): string {
 }
 
 function detectObligation(userText: string): MemorySuggestionObligation | undefined {
-  const due = extractDueDateFromLine(userText);
-  if (!due) return undefined;
-  const lower = userText.toLowerCase();
-  let obligationType: MemorySuggestionObligation['obligationType'] = 'deadline';
-  if (/\b(review|revis|verific)\b/i.test(lower)) obligationType = 'review-by';
-  else if (/\b(renew|reînno)/i.test(lower)) obligationType = 'renewal';
-  return { obligationType, expiresAt: due.expiresAt };
+  return inferObligationFromText(userText);
 }
 
 function shouldSkipUserMessage(userText: string): string | null {

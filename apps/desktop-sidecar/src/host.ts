@@ -43,7 +43,12 @@ import { extractQueryEntities } from './host/recall.js';
 import { invalidateQueryEnrichmentCache } from './query-enrichment-cache.js';
 import { bundledDocForRef } from './docs-ingest.js';
 import { actorOf } from './activity-actors.js';
-import { queryOplogForActivity, sliceOplogCacheForActivity } from './oplog-activity-query.js';
+import {
+  queryOplogForActivity,
+  queryOplogIngestGrowth,
+  sliceOplogCacheForActivity,
+  sliceOplogCacheForIngestGrowth,
+} from './oplog-activity-query.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -333,6 +338,12 @@ export class GraphnosisHost {
    * rather than spawning N concurrent disk reads.
    */
   private _oplogReadPromise: Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> | null = null;
+  /**
+   * In-flight corrections sweep + compaction. Shared across concurrent callers
+   * of `refreshAllCorrectionsFromOplog()` (Activity IPC, idle maintenance) so
+   * only one compaction attempt runs at a time and "starting" logs aren't duplicated.
+   */
+  private _correctionsSweepPromise: Promise<OplogHousekeepingResult> | null = null;
   /** In-process cache for mcp-audit.enc reads — invalidated on append. */
   private _mcpAuditCache: import('./mcp-audit.js').McpAuditEvent[] | null = null;
   /**
@@ -5207,6 +5218,15 @@ export class GraphnosisHost {
    * oplog decryptions that starved the loading loop's readFile calls.
    */
   async refreshAllCorrectionsFromOplog(): Promise<OplogHousekeepingResult> {
+    if (this._correctionsSweepPromise) return this._correctionsSweepPromise;
+
+    this._correctionsSweepPromise = this._refreshAllCorrectionsFromOplogOnce().finally(() => {
+      this._correctionsSweepPromise = null;
+    });
+    return this._correctionsSweepPromise;
+  }
+
+  private async _refreshAllCorrectionsFromOplogOnce(): Promise<OplogHousekeepingResult> {
     const noop: OplogHousekeepingResult = { compaction: { compacted: false } };
     try {
       const t0 = Date.now();
@@ -5977,6 +5997,20 @@ export class GraphnosisHost {
       key: this.key,
       readOpts: this.oplogReadOptions(),
       ...base,
+    });
+  }
+
+  /** Daily ingestSource counts for the Home growth sparkline — aggregates during scan, no enrichment. */
+  async getIngestGrowthStats(days = 90): Promise<{ total: number; buckets: number[]; days: number }> {
+    const bounded = Math.min(Math.max(Math.floor(days), 7), 365);
+    if (this._oplogReadCache && this._oplogReadCache.seq === this._oplogWriteSeq) {
+      return sliceOplogCacheForIngestGrowth(this._oplogReadCache.events, bounded);
+    }
+    return queryOplogIngestGrowth({
+      oplogDir: path.join(this.opts.cortexDir, 'oplog'),
+      key: this.key,
+      readOpts: this.oplogReadOptions(),
+      days: bounded,
     });
   }
 

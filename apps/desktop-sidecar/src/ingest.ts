@@ -14,6 +14,7 @@ import { unzipSync, strFromU8 } from 'fflate';
 // still loads (or surfaces a clean error) when the user actually pastes
 // a URL to ingest.
 import type { ObligationWriteInput } from './obligation-index.js';
+import { inferObligationFromText } from './ghampus-temporal-parse.js';
 import type { GraphnosisHost } from './host.js';
 import type { AppendDocumentInput } from './graphnosis-adapter.js';
 import { beginIngest, endIngest } from './client-activity.js';
@@ -479,6 +480,8 @@ async function ingestClipImpl(
     content = `# ${label}\n\n${text}`;
   }
 
+  const obligation = opts?.obligation ?? inferObligationFromText(text);
+
   const rec = await host.ingest(graphId, sourceKind, sourceRef, {
     kind,
     content,
@@ -488,7 +491,7 @@ async function ingestClipImpl(
     ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
     ...(opts?.skipSave ? { skipSave: true } : {}),
     ...(opts?.skipAutoRelink ? { skipAutoRelink: true } : {}),
-    ...(opts?.obligation ? { obligation: opts.obligation } : {}),
+    ...(obligation ? { obligation } : {}),
   });
   if (opts?.addedBy) {
     await host.gllWriter.append({

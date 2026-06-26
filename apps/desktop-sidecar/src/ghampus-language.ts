@@ -582,7 +582,16 @@ export function isAdviceOrDecisionQuery(text: string): boolean {
 /** Temporal todo/deadline lookup — prefer recall_obligations over broad recall. */
 export function isTemporalTodoQuery(msg: string): boolean {
   const m = msg.trim();
-  return TASK_NOUN_RE.test(m)
+  if (
+    /\b(?:list|show|what(?:'s| is)|find|recall)\b.*\b(?:obligation|deadline)s?\b/i.test(m)
+    || /\blist due obligations?\b/i.test(m)
+    || /\bwhat(?:'s| is) due\b/i.test(m)
+    || /\b(?:obligation|deadline)s?\s+(?:due|this week|next week|today|tomorrow)\b/i.test(m)
+    || /\b(?:due|overdue)\b.*\b(?:this week|next week|cortex|memor(?:y|ies)|engram)\b/i.test(m)
+  ) {
+    return true;
+  }
+  return (TASK_NOUN_RE.test(m) || TASK_DEADLINE_NOUN_RE.test(m))
     && /\b(?:due|overdue|past due|tomorrow|today|this week|expir(?:e|ing|es)?|deadline)\b/i.test(m);
 }
 
