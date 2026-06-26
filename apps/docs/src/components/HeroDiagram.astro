@@ -1,32 +1,66 @@
 ---
 interface Props {
   variant?: 'consumer' | 'b2b';
+  persona?: string;
 }
-const { variant = 'consumer' } = Astro.props;
+const { variant = 'consumer', persona = '' } = Astro.props;
 ---
 
-<div id="hero-diagram" data-variant={variant} class="select-none"></div>
+<div id="hero-diagram" data-variant={variant} data-persona={persona} class="select-none"></div>
 
 <script is:inline src="https://unpkg.com/roughjs@4.6.6/bundled/rough.js"></script>
 <script is:inline>
 (function () {
-  var C = { human: '#c4c6d6', brain: '#67e8f9', ai: '#a78bfa', white: '#f0f0f5', tools: '#f59e0b' };
+  var C = { human: '#c4c6d6', brain: '#67e8f9', ai: '#a78bfa', white: '#f0f0f5', tools: '#f59e0b', conflict: '#fca5a5' };
 
   var CONSUMER_PAIRS = [
-    { p: '"which car did we settle on?"',  a1: '"Used Volvo XC60 —',    a2: 'fits budget, April 2"' },
-    { p: '"which college did Maya pick?"', a1: '"UC Davis, pre-med,',   a2: 'scholarship, May 1"' },
+    { p: '"which car did we settle on?"',  a1: '"Used Volvo XC60 —',    a2: 'fits budget, April 2"', conflict: true, b1: '"Honda CR-V —', b2: 'lower mileage, March 28"', hw: ['Volvo', 'Honda', 'budget', 'mileage'] },
+    { p: '"which college did Maya pick?"', a1: '"UC Davis, pre-med,',   a2: 'scholarship, May 1"', conflict: true, b1: '"Berkeley, waitlist', b2: 'accepted, May 3"', hw: ['Davis', 'Berkeley', 'scholarship', 'waitlist'] },
     { p: '"what did the study conclude?"', a1: '"Sleep beats diet',     a2: 'for memory — noted"', w: 'Sleep diet memory noted' },
     { p: '"why did we pick Portland?"',    a1: '"Schools + lower cost,', a2: 'confirmed March 18"' },
-    { p: '"when are we moving?"',          a1: '"Keys June 20,',         a2: 'departure June 15"' },
+    { p: '"when are we moving?"',          a1: '"Keys June 20,',         a2: 'departure June 15"', conflict: true, b1: '"Keys June 20,', b2: 'departure June 22"', hw: ['June', '20', '15', '22'] },
   ];
 
   var B2B_PAIRS = [
-    { p: '"renewal risk for Acme Corp?"',    a1: '"High — 3 issues,',     a2: 'last call Feb 14"' },
+    { p: '"renewal risk for Acme Corp?"',    a1: '"High — 3 issues,',     a2: 'last call Feb 14"', conflict: true, b1: '"Low — renewed,', b2: 'signed March 1"', hw: ['High', 'Low', 'issues', 'renewed'] },
     { p: '"which ADR governs auth layer?"',  a1: '"ADR-042 JWT refresh,', a2: 'confirmed Sept 12"' },
-    { p: '"who owns EU compliance?"',        a1: '"Ana led it,',          a2: 'filed March 3"' },
-    { p: '"what did Q3 retro flag?"',        a1: '"Deploy freeze cost',   a2: 'two sprint days"' },
-    { p: '"client budget ceiling?"',         a1: '"$240k cap,',           a2: 'confirmed April 9"' },
+    { p: '"who owns EU compliance?"',        a1: '"Ana led it,',          a2: 'filed March 3"', conflict: true, b1: '"Marco owns it,', b2: 'filed Jan 15"', hw: ['Ana', 'Marco', 'filed', 'owns'] },
+    { p: '"what did Q3 retro flag?"',        a1: '"Deploy freeze cost',   a2: 'two sprint days"', conflict: true, b1: '"Deploy freeze cost', b2: 'five sprint days"', hw: ['freeze', 'cost', 'two', 'five'] },
+    { p: '"client budget ceiling?"',         a1: '"$240k cap,',           a2: 'confirmed April 9"', conflict: true, b1: '"$320k cap,', b2: 'verbal April 12"', hw: ['240k', '320k', 'cap', 'verbal'] },
   ];
+
+  var PERSONA_PAIRS = {
+    personal: [
+      { p: '"which college did Maya pick?"', a1: '"UC Davis, pre-med,', a2: 'scholarship, May 1"', conflict: true, b1: '"Berkeley, waitlist', b2: 'accepted, May 3"', hw: ['Davis', 'Berkeley', 'scholarship', 'waitlist'] },
+      { p: '"which car did we settle on?"',  a1: '"Used Volvo XC60 —', a2: 'fits budget, April 2"', conflict: true, b1: '"Honda CR-V —', b2: 'lower mileage, March 28"', hw: ['Volvo', 'Honda', 'budget', 'mileage'] },
+      { p: '"what did the study conclude?"', a1: '"Sleep beats diet',   a2: 'for memory — noted"', w: 'Sleep diet memory noted' },
+    ],
+    team: [
+      { p: '"what did Q3 retro flag?"',        a1: '"Deploy freeze cost', a2: 'two sprint days"', conflict: true, b1: '"Deploy freeze cost', b2: 'five sprint days"', hw: ['freeze', 'cost', 'two', 'five'] },
+      { p: '"who owns the auth layer?"',       a1: '"Platform team owns', a2: 'it — ADR-042"', conflict: true, b1: '"Security team owns', b2: 'it — ticket 1842"', hw: ['Platform', 'Security', 'owns', 'ADR'] },
+      { p: '"which ADR governs auth layer?"',  a1: '"ADR-042 JWT refresh,', a2: 'confirmed Sept 12"' },
+    ],
+    business: [
+      { p: '"client budget ceiling?"',         a1: '"$240k cap,', a2: 'confirmed April 9"', conflict: true, b1: '"$320k cap,', b2: 'verbal April 12"', hw: ['240k', '320k', 'cap', 'verbal'] },
+      { p: '"renewal risk for Acme Corp?"',    a1: '"High — 3 issues,', a2: 'last call Feb 14"', conflict: true, b1: '"Low — renewed,', b2: 'signed March 1"', hw: ['High', 'Low', 'issues', 'renewed'] },
+      { p: '"who owns EU compliance?"',        a1: '"Ana led it,', a2: 'filed March 3"' },
+    ],
+    regulated: [
+      { p: '"HIPAA audit finding status?"',    a1: '"Remediated —', a2: 'closed Feb 28"', conflict: true, b1: '"Still open —', b2: 'due April 15"', hw: ['Remediated', 'open', 'closed', 'due'] },
+      { p: '"data retention policy?"',         a1: '"7 years —', a2: 'legal approved"', conflict: true, b1: '"3 years —', b2: 'ops default"', hw: ['years', 'legal', 'ops', 'default'] },
+      { p: '"designated privacy officer?"',    a1: '"Ana Patel,', a2: 'appointed 2024"' },
+    ],
+    enterprise: [
+      { p: '"which ADR governs auth?"',        a1: '"ADR-042 JWT refresh,', a2: 'confirmed Sept 12"', conflict: true, b1: '"ADR-051 SAML SSO,', b2: 'draft Oct 3"', hw: ['JWT', 'SAML', '042', '051'] },
+      { p: '"EU data residency?"',             a1: '"Frankfurt region —', a2: 'contract clause 8"', conflict: true, b1: '"Dublin region —', b2: 'procurement memo"', hw: ['Frankfurt', 'Dublin', 'region', 'clause'] },
+      { p: '"SSO rollout timeline?"',        a1: '"Q2 pilot,', a2: 'full Q3"' },
+    ],
+    'air-gapped': [
+      { p: '"Pump 7 maintenance interval?"',   a1: '"Every 90 days —', a2: 'OEM spec"', conflict: true, b1: '"Every 180 days —', b2: 'plant override"', hw: ['90', '180', 'days', 'OEM'] },
+      { p: '"runbook deviation for seal?"',      a1: '"Voided warranty —', a2: 'logged Feb 9"', conflict: true, b1: '"Within tolerance —', b2: 'tech note Mar 2"', hw: ['warranty', 'tolerance', 'voided', 'logged'] },
+      { p: '"SCADA alert threshold?"',         a1: '"Pressure drop 12%,', a2: 'alarm set"' },
+    ],
+  };
 
   var CORTEX_LINES = [
     'never leaves device in full',
@@ -159,6 +193,7 @@ const { variant = 'consumer' } = Astro.props;
   }
 
   function pickWords(pair) {
+    if (pair.hw && pair.hw.length >= 4) return pair.hw.slice(0, 4);
     var src = pair.w ? pair.w : (pair.a1 + ' ' + pair.a2);
     var tokens = src
       .replace(/["""''—+,\.]/g, ' ')
@@ -223,6 +258,68 @@ const { variant = 'consumer' } = Astro.props;
     };
   }
 
+  function makeConflictAmber(svg) {
+    return function (x, y, str, size) {
+      var fs = size || 12;
+      var approxW = str.length * fs * 0.52 + 16;
+      var bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('x', x - approxW / 2); bg.setAttribute('y', y - fs + 1);
+      bg.setAttribute('width', approxW); bg.setAttribute('height', fs + 5);
+      bg.setAttribute('rx', 3); bg.setAttribute('fill', 'rgba(248,113,113,0.18)');
+      svg.appendChild(bg);
+      var el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      el.setAttribute('x', x); el.setAttribute('y', y);
+      el.setAttribute('text-anchor', 'middle');
+      el.setAttribute('fill', C.conflict);
+      el.setAttribute('font-size', fs);
+      el.setAttribute('font-family', 'monospace');
+      el.textContent = str;
+      svg.appendChild(el);
+    };
+  }
+
+  function isConflict(pair) {
+    return pair.conflict && pair.b1 && pair.b2;
+  }
+
+  function renderAnswers(amber, conflictAmber, pair, x, y, fs, mono) {
+    if (isConflict(pair)) {
+      amber(x, y, pair.a1, fs);
+      amber(x, y + 14, pair.a2, fs);
+      conflictAmber(x, y + 32, pair.b1, fs);
+      conflictAmber(x, y + 46, pair.b2, fs);
+      return y + 62;
+    }
+    amber(x, y, pair.a1, fs);
+    amber(x, y + 14, pair.a2, fs);
+    return y + 30;
+  }
+
+  function clientFooterLabel(pair) {
+    return isConflict(pair) ? 'conflict detected · you decide' : 'consistent answer';
+  }
+
+  function cortexSubline(pair, cortexLine) {
+    return isConflict(pair) ? '⚠ memory integrity · surfaced' : cortexLine;
+  }
+
+  function pickPair(PAIRS, pairIndex) {
+    if (pairIndex != null && pairIndex >= 0) return PAIRS[pairIndex % PAIRS.length];
+    return PAIRS[Math.floor(Math.random() * PAIRS.length)];
+  }
+
+  function resolvePairs(el) {
+    var variant = el.getAttribute('data-variant') || 'consumer';
+    var persona = el.getAttribute('data-persona') || '';
+    if (persona && PERSONA_PAIRS[persona]) return PERSONA_PAIRS[persona];
+    return variant === 'b2b' ? B2B_PAIRS : CONSUMER_PAIRS;
+  }
+
+  function resolveTools(el) {
+    var variant = el.getAttribute('data-variant') || 'consumer';
+    return variant === 'b2b' ? B2B_TOOLS : CONSUMER_TOOLS;
+  }
+
   function addLogo(svg, x, y, size) {
     var img = document.createElementNS('http://www.w3.org/2000/svg', 'image');
     img.setAttribute('href', '/graphnosis-logo.png');
@@ -231,10 +328,11 @@ const { variant = 'consumer' } = Astro.props;
     svg.appendChild(img);
   }
 
-  function drawDesktop(container, PAIRS, TOOLS) {
-    var pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
+  function drawDesktop(container, PAIRS, TOOLS, pairIndex) {
+    var pair = pickPair(PAIRS, pairIndex);
     var words = pickWords(pair);
     var cortexLine = CORTEX_LINES[Math.floor(Math.random() * CORTEX_LINES.length)];
+    var conflict = isConflict(pair);
     // tools box grows with number of lines: title at y=262, first line y=282, spacing 14px
     var toolsBoxH = Math.max(148, 54 + (TOOLS.length - 1) * 14);
     var svgH = Math.max(410, 243 + toolsBoxH + 20);
@@ -242,6 +340,7 @@ const { variant = 'consumer' } = Astro.props;
     var rc = rough.svg(svg);
     var tx = makeTx(svg);
     var amber = makeAmber(svg);
+    var conflictAmber = makeConflictAmber(svg);
 
     svg.appendChild(rc.rectangle(4, 12, 272, 160,  { roughness:2.2, stroke:C.human, strokeWidth:1.6, fill:'#16161f', fillStyle:'solid' }));
     svg.appendChild(rc.ellipse(500, 92, 324, 160,   { roughness:2.8, stroke:C.brain, strokeWidth:2.4, fill:'#0b1a1e', fillStyle:'solid' }));
@@ -282,20 +381,32 @@ const { variant = 'consumer' } = Astro.props;
     tx(500,  86, 'Graphnosis',                      C.brain, 17, '700');
     tx(500, 102, 'encrypted · local · indexed · retrieved', C.human, 11);
     tx(500, 116, 'dual-graph over the same nodes',          C.human, 11);
-    tx(500, 130, cortexLine,                                C.human, 11);
+    if (conflict) {
+      tx(500, 130, cortexSubline(pair, cortexLine), '#fde68a', 11);
+      tx(500, 144, 'not silently merged', C.human, 10);
+    } else {
+      tx(500, 130, cortexLine, C.human, 11);
+    }
     tx(500, 152, 'your cortex',                             C.human, 14);
 
     tx(860,  38, '🤖',             C.ai,   24);
     tx(860,  62, 'any AI client',  C.human, 14, '600');
-    amber(860, 82,  pair.a1, 12);
-    amber(860, 98,  pair.a2, 12);
-    tx(860, 120, 'claude · cursor',   C.ai, 12, 'normal', true);
-    tx(860, 136, 'copilot · zed',     C.ai, 12, 'normal', true);
-    tx(860, 164, 'consistent answer', C.human, 14);
+    if (conflict) {
+      renderAnswers(amber, conflictAmber, pair, 860, 74, 11);
+      tx(860, 138, 'claude · cursor',   C.ai, 11, 'normal', true);
+      tx(860, 152, 'copilot · zed',     C.ai, 11, 'normal', true);
+      tx(860, 168, clientFooterLabel(pair), '#fde68a', 12);
+    } else {
+      amber(860, 82,  pair.a1, 12);
+      amber(860, 98,  pair.a2, 12);
+      tx(860, 120, 'claude · cursor',   C.ai, 12, 'normal', true);
+      tx(860, 136, 'copilot · zed',     C.ai, 12, 'normal', true);
+      tx(860, 164, clientFooterLabel(pair), C.human, 14);
+    }
 
     tx(307,  57, 'feeds context',              C.human, 12, 'normal', true);
-    tx(693, 133, 'retrieves memory /', C.human, 11, 'normal', true);
-    tx(693, 146, 'edit',              C.human, 11, 'normal', true);
+    tx(693, 133, conflict ? 'surfaces conflict /' : 'retrieves memory /', C.human, 11, 'normal', true);
+    tx(693, 146, conflict ? 'you decide' : 'edit', C.human, 11, 'normal', true);
     tx(220, 215, 'remember / auto-ingest',      C.human, 11, 'normal', true);
     tx(548, 222, 'same cortex',                 C.human, 11, 'normal', true);
     tx(748, 215, 'recall / remind',             C.human, 11, 'normal', true);
@@ -311,33 +422,48 @@ const { variant = 'consumer' } = Astro.props;
 
     tx(500, 260, '⚡',               C.ai,    22);
     tx(500, 277, 'AI agents',        C.ai,    15, '700');
-    amber(500, 293, pair.a1,         11);
-    amber(500, 307, pair.a2,         11);
-    tx(500, 322, 'Claude agents',    C.white,  12);
-    tx(500, 337, 'n8n · LangChain',  C.white,  12);
-    tx(500, 352, 'custom workflows', C.white,  12);
-    tx(500, 372, 'same cortex',      C.human,  13);
+    if (conflict) {
+      renderAnswers(amber, conflictAmber, pair, 500, 288, 11);
+      tx(500, 358, 'Claude agents',    C.white,  11);
+      tx(500, 372, 'conflict surfaced', '#fde68a', 11);
+    } else {
+      amber(500, 293, pair.a1,         11);
+      amber(500, 307, pair.a2,         11);
+      tx(500, 322, 'Claude agents',    C.white,  12);
+      tx(500, 337, 'n8n · LangChain',  C.white,  12);
+      tx(500, 352, 'custom workflows', C.white,  12);
+      tx(500, 372, 'same cortex',      C.human,  13);
+    }
 
     tx(840, 263, '🔀',              C.ai,    22);
     tx(840, 280, 'all clients',     C.human, 15, '700');
-    amber(840, 296, pair.a1,        11);
-    amber(840, 310, pair.a2,        11);
-    tx(840, 325, 'Claude · Cursor', C.ai,    12);
-    tx(840, 340, 'Copilot · Zed',   C.ai,    12);
-    tx(840, 355, 'Claude Cowork',   C.ai,    12);
-    tx(840, 375, 'same memory',     C.human, 13);
+    if (conflict) {
+      renderAnswers(amber, conflictAmber, pair, 840, 292, 11);
+      tx(840, 358, 'Claude · Cursor', C.ai,    11);
+      tx(840, 373, clientFooterLabel(pair), '#fde68a', 11);
+    } else {
+      amber(840, 296, pair.a1,        11);
+      amber(840, 310, pair.a2,        11);
+      tx(840, 325, 'Claude · Cursor', C.ai,    12);
+      tx(840, 340, 'Copilot · Zed',   C.ai,    12);
+      tx(840, 355, 'Claude Cowork',   C.ai,    12);
+      tx(840, 375, 'same memory',     C.human, 13);
+    }
 
     container.appendChild(svg);
   }
 
-  function drawMobile(container, PAIRS, TOOLS) {
-    var pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
+  function drawMobile(container, PAIRS, TOOLS, pairIndex) {
+    var pair = pickPair(PAIRS, pairIndex);
     var words = pickWords(pair);
     var cortexLine = CORTEX_LINES[Math.floor(Math.random() * CORTEX_LINES.length)];
-    var svg = makeSvg(400, 610);
+    var conflict = isConflict(pair);
+    var svgH = conflict ? 640 : 610;
+    var svg = makeSvg(400, svgH);
     var rc = rough.svg(svg);
     var tx = makeTx(svg);
     var amber = makeAmber(svg);
+    var conflictAmber = makeConflictAmber(svg);
 
     svg.appendChild(rc.rectangle(15, 8, 370, 105,  { roughness:2.2, stroke:C.human, strokeWidth:1.6, fill:'#16161f', fillStyle:'solid' }));
     svg.appendChild(rc.path('M 200 113 L 200 152',  { roughness:1.4, stroke:C.brain, strokeWidth:2 }));
@@ -368,11 +494,15 @@ const { variant = 'consumer' } = Astro.props;
     addLogo(svg, 182, 158, 36);
     tx(200, 210, 'Graphnosis',                     C.brain, 15, '700');
     tx(200, 222, 'encrypted · local · indexed · retrieved', C.human, 9);
-    tx(200, 234, 'dual-graph · ' + cortexLine.split(' ').slice(0,3).join(' '), C.human, 9);
+    if (conflict) {
+      tx(200, 234, cortexSubline(pair, cortexLine), '#fde68a', 9);
+    } else {
+      tx(200, 234, 'dual-graph · ' + cortexLine.split(' ').slice(0,3).join(' '), C.human, 9);
+    }
 
     tx(248, 136, 'feeds context',   C.human, 10, 'normal', true);
     tx(128, 318, 'auto-ingest',     C.human, 10, 'normal', true);
-    tx(272, 318, 'recall / remind', C.human, 10, 'normal', true);
+    tx(272, 318, conflict ? 'conflict surfaced' : 'recall / remind', C.human, 10, 'normal', true);
 
     tx(97, 355, 'your ⚙️ sources', C.tools, 13, '700');
     for (var ti = 0; ti < TOOLS.length; ti++) {
@@ -385,37 +515,62 @@ const { variant = 'consumer' } = Astro.props;
 
     tx(302, 354, '🔀',              C.ai,    18);
     tx(302, 370, 'all clients',     C.human, 13, '700');
-    amber(302, 384, pair.a1,        10);
-    amber(302, 397, pair.a2,        10);
-    tx(302, 411, 'Claude · Cursor', C.ai,    11);
-    tx(302, 426, 'Copilot · Zed',   C.ai,    11);
-    tx(302, 441, 'Claude Cowork',   C.ai,    11);
-    tx(302, 460, 'same memory',     C.human, 12);
+    if (conflict) {
+      renderAnswers(amber, conflictAmber, pair, 302, 382, 10);
+      tx(302, 448, clientFooterLabel(pair), '#fde68a', 10);
+    } else {
+      amber(302, 384, pair.a1,        10);
+      amber(302, 397, pair.a2,        10);
+      tx(302, 411, 'Claude · Cursor', C.ai,    11);
+      tx(302, 426, 'Copilot · Zed',   C.ai,    11);
+      tx(302, 441, 'Claude Cowork',   C.ai,    11);
+      tx(302, 460, 'same memory',     C.human, 12);
+    }
 
-    tx(200, 545, '⚡ AI agents — Claude agents · n8n · LangChain · custom workflows', C.ai,    12, '700');
-    amber(200, 558, pair.a1 + ' ' + pair.a2,                                          10);
-    tx(200, 572, 'same cortex as all clients',                                         C.human, 11);
+    tx(200, 545, '⚡ AI agents — Claude agents · n8n · LangChain', C.ai, 12, '700');
+    if (conflict) {
+      renderAnswers(amber, conflictAmber, pair, 200, 558, 10);
+      tx(200, 622, clientFooterLabel(pair), '#fde68a', 10);
+    } else {
+      amber(200, 558, pair.a1 + ' ' + pair.a2, 10);
+      tx(200, 572, 'same cortex as all clients', C.human, 11);
+    }
 
     container.appendChild(svg);
   }
 
-  function draw(el) {
-    var variant = el.getAttribute('data-variant') || 'consumer';
-    var PAIRS = variant === 'b2b' ? B2B_PAIRS : CONSUMER_PAIRS;
-    var TOOLS = variant === 'b2b' ? B2B_TOOLS : CONSUMER_TOOLS;
+  var ROTATE_MS = 10000;
+  var pairIndex = 0;
+  var rotateTimer = null;
+
+  function draw(el, index) {
+    var PAIRS = resolvePairs(el);
+    var TOOLS = resolveTools(el);
+    if (index != null) pairIndex = index % PAIRS.length;
     el.innerHTML = '';
-    if (el.offsetWidth < 640) drawMobile(el, PAIRS, TOOLS);
-    else drawDesktop(el, PAIRS, TOOLS);
+    if (el.offsetWidth < 640) drawMobile(el, PAIRS, TOOLS, pairIndex);
+    else drawDesktop(el, PAIRS, TOOLS, pairIndex);
+  }
+
+  function startRotation(el) {
+    if (rotateTimer) clearInterval(rotateTimer);
+    var PAIRS = resolvePairs(el);
+    rotateTimer = setInterval(function () {
+      pairIndex = (pairIndex + 1) % PAIRS.length;
+      draw(el, pairIndex);
+    }, ROTATE_MS);
   }
 
   function init() {
     var el = document.getElementById('hero-diagram');
     if (!el) return;
     if (typeof rough === 'undefined') { setTimeout(init, 30); return; }
-    draw(el);
+    pairIndex = 0;
+    draw(el, 0);
+    startRotation(el);
     window.addEventListener('resize', function () {
       clearTimeout(window.__dgtimer);
-      window.__dgtimer = setTimeout(function () { draw(el); }, 200);
+      window.__dgtimer = setTimeout(function () { draw(el, pairIndex); }, 200);
     });
   }
 
