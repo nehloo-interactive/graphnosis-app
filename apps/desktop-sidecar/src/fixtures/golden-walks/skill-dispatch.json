@@ -4,12 +4,12 @@
   },
   "steps": [
     {
-      "index": 3,
+      "index": 2,
       "text": "1. Call @skill: verify-target.",
       "unresolvedCall": "verify-target"
     },
     {
-      "index": 4,
+      "index": 3,
       "text": "2. Report routing complete."
     }
   ],

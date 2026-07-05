@@ -4,11 +4,11 @@
   },
   "steps": [
     {
-      "index": 3,
+      "index": 2,
       "text": "1. Reproduce the issue."
     },
     {
-      "index": 4,
+      "index": 3,
       "text": "2. Narrow root cause @loop: 1 max=5",
       "loopsBackTo": [
         1
@@ -16,7 +16,7 @@
       "maxIterations": 5
     },
     {
-      "index": 5,
+      "index": 4,
       "text": "3. Propose fix."
     }
   ],

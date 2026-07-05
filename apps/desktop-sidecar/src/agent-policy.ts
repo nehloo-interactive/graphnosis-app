@@ -16,6 +16,7 @@
 import type { GraphnosisHost } from './host.js';
 import type { LicenseValidator } from './license-validator.js';
 import type { AgentToolName } from './agent-types.js';
+import { resolveUnattendedExecutorEnabled } from '@graphnosis-app/core/settings';
 
 export interface AgentPolicyDeps {
   host: Pick<GraphnosisHost, 'getSettings' | 'getLicenseToken'>;
@@ -23,7 +24,7 @@ export interface AgentPolicyDeps {
 }
 
 export class AgentPolicyError extends Error {
-  constructor(readonly reason: 'killed', message: string) {
+  constructor(readonly reason: 'killed' | 'unattended-not-allowed', message: string) {
     super(message);
     this.name = 'AgentPolicyError';
   }
@@ -43,6 +44,31 @@ export function assertCanInvokeTool(deps: AgentPolicyDeps, _tool: AgentToolName)
     throw new AgentPolicyError(
       'killed',
       'Ghampus is disabled by the user kill switch. Re-enable from the menu-bar tray or the Ghampus tab.',
+    );
+  }
+}
+
+/**
+ * Shared enforcement point for the true L3 UNATTENDED executor. SAFETY-CRITICAL:
+ * throws unless BOTH the global kill switch is off (`agent.enabled !== false`)
+ * AND the owner has explicitly opted in (`agent.unattendedExecutor.enabled ===
+ * true`). The executor calls this just before it starts a walk — a last-line
+ * check so a kill-switch / opt-in flip between the admission gate and the walk
+ * cannot let an unattended run proceed. Any future caller of the unattended
+ * surface shares this one gate (parity with assertCanInvokeTool's kill switch).
+ */
+export function assertUnattendedAllowed(deps: Pick<AgentPolicyDeps, 'host'>): void {
+  const agent = deps.host.getSettings().agent;
+  if (agent?.enabled === false) {
+    throw new AgentPolicyError(
+      'killed',
+      'Ghampus is disabled by the user kill switch — the unattended executor will not run.',
+    );
+  }
+  if (!resolveUnattendedExecutorEnabled(agent)) {
+    throw new AgentPolicyError(
+      'unattended-not-allowed',
+      'The unattended executor is not opted in. Enable it explicitly in Settings → Ghampus → Unattended.',
     );
   }
 }

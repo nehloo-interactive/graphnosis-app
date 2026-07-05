@@ -4,15 +4,15 @@
   },
   "steps": [
     {
-      "index": 3,
+      "index": 2,
       "text": "1. Review changelog."
     },
     {
-      "index": 4,
+      "index": 3,
       "text": "2. Bump version @loop: 2 max=3"
     },
     {
-      "index": 5,
+      "index": 4,
       "text": "3. Publish release."
     }
   ],
