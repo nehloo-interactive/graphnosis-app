@@ -175,6 +175,7 @@ export async function ingestBundledSkillDemos(
           skipRelink: true,
           role: s.role,
           triggeredBy: 'bundled-demo:ingest',
+          singleNode: true,
         });
       }
       // Wire SOP edges — sequence + goals are the two consistently useful

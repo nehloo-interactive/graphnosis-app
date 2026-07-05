@@ -15,6 +15,15 @@ const SOP_TOKEN_PATTERNS: RegExp[] = [
   /@loop:\s*\d+(?:\s+max=\d+)?/gi,
   /@branch:\s*\d+/gi,
   /@parallel:\s*\[[^\]]*\]/gi,
+  // Per-step model-routing tag (e.g. "@needs: reasoning, structured-output").
+  // Parsed by deriveStepsFromText (model-router.ts NEEDS_PATTERN); dropping it
+  // silently changes which model a step routes to. Matched tightly to the
+  // capability list so it does not swallow trailing prose.
+  /@needs?:\s*[a-z][a-z-]*(?:\s*,\s*[a-z][a-z-]*)*/gi,
+  // Recall/privacy binding (e.g. only_engrams=["coding"] or only_engrams: [...]).
+  // Dropping it changes which engrams a recall step reads — a correctness and
+  // privacy regression. Accept both '=' and ':' forms.
+  /only_engrams\s*[:=]\s*\[[^\]]*\]/gi,
   /\[\[skill:[^\]]+\]\]/gi,
   /\[\[loop:[^\]]+\]\]/gi,
   /\[\[branch:[^\]]+\]\]/gi,
@@ -87,6 +96,8 @@ Hard rules — violating any rule makes the output unusable:
    - @loop: N and optional max=M
    - @branch: N
    - @parallel: [ … ] and optional -> [ … ]
+   - @needs: <capabilities> — the per-step model-routing tag (preserve verbatim)
+   - only_engrams=[ … ] / only_engrams: [ … ] — recall/privacy bindings (preserve verbatim)
    - Goal headers: Success:, Out of scope:, On completion:, Trigger:, Prerequisites:, \
      On failure:, Requires:, Produces:
    - Wiki-style [[skill:…]], [[loop:…]], [[branch:…]] if present

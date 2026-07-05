@@ -32,6 +32,40 @@ export function isRecallRecipeParagraph(text: string): boolean {
   return RECIPE_STEP_RE.test(lines[1]!.trim());
 }
 
+/**
+ * Pull every engram name a free-form text blob references via a recall recipe —
+ * `only_engrams: ["a", "b"]`, the `=` form (`only_engrams=[...]`), and the
+ * `target_engram: "x"` single-engram form. Independent of full recipe structure
+ * so it also catches an `only_engrams` clause sitting in a step's body or its
+ * anchored supporting-context text, not just a well-formed recipe block.
+ *
+ * Used by the privacy hard-lock (Invariant 2): the walker resolves these names
+ * to engram tiers at plan time so a step that recalls from a `sensitive` engram
+ * is forced to a local model. Conservative by design — over-matching a name just
+ * means an extra (harmless) tier lookup; a miss would silently leak.
+ */
+export function extractRecipeEngramNames(text: string): string[] {
+  if (!text) return [];
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string): void => {
+    const name = raw.trim().replace(/^["']|["']$/g, '').trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  };
+  // only_engrams: [...] and only_engrams = [...]  (colon or equals, any spacing)
+  for (const m of text.matchAll(/only_engrams\s*[:=]\s*\[([^\]]*)\]/gi)) {
+    for (const part of (m[1] ?? '').split(',')) push(part);
+  }
+  // target_engram: "x" / target_engram = x  (single-engram recall scope)
+  for (const m of text.matchAll(/target_engram\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,)\]]+)/gi)) {
+    push(m[1] ?? '');
+  }
+  return names;
+}
+
 /** Parse plain-text recipe nodes (import + train paths). */
 export function parseRecallRecipeText(text: string): ParsedRecallRecipe | null {
   const lines = text.trim().split('\n').filter(Boolean);
@@ -108,7 +142,7 @@ export function extractRecallRecipesFromSource(
 }
 
 /** Resolve graph IDs from recipe onlyEngrams (template names or raw graphIds). */
-function resolveEngramScope(host: GraphnosisHost, onlyEngrams?: string[]): string[] | undefined {
+export function resolveEngramScope(host: GraphnosisHost, onlyEngrams?: string[]): string[] | undefined {
   if (!onlyEngrams?.length) return undefined;
   const ids: string[] = [];
   for (const name of onlyEngrams) {

@@ -79,6 +79,26 @@ export interface TrainSkillInput {
    * false — the trainer chunks the user's pasted text into paragraph nodes as-is.
    */
   useLlmRewrite?: boolean;
+  /**
+   * Opt-in: bind recall *recipes* at train time instead of the empty-engram
+   * default. Runs a relevance-gated recall to find which engrams hold context
+   * relevant to this skill, and emits a `recall(… only_engrams: […])` recipe
+   * into the body — no frozen personal content (the skill stays portable),
+   * resolved live at walk time (so it never goes stale). Default false preserves
+   * the empty-engram train invariant.
+   */
+  bindRecipes?: boolean;
+  /**
+   * Optional per-skill execution-autonomy override to set AFTER the skill is
+   * saved (only honored when `save !== false`). Omitted = no override is
+   * written, so the skill keeps INHERITING the engram default — the empty-train
+   * default. CLAMPED to the skill's authored dispatch-safe cap; a requested
+   * level above the cap is lowered to the cap and surfaced via
+   * `TrainSkillResult.autonomyNote`. Stored in graph metadata
+   * (`skillAutonomyLevels[sourceId]`), not the skill body, so it survives
+   * future retraining.
+   */
+  autonomyLevel?: import('@graphnosis-app/core/settings').ExecutionAutonomyLevel;
 }
 
 export interface InfluentialNode {
@@ -140,6 +160,13 @@ export interface TrainSkillResult {
   skillId?: string;
   /** Explanation when mode='memory-augmented' (no LLM available). */
   degradedNote?: string;
+  /**
+   * Set when an `autonomyLevel` was requested and a skill was saved: reports the
+   * applied per-skill autonomy level, including a clamp note when the request
+   * exceeded the authored dispatch-safe cap. Absent when no override was asked
+   * for (or the skill wasn't saved).
+   */
+  autonomyNote?: string;
 }
 
 export interface SkillVitalityResult {
@@ -148,6 +175,11 @@ export interface SkillVitalityResult {
   trainedAt?: number;
   /** How many of the skill's own graph nodes have been soft-deleted since training. */
   staleNodesCount: number;
+  /** Sub-score breakdown — points subtracted from 100 — so callers can show the
+   *  user WHY a skill is aging and what would help (retrain clears age+staleness). */
+  agePenalty?: number;
+  stalenessPenalty?: number;
+  citedDriftPenalty?: number;
   /** Total cited memory nodes bound via recall recipes. */
   citedNodesCount?: number;
   /** Cited memory nodes that were edited, forgotten, or are missing from cortex. */
@@ -565,6 +597,43 @@ export class SkillTrainer {
 
   // ── trainSkill ──────────────────────────────────────────────────────────────
 
+  /**
+   * Opt-in (bindRecipes): derive a relevance-gated recall recipe block for a
+   * skill. Recalls the user's NON-skill engrams with a query built from the
+   * skill title, keeps engrams holding a hit at/above the relevance floor, and
+   * returns a recipe paragraph (`Personal context: …` / `- recall: … only_engrams: [...]`).
+   * Returns null when the skill already has a recipe, or nothing is relevant.
+   * Emits a binding (query + engram names), never frozen personal content.
+   */
+  private async deriveRecallRecipeBlock(
+    skill: string,
+    graphId: string,
+    skillName: string | undefined,
+    recallBreadth: number,
+  ): Promise<string | null> {
+    const paras = skill.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+    if (paras.some((p) => isRecallRecipeParagraph(p))) return null;
+    const title = extractSkillTitle(skill) || skillName || 'this skill';
+    const query = `${title} prior context decisions preferences`.replace(/\s+/g, ' ').trim();
+    const candidates = this.host.listGraphs().filter((g) => g !== graphId && !/skill/i.test(g));
+    if (candidates.length === 0) return null;
+    const { maxTokens, maxNodes } = breadthToBudget(recallBreadth);
+    let recalled: Awaited<ReturnType<GraphnosisHost['recall']>>;
+    try {
+      recalled = await this.host.recall(query, { budget: { maxTokens, maxNodes }, onlyGraphIds: candidates });
+    } catch {
+      return null;
+    }
+    const RELEVANCE_FLOOR = 0.78;
+    const engrams: string[] = [];
+    for (const [gid, nodes] of recalled.byGraph) {
+      if (!engrams.includes(gid) && nodes.some((n) => n.score >= RELEVANCE_FLOOR)) engrams.push(gid);
+    }
+    if (engrams.length === 0) return null;
+    const list = engrams.map((g) => `"${g}"`).join(', ');
+    return `Personal context: ${title}\n- recall: ${query} only_engrams: [${list}]`;
+  }
+
   async trainSkill(input: TrainSkillInput & {
     /** Streaming callback for live progressive diff. When provided AND the
      *  underlying LLM supports `completeStream`, the trainer streams the
@@ -581,7 +650,6 @@ export class SkillTrainer {
     onStatus?: (label: string) => void;
   }): Promise<TrainSkillResult> {
     const {
-      skill,
       skillName,
       focusGraphIds,
       modelTarget,
@@ -592,6 +660,9 @@ export class SkillTrainer {
       onChunk,
       onStatus,
     } = input;
+    // Mutable so the opt-in recipe-binding pass (below) can prepend a recall
+    // recipe before parsing. Defaults to the verbatim authored text.
+    let skill = input.skill;
 
     // Phase 3b — wrap the whole training run in the overlay-recompute guard
     // so the GNN edge-prediction loop and the LLM edge-prediction loop don't
@@ -603,6 +674,14 @@ export class SkillTrainer {
     // ── Phase 1: Build skill context (empty train-time recall scope) ──────────
     onStatus?.('Structuring skill from source…');
     const effectiveBreadth = inputBreadth ?? 50;
+    // Opt-in recipe-binding: bind relevant engrams as a recall RECIPE (not frozen
+    // content) so the body stays clean, portable, and fresh. Default-off path is
+    // the empty-engram contract.
+    if (input.bindRecipes) {
+      onStatus?.('Binding recall recipes from cortex…');
+      const recipe = await this.deriveRecallRecipeBlock(skill, graphId, skillName, effectiveBreadth);
+      if (recipe) skill = insertRecipeBeforeFirstStep(skill, recipe);
+    }
     const context = await this.buildSkillContext(skill, graphId, focusGraphIds, effectiveBreadth, input.goals);
     const topNodes = context.influentialNodes.slice(0, 10);
 
@@ -714,6 +793,7 @@ export class SkillTrainer {
     // sources with orphaned metadata/title nodes drawn as red islands in
     // the atlas. The new model collapses to one source per skill.
     let skillId: string | undefined;
+    let autonomyNote: string | undefined;
     if (save) {
       onStatus?.('Saving the trained skill…');
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -721,6 +801,11 @@ export class SkillTrainer {
         ? `${skillName} (trained ${dateStr})`
         : `Trained skill (${dateStr})`;
       const baseName = baseSkillName(label);
+      // Normalized key so an innocent slug-vs-title-case difference in the
+      // passed skill_name (e.g. "enterprise-compliance-lens" vs the stored
+      // "Enterprise Compliance Lens") still matches the existing source for an
+      // in-place retrain instead of silently forking a duplicate.
+      const baseNameKey = skillNameMatchKey(baseName);
 
       const metadataComment = [
         `<!-- Graphnosis skill training metadata`,
@@ -736,7 +821,39 @@ export class SkillTrainer {
       // original skill text (memory-augmented mode). Recalled memories are
       // separately tracked in recalledParagraphs.
       const bodySource = mode === 'llm' ? trained : skill;
-      const bodyParagraphs = bodySource.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+      // Goal-header robustness: split any single semicolon-joined goal-header
+      // line (Trigger: …; Prerequisites: …; …) into one line per goal field
+      // BEFORE paragraph sectioning, so each field becomes its own chunk and is
+      // classified into its goal role. No-op for headers already one-per-line and
+      // for ordinary step text (see normalizeInlineGoalHeader). Re-split on the
+      // blank lines it introduces so the new fields become distinct paragraphs.
+      const bodyParagraphs = normalizeInlineGoalHeader(bodySource)
+        .split(/\n{2,}/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+      // ── Strip a slug-only first body line ────────────────────────────────
+      // Some SOPs lead with a junk line that is just the skill's kebab slug
+      // (e.g. "sponsor-and-vendor-negotiation") on its own, with no goal prefix
+      // and no leading step number. The title node already carries the name, so
+      // that line is duplicative — drop it before sectioning so it doesn't
+      // become its own node. Only the very first physical body line is checked,
+      // and only when it matches the skill's normalized slug exactly.
+      if (bodyParagraphs.length > 0) {
+        const firstPara = bodyParagraphs[0]!;
+        const firstLine = firstPara.split('\n')[0]!.trim();
+        const isSlugOnly =
+          !!firstLine &&
+          !GOAL_NODE_RE.test(firstLine) &&
+          !/^\s*\d+\.\s/.test(firstLine) &&
+          skillNameMatchKey(firstLine) === baseNameKey &&
+          baseNameKey.length > 0;
+        if (isSlugOnly) {
+          const rest = firstPara.split('\n').slice(1).join('\n').trim();
+          if (rest) bodyParagraphs[0] = rest;
+          else bodyParagraphs.shift();
+        }
+      }
 
       // ── Ingest metadata comment + title + body paragraphs ─────────────────
       // Recalled-memory paragraphs are handled separately below (Phase 2:
@@ -775,10 +892,16 @@ export class SkillTrainer {
         const flushBodyRun = (): void => {
           const text = bodyRun.join('\n').trim();
           if (text) {
-            bodySections.push({
-              role: isRecallRecipeParagraph(text) ? 'recipe' : 'body',
-              text,
-            });
+            // A run gathered between goal lines may itself contain several
+            // semantic units (numbered steps / bullets) that were authored with
+            // only single newlines between them. Split it so each becomes its
+            // own node — the single-node guarantee then applies per step.
+            for (const unit of splitBodyRunIntoUnits(bodyRun)) {
+              bodySections.push({
+                role: isRecallRecipeParagraph(unit) ? 'recipe' : 'body',
+                text: unit,
+              });
+            }
           }
           bodyRun = [];
         };
@@ -822,7 +945,7 @@ export class SkillTrainer {
       // shipped, pick the most recent and forget the older leftovers below.
       const allSkillSources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
       const matchingSkills = allSkillSources
-        .filter((s) => baseSkillName(s.ref) === baseName)
+        .filter((s) => skillNameMatchKey(s.ref) === baseNameKey)
         .sort((a, b) => b.ingestedAt - a.ingestedAt);
       const existingSource = matchingSkills[0];
       let inPlaceRenameRef: string | undefined;
@@ -919,7 +1042,7 @@ export class SkillTrainer {
       const insertAtEnd = async (text: string, role: string): Promise<void> => {
         const len = this.host.getSourceRecord(graphId, skillId!)?.nodeIds.length ?? 0;
         await this.host.insertNodeAt(graphId, skillId!, len, text, {
-          skipRelink: true, role, triggeredBy: 'mcp:train_skill',
+          skipRelink: true, role, triggeredBy: 'mcp:train_skill', singleNode: true,
         });
       };
 
@@ -1001,6 +1124,24 @@ export class SkillTrainer {
         const { scheduleDispatchSyncAfterRetrain } = await import('./skill-dispatch-sync.js');
         await scheduleDispatchSyncAfterRetrain(this.host, this, graphId, skillId);
       } catch { /* non-fatal */ }
+
+      // Optional per-skill autonomy override — only when a level was requested
+      // (omitted = no override written, so the skill keeps inheriting the engram
+      // default). Clamped to the skill's authored dispatch-safe cap; a request
+      // above the cap is lowered and reported via `autonomyNote`. Persisted in
+      // graph metadata (not the skill body) so it survives future retraining.
+      if (input.autonomyLevel && skillId) {
+        const { levelRank } = await import('./skill-autonomy.js');
+        const readout = this.host.dispatchSafeReadout(graphId)[0];
+        const entry = readout?.perSkill.find((p) => p.sourceId === skillId);
+        const cap = entry?.cap ?? 'L3';
+        const requested = input.autonomyLevel;
+        const applied = levelRank(requested) > levelRank(cap) ? cap : requested;
+        await this.host.setSkillExecutionAutonomy(graphId, skillId, applied);
+        autonomyNote = applied === requested
+          ? `Per-skill autonomy set to ${applied}.`
+          : `Per-skill autonomy requested ${requested} but the authored dispatch-safe cap is ${cap}; clamped to ${applied}.`;
+      }
     }
 
     return {
@@ -1011,6 +1152,7 @@ export class SkillTrainer {
       mode,
       ...(skillId !== undefined ? { skillId } : {}),
       ...(degradedNote !== undefined ? { degradedNote } : {}),
+      ...(autonomyNote !== undefined ? { autonomyNote } : {}),
     };
     } finally {
       this.host.setSkipOverlayRecompute(false);
@@ -1116,9 +1258,63 @@ export class SkillTrainer {
       score,
       trainedAt,
       staleNodesCount,
+      agePenalty,
+      stalenessPenalty,
+      citedDriftPenalty,
       ...(citedNodesCount > 0 ? { citedNodesCount, missingCitedNodesCount, driftDetected } : {}),
       recommendation,
     };
+  }
+
+  // ── debugInjectCitedDrift (DEV/TEST ONLY) ──────────────────────────────────
+
+  /**
+   * DEV/TEST ONLY — deterministic cited-drift injection for the Appendix-S7 pilot
+   * (paper #3). The pilot must estimate the baseline staleness-event rate λ₀, but
+   * real cited-drift moves only with wall-clock age or owner-approved `edit`s, so
+   * it cannot be produced automatically in a single session. This seeds
+   * `skillCitedNodes` for a SANDBOX skill so computeSkillVitality's REAL
+   * `citedDriftPenalty` term responds on demand: the skill's own (present) body
+   * nodes plus `missingCount` synthetic nodes pointing at a non-existent engram,
+   * yielding citedDriftPenalty = round(missingCount / (bodyNodes + missingCount) * 40).
+   * It exercises the same code path real drift triggers — nothing is faked in the
+   * scorer — so the measured λ₀ is faithful.
+   *
+   * Guarded twice; refuses to touch anything real:
+   *   1. process.env.GRAPHNOSIS_DEV === '1'  (throws in production)
+   *   2. graphId must be a sandbox engram (^s7-pilot / ^sandbox-)
+   */
+  async debugInjectCitedDrift(
+    graphId: string,
+    sourceId: string,
+    missingCount: number,
+  ): Promise<SkillVitalityResult> {
+    if (process.env.GRAPHNOSIS_DEV !== '1') {
+      throw new Error('debugInjectCitedDrift is dev-only — set GRAPHNOSIS_DEV=1');
+    }
+    if (!/^(s7-pilot|sandbox-)/.test(graphId)) {
+      throw new Error(
+        `debugInjectCitedDrift refuses non-sandbox engram "${graphId}" (allowlist: s7-pilot*, sandbox-*)`,
+      );
+    }
+    const source = this.host.listSources(graphId).find((s) => s.sourceId === sourceId);
+    if (!source) {
+      throw new Error(`debugInjectCitedDrift: skill ${sourceId} not found in ${graphId}`);
+    }
+    const missing = Math.max(0, Math.floor(missingCount));
+    const nodes: Record<string, string> = {};
+    // Present cited nodes = the skill's real body nodes (found in graphId, live).
+    for (const id of source.nodeIds) nodes[id] = graphId;
+    // "Drifted" cited nodes = synthetic ids in a non-existent engram → counted missing.
+    for (let i = 0; i < missing; i++) nodes[`s7-drift-gone-${i}`] = `${graphId}-gone-nonexistent`;
+    const settings = this.host.getSettings();
+    await this.host.setSettings({
+      skillCitedNodes: {
+        ...(settings.skillCitedNodes ?? {}),
+        [sourceId]: { graphId, nodes },
+      },
+    });
+    return this.computeSkillVitality(graphId, sourceId);
   }
 
   // ── exportSkill ────────────────────────────────────────────────────────────
@@ -1337,6 +1533,7 @@ export class SkillTrainer {
         skipRelink: true,
         ...(node.role !== undefined ? { role: node.role } : {}),
         triggeredBy: 'skill:repair-hollow',
+        singleNode: true,
       });
     }
 
@@ -1352,11 +1549,26 @@ export class SkillTrainer {
   }
 
   listSkills(graphId?: string): SkillListEntry[] {
+    // Listing across ALL engrams must surface every skill, regardless of the
+    // host engram's template. train_skill resolves `target_engram` by name with
+    // no template check, so a skill can be (and is) trained into engrams whose
+    // template is NOT 'skill' (e.g. a 'project' or 'personal' engram). Every
+    // other skill path — skillEngramIds(), cross-engram call linking, walk_skill,
+    // get_skill — keys off `kind === 'skill'`, so gating the all-engrams listing
+    // by `template === 'skill'` silently dropped those skills here alone. Include
+    // any non-archived engram that actually holds at least one skill source.
     const graphIds = graphId
       ? [graphId]
       : this.host.listGraphs().filter((gid) => {
           const meta = this.host.getGraphMetadata(gid);
-          return meta?.template === 'skill' && meta.archived !== true;
+          if (meta?.archived === true) return false;
+          // QUARANTINE CONTRACT: imported-but-unpromoted engrams are excluded
+          // from the DEFAULT (all-engrams) skill scope — feeding both the
+          // proactive watcher's usableSkills and list_skills' default scope.
+          // An explicit `graphId` (e.g. the quarantine-review tooling) can still
+          // enumerate them. Routed through the centralized host.isQuarantined.
+          if (this.host.isQuarantined(gid)) return false;
+          return this.host.listSources(gid).some((s) => s.kind === 'skill');
         });
     const entries: SkillListEntry[] = [];
     const now = Date.now();
@@ -1574,6 +1786,7 @@ export class SkillTrainer {
         skipRelink: true,
         ...(node.role !== undefined ? { role: node.role } : {}),
         triggeredBy: 'skill:rollback',
+        singleNode: true,
       });
     }
 
@@ -1829,11 +2042,135 @@ function jaccardSop(a: Set<string>, b: Set<string>): number {
   return inter / (a.size + b.size - inter);
 }
 
-function splitSentences(text: string): string[] {
-  return text
-    .split(/(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÀÂÊÔÛÄÖÜÃÕ])/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+// Known abbreviations whose trailing period is NOT a sentence boundary.
+// Stored dot-stripped + lowercased; "e.g." / "i.e." are matched by stripping
+// the internal dots of the trailing token before lookup (so "e.g" → "eg").
+const SENTENCE_ABBREVIATIONS = new Set([
+  'etc', 'eg', 'ie', 'vs', 'no', 'dr', 'mr', 'mrs', 'ms', 'inc',
+  'ltd', 'co', 'fig', 'cf', 'al',
+]);
+
+/** True when the chunk ending in a period should NOT be treated as a sentence
+ *  end: it ends in a known abbreviation ("etc.", "e.g.", "i.e."), a code token
+ *  (501c3, 990), or a decimal (3.5). */
+function suppressesSentenceBoundary(chunk: string): boolean {
+  // Strip the terminal punctuation we split on, then grab the trailing token
+  // (letters/digits, allowing internal periods so "e.g" / "501.c" survive).
+  const body = chunk.replace(/[.!?]+$/, '');
+  const tail = body.match(/[\w.]+$/)?.[0] ?? '';
+  if (!tail) return false;
+  // Decimal or numeric/code token (digits, optionally mixed with letters/dots).
+  if (/\d/.test(tail) && /^[\w.]+$/.test(tail)) return true;
+  // Known abbreviation, with internal dots removed (e.g → eg, i.e → ie).
+  const flat = tail.replace(/\./g, '').toLowerCase();
+  return SENTENCE_ABBREVIATIONS.has(flat);
+}
+
+export function splitSentences(text: string): string[] {
+  // First-pass split on terminal punctuation followed by whitespace + an
+  // uppercase (incl. accented) start-of-sentence letter.
+  const rough = text.split(/(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÀÂÊÔÛÄÖÜÃÕ])/);
+
+  // Re-join any split where the chunk before the boundary ends in an
+  // abbreviation, a code token, or a decimal — those periods aren't real
+  // sentence ends. The split regex already guards lowercase / decimal
+  // next-chars; this guards the abbreviation + code cases it misses.
+  const merged: string[] = [];
+  for (const part of rough) {
+    const prev = merged[merged.length - 1];
+    if (prev !== undefined && /[.!?]$/.test(prev) && suppressesSentenceBoundary(prev)) {
+      merged[merged.length - 1] = `${prev} ${part}`;
+    } else {
+      merged.push(part);
+    }
+  }
+
+  return merged.map((s) => s.trim()).filter(Boolean);
+}
+
+/** A line that begins a recall-recipe STEP (e.g. "- recall: …"). Mirrors the
+ *  bullet form recall recipes use so the recipe-block detector below can tell a
+ *  recipe continuation from a free-standing bullet step. */
+const RECIPE_STEP_LINE_RE =
+  /^[-—]\s*(?:recall|remind|dig_deeper|recall_structured|recall_with_citations|cross_search)\s*:/i;
+
+/** True when `line` begins a new semantic body unit: a numbered step or a
+ *  bullet (recall-recipe blocks are handled by the caller, which keeps their
+ *  step bullets whole). Numbered steps use the same abbreviation/decimal guard
+ *  as splitSentences so a wrapped continuation line like "3.5 percent overhead"
+ *  (no space after the dot) is NOT mistaken for a "3." step — `^\s*\d+\.\s`
+ *  already requires whitespace after the dot, and we additionally reject a
+ *  leading token that suppresses a sentence boundary (decimals, code tokens,
+ *  known abbreviations like "etc."). */
+function startsNewBodyUnit(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  if (/^[-*]\s/.test(t) && !RECIPE_STEP_LINE_RE.test(t)) return true;
+  // A numbered step is "N." followed by whitespace. The required whitespace is
+  // itself the decimal guard: a decimal like "3.5 percent" or a code token like
+  // "501.c" has NO space after the dot, so it never opens a node here. (The
+  // abbreviation/decimal handling for in-line text lives in splitSentences /
+  // suppressesSentenceBoundary; step boundaries are purely line-anchored.)
+  if (/^\d+\.\s/.test(t)) return true;
+  return false;
+}
+
+/**
+ * Split a run of body lines (already separated from goal lines) into individual
+ * semantic units so each numbered step / bullet / recall-recipe becomes its own
+ * stored node — even when the author used only single newlines between steps.
+ *
+ * A new unit begins at any line matching a numbered step (`1. `), a bullet
+ * (`- ` / `* `), or a recall-recipe header (a "name: trigger" line immediately
+ * followed by recipe-step bullets). Lines that are neither stay attached to the
+ * current unit (continuation / wrapped text). Recall-recipe blocks are kept
+ * whole — their step bullets are NOT split off as free-standing bullets.
+ *
+ * The abbreviation-safe guard (suppressesSentenceBoundary) protects decimals,
+ * code tokens, and "etc."/"e.g." so a step's wrapped line never opens a node.
+ */
+export function splitBodyRunIntoUnits(lines: readonly string[]): string[] {
+  const units: string[] = [];
+  let current: string[] = [];
+  const flush = (): void => {
+    const text = current.join('\n').trim();
+    if (text) units.push(text);
+    current = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const t = line.trim();
+    if (!t) { current.push(line); continue; }
+
+    // Recall-recipe header: a "name: trigger" line whose NEXT non-empty line is
+    // a recipe step. Start a fresh unit and absorb every following recipe-step
+    // bullet so the recipe stays a single node.
+    let next = '';
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j]!.trim()) { next = lines[j]!.trim(); break; }
+    }
+    const isRecipeHeader =
+      /^[^\s:].*:/.test(t) && !GOAL_NODE_RE.test(t) && RECIPE_STEP_LINE_RE.test(next);
+    if (isRecipeHeader) {
+      flush();
+      current.push(line);
+      // Consume contiguous recipe-step bullet lines into this same unit.
+      while (i + 1 < lines.length) {
+        const peek = lines[i + 1]!.trim();
+        if (peek === '' || RECIPE_STEP_LINE_RE.test(peek)) { current.push(lines[++i]!); }
+        else break;
+      }
+      flush();
+      continue;
+    }
+
+    if (startsNewBodyUnit(line) && current.some((l) => l.trim())) {
+      flush();
+    }
+    current.push(line);
+  }
+  flush();
+  return units;
 }
 
 function isNonLatinScript(text: string): boolean {
@@ -1906,7 +2243,15 @@ export async function linkSkillLoopsAndBranches(
   const stale = directed
     .filter(
       (e) =>
-        (e.evidence === SKILL_LOOP_EVIDENCE || e.evidence === SKILL_BRANCH_EVIDENCE) &&
+        // Loop edges may carry a `;max=N` cap suffix (see encodeLoopEvidence),
+        // so match the base tag exactly OR with a `;`-prefixed suffix. Matching
+        // only the bare form would leave stale capped-loop edges behind, breaking
+        // idempotent edge derivation (Lemma 1). Branch edges are always bare, but
+        // we apply the same suffix-tolerant match for consistency.
+        (e.evidence === SKILL_LOOP_EVIDENCE ||
+          e.evidence?.startsWith(SKILL_LOOP_EVIDENCE + ';') ||
+          e.evidence === SKILL_BRANCH_EVIDENCE ||
+          e.evidence?.startsWith(SKILL_BRANCH_EVIDENCE + ';')) &&
         (nodeSet.has(e.from) || nodeSet.has(e.to)),
     )
     .map((e) => e.id);
@@ -2421,7 +2766,10 @@ export async function linkCrossEngramCalls(
 
   const ownIndex = buildSkillIndex(host, callerGraphId, callerSourceId);
   const otherIndices = candidateGraphIds
-    .filter((g) => g !== callerGraphId)
+    // QUARANTINE CONTRACT: a cross-engram `@skill:` reference must NEVER resolve
+    // INTO a quarantined (imported-but-unpromoted) engram — that would make an
+    // un-adjudicated skill reachable via dispatch. Routed through host.isQuarantined.
+    .filter((g) => g !== callerGraphId && !host.isQuarantined(g))
     .map((g) => ({ graphId: g, index: buildSkillIndex(host, g) }));
 
   const links: SkillCallLink[] = [];
@@ -3545,6 +3893,23 @@ export function baseSkillName(label: string): string {
     .trim();
 }
 
+/**
+ * Normalized key for in-place retrain matching. Case- and punctuation-
+ * insensitive form of the base skill name, so "Enterprise Compliance Lens",
+ * "enterprise-compliance-lens", and "skill:123:Enterprise Compliance Lens"
+ * all collapse to the same key. Without this, train_skill called with a
+ * skill_name that differs only in case/punctuation from the stored label
+ * fails the `=== baseName` test and forks a DUPLICATE source instead of
+ * retraining in place (observed 2026-06-26: a slug passed for a title-cased
+ * skill created a second "enterprise-compliance-lens" source).
+ */
+export function skillNameMatchKey(label: string): string {
+  return baseSkillName(label)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+}
+
 interface ParsedSkillMeta { trainedAt?: string; mode?: string; recallBreadth?: number; }
 
 /**
@@ -3628,6 +3993,99 @@ function parseSkillProvenance(text: string): import('./skill-trainer.js').SkillP
 }
 
 // ── Text-cleaning helpers ─────────────────────────────────────────────────────
+
+/**
+ * The 8 authored goal-header keywords, in their canonical surface form. These
+ * are the prefixes `classifyChunkRole` / `GOAL_NODE_RE` / `goalRoleForLine`
+ * recognise; keep this list in sync with them.
+ */
+const GOAL_HEADER_KEYWORDS = [
+  'Trigger',
+  'Prerequisites',
+  'Requires',
+  'Produces',
+  'Success',
+  'Out of scope',
+  'On failure',
+  'On completion',
+] as const;
+
+/**
+ * Matches `"; <GoalKeyword>:"` — a semicolon+space separator immediately
+ * followed by one of the 8 goal keywords and its colon. Used to split an
+ * inline-authored goal header that joined every field on one line. The
+ * capture is the keyword so we can re-anchor the split at the boundary.
+ *
+ * Order matters only for the alternation's first-match-wins on overlapping
+ * prefixes; none of these 8 are prefixes of each other so ordering is moot,
+ * but we list multi-word keywords explicitly so `Out of scope` / `On failure`
+ * / `On completion` match in full.
+ */
+const GOAL_HEADER_SPLIT_RE = new RegExp(
+  `;\\s+(?=(?:${GOAL_HEADER_KEYWORDS.map((k) => k.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')}):)`,
+  'gu',
+);
+
+/** Anchored test: does a trimmed line BEGIN with one of the 8 goal keywords + ":"? */
+const GOAL_HEADER_START_RE = new RegExp(
+  `^(?:${GOAL_HEADER_KEYWORDS.map((k) => k.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')}):`,
+  'u',
+);
+
+/**
+ * Trainer goal-header robustness — normalize a skill BODY before chunking.
+ *
+ * Bug it fixes: when an author writes the whole goal header on ONE
+ * semicolon-joined line —
+ *
+ *   Trigger: …; Prerequisites: …; Requires: …; Produces: …; Success: …;
+ *   Out of scope: …; On failure: …; On completion: …
+ *
+ * — that physical line carries only ONE leading goal keyword (`Trigger:`), so
+ * the line-level goal splitter classifies the whole thing as `goal-trigger`
+ * and the other 7 fields ride along inside the trigger's value. The skill then
+ * stores 1/8 goal nodes instead of 8/8. Skills that put each goal field on its
+ * own line already get 8/8.
+ *
+ * Fix: detect any single line that BEGINS with a goal keyword and contains one
+ * or more `"; <GoalKeyword>:"` segments, and rewrite it as one line per goal
+ * field (blank-line separated paragraphs) so each becomes its own chunk and is
+ * classified independently. Deterministic, no LLM.
+ *
+ * Safety: the split fires ONLY on `"; "` immediately followed by one of the 8
+ * exact keywords + `":"`. A semicolon inside step text (e.g.
+ * "Do X; then do Y") or inside a goal VALUE (e.g.
+ * "Success: parsed; validated; saved") is never split — none of those follow
+ * a goal keyword. Lines that don't start with a goal keyword are left untouched
+ * entirely, so ordinary body steps are never reshaped.
+ */
+export function normalizeInlineGoalHeader(body: string): string {
+  // Operate line by line so we only ever touch a physical line that itself
+  // begins with a goal keyword — body steps and multi-line prose are untouched.
+  const out: string[] = [];
+  for (const line of body.split('\n')) {
+    const trimmedStart = line.replace(/^\s+/u, '');
+    if (!GOAL_HEADER_START_RE.test(trimmedStart)) {
+      out.push(line);
+      continue;
+    }
+    // This line starts with a goal keyword. Split it at every "; <GoalKeyword>:"
+    // boundary. If there is no such boundary the line is already one-per-line —
+    // emit it unchanged (single-element split).
+    const parts = trimmedStart.split(GOAL_HEADER_SPLIT_RE).map((p) => p.trim()).filter(Boolean);
+    if (parts.length <= 1) {
+      out.push(line);
+      continue;
+    }
+    // Emit each goal field as its own blank-line-separated paragraph so the
+    // downstream chunker turns each into its own classified chunk.
+    for (let i = 0; i < parts.length; i++) {
+      out.push(parts[i]!);
+      if (i < parts.length - 1) out.push('');
+    }
+  }
+  return out.join('\n');
+}
 
 /**
  * Phase 3c — Heuristic role classifier for chunk-driven export.
@@ -3782,6 +4240,18 @@ function triggerToDescription(trigger: string): string {
     .replace(/\[dispatch-safe:[^\]]*\]/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Insert a recall-recipe paragraph just before the first numbered step, so it
+ *  parses as a `recipe` node (not the title or a goal) and binds at walk time.
+ *  Exported for testing. */
+export function insertRecipeBeforeFirstStep(skill: string, recipe: string): string {
+  const lines = skill.split('\n');
+  const idx = lines.findIndex((l) => /^\s*\d+\.\s/.test(l));
+  if (idx < 0) return `${skill.trimEnd()}\n\n${recipe}\n`;
+  const before = lines.slice(0, idx).join('\n').replace(/\s+$/, '');
+  const after = lines.slice(idx).join('\n');
+  return `${before}\n\n${recipe}\n\n${after}`;
 }
 
 /** First non-comment, non-goal line of a raw trained-text blob = the title. */

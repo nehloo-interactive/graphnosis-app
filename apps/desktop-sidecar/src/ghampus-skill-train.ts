@@ -29,9 +29,21 @@ export type GhampusListedSkill = {
   searchText?: string;
 };
 
+/** Routing legibility for the "Handled by {Agempus}" chat chip (feature #41).
+ *  Attached to the dispatched assistant answer so chat surfaces WHICH domain
+ *  Agempus (engram) and which skill handled the turn. Descriptive only. */
+export type GhampusHandledByInfo = {
+  engramName: string;
+  engramId: string;
+  skillLabel: string;
+  skillSlug: string;
+};
+
 export type GhampusSkillRouteRunner = {
   ghampusTool: (name: string, toolArgs?: Record<string, unknown>) => Promise<unknown>;
-  emitGhampusMsg: (text: string) => Promise<void>;
+  /** Optional `opts.handledBy` carries the dispatch-routing chip metadata onto
+   *  the emitted ghampus answer. Additive — existing callers pass only `text`. */
+  emitGhampusMsg: (text: string, opts?: { handledBy?: GhampusHandledByInfo }) => Promise<void>;
   emitTrace: (step: GhampusTraceStep) => void;
   setPendingClarification?: (v: GhampusPendingClarificationState | null) => void;
   isSkillTrainingLicensed?: () => boolean | Promise<boolean>;
@@ -283,6 +295,14 @@ export async function runGhampusSkillPreview(
   }
 
   const displayLabel = normalizeSkillDisplayLabel(match.label);
+  // Resolve the handling Agempus (engram) display name for the routing chip.
+  const handlingEngram = (engList.engrams ?? []).find((e) => e.graphId === graphId);
+  const handledBy: GhampusHandledByInfo = {
+    engramName: handlingEngram?.displayName || match.engramName || graphId,
+    engramId: graphId,
+    skillLabel: displayLabel,
+    skillSlug: baseSkillName(match.label).replace(/\s+/g, '-'),
+  };
   const stepId = ghampusTraceStepId('walk_skill');
   runner.emitTrace({ stepId, status: 'running', label: 'preview skill', tool: 'walk_skill' });
 
@@ -312,7 +332,7 @@ export async function runGhampusSkillPreview(
       tool: 'walk_skill',
       preview: displayLabel,
     });
-    await runner.emitGhampusMsg(sanitizeGhampusResponse(body.slice(0, 12000)));
+    await runner.emitGhampusMsg(sanitizeGhampusResponse(body.slice(0, 12000)), { handledBy });
     if (runner.emitSkillPreviewCard && shouldOfferSkillImproveCard(originalText)) {
       const licensed = runner.isSkillTrainingLicensed
         ? await runner.isSkillTrainingLicensed()
