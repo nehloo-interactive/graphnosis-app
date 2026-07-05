@@ -26,8 +26,9 @@ import type { BroadcastRawFn } from './events.js';
 import { listNotifications } from './agent-notifications.js';
 import { extractDispatchTriggerLines, findSkillDispatchSourceId } from './skill-dispatch-sync.js';
 import { matchDispatchTriggers } from './proactive-dispatch-match.js';
-import { resolveGhampusProactiveSettings } from '@graphnosis-app/core/settings';
+import { resolveGhampusProactiveSettings, resolveSkillAutonomyLevel } from '@graphnosis-app/core/settings';
 import { shouldDeferGhampusBackground, scaleGhampusStartupDelay } from './background-lane-scheduler.js';
+import { decideSkillAutonomy, type AutonomyAction, type DispatchSafety } from './skill-autonomy.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -46,12 +47,32 @@ export interface ProactiveCard {
   /** One-line reason shown to the user. */
   why: string;
   status: 'pending' | 'running' | 'snoozed' | 'dismissed' | 'done';
+  /**
+   * Execution-autonomy decision for this proposal (skill-autonomy.ts).
+   *   - 'suggest' → ordinary propose card (default at L1).
+   *   - 'preview' → card flagged as preview-then-run.
+   *   - 'auto'    → card flagged auto-eligible (still human-gated in this build).
+   * 'manual' decisions are skipped before a card is built, so this is never 'manual'.
+   * Absent on cards built before autonomy gating (back-compat) → treat as 'suggest'.
+   */
+  autonomyAction?: Exclude<AutonomyAction, 'manual'>;
+  /** decision.reason from decideSkillAutonomy — surfaced for transparency. */
+  autonomyReason?: string;
 }
 
 export interface ProactiveWatcherDeps {
   host: GraphnosisHost;
   skillTrainer: SkillTrainer | null;
   broadcastRaw: BroadcastRawFn;
+  /**
+   * Optional hand-off for auto-eligible (decision.action === 'auto') cards. When
+   * the owner has opted into the unattended executor, the watcher passes the card
+   * here instead of only logging "surfaced, not executed". Kept as an injected
+   * hook so the watcher stays decoupled from the executor — the watcher does NOT
+   * decide whether to run; the executor RE-checks every interlock live before it
+   * ever walks. Absent (default) → today's behavior: surface only, never execute.
+   */
+  onAutoEligible?: (card: ProactiveCard) => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -358,10 +379,33 @@ export class ProactiveWatcher {
     const skills = this.deps.skillTrainer.listSkills();
     if (skills.length === 0) return;
 
-    // Filter out meta-skills and build a usable index.
+    // Filter out meta-skills (they route to others) and any skill whose Trigger
+    // carries [dispatch-safe: no] — the authored opt-out from auto-proposal.
+    const graphsForSafety = this.deps.host.listGraphs();
+    // Authored dispatch-safety tag → 'yes' | 'partial' | 'no'. The watcher
+    // filters out 'no' from auto-proposal (below); the full value also feeds
+    // decideSkillAutonomy at emit time so 'partial' caps a card to preview.
+    const dispatchSafety = (sourceId: string): DispatchSafety => {
+      for (const gid of graphsForSafety) {
+        const detail = this.deps.skillTrainer?.getSkill(gid, sourceId);
+        if (detail?.text) {
+          const m = detail.text.match(/\[dispatch-safe:\s*([a-z]+)\s*\]/i);
+          const v = m?.[1]?.toLowerCase();
+          return v === 'no' || v === 'partial' ? v : 'yes';
+        }
+      }
+      return 'yes';
+    };
+    const isDispatchSafe = (sourceId: string): boolean => dispatchSafety(sourceId) !== 'no';
     const usableSkills = skills.filter((s) => {
       const label = s.label.replace(/^skill:\d+:/, '');
-      return !META_SKILLS.has(label);
+      if (META_SKILLS.has(label)) return false;
+      // QUARANTINE CONTRACT (belt-and-suspenders): SkillTrainer.listSkills()
+      // already drops quarantined engrams from the default scope, but re-assert
+      // here through the centralized host.isQuarantined so a quarantined import
+      // can never be auto-proposed even if the enumeration source changes.
+      if (this.deps.host.isQuarantined(s.graphId)) return false;
+      return isDispatchSafe(s.sourceId);
     });
 
     const now = Date.now();
@@ -370,6 +414,10 @@ export class ProactiveWatcher {
     // emit the same skill twice in a single scan, regardless of how many
     // signals match it.
     const proposedSkillIds = new Set<string>();
+    // card.id → 0..1 match confidence (fed to decideSkillAutonomy at emit).
+    // Cadence-driven cards (time-based / obligation) have no fuzzy score and
+    // are treated as confident (1) — their trigger IS the signal.
+    const cardConfidence = new Map<string, number>();
 
     // ── Pass 0: temporal obligations due ≤7d or overdue ─────────────────────
     // Parallel to GoalTracker deadline alerts — obligations use structured
@@ -393,17 +441,19 @@ export class ProactiveWatcher {
           usableSkills, signalWords, signalContext, 'recent-ingest', notif.sourceId, proposedSkillIds,
         );
         if (bestMatch) {
-          proposedSkillIds.add(bestMatch.sourceId);
-          const skillLabel = bestMatch.label.replace(/^skill:\d+:/, '');
+          proposedSkillIds.add(bestMatch.skill.sourceId);
+          const skillLabel = bestMatch.skill.label.replace(/^skill:\d+:/, '');
           const desc = describeSkill(skillLabel);
           const sourceHint = truncate(notif.label.replace(/^[^:]+:/, '').replace(/\//g, ' › '), 40);
+          const cardId = `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          cardConfidence.set(cardId, scoreToConfidence(bestMatch.score));
           proposed.push({
-            id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            id: cardId,
             createdAt: now,
             signalType: 'recent-ingest',
             signalLabel: `You just added "${sourceHint}" to your ${notif.engramId} engram.`,
-            skillSourceId: bestMatch.sourceId,
-            skillGraphId: bestMatch.graphId,
+            skillSourceId: bestMatch.skill.sourceId,
+            skillGraphId: bestMatch.skill.graphId,
             skillLabel,
             why: `**${skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}** ${desc.what}. Preview the SOP in chat — ${desc.benefit}.`,
             status: 'pending',
@@ -448,13 +498,60 @@ export class ProactiveWatcher {
       this.markStateDirty();
     }
 
-    // ── Emit new cards ────────────────────────────────────────────────────────
+    // ── Autonomy gating + emit new cards ───────────────────────────────────────
+    // Each matched skill is passed through the pure decideSkillAutonomy() gate
+    // (skill-autonomy.ts), capped by authored safety. 'manual' → skip the card
+    // entirely; 'suggest'/'preview'/'auto' annotate the card with the action +
+    // reason for transparency. NO unattended walk execution happens here — even
+    // 'auto' only surfaces an auto-eligible card on the existing channel.
+    const agentSettings = this.deps.host.getSettings().agent;
     for (const card of proposed) {
+      const skillLabel = card.skillLabel;
+      // Per-SKILL autonomy: the requested level for THIS skill is its own
+      // override if set, else the engram default, else the global level.
+      // decideSkillAutonomy() then caps it by the skill's authored safety.
+      const level = resolveSkillAutonomyLevel(
+        card.skillSourceId,
+        this.deps.host.getGraphMetadata(card.skillGraphId),
+        agentSettings,
+      );
+      const decision = decideSkillAutonomy({
+        level,
+        dispatchSafe: dispatchSafety(card.skillSourceId),
+        isMetaSkill: META_SKILLS.has(skillLabel),
+        matchConfidence: cardConfidence.get(card.id) ?? 1,
+        // Cheap-only: we don't run a recall at watch time, so we can't know if a
+        // matched skill would touch contradicted memory. The self-heal scheduler
+        // + walker guard cover that seam; left false here by design.
+        hasUnresolvedContradiction: false,
+      });
+      if (decision.action === 'manual') {
+        // L0 / capped-to-manual — do not surface a card at all.
+        continue;
+      }
+      card.autonomyAction = decision.action;
+      card.autonomyReason = decision.reason;
+
       const suppressKey = `${card.signalType}:${card.skillSourceId}`;
       this.suppressed.set(suppressKey, now);
       this.cards.push(card);
       this.cardsThisSession++;
       this.markStateDirty();
+
+      if (decision.action === 'auto') {
+        // Log the decision reason — an auto-eligible card was surfaced.
+        console.log(`[proactive] auto-eligible card for "${skillLabel}" (${decision.reason})`);
+        // Hand it to the unattended executor IF one is wired (owner opted in).
+        // The watcher does NOT execute or even decide here — it only forwards.
+        // The executor re-resolves the effective level, re-runs decideSkillAutonomy
+        // with a LIVE contradiction check, guards the plan shape, and enforces the
+        // reversibility + rate-limit interlocks before it walks anything. Absent
+        // hook → unchanged: the card is surfaced, not executed (today's behavior).
+        if (this.deps.onAutoEligible) {
+          try { this.deps.onAutoEligible(card); }
+          catch { /* non-fatal — surfacing already happened */ }
+        }
+      }
 
       try {
         this.deps.broadcastRaw({
@@ -520,7 +617,7 @@ export class ProactiveWatcher {
     signalType: string,
     signalId: string,
     proposedSkillIds: Set<string>,
-  ): (typeof skills)[0] | null {
+  ): { skill: (typeof skills)[0]; score: number } | null {
     const now = Date.now();
     let bestSkill: (typeof skills)[0] | null = null;
     let bestScore = 0;
@@ -543,9 +640,10 @@ export class ProactiveWatcher {
 
     if (bestSkill) {
       this.suppressed.set(`${signalType}:${bestSkill.sourceId}:${signalId}`, now);
+      return { skill: bestSkill, score: bestScore };
     }
 
-    return bestSkill;
+    return null;
   }
 
   private isSkillSnoozedOrDismissed(skillSourceId: string, now: number): boolean {
@@ -605,6 +703,13 @@ function tokenize(text: string): string[] {
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
+/** Map a discrete proactive match score (≥2 to qualify; dispatch hits add ~5–8)
+ *  to a 0..1 confidence for the autonomy gate. Saturates at 8 → 1.0; the gate's
+ *  AUTONOMY_CONFIDENCE_FLOOR (0.6) corresponds to a score of ~4.8. */
+function scoreToConfidence(score: number): number {
+  return Math.max(0, Math.min(1, score / 8));
 }
 
 const STOP_WORDS = new Set([

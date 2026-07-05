@@ -37,11 +37,13 @@ import type { BroadcastRawFn } from './events.js';
 import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
 import { ProactiveWatcher } from './proactive-watcher.js';
+import { UnattendedExecutor } from './unattended-executor.js';
 import { GhampusReminderScheduler } from './ghampus-reminders.js';
 import { GhampusProactiveTipsScheduler } from './ghampus-proactive-tips.js';
 import { GhampusVitalityNudgesScheduler } from './ghampus-vitality-nudges.js';
 import { emitGhampusRecoveryNudge } from './ghampus-recovery-nudge.js';
 import { SkillMaintenanceScheduler } from './skill-maintenance-scheduler.js';
+import { ContradictionHealthScheduler } from './contradiction-health-scheduler.js';
 import { SidecarIdleMaintenance } from './sidecar-idle-maintenance.js';
 import { SkillTrainer } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
@@ -1259,8 +1261,26 @@ async function main(): Promise<void> {
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
     ?? path.join(env.cortexDir, 'sidecar.sock');
-  const proactiveWatcher = new ProactiveWatcher({ host, skillTrainer: skillTrainer ?? null, broadcastRaw });
+  // True L3 unattended executor (#40). SAFETY-CRITICAL: default OFF — start() is
+  // a no-op while agent.unattendedExecutor.enabled is absent/false. Instantiated
+  // BEFORE the watcher so the watcher can hand it auto-eligible cards via the
+  // onAutoEligible hook; the executor RE-checks every interlock live before any
+  // walk, so the watcher stays a pure surfacer.
+  const unattendedExecutor = new UnattendedExecutor({
+    host,
+    skillTrainer: skillTrainer ?? null,
+    brainEngine: brainEngine ?? null,
+    broadcastRaw,
+    cortexDir: env.cortexDir,
+  });
+  const proactiveWatcher = new ProactiveWatcher({
+    host,
+    skillTrainer: skillTrainer ?? null,
+    broadcastRaw,
+    onAutoEligible: (card) => unattendedExecutor.onAutoEligible(card),
+  });
   proactiveWatcher.start();
+  unattendedExecutor.start();
   const reminderScheduler = new GhampusReminderScheduler({
     host,
     broadcastRaw,
@@ -1289,6 +1309,11 @@ async function main(): Promise<void> {
   skillMaintenanceScheduler.start();
   const sidecarIdleMaintenance = new SidecarIdleMaintenance({ host, cortexDir: env.cortexDir, broadcastRaw });
   sidecarIdleMaintenance.start();
+  // Self-heal cadence: surface newly-detected contradictions for owner
+  // adjudication on a timer (never auto-resolves). Counterpart to the skill
+  // maintenance scheduler; decision logic is the pure planContradictionSweep().
+  const contradictionHealthScheduler = new ContradictionHealthScheduler({ host, brainEngine, broadcastRaw });
+  contradictionHealthScheduler.start();
   // Build a dispatcher bound to mcpDeps so Ghampus can call any of the 47+
   // MCP tool handlers without going through the network transport. The Server
   // returned here is not connected to any transport — it's just a side effect
@@ -1312,6 +1337,7 @@ async function main(): Promise<void> {
     skillTrainer,
     licenseValidator,
     proactiveWatcher,
+    unattendedExecutor,
     reminderScheduler,
     tipsScheduler,
     skillMaintenanceScheduler,
@@ -1469,6 +1495,7 @@ async function main(): Promise<void> {
     // cortex lock + GBs of RAM. Force-exit after 5 s no matter what.
     setTimeout(() => { console.error('[graphnosis-sidecar] shutdown timed out — forcing exit'); process.exit(0); }, 5000).unref();
     try { brainEngine.stop(); } catch { /* may not have started (deferred boot) */ }
+    try { unattendedExecutor.stop(); } catch { /* timer may be unarmed */ }
     await connectorManager.stop().catch(() => {});
     for (const graphId of host.listGraphs()) {
       try { await host.save(graphId); } catch { /* best-effort — don't block exit */ }

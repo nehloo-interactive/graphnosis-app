@@ -7,7 +7,7 @@ import path from 'node:path';
 
 // ── Connector types ───────────────────────────────────────────────────────────
 
-export type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear' | 'obsidian' | 'gbrain' | 'ai-context';
+export type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear' | 'obsidian' | 'gbrain' | 'ai-context' | 'x';
 
 export interface ConnectorConfig {
   /** User-chosen slug — must be unique within a cortex. */
@@ -628,6 +628,68 @@ export interface GraphMetadata {
    * Recall into this engram requires an Enterprise IdP unlock for the session.
    */
   requireSsoSession?: boolean;
+
+  /**
+   * Per-engram execution-autonomy override. Each per-family skill engram is
+   * itself a domain agent, so it may carry its OWN autonomy dial — how far
+   * Ghampus may take a skill matched from THIS engram automatically. When set,
+   * it overrides the global `AgentSettings.executionAutonomyLevel` for skills
+   * living in this engram. Absent (default) = fall back to the global level, so
+   * existing engrams behave exactly as before. Still capped by authored skill
+   * safety via decideSkillAutonomy() — see skill-autonomy.ts. Resolve via
+   * `resolveEngramAutonomyLevel`.
+   */
+  executionAutonomyLevel?: ExecutionAutonomyLevel;
+
+  /**
+   * Per-SKILL execution-autonomy overrides, keyed by the skill's stable
+   * `sourceId` (stable across in-place retrain — survives a re-train that reuses
+   * the same source). Each entry is the user's chosen autonomy level for THAT
+   * one skill; absent = the skill INHERITS this engram's `executionAutonomyLevel`
+   * (which itself falls back to the global level). Stored here in metadata — NOT
+   * in the skill body or its metadata-comment — so it survives retraining and
+   * never pollutes the trained text.
+   *
+   * The override is still capped by the skill's AUTHORED safety
+   * (`[dispatch-safe: …]`) at dispatch time via decideSkillAutonomy() — see
+   * skill-autonomy.ts. Resolve via `resolveSkillAutonomyLevel`; the EFFECTIVE
+   * (capped) level is min(resolved, authoredCap). Absent (default) = every
+   * skill inherits, so existing engrams behave exactly as before.
+   */
+  skillAutonomyLevels?: { [sourceId: string]: ExecutionAutonomyLevel };
+
+  /**
+   * Quarantine marker for engrams created by an untrusted IMPORT (a received
+   * `.gez` / `.gsk` pack). A fresh quarantine engram is created per import batch.
+   *
+   * While this block is present the engram is QUARANTINED: it is excluded — at
+   * the host/server boundary, never the UI — from federated recall
+   * (`resolveConsentedGraphIds`), the proactive watcher's usableSkills, cross-engram
+   * `@skill:` resolution, and the default `list_skills` scope. Quarantine engrams
+   * are created with `executionAutonomyLevel='L0'` and `sensitivityTier='sensitive'`,
+   * and imported skills are forced `[dispatch-safe: no]`. The owner adjudicates each
+   * item: `promoted` moves the source to a real target engram (lifting the flag for
+   * that item); `rejected` discards it (op-log audit). Resolve via `isQuarantined`.
+   */
+  quarantine?: {
+    /** Origin pack filename / label (provenance). */
+    fromPack: string;
+    /** Base64 Ed25519 public key the pack was signed by, when signed/verified. */
+    signerPublicKey?: string;
+    /** True when the pack's Ed25519 signature verified at import time. */
+    verified: boolean;
+    /** Unix-ms when the import batch landed. */
+    importedAt: number;
+    /** Per-item adjudication state. */
+    items: Array<{
+      /** sourceId of the landed (quarantined) source in THIS engram. */
+      sourceId: string;
+      /** skill_lint findings captured at import time (skills only). */
+      lint?: string[];
+      /** Owner-adjudication state. */
+      state: 'quarantined' | 'promoted' | 'rejected';
+    }>;
+  };
 }
 
 /**
@@ -1317,6 +1379,126 @@ export interface AgentSettings {
   memorySuggestions?: GhampusMemorySuggestionsSettings;
   /** Idle vitality nudge cards in Ghampus chat. Absent → defaults (enabled). */
   vitalityNudges?: GhampusVitalityNudgesSettings;
+  /**
+   * How far Ghampus may take a *matched* skill automatically — the execution
+   * axis, distinct from the retrain-promotion `SkillAutoRetrainConfig.autonomyLevel`.
+   *   - 'L0' manual  — never surface a card.
+   *   - 'L1' suggest — surface a propose-card (default).
+   *   - 'L2' preview — surface a card flagged as preview-then-run.
+   *   - 'L3' auto    — surface an auto-eligible card (still human-gated unless the
+   *                    unattended executor below is explicitly opted-in).
+   * Capped by authored skill safety via decideSkillAutonomy() — see
+   * skill-autonomy.ts. Absent → 'L1'.
+   */
+  executionAutonomyLevel?: ExecutionAutonomyLevel;
+  /**
+   * True L3 UNATTENDED executor — runs an auto-eligible (L3, dispatch-safe:yes,
+   * uncontradicted, reversible, single-pass) skill end-to-end with NO human.
+   * SAFETY-CRITICAL: absent/disabled → the executor is a no-op. Explicit owner
+   * opt-in only; see UnattendedExecutorSettings. Even when enabled, the seven
+   * interlocks in unattended-executor.ts re-check everything live at exec time.
+   */
+  unattendedExecutor?: UnattendedExecutorSettings;
+}
+
+/**
+ * Owner opt-in for the true L3 unattended skill executor. SAFETY-CRITICAL —
+ * default OFF: an absent block or `enabled !== true` means the executor never
+ * runs (start() returns early). Enabling it is necessary but NOT sufficient —
+ * a run must still clear all seven interlocks (kill switch, opt-in, live
+ * effective L3, live uncontradicted memory, single-pass plan shape, reversible
+ * side effects, rate limit) every tick.
+ */
+export interface UnattendedExecutorSettings {
+  /** Master opt-in. DEFAULT FALSE — absent/false → the executor is a no-op. */
+  enabled: boolean;
+  /** Optional cap on unattended runs per rolling hour. Absent → unbounded by
+   *  this field (the one-skill-per-tick + idle gating still throttle). */
+  maxRunsPerHour?: number;
+  /** Refuse any run whose side effects aren't reversible. DEFAULT TRUE — only an
+   *  explicit `false` admits irreversible side effects (and the executor still
+   *  refuses any unclassifiable action). */
+  requireReversibleOnly?: boolean;
+}
+
+/**
+ * Resolve the unattended-executor master opt-in. SAFETY-CRITICAL default: FALSE.
+ * Any value other than a literal `true` (absent block, missing field, non-boolean
+ * a hand-edited cortex could carry) resolves to false — the executor never runs.
+ */
+export function resolveUnattendedExecutorEnabled(agent?: AgentSettings | null): boolean {
+  return agent?.unattendedExecutor?.enabled === true;
+}
+
+/** Resolve `requireReversibleOnly` with its SAFETY default of TRUE — only an
+ *  explicit `false` opts out of the reversibility guard. */
+export function resolveUnattendedRequireReversibleOnly(agent?: AgentSettings | null): boolean {
+  return agent?.unattendedExecutor?.requireReversibleOnly !== false;
+}
+
+/** Execution-autonomy axis for matched-skill dispatch. See AgentSettings.executionAutonomyLevel. */
+export type ExecutionAutonomyLevel = 'L0' | 'L1' | 'L2' | 'L3';
+
+/** Default execution autonomy when unset — suggest only. */
+export const DEFAULT_EXECUTION_AUTONOMY_LEVEL: ExecutionAutonomyLevel = 'L1';
+
+/** Resolve the execution-autonomy level with the L1 default. */
+export function resolveExecutionAutonomyLevel(
+  agent?: AgentSettings | null,
+): ExecutionAutonomyLevel {
+  const lvl = agent?.executionAutonomyLevel;
+  return lvl === 'L0' || lvl === 'L1' || lvl === 'L2' || lvl === 'L3'
+    ? lvl
+    : DEFAULT_EXECUTION_AUTONOMY_LEVEL;
+}
+
+/**
+ * Resolve the execution-autonomy level for a single engram (its per-family
+ * skill engram acting as a domain agent). Pure: takes the engram's metadata
+ * (or undefined) plus the global agent settings.
+ *
+ *   - A valid per-engram `executionAutonomyLevel` override wins.
+ *   - Otherwise (missing or invalid override) fall back to the global level
+ *     via `resolveExecutionAutonomyLevel(agent)` — back-compat: engrams with no
+ *     override behave exactly as today.
+ */
+export function resolveEngramAutonomyLevel(
+  meta?: GraphMetadata | null,
+  agent?: AgentSettings | null,
+): ExecutionAutonomyLevel {
+  const lvl = meta?.executionAutonomyLevel;
+  if (lvl === 'L0' || lvl === 'L1' || lvl === 'L2' || lvl === 'L3') return lvl;
+  return resolveExecutionAutonomyLevel(agent);
+}
+
+/**
+ * Resolve the REQUESTED execution-autonomy level for a single skill (the third,
+ * innermost layer of the three-layer autonomy model). Pure: takes the skill's
+ * stable `sourceId`, the owning engram's metadata (or undefined), and the global
+ * agent settings.
+ *
+ * Resolution order (most-specific first; each falls back to the next):
+ *   - A valid per-skill override in `meta.skillAutonomyLevels[sourceId]` wins.
+ *   - Otherwise the engram default via `resolveEngramAutonomyLevel(meta, agent)`
+ *     (its own override, else the global level, else the L1 default).
+ *
+ * This is the REQUESTED level only — the EFFECTIVE level is still capped by the
+ * skill's AUTHORED safety (`[dispatch-safe: …]`) at dispatch time via
+ * decideSkillAutonomy()/safetyCeiling (skill-autonomy.ts):
+ *   effective(skill) = min(resolveSkillAutonomyLevel(...), authoredCap).
+ *
+ * An absent override (or an invalid stored value an older/hand-edited cortex
+ * could carry) means "inherit from the engram" — so existing engrams and skills
+ * behave exactly as before.
+ */
+export function resolveSkillAutonomyLevel(
+  sourceId: string,
+  meta?: GraphMetadata | null,
+  agent?: AgentSettings | null,
+): ExecutionAutonomyLevel {
+  const lvl = meta?.skillAutonomyLevels?.[sourceId];
+  if (lvl === 'L0' || lvl === 'L1' || lvl === 'L2' || lvl === 'L3') return lvl;
+  return resolveEngramAutonomyLevel(meta, agent);
 }
 
 /** Vitality suggestion cards when chat is idle. */
@@ -2036,6 +2218,10 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     const vn = a.vitalityNudges;
     agent = {
       enabled: typeof a.enabled === 'boolean' ? a.enabled : true,
+      ...(a.executionAutonomyLevel === 'L0' || a.executionAutonomyLevel === 'L1'
+        || a.executionAutonomyLevel === 'L2' || a.executionAutonomyLevel === 'L3'
+        ? { executionAutonomyLevel: a.executionAutonomyLevel }
+        : {}),
       ...(sm && typeof sm === 'object'
         ? {
             skillMaintenance: {
@@ -2090,6 +2276,25 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
               ...(typeof vn.enabled === 'boolean' ? { enabled: vn.enabled } : {}),
               ...(typeof vn.startupDelayMs === 'number' && vn.startupDelayMs >= 0
                 ? { startupDelayMs: vn.startupDelayMs }
+                : {}),
+            },
+          }
+        : {}),
+      // Unattended executor — SAFETY-CRITICAL. Only persist a block when the
+      // partial carries one; `enabled` round-trips only as a literal boolean so
+      // a malformed value can never silently turn the executor on (the resolver
+      // also requires `=== true`). requireReversibleOnly persists only as an
+      // explicit boolean so the TRUE default is preserved when absent.
+      ...(a.unattendedExecutor && typeof a.unattendedExecutor === 'object'
+        ? {
+            unattendedExecutor: {
+              enabled: a.unattendedExecutor.enabled === true,
+              ...(typeof a.unattendedExecutor.maxRunsPerHour === 'number'
+                && a.unattendedExecutor.maxRunsPerHour >= 0
+                ? { maxRunsPerHour: a.unattendedExecutor.maxRunsPerHour }
+                : {}),
+              ...(typeof a.unattendedExecutor.requireReversibleOnly === 'boolean'
+                ? { requireReversibleOnly: a.unattendedExecutor.requireReversibleOnly }
                 : {}),
             },
           }
