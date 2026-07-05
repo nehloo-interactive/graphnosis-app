@@ -577,7 +577,10 @@ export async function runGhampusSend(
 
     let queryText = text;
 
-    const emitGhampusMsg = async (responseText: string) => {
+    const emitGhampusMsg = async (
+      responseText: string,
+      opts?: { handledBy?: import('./ghampus-skill-train.js').GhampusHandledByInfo },
+    ) => {
       finishPlanning();
       const trace = buildTraceSnapshot();
       const responseMsg = {
@@ -586,6 +589,9 @@ export async function runGhampusSend(
         ts: Date.now(),
         turnId: traceTurnId,
         ...(trace ? { trace } : {}),
+        // Routing-legibility chip (feature #41) — present only when the turn was
+        // dispatched to a domain Agempus's skill. Additive + optional.
+        ...(opts?.handledBy ? { handledBy: opts.handledBy } : {}),
       };
       if (cortexDirForHistory) {
         await appendGhampusHistoryMessage(cortexDirForHistory, responseMsg);

@@ -19,6 +19,7 @@ import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { broadcastOplogCompacted } from './sidecar-idle-maintenance.js';
 import { dbg } from './log-redact.js';
+import { logIpcMethodError, logThrottled } from './log-rate-limit.js';
 import { enqueueBackgroundLane, resolveDocsReingestDelayMs } from './background-lane-scheduler.js';
 import { actorOf } from './activity-actors.js';
 import { mcpRegistry } from './mcp-registry.js';
@@ -196,6 +197,8 @@ export interface IpcDeps {
   licenseValidator?: import('./license-validator.js').LicenseValidator | null;
   /** Proactive watcher — surfaces skill-match cards into the Ghampus chat thread. */
   proactiveWatcher?: import('./proactive-watcher.js').ProactiveWatcher | null;
+  /** True L3 unattended executor — runs auto-eligible skills with no human. Default off. */
+  unattendedExecutor?: import('./unattended-executor.js').UnattendedExecutor | null;
   /** Autonomous todo / obligation reminder scheduler. */
   reminderScheduler?: import('./ghampus-reminders.js').GhampusReminderScheduler | null;
   tipsScheduler?: import('./ghampus-proactive-tips.js').GhampusProactiveTipsScheduler | null;
@@ -409,7 +412,7 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
           if (unknownMethod) {
             dbg(`[graphnosis-sidecar] IPC method '${req.method}' not available: ${err.message}`);
           } else {
-            console.error(`[graphnosis-sidecar] IPC method '${req.method}' failed:`, err);
+            logIpcMethodError(req.method, err);
           }
           const message = err.stack ?? err.message;
           sock.write(JSON.stringify({ id: req.id, error: message }) + '\n');
@@ -1578,8 +1581,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const record = deps.host.getLastOplogCompaction();
         broadcastOplogCompacted(deps.broadcastRaw, compaction, record?.at ?? Date.now());
       }).catch((e: unknown) => {
-        console.error(
-          `[graphnosis-ipc] activity.list oplog housekeeping failed: ${(e as Error).message}`,
+        const msg = (e as Error).message ?? String(e);
+        logThrottled(
+          `activity.list-housekeeping-${msg.split('\n')[0]?.trim() ?? msg}`,
+          `[graphnosis-ipc] activity.list oplog housekeeping failed: ${msg}`,
+          { level: 'warn' },
         );
       });
       return { events: enriched, actors, hasMore, nextCursor, lastCompaction: deps.host.getLastOplogCompaction() };
@@ -1791,6 +1797,72 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }).parse(params);
       await deps.host.setGraphTier(args.graphId, args.tier);
       return { ok: true };
+    }
+    case 'graphs.setExecutionAutonomy': {
+      // Per-engram (Agempus) autonomy dial. `level: null` clears the override
+      // → the engram falls back to the global execution-autonomy level. The
+      // effective level is still capped per skill by authored `dispatch-safe:`
+      // (decideSkillAutonomy) — the UI surfaces that cap; this only persists the
+      // requested ceiling for skills matched from this engram.
+      const args = z.object({
+        graphId: z.string(),
+        level: z.enum(['L0', 'L1', 'L2', 'L3']).nullable(),
+      }).parse(params);
+      await deps.host.setGraphExecutionAutonomy(args.graphId, args.level);
+      return { ok: true };
+    }
+    case 'skills.setSkillAutonomy': {
+      // Per-SKILL autonomy dial. `level: null` clears the override → the skill
+      // inherits the engram default (which falls back to the global level). The
+      // effective level returned is still capped per skill by authored
+      // `dispatch-safe:` (decideSkillAutonomy) — the UI renders it directly.
+      const args = z.object({
+        graphId: z.string(),
+        sourceId: z.string(),
+        level: z.enum(['L0', 'L1', 'L2', 'L3']).nullable(),
+      }).parse(params);
+      // Clamp a requested level to the skill's authored dispatch-safe cap BEFORE
+      // persisting it — mirrors the other two write paths (SkillTrainer's
+      // clamp-and-report and the MCP set_skill_autonomy refuse-above-cap). The
+      // dispatch + read paths re-clamp anyway, so a raw above-cap value is never
+      // *applied*; but storing it verbatim leaves misleading state (it reads back
+      // higher than the effective level) and a hazard for any future consumer
+      // that treats the stored override as an action input. `null` (clear the
+      // override) skips clamping. Cap falls back to L3 when the skill isn't in
+      // the readout (unknown → no clamp), matching SkillTrainer.
+      let levelToStore = args.level;
+      if (args.level) {
+        const { levelRank } = await import('./skill-autonomy.js');
+        const readout = deps.host.dispatchSafeReadout(args.graphId)[0];
+        const cap = readout?.perSkill.find((p) => p.sourceId === args.sourceId)?.cap ?? 'L3';
+        levelToStore = levelRank(args.level) > levelRank(cap) ? cap : args.level;
+      }
+      await deps.host.setSkillExecutionAutonomy(args.graphId, args.sourceId, levelToStore);
+      // Echo the resulting effective (capped) level so the UI doesn't need a
+      // follow-up dispatchSafeReadout call. The label is recovered from the
+      // source record's ref (used for meta/router detection inside the host).
+      const ref = deps.host.getSourceRecord(args.graphId, args.sourceId)?.ref ?? args.sourceId;
+      const effectiveLevel = deps.host.resolveEffectiveSkillAutonomy(args.graphId, args.sourceId, ref);
+      return { ok: true, effectiveLevel };
+    }
+    case 'graphs.dispatchSafeReadout': {
+      // Read-only computed view of the effective execution-autonomy ceiling per
+      // engram: min(the engram's configured executionAutonomyLevel, the authored
+      // dispatch-safe cap derived from its skills' `[dispatch-safe: …]` tags).
+      // Pass a graphId to scope to one engram; omit to read every skill-bearing
+      // engram. Deterministic — no LLM, no mutation.
+      const args = z.object({
+        graphId: z.string().optional(),
+      }).parse(params);
+      const readouts = args.graphId
+        ? deps.host.dispatchSafeReadout(args.graphId)
+        : deps.host.dispatchSafeReadout();
+      // Single-engram callers get the one readout directly; the all-engrams call
+      // returns the array. Keep both shapes explicit so the UI can branch on the
+      // presence of `graphId` in its request.
+      return args.graphId
+        ? { ok: true, readout: readouts[0] ?? null }
+        : { ok: true, readouts };
     }
     case 'graphs.setClassificationLabel': {
       const licenseToken = await getEffectiveLicenseToken(deps);
@@ -2670,7 +2742,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Admin/IT policy state for the "Disabled by IT" Home card + (later)
       // the editable toggles. `managed` = env-pinned by IT (read-only here).
       const p = getAdminPolicy();
-      const ALL_CONNECTOR_KINDS = ['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context'];
+      const ALL_CONNECTOR_KINDS = ['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context', 'x'];
       const clientTypes = deps.host.getSettings().ai.clientTypes ?? {};
       const isPolicyClientName = (name: string): boolean =>
         name.length >= 2 && name !== 'chat' && name !== 'agent';
@@ -2711,7 +2783,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { config } = z.object({
         config: z.object({
           id: z.string().optional(),
-          kind: z.enum(['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context']),
+          kind: z.enum(['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context', 'x']),
           graphId: z.string().optional(),
           enabled: z.boolean().optional(),
           // zod v4: z.record requires (keyType, valueType). Credentials are
@@ -4706,7 +4778,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         ...(meta?.displayName ? { engramName: meta.displayName } : {}),
       });
       const rawSteps = skillPlan.steps.map((s) => ({ index: s.index, text: s.text }));
-      const planSteps = deriveStepsFromText(rawSteps);
+      // Privacy hard-lock (Invariant 2): resolve each step's recalled-engram
+      // tiers so the preview's `privacySafe` flag and per-step routing reflect
+      // the same local-lock the actual walk applies to sensitive-engram steps.
+      const { deriveEngramTierByStep } = await import('./agent-walker.js');
+      const engramTierByStep = deriveEngramTierByStep(deps.host, skillPlan.steps);
+      const planSteps = deriveStepsFromText(rawSteps, engramTierByStep);
       const strategy = settings.models?.strategy ?? 'adaptive';
       const plan = planSkillWalk(planSteps, {
         strategy,
@@ -5078,7 +5155,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // unconfigured paid providers report a clear error per step. Each step writes a
       // routing-savings entry as it lands; the walk's final result
       // carries the per-step outputs + captures for the UI to render.
-      const { walkSkillPlan } = await import('./agent-walker.js');
+      const { walkSkillPlan, deriveEngramTierByStep } = await import('./agent-walker.js');
       const { planSkillWalk, deriveStepsFromText } = await import('./model-router.js');
       const args = z.object({
         sourceId: z.string().min(1),
@@ -5112,7 +5189,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           subscriptionPoolUsage[pid] = { poolSpentUsd: ps.poolSpentUsd ?? 0, flexSpentUsd: ps.flexSpentUsd ?? 0 };
         }
       }
-      const planSteps = deriveStepsFromText(rawSteps);
+      // Privacy hard-lock (Invariant 2): force any step that recalls from a
+      // sensitive engram onto a local model. This path actually dispatches the
+      // LLM calls, so the lock must engage here exactly as in buildPlanForSkill.
+      const engramTierByStep = deriveEngramTierByStep(deps.host, skillPlan.steps);
+      const planSteps = deriveStepsFromText(rawSteps, engramTierByStep);
       const plan = planSkillWalk(planSteps, {
         strategy: settings.models?.strategy ?? 'adaptive',
         enabledProviders,
@@ -5171,6 +5252,81 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
       return { ok: true, plan, result };
     }
+
+    // ── Unattended executor (#40) — review + undo + in-UI kill switch ─────────
+    case 'unattended:listRuns': {
+      // Read the per-action audit headers (redacted by construction), newest
+      // first. The audit file is the source of truth for the review pane.
+      const args = z.object({
+        limit: z.number().int().min(1).max(500).optional(),
+        status: z.enum(['running', 'complete', 'failed', 'aborted']).optional(),
+      }).parse(params ?? {});
+      const { readRecentUnattendedRuns } = await import('./unattended-audit.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir();
+      let runs = await readRecentUnattendedRuns(cortexDir, deps.host.getCortexDataKey(), args.limit ?? 100);
+      if (args.status) runs = runs.filter((r) => r.status === args.status);
+      return { ok: true, runs, total: runs.length };
+    }
+    case 'unattended:getTrace': {
+      const args = z.object({ runId: z.string().min(1) }).parse(params ?? {});
+      const { readRunTrace } = await import('./unattended-audit.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir();
+      const { header, actions } = await readRunTrace(cortexDir, deps.host.getCortexDataKey(), args.runId);
+      return { ok: true, header, actions };
+    }
+    case 'unattended:undo': {
+      // Replay the inverse of one action (or every reversible action in a run
+      // when stepIndex is omitted). Goes through the indelible correction /
+      // snapshot machinery, so the undo is itself audited and re-reversible.
+      const args = z.object({
+        runId: z.string().min(1),
+        stepIndex: z.number().int().min(0).optional(),
+      }).parse(params ?? {});
+      const { readRunTrace } = await import('./unattended-audit.js');
+      const { applyUndo } = await import('./unattended-undo.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir();
+      const { actions } = await readRunTrace(cortexDir, deps.host.getCortexDataKey(), args.runId);
+      const targets = args.stepIndex === undefined
+        ? actions.filter((a) => a.undo.reversible && a.undo.undoToken && !a.reverted)
+        : actions.filter((a) => a.stepIndex === args.stepIndex);
+      if (targets.length === 0) return { ok: false, reason: 'no-reversible-action' };
+      let reverted = 0;
+      const reasons: string[] = [];
+      for (const a of targets) {
+        if (!a.undo.reversible || !a.undo.undoToken) { reasons.push(`step ${a.stepIndex}: irreversible`); continue; }
+        const res = await applyUndo(deps.host, a.undo.undoToken, deps.skillTrainer ?? null);
+        if (res.ok) reverted++;
+        else reasons.push(`step ${a.stepIndex}: ${res.reason ?? 'failed'}`);
+      }
+      return { ok: reverted > 0, reverted, ...(reasons.length ? { reason: reasons.join('; ') } : {}) };
+    }
+    case 'unattended:setEnabled': {
+      // The in-UI opt-in / kill switch. Persists agent.unattendedExecutor.enabled.
+      // SAFETY: default-off is preserved — this only ever writes an explicit
+      // boolean the owner chose in the UI.
+      const args = z.object({ enabled: z.boolean() }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prior = current.agent ?? { enabled: true };
+      await deps.host.setSettings({
+        ...current,
+        agent: {
+          ...prior,
+          unattendedExecutor: { ...(prior.unattendedExecutor ?? { enabled: false }), enabled: args.enabled },
+        },
+      });
+      return { ok: true, enabled: args.enabled };
+    }
+    case 'unattended:status': {
+      const { resolveUnattendedExecutorEnabled } = await import('@graphnosis-app/core/settings');
+      const live = deps.unattendedExecutor?.status();
+      return {
+        ok: true,
+        enabled: live?.enabled ?? resolveUnattendedExecutorEnabled(deps.host.getSettings().agent),
+        runsLastHour: live?.runsLastHour ?? 0,
+        blockedCount: live?.blockedCount ?? 0,
+      };
+    }
+
     case 'savings:recordRecallOnly': {
       // Called by the MCP recall handler when a recall succeeded and
       // returned context to the AI client. The counterfactual is "the
@@ -5659,6 +5815,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return deps.skillTrainer.computeSkillVitality(args.graphId, args.sourceId);
     }
 
+    case 'skill:debugInjectDrift': {
+      // DEV/TEST ONLY — cited-drift injection for the Appendix-S7 pilot (paper #3).
+      // Sandbox engrams only; the trainer method double-guards (env + slug).
+      if (process.env.GRAPHNOSIS_DEV !== '1') return { ok: false, error: 'dev-only' };
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        missingCount: z.number().int().min(0),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return null;
+      return deps.skillTrainer.debugInjectCitedDrift(args.graphId, args.sourceId, args.missingCount);
+    }
+
     case 'skill:list': {
       // Read-only listing of all skill sources across engrams (or filtered to one).
       // Returns SkillListEntry[] — already enriched with parsed metadata
@@ -5959,6 +6128,152 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return walked;
     }
 
+    case 'skills.callGraph': {
+      // READ-ONLY batched call-graph reader for the Agents/Agempi roster
+      // (feature #41). Returns the resolved skill:calls edge set for one
+      // family (graphId) or — when graphId is omitted — every NON-quarantined
+      // skill-template engram, plus each family's dispatch-trigger phrases.
+      //
+      // SAFETY CONTRACT: this returns ONLY labels/ids/titles already exposed by
+      // skill:list and skill:walkSequence — NO node bodies, NO recall content.
+      // Quarantined engrams (host.isQuarantined) are EXCLUDED from the roster,
+      // from the edges, AND from cross-engram resolution: a quarantined engram
+      // is not a promoted Agempus. Strictly deterministic — no LLM.
+      const args = z.object({
+        graphId: z.string().min(1).optional(),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return { ok: true, edges: [], triggers: {} };
+
+      const { extractDispatchTriggerLines, findSkillDispatchSourceId } =
+        await import('./skill-dispatch-sync.js');
+
+      // Family set: skill-template engrams, minus quarantined. When a specific
+      // graphId is requested, honour it but still drop it if quarantined.
+      const familyIds = (args.graphId
+        ? [args.graphId]
+        : skillEngramIds(deps.host)
+      ).filter((gid) => !deps.host.isQuarantined(gid));
+
+      // Non-quarantined skill-template engrams — the only valid edge endpoints.
+      const nonQuarantinedSkillEngrams = new Set(
+        skillEngramIds(deps.host).filter((gid) => !deps.host.isQuarantined(gid)),
+      );
+
+      type CallEdge = {
+        callerGraphId: string;
+        callerSourceId: string;
+        callerLabel: string;
+        targetGraphId: string;
+        targetSourceId: string;
+        targetTitle: string;
+        crossEngram: boolean;
+        kind: 'call' | 'parallel' | 'onFailure';
+      };
+      const edges: CallEdge[] = [];
+      const seen = new Set<string>();
+      const pushEdge = (e: CallEdge): void => {
+        // Drop any edge whose target lands in a quarantined / non-skill engram.
+        if (!nonQuarantinedSkillEngrams.has(e.targetGraphId)) return;
+        const key = `${e.callerGraphId}|${e.callerSourceId}|${e.targetGraphId}|${e.targetSourceId}|${e.kind}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        edges.push(e);
+      };
+
+      const triggers: Record<string, string[]> = {};
+      const labelFor = (graphId: string, sourceId: string): string => {
+        const rec = deps.host.getSourceRecord(graphId, sourceId);
+        return rec?.ref?.replace(/^skill:\d+:/, '').trim() || sourceId;
+      };
+
+      for (const gid of familyIds) {
+        // Per-family dispatch triggers: prefer the family's own skill-dispatch
+        // source (parsed with the shared extractDispatchTriggerLines); fall back
+        // to each skill's `Trigger:` goal so the region is never empty.
+        let triggerLines: string[] = [];
+        const dispatchSid = findSkillDispatchSourceId(deps.host, gid);
+        if (dispatchSid) {
+          const detail = deps.skillTrainer.getSkill(gid, dispatchSid);
+          if (detail?.text) triggerLines = extractDispatchTriggerLines(detail.text);
+        }
+
+        const sources = deps.host.listSources(gid).filter((s) => s.kind === 'skill');
+        const fallbackTriggers: string[] = [];
+
+        for (const src of sources) {
+          const callerLabel = labelFor(gid, src.sourceId);
+          // Intra-engram edges from the walk (callsSkill / parallelCalls /
+          // failureHandlers). Cross-engram edges carry a targetGraphId.
+          const perSourceCross = await deps.host.skillCallLinks.getForSource(gid, src.sourceId);
+          const walked = walkSkillSequence(deps.host, gid, src.sourceId, {
+            recursive: false,
+            crossEngramLinks: perSourceCross,
+          });
+
+          for (const step of walked.steps) {
+            if (step.callsSkill) {
+              const tgtGid = step.callsSkill.targetGraphId ?? gid;
+              pushEdge({
+                callerGraphId: gid,
+                callerSourceId: src.sourceId,
+                callerLabel,
+                targetGraphId: tgtGid,
+                targetSourceId: step.callsSkill.targetSourceId,
+                targetTitle: step.callsSkill.targetTitle,
+                crossEngram: tgtGid !== gid,
+                kind: 'call',
+              });
+            }
+            for (const pc of step.parallelCalls ?? []) {
+              const tgtGid = pc.targetGraphId ?? gid;
+              pushEdge({
+                callerGraphId: gid,
+                callerSourceId: src.sourceId,
+                callerLabel,
+                targetGraphId: tgtGid,
+                targetSourceId: pc.targetSourceId,
+                targetTitle: pc.targetTitle,
+                crossEngram: tgtGid !== gid,
+                kind: 'parallel',
+              });
+            }
+          }
+          for (const fh of walked.failureHandlers) {
+            if (!fh.targetSourceId) continue;
+            const tgtGid = gid; // failure handlers resolve in-engram by name
+            pushEdge({
+              callerGraphId: gid,
+              callerSourceId: src.sourceId,
+              callerLabel,
+              targetGraphId: tgtGid,
+              targetSourceId: fh.targetSourceId,
+              targetTitle: fh.targetTitle ?? fh.targetSourceId,
+              crossEngram: false,
+              kind: 'onFailure',
+            });
+          }
+
+          // Trigger fallback: this skill's own `Trigger:` goal — the phrase only
+          // (first line), never the full node body. A properly section-walked
+          // skill stores the trigger as a one-line goal node; we defensively cap
+          // to the first line so a hollow/un-chunked skill can't leak step text.
+          if (triggerLines.length === 0) {
+            for (const goal of walked.goals) {
+              if (goal.kind === 'trigger') {
+                const firstLine = goal.text.split('\n')[0] ?? '';
+                const t = firstLine.replace(/^Trigger:\s*/i, '').trim();
+                if (t) fallbackTriggers.push(`${callerLabel}: ${t}`);
+              }
+            }
+          }
+        }
+
+        triggers[gid] = triggerLines.length > 0 ? triggerLines : fallbackTriggers;
+      }
+
+      return { ok: true, edges, triggers };
+    }
+
     case 'skill:walkStructured': {
       // Machine-readable SkillExecutionPlan — IPC mirror of MCP walk_skill_structured.
       const args = z.object({
@@ -6208,6 +6523,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         skipRelink: true,
         role: s.role,
         triggeredBy: 'ipc:skill:saveFallback',
+        singleNode: true,
       });
     }
     await deps.host.renameSource(args.graphId, existing.sourceId, newRef, {
@@ -6234,6 +6550,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         skipRelink: true,
         role: s.role,
         triggeredBy: 'ipc:skill:saveFallback',
+        singleNode: true,
       });
     }
     skillId = rec.sourceId;
@@ -6268,13 +6585,27 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // 'graphnosis-skill-importer' so imports are visible in the
         // Sources panel's "added by" column.
         addedBy: z.string().optional(),
+        // Passphrase / recipient secret key for a v2-encrypted (.gsk GSK2) pack.
+        passphrase: z.string().optional(),
+        recipientSecretKeyB64: z.string().optional(),
+        // QUARANTINE (default TRUE): land in a fresh per-batch quarantine engram
+        // that is invisible to recall/dispatch/watcher/cross-skill until promoted.
+        // Set false only for the legacy trusted in-app merge into args.graphId.
+        quarantine: z.boolean().optional(),
       }).parse(params ?? {});
 
-      const { parseGskPackage } = await import('./gsk-format.js');
+      // NO license gate on import (locked decision #1) — import is an adoption
+      // funnel and lands in quarantine by default. Authoring/training/export
+      // gates are unchanged.
+
+      const { parseGskPackageAny } = await import('./gsk-format.js');
       let payload: import('./gsk-format.js').GskPayload;
       try {
         const bytes = Buffer.from(args.gskBase64, 'base64');
-        payload = parseGskPackage(bytes);
+        const decryptOpts: import('./pack-crypto.js').DecryptOptions = {};
+        if (args.passphrase !== undefined) decryptOpts.passphrase = args.passphrase;
+        if (args.recipientSecretKeyB64 !== undefined) decryptOpts.recipientSecretKeyB64 = args.recipientSecretKeyB64;
+        ({ payload } = await parseGskPackageAny(bytes, decryptOpts));
       } catch (e) {
         return {
           ok: false,
@@ -6300,13 +6631,40 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         };
       }
 
-      // Confirm the target engram exists.
-      const meta = deps.host.getGraphMetadata(args.graphId);
-      if (!meta) {
-        return { ok: false, reason: 'unknown_graph', message: `Engram ${args.graphId} is not loaded.` };
+      // Resolve the ingest target. By DEFAULT imported skills land in a FRESH
+      // per-batch QUARANTINE engram (sensitivityTier 'sensitive', L0) — excluded
+      // from recall/dispatch/watcher/cross-skill until the owner promotes them.
+      const quarantine = args.quarantine !== false; // DEFAULT TRUE
+      let ingestGraphId: string;
+      let quarantineEngramId: string | undefined;
+      if (quarantine) {
+        ingestGraphId = `quarantine-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        quarantineEngramId = ingestGraphId;
+        await deps.host.createGraph(ingestGraphId);
+        await deps.host.setGraphMetadata(ingestGraphId, {
+          template: 'skill',
+          displayName: `Quarantine — ${payload.displayName}`,
+          createdAt: Date.now(),
+          sensitivityTier: 'sensitive',
+          executionAutonomyLevel: 'L0',
+          quarantine: {
+            fromPack: `${payload.id} v${payload.version}`,
+            verified,
+            importedAt: Date.now(),
+            items: [],
+          },
+        });
+      } else {
+        const targetMeta = deps.host.getGraphMetadata(args.graphId);
+        if (!targetMeta) {
+          return { ok: false, reason: 'unknown_graph', message: `Engram ${args.graphId} is not loaded.` };
+        }
+        ingestGraphId = args.graphId;
       }
+      const meta = deps.host.getGraphMetadata(ingestGraphId)!;
 
       const imported: Array<{ name: string; sourceId: string }> = [];
+      const quarantineItems: Array<{ sourceId: string; lint?: string[]; state: 'quarantined' }> = [];
       const skippedEmpty: string[] = [];
       for (const skill of payload.skills) {
         // Prefer trainedTextFallback (already-applied delta) over baseText
@@ -6347,8 +6705,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // section-content node).
         const sections: Array<{ role: string; text: string }> = [];
         sections.push({ role: 'title', text: label });
+        // FORCE [dispatch-safe: no] on every imported skill, regardless of what
+        // the pack claimed. Any authored dispatch-safe tag in the body is rewritten
+        // to `no`, and a dedicated safety section is always injected so the autonomy
+        // gate (safetyCeiling → 'suggest') caps the skill even if it is later
+        // promoted out of quarantine. Carried in the body text so a retrain (which
+        // re-reads the body) cannot silently lose it.
+        sections.push({ role: 'goal-trigger', text: 'Trigger: imported skill — review before use [dispatch-safe: no]' });
         for (const para of body.split(/\n{2,}/)) {
-          const t = para.trim();
+          const t = para.trim().replace(/\[dispatch-safe:\s*[a-z]+\s*\]/gi, '[dispatch-safe: no]');
           if (t) sections.push({ role: 'body', text: t });
         }
         for (const r of skill.recallRecipes ?? []) {
@@ -6390,7 +6755,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // plain text, one node per section, no SDK chunker involvement.
         const rec = await ingestClip(
           deps.host,
-          args.graphId,
+          ingestGraphId,
           provenanceComment,
           label,
           {
@@ -6400,11 +6765,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           },
         );
         for (const s of sections) {
-          const len = deps.host.getSourceRecord(args.graphId, rec.sourceId)?.nodeIds.length ?? 1;
-          await deps.host.insertNodeAt(args.graphId, rec.sourceId, len, s.text, {
+          const len = deps.host.getSourceRecord(ingestGraphId, rec.sourceId)?.nodeIds.length ?? 1;
+          await deps.host.insertNodeAt(ingestGraphId, rec.sourceId, len, s.text, {
             skipRelink: true,
             role: s.role,
             triggeredBy: 'ipc:skill:importGsk',
+            singleNode: true,
           });
         }
         // ── SDK artifact cleanup ─────────────────────────────────────────────
@@ -6427,16 +6793,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // processes after ingestClip returned are also caught.
         {
           const refText = rec.ref; // "skill:{ts}:{label}"
-          const src = deps.host.getSourceRecord(args.graphId, rec.sourceId);
+          const src = deps.host.getSourceRecord(ingestGraphId, rec.sourceId);
           const idsSnapshot = src ? src.nodeIds.slice() : [];
           const artifactIds: string[] = [];
           for (const nid of idsSnapshot) {
-            const full = deps.host.getFullNodeContent(args.graphId, nid) ?? '';
+            const full = deps.host.getFullNodeContent(ingestGraphId, nid) ?? '';
             if (full.trim() === refText) artifactIds.push(nid);
           }
           for (const aid of artifactIds) {
             try {
-              await deps.host.removeNodeFromSource(args.graphId, rec.sourceId, aid, {
+              await deps.host.removeNodeFromSource(ingestGraphId, rec.sourceId, aid, {
                 triggeredBy: 'ipc:skill:importGsk',
                 reason: 'SDK seed artifact (sourceRef-text node)',
               });
@@ -6444,16 +6810,30 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           }
         }
         // Single coalesced relink pass after all paragraphs are in.
-        deps.host.triggerRelink(args.graphId);
+        deps.host.triggerRelink(ingestGraphId);
         // Wire all SOP edges (sequence, goals, loops, ctx, sub-skill calls).
-        await linkSkillSequence(deps.host, args.graphId, rec.sourceId);
-        await linkSkillGoals(deps.host, args.graphId, rec.sourceId);
+        await linkSkillSequence(deps.host, ingestGraphId, rec.sourceId);
+        await linkSkillGoals(deps.host, ingestGraphId, rec.sourceId);
         imported.push({ name: skill.name, sourceId: rec.sourceId });
+        if (quarantine) quarantineItems.push({ sourceId: rec.sourceId, state: 'quarantined' });
+      }
+
+      // Persist the per-item quarantine state now that landed sourceIds are known.
+      if (quarantine && quarantineEngramId) {
+        const qMeta = deps.host.getGraphMetadata(quarantineEngramId);
+        if (qMeta?.quarantine) {
+          await deps.host.setGraphMetadata(quarantineEngramId, {
+            ...qMeta,
+            quarantine: { ...qMeta.quarantine, items: quarantineItems.map((it) => ({ ...it })) },
+          });
+        }
       }
 
       return {
         ok: true,
         verified,
+        quarantined: quarantine,
+        ...(quarantineEngramId ? { quarantineEngramId } : {}),
         pack: {
           id: payload.id,
           displayName: payload.displayName,
@@ -6462,11 +6842,105 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           kind: payload.kind,
           description: payload.description,
         },
-        engramName: meta.displayName ?? args.graphId,
-        graphId: args.graphId,
+        engramName: meta.displayName ?? ingestGraphId,
+        graphId: ingestGraphId,
         imported,
         skippedEmpty,
       };
+    }
+
+    case 'quarantine:list': {
+      // Read-only: every quarantined import batch + provenance + per-item state.
+      // Mirrors the MCP list_quarantined tool for later UI use.
+      const batches = deps.host.listGraphs()
+        .map((gid) => ({ gid, meta: deps.host.getGraphMetadata(gid) }))
+        .filter((x) => !!x.meta?.quarantine)
+        .map(({ gid, meta }) => ({
+          graphId: gid,
+          displayName: meta!.displayName ?? gid,
+          active: deps.host.isQuarantined(gid),
+          fromPack: meta!.quarantine!.fromPack,
+          verified: meta!.quarantine!.verified,
+          ...(meta!.quarantine!.signerPublicKey ? { signerPublicKey: meta!.quarantine!.signerPublicKey } : {}),
+          importedAt: meta!.quarantine!.importedAt,
+          items: meta!.quarantine!.items.map((it) => ({ ...it })),
+        }));
+      return { ok: true, batches };
+    }
+
+    case 'quarantine:promote': {
+      // Owner-adjudicated promotion. Routes around the agent-facing
+      // transfer_source tier-lowering refusal via the trusted in-app moveSource.
+      const args = z.object({
+        items: z.array(z.string().min(1)).min(1),
+        targetEngramId: z.string().min(1),
+      }).parse(params ?? {});
+      const qEngrams = deps.host.listGraphs().filter((gid) => deps.host.getGraphMetadata(gid)?.quarantine);
+      const itemSet = new Set(args.items);
+      const fromGid = qEngrams.find((gid) =>
+        (deps.host.getGraphMetadata(gid)?.quarantine?.items ?? []).some((it) => itemSet.has(it.sourceId)),
+      );
+      if (!fromGid) return { ok: false, reason: 'not_found', message: 'No matching quarantined items.' };
+      let targetGid = args.targetEngramId;
+      if (!deps.host.listGraphs().includes(targetGid)) {
+        await deps.host.createGraph(targetGid);
+        await deps.host.setGraphMetadata(targetGid, { template: 'skill', displayName: targetGid, createdAt: Date.now() });
+      }
+      const qm = deps.host.getGraphMetadata(fromGid)!;
+      const promoted: string[] = [];
+      const failures: string[] = [];
+      for (const sourceId of args.items) {
+        const item = qm.quarantine!.items.find((it) => it.sourceId === sourceId);
+        if (!item || item.state !== 'quarantined') { failures.push(sourceId); continue; }
+        try {
+          await deps.host.moveSource(fromGid, sourceId, targetGid);
+          item.state = 'promoted';
+          promoted.push(sourceId);
+        } catch { failures.push(sourceId); }
+      }
+      await deps.host.setGraphMetadata(fromGid, {
+        ...qm,
+        quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
+      });
+      return { ok: true, fromGraphId: fromGid, targetEngramId: targetGid, promoted, failures, stillQuarantined: deps.host.isQuarantined(fromGid) };
+    }
+
+    case 'quarantine:reject': {
+      const args = z.object({
+        items: z.array(z.string().min(1)).min(1),
+      }).parse(params ?? {});
+      const qEngrams = deps.host.listGraphs().filter((gid) => deps.host.getGraphMetadata(gid)?.quarantine);
+      const itemSet = new Set(args.items);
+      const fromGid = qEngrams.find((gid) =>
+        (deps.host.getGraphMetadata(gid)?.quarantine?.items ?? []).some((it) => itemSet.has(it.sourceId)),
+      );
+      if (!fromGid) return { ok: false, reason: 'not_found', message: 'No matching quarantined items.' };
+      const qm = deps.host.getGraphMetadata(fromGid)!;
+      const rejected: string[] = [];
+      const failures: string[] = [];
+      for (const sourceId of args.items) {
+        const item = qm.quarantine!.items.find((it) => it.sourceId === sourceId);
+        if (!item || item.state !== 'quarantined') { failures.push(sourceId); continue; }
+        try {
+          await deps.host.forgetSource(fromGid, sourceId, { triggeredBy: 'user:reject-import' });
+          item.state = 'rejected';
+          rejected.push(sourceId);
+        } catch { failures.push(sourceId); }
+      }
+      await deps.host.setGraphMetadata(fromGid, {
+        ...qm,
+        quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
+      });
+      return { ok: true, fromGraphId: fromGid, rejected, failures };
+    }
+
+    case 'crypto:recipientPublicKey': {
+      // This cortex's X25519 recipient public key (for peers to encrypt packs to).
+      const cortexDir = deps.host.getCortexDir();
+      if (!cortexDir) return { ok: false, reason: 'no_cortex_dir' };
+      const { getCortexRecipientPublicKeyB64 } = await import('./engram-pack.js');
+      const recipientPublicKeyB64 = await getCortexRecipientPublicKeyB64(cortexDir);
+      return { ok: true, recipientPublicKeyB64 };
     }
 
     case 'license:setToken': {
@@ -7630,13 +8104,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         skipExisting: z.boolean().optional(),
       }).parse(params ?? {});
 
-      // Same gate fix as export — see hasAnyPaidPlan comment above.
-      if (!(await hasAnyPaidPlan(deps))) {
-        return {
-          ok: false, reason: 'not_licensed',
-          message: 'Engram Pack import requires a Graphnosis Pro, Teams, or Enterprise subscription. Visit https://graphnosis.com/upgrade',
-        };
-      }
+      // NO license gate on IMPORT (locked decision #1) — matches the MCP
+      // import_engram tool and skill:importGsk. Import is an adoption funnel and
+      // lands in quarantine by default, so it carries no confidentiality/authoring
+      // cost. Export (engram.export hasAnyPaidPlan) and authoring/training gates
+      // stay intact.
 
       let packBuffer: Buffer;
       try {

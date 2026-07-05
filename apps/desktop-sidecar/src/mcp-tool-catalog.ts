@@ -56,6 +56,7 @@ export const MCP_TOOL_CATALOG: McpToolCatalogEntry[] = [
   { name: 'confirm_data_access', shortDescription: 'Headless consent phrase validation' },
   { name: 'train_skill', shortDescription: 'Train or retrain a skill SOP (Pro)' },
   { name: 'skill_vitality', shortDescription: 'Skill freshness score (Pro)' },
+  { name: 'debug_inject_drift', shortDescription: 'DEV-only: inject cited-drift into a sandbox skill (S7 pilot)' },
   { name: 'export_skill', shortDescription: 'Export skill as .gsk pack (Pro)' },
   { name: 'export_engram', shortDescription: 'Export engram pack' },
   { name: 'import_engram', shortDescription: 'Import engram pack' },

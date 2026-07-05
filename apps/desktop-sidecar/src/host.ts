@@ -38,6 +38,15 @@ import {
 import { DeviceIdentity } from './device-identity.js';
 import { FEDERATED_MASTER_FILE, federatedMasterPath, generateFederatedUnlockKey } from '@graphnosis-app/core/sso';
 import type { WorkPriority } from './work-priority.js';
+import {
+  computeDispatchSafeReadout,
+  dispatchSafeCapForSkill,
+  lowerLevel,
+  parseDispatchSafe,
+  isMetaSkillLabel,
+  type DispatchSafeReadout,
+  type SkillSafetyInfo,
+} from './skill-autonomy.js';
 import { hostRecall, hostDigDeeper, type RecallHost } from './host/recall-methods.js';
 import { extractQueryEntities } from './host/recall.js';
 import { invalidateQueryEnrichmentCache } from './query-enrichment-cache.js';
@@ -49,6 +58,12 @@ import {
   sliceOplogCacheForActivity,
   sliceOplogCacheForIngestGrowth,
 } from './oplog-activity-query.js';
+import {
+  isOplogEnomemBackoff,
+  isOplogResourceError,
+  logActivityOplogResourceError,
+} from './log-rate-limit.js';
+import { safeReadAllEvents, safeReadEventsSince } from './oplog-safe-read.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -346,6 +361,9 @@ export class GraphnosisHost {
   private _correctionsSweepPromise: Promise<OplogHousekeepingResult> | null = null;
   /** In-process cache for mcp-audit.enc reads — invalidated on append. */
   private _mcpAuditCache: import('./mcp-audit.js').McpAuditEvent[] | null = null;
+  /** In-flight audit append promises. Appends are fired without awaiting on the
+   *  hot path; flushMcpAuditWrites() awaits these so a following read sees them. */
+  private _mcpAuditWrites = new Set<Promise<void>>();
   /**
    * Incremented by `invalidateOplogCache()`. Captured by each in-flight read;
    * the read only writes to `_oplogReadCache` when the generation still matches,
@@ -888,6 +906,15 @@ export class GraphnosisHost {
    *  abstraction — e.g. listing `.gai.corrupt-*` quarantine artifacts. */
   getCortexDir(): string {
     return this.opts.cortexDir;
+  }
+
+  /** The cortex data key, for the encrypted-at-rest stores whose encode/decode
+   *  lives in their own module (mirrors how mcp-audit.ts / healing-journal.ts
+   *  take `dataKey` directly). The host owns key + filesystem wiring; the module
+   *  owns the envelope. Exposed narrowly so the unattended-audit ledger can be
+   *  sealed with the same key as the rest of the cortex. */
+  getCortexDataKey(): Uint8Array {
+    return this.key;
   }
 
   // ── Healing journal ──────────────────────────────────────────────────────
@@ -1632,6 +1659,35 @@ export class GraphnosisHost {
   }
 
   /**
+   * True when an engram is QUARANTINED — i.e. created by an untrusted import
+   * (`GraphMetadata.quarantine` present) and not yet fully promoted.
+   *
+   * This is the SINGLE centralized boundary check for the import-quarantine
+   * exclusion contract. Every enumeration that could surface a quarantined
+   * engram's content to the AI MUST route through this (or `nonQuarantinedGraphs`):
+   * federated recall (`resolveConsentedGraphIds` in mcp-server), the proactive
+   * watcher's usableSkills, cross-engram `@skill:` resolution, and the default
+   * `list_skills` scope. Quarantined engrams stay fully present in the Sources
+   * list / stats / explicit quarantine-review tooling — quarantine narrows AI
+   * visibility, it is not a hide-everywhere.
+   *
+   * An engram whose quarantine items are ALL promoted/rejected is no longer
+   * quarantined (the block remains for provenance/audit but stops gating).
+   */
+  isQuarantined(graphId: GraphId): boolean {
+    const q = this.getGraphMetadata(graphId)?.quarantine;
+    if (!q) return false;
+    // Still quarantined while any item is awaiting adjudication.
+    return q.items.some((it) => it.state === 'quarantined');
+  }
+
+  /** Every loaded engram that is NOT quarantined. The default-safe scope for
+   *  any AI-facing enumeration. */
+  nonQuarantinedGraphs(): GraphId[] {
+    return this.listGraphs().filter((gid) => !this.isQuarantined(gid));
+  }
+
+  /**
    * Combined view: every loaded graph + its metadata (or sensible defaults).
    *
    * With `includeUnloaded: true`, also include engrams that have a metadata
@@ -1683,6 +1739,149 @@ export class GraphnosisHost {
       createdAt: 0,
     };
     await this.setGraphMetadata(graphId, { ...existing, archived });
+  }
+
+  /**
+   * Set (or clear) a skill-template engram's per-engram execution-autonomy
+   * override — its Agempus autonomy dial. The override is persisted in graph
+   * metadata and resolved at dispatch time via `resolveEngramAutonomyLevel`
+   * (it tops out the global level for skills matched from THIS engram, still
+   * capped by each skill's authored `dispatch-safe:` via decideSkillAutonomy).
+   * Passing `null` clears the override → the engram falls back to the global
+   * level. The engram must already exist; a missing metadata record gets a
+   * default one, mirroring setGraphArchived.
+   */
+  async setGraphExecutionAutonomy(
+    graphId: GraphId,
+    level: settingsMod.ExecutionAutonomyLevel | null,
+  ): Promise<void> {
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const updated: settingsMod.GraphMetadata = { ...existing };
+    if (level === null) delete updated.executionAutonomyLevel;
+    else updated.executionAutonomyLevel = level;
+    await this.setGraphMetadata(graphId, updated);
+  }
+
+  /**
+   * Set (or clear) a single SKILL's per-skill execution-autonomy override,
+   * keyed by its stable `sourceId` (stable across in-place retrain). The map
+   * lives in graph metadata at `skillAutonomyLevels[sourceId]` — never in the
+   * skill body — so it survives retraining and never pollutes the trained text.
+   * Passing `null` clears the override → the skill inherits the engram's
+   * `executionAutonomyLevel` (which itself falls back to the global level).
+   *
+   * This persists the REQUESTED level only; the EFFECTIVE level is still capped
+   * per skill by authored `dispatch-safe:` via decideSkillAutonomy() —
+   * `resolveEffectiveSkillAutonomy` returns the capped value the caller (IPC /
+   * MCP) reports back so the UI can render it without a second round-trip. The
+   * engram must already exist; a missing metadata record gets a default one,
+   * mirroring setGraphExecutionAutonomy.
+   */
+  async setSkillExecutionAutonomy(
+    graphId: GraphId,
+    sourceId: string,
+    level: settingsMod.ExecutionAutonomyLevel | null,
+  ): Promise<void> {
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const updated: settingsMod.GraphMetadata = { ...existing };
+    const map = { ...(updated.skillAutonomyLevels ?? {}) };
+    if (level === null) delete map[sourceId];
+    else map[sourceId] = level;
+    if (Object.keys(map).length === 0) delete updated.skillAutonomyLevels;
+    else updated.skillAutonomyLevels = map;
+    await this.setGraphMetadata(graphId, updated);
+  }
+
+  /**
+   * Compute one skill's EFFECTIVE (capped) autonomy level — the value the
+   * dispatcher will honor: min(resolveSkillAutonomyLevel(override ?? engram ??
+   * global), authored dispatch-safe cap). Deterministic + read-only. Used by the
+   * IPC / MCP setters to echo the resulting effective level after a write.
+   */
+  resolveEffectiveSkillAutonomy(graphId: GraphId, sourceId: string, label: string): settingsMod.ExecutionAutonomyLevel {
+    const meta = this.getGraphMetadata(graphId);
+    const agent = this.settings.agent;
+    const info = this.skillSafetyInfo(graphId, sourceId, label, meta, agent);
+    const cap = dispatchSafeCapForSkill({ dispatchSafe: info.dispatchSafe, isMetaSkill: info.isMetaSkill });
+    const requested = info.resolvedSkillLevel ?? settingsMod.resolveEngramAutonomyLevel(meta, agent);
+    return lowerLevel(requested, cap);
+  }
+
+  /** Parse one skill source's authored safety (dispatch-safe tag + meta/router
+   *  status) by reading its live node text, plus its per-skill autonomy override
+   *  (raw) and resolved requested level. Deterministic + read-only. */
+  private skillSafetyInfo(
+    graphId: GraphId,
+    sourceId: string,
+    label: string,
+    meta?: settingsMod.GraphMetadata,
+    agent?: settingsMod.AgentSettings | null,
+  ): SkillSafetyInfo {
+    const src = this.getSourceRecord(graphId, sourceId);
+    const now = Date.now();
+    let text = '';
+    if (src) {
+      const nodeMap = new Map(this.listNodes(graphId).map((n) => [n.id, n]));
+      const parts: string[] = [];
+      for (const id of src.nodeIds) {
+        const n = nodeMap.get(id);
+        if (!n || n.confidence <= 0.2) continue;
+        if (n.validUntil !== undefined && n.validUntil <= now) continue;
+        parts.push(this.getFullNodeContent(graphId, id) ?? n.contentPreview);
+      }
+      text = parts.join('\n');
+    }
+    const raw = meta?.skillAutonomyLevels?.[sourceId];
+    const configuredSkillLevel: settingsMod.ExecutionAutonomyLevel | null =
+      raw === 'L0' || raw === 'L1' || raw === 'L2' || raw === 'L3' ? raw : null;
+    return {
+      sourceId,
+      label,
+      dispatchSafe: parseDispatchSafe(text),
+      isMetaSkill: isMetaSkillLabel(label),
+      configuredSkillLevel,
+      resolvedSkillLevel: settingsMod.resolveSkillAutonomyLevel(sourceId, meta, agent),
+    };
+  }
+
+  /**
+   * Computed dispatch-safe readout for one engram (or every skill-bearing engram
+   * when graphId is omitted). Deterministic + read-only.
+   *
+   * Per engram it returns the resolved configured execution-autonomy level, the
+   * authored dispatch-safe cap derived from the engram's skills' `[dispatch-safe:
+   * …]` tags (the most permissive skill sets the ceiling; an engram with no
+   * skills is uncapped → L3), the effective level = min(configured, cap), and the
+   * per-skill breakdown. The dial is still capped per skill at dispatch time via
+   * decideSkillAutonomy() — this surfaces the standing ceiling for the UI / MCP.
+   */
+  dispatchSafeReadout(graphId?: GraphId): DispatchSafeReadout[] {
+    const agent = this.settings.agent;
+    const targets = graphId
+      ? [graphId]
+      : this.listGraphs().filter((gid) => {
+          const meta = this.getGraphMetadata(gid);
+          if (meta?.archived === true) return false;
+          return this.listSources(gid).some((s) => s.kind === 'skill');
+        });
+    const out: DispatchSafeReadout[] = [];
+    for (const gid of targets) {
+      const meta = this.getGraphMetadata(gid);
+      const configuredLevel = settingsMod.resolveEngramAutonomyLevel(meta, agent);
+      const skills = this.listSources(gid)
+        .filter((s) => s.kind === 'skill')
+        .map((s) => this.skillSafetyInfo(gid, s.sourceId, s.ref, meta, agent));
+      out.push(computeDispatchSafeReadout(gid, configuredLevel, skills));
+    }
+    return out;
   }
 
   /**
@@ -2257,7 +2456,9 @@ export class GraphnosisHost {
     } else if (tailCheckpoints.length > 0) {
       const minCk = this.minOplogReconcileCheckpoint(tailCheckpoints);
       const oplogDir = path.join(this.opts.cortexDir, 'oplog');
-      tailEvents = await oplog.readEventsSince(oplogDir, this.key, {
+      // safeReadEventsSince — see comment on the listOplogEvents() call site
+      // for why this isn't the SDK's oplog.readEventsSince().
+      tailEvents = await safeReadEventsSince(oplogDir, this.key, {
         ...this.oplogReadOptions(),
         sinceTs: minCk.maxTs,
         ...(minCk.maxSeq !== undefined ? { sinceSeq: minCk.maxSeq } : {}),
@@ -4378,7 +4579,7 @@ export class GraphnosisHost {
     this.llmGetter = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority }): Promise<federation.FederatedSubgraph> {
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority; includeQuarantined?: boolean }): Promise<federation.FederatedSubgraph> {
     return hostRecall(this as unknown as RecallHost, query, opts);
   }
 
@@ -4548,7 +4749,7 @@ export class GraphnosisHost {
     sourceId: string,
     position: number,
     content: string,
-    opts?: { triggeredBy?: string; skipRelink?: boolean; role?: string },
+    opts?: { triggeredBy?: string; skipRelink?: boolean; role?: string; singleNode?: boolean },
   ): Promise<{ nodeId: string }> {
     const g = this.must(graphId);
     const rec = g.sourceIndex.get(sourceId);
@@ -4558,6 +4759,11 @@ export class GraphnosisHost {
     // `role` is metadata for op-log audit + (future) editor chip-tagging;
     // it's not part of the SDK's AppendDocumentInput, so we don't pass it
     // down — only emit it in the op-log entry below.
+    //
+    // `singleNode` (set by skill-source inserts, where each call carries ONE
+    // semantic unit — a step, goal line, or recipe) forces the adapter to
+    // collapse the SDK's output to exactly one verbatim node, so a step that
+    // trips the sentence splitter (e.g. ends in "etc.") isn't fragmented.
     const input: AppendDocumentInput = {
       kind: 'text',
       content,
@@ -4566,7 +4772,7 @@ export class GraphnosisHost {
     const result = await this.opts.adapter.appendDocument(
       g.handle,
       input,
-      { chunkSize: this.settings.ai.chunkSize },
+      { chunkSize: this.settings.ai.chunkSize, ...(opts?.singleNode ? { singleNode: true } : {}) },
     );
     if (result.newNodeIds.length === 0) {
       throw new Error(`insertNodeAt: SDK returned no node ids for content of ${content.length} chars`);
@@ -5252,7 +5458,17 @@ export class GraphnosisHost {
       const compaction = await this.compactOplogIfNeeded(events);
       return { compaction };
     } catch (e) {
-      console.error(`[graphnosis-host] corrections sweep failed: ${(e as Error).message}`);
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (isOplogResourceError(err)) {
+        // Same 60s-shared warning as the activity-query ENOMEM path — this
+        // sweep can be triggered repeatedly (boot + vitality.compute() +
+        // cache-expiry re-reads), so without throttling a persistently
+        // oversized op-log spams one "corrections sweep failed: ENOMEM" line
+        // per attempt.
+        logActivityOplogResourceError('correctionsSweep', err);
+      } else {
+        console.error(`[graphnosis-host] corrections sweep failed: ${err.message}`);
+      }
       return noop;
     }
   }
@@ -5267,7 +5483,12 @@ export class GraphnosisHost {
       const events = await this.listOplogEvents(); // uses shared 60s cache
       return this._correctionsCountForGraph(graphId, events);
     } catch (e) {
-      console.error(`[graphnosis-host] count corrections from op-log failed: ${(e as Error).message}`);
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (isOplogResourceError(err)) {
+        logActivityOplogResourceError('countCorrections', err);
+      } else {
+        console.error(`[graphnosis-host] count corrections from op-log failed: ${err.message}`);
+      }
       return 0;
     }
   }
@@ -5942,7 +6163,13 @@ export class GraphnosisHost {
     // readAllEvents is running, the cached seq stays behind current → the next
     // read refreshes (errs toward re-reading, never serving stale).
     const seqAtStart = this._oplogWriteSeq;
-    this._oplogReadPromise = oplog.readAllEvents(
+    // Uses our own memory-bounded reader, NOT the SDK's oplog.readAllEvents()
+    // — that one calls fs.readFile() on each whole .oplog file, which throws
+    // ENOMEM once a single device's file grows into the multi-GB range (seen
+    // in the field on a long-lived "large cortex"). safeReadAllEvents() reads
+    // one chunk's ciphertext at a time instead, bounding memory regardless of
+    // file size. Same result shape / integrity semantics as the SDK reader.
+    this._oplogReadPromise = safeReadAllEvents(
       path.join(this.opts.cortexDir, 'oplog'),
       this.key,
       this.oplogReadOptions(),
@@ -5989,29 +6216,53 @@ export class GraphnosisHost {
     if (params.since !== undefined && params.until !== undefined && params.until <= params.since) {
       return { events: [], actors: [], hasMore: false };
     }
+    if (isOplogEnomemBackoff()) {
+      return { events: [], actors: [], hasMore: false };
+    }
     if (this._oplogReadCache && this._oplogReadCache.seq === this._oplogWriteSeq) {
       return sliceOplogCacheForActivity(this._oplogReadCache.events, base);
     }
-    return queryOplogForActivity({
-      oplogDir: path.join(this.opts.cortexDir, 'oplog'),
-      key: this.key,
-      readOpts: this.oplogReadOptions(),
-      ...base,
-    });
+    try {
+      return await queryOplogForActivity({
+        oplogDir: path.join(this.opts.cortexDir, 'oplog'),
+        key: this.key,
+        readOpts: this.oplogReadOptions(),
+        ...base,
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (isOplogResourceError(err)) {
+        logActivityOplogResourceError('activity.list', err);
+        return { events: [], actors: [], hasMore: false };
+      }
+      throw e;
+    }
   }
 
   /** Daily ingestSource counts for the Home growth sparkline — aggregates during scan, no enrichment. */
   async getIngestGrowthStats(days = 90): Promise<{ total: number; buckets: number[]; days: number }> {
     const bounded = Math.min(Math.max(Math.floor(days), 7), 365);
+    if (isOplogEnomemBackoff()) {
+      return sliceOplogCacheForIngestGrowth([], bounded);
+    }
     if (this._oplogReadCache && this._oplogReadCache.seq === this._oplogWriteSeq) {
       return sliceOplogCacheForIngestGrowth(this._oplogReadCache.events, bounded);
     }
-    return queryOplogIngestGrowth({
-      oplogDir: path.join(this.opts.cortexDir, 'oplog'),
-      key: this.key,
-      readOpts: this.oplogReadOptions(),
-      days: bounded,
-    });
+    try {
+      return await queryOplogIngestGrowth({
+        oplogDir: path.join(this.opts.cortexDir, 'oplog'),
+        key: this.key,
+        readOpts: this.oplogReadOptions(),
+        days: bounded,
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (isOplogResourceError(err)) {
+        logActivityOplogResourceError('activity.growthStats', err);
+        return sliceOplogCacheForIngestGrowth([], bounded);
+      }
+      throw e;
+    }
   }
 
 
@@ -6023,12 +6274,30 @@ export class GraphnosisHost {
     return events;
   }
 
-  async appendMcpAuditEvent(
+  appendMcpAuditEvent(
     partial: Omit<import('./mcp-audit.js').McpAuditEvent, 'id' | 'ts'>,
   ): Promise<void> {
-    const { appendMcpAuditEvent } = await import('./mcp-audit.js');
-    await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
-    this._mcpAuditCache = null;
+    // Register the write synchronously — before the dynamic import resolves —
+    // so flushMcpAuditWrites() can await it even when the caller fired it
+    // without awaiting (e.g. the MCP server's post-tool-call audit hook).
+    const write = (async () => {
+      const { appendMcpAuditEvent } = await import('./mcp-audit.js');
+      await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
+      this._mcpAuditCache = null;
+    })();
+    this._mcpAuditWrites.add(write);
+    void write.catch(() => {}).finally(() => this._mcpAuditWrites.delete(write));
+    return write;
+  }
+
+  /** Await all in-flight MCP audit appends. Audit writes are fired without
+   *  awaiting on the hot path (one tool call must not block on a disk write);
+   *  callers that then read the log — tests, compliance export — call this so
+   *  the read reflects those writes. */
+  async flushMcpAuditWrites(): Promise<void> {
+    while (this._mcpAuditWrites.size > 0) {
+      await Promise.allSettled([...this._mcpAuditWrites]);
+    }
   }
 
   /** Expire the op-log read cache so the next listOplogEvents() re-reads from disk.

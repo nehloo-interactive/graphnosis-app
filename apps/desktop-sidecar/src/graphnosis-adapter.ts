@@ -55,6 +55,16 @@ export type EmbedBatchPreset = 'small' | 'medium' | 'large' | 'auto';
 
 export interface AppendDocumentOptions {
   chunkSize?: ChunkSizePreset;
+  /**
+   * Single-node guarantee for one-semantic-unit inserts (skill steps, goal
+   * lines, recipes). When true, after the SDK append produces its node(s),
+   * the adapter collapses the result to EXACTLY ONE node whose content is the
+   * verbatim input text — rewriting the first node and deleting any extras the
+   * SDK's chunker split off (e.g. a step ending in "etc." or "e.g." that the
+   * sentence splitter fractured). Off by default: normal ingestion and recall
+   * must keep chunking multi-sentence prose into multiple nodes.
+   */
+  singleNode?: boolean;
 }
 
 export interface BuildEmbeddingsAdapterOpts {

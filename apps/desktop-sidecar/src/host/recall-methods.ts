@@ -3,6 +3,11 @@ import { federation, type GraphId, type SubgraphBudget } from '@nehloo-interacti
 import type { HostOptions } from '../host.js';
 import { cachedExtractQueryEntities } from '../query-enrichment-cache.js';
 import { dbg } from '../log-redact.js';
+import {
+  isEnrichmentCircuitOpen,
+  logEnrichmentFailure,
+  recordEnrichmentSuccess,
+} from '../log-rate-limit.js';
 const { federatedQuery } = federation;
 import {
   WorkPriority,
@@ -40,6 +45,9 @@ export interface RecallHost {
     handle: import('../graphnosis-adapter.js').GraphHandle;
   }>;
   listGraphs(): GraphId[];
+  /** Centralized import-quarantine check — the SINGLE source of truth for the
+   *  visibility-exclusion contract. See host.isQuarantined. */
+  isQuarantined(graphId: GraphId): boolean;
   ensureLoaded(id: GraphId): Promise<void>;
   activeNodeIds(graphId: GraphId): Set<string>;
   recallNodeSnapshot(graphId: GraphId): {
@@ -65,6 +73,10 @@ export interface RecallHost {
       consentedGraphIds?: string[];
       /** Work-priority lane — defaults to P1 user recall, P3 when noLoadOnDemand. */
       recallPriority?: WorkPriority;
+      /** Opt-in: include quarantined (imported-but-unpromoted) engrams in scope.
+       *  Default false. Set ONLY by the trusted review path (list_quarantined /
+       *  promote / lint). See the quarantine-visibility contract. */
+      includeQuarantined?: boolean;
     },
   ): Promise<federation.FederatedSubgraph>;
 }
@@ -78,6 +90,8 @@ export type RecallOpts = {
   noLoadOnDemand?: boolean;
   consentedGraphIds?: string[];
   recallPriority?: WorkPriority;
+  /** Opt-in: include quarantined engrams. Default false. Trusted review path only. */
+  includeQuarantined?: boolean;
 };
 
 export async function hostRecall(
@@ -85,6 +99,47 @@ export async function hostRecall(
   query: string,
   opts?: RecallOpts,
 ): Promise<federation.FederatedSubgraph> {
+    // ── Quarantine boundary (SINGLE centralized exclusion) ───────────────
+    // The import-quarantine visibility contract: a quarantined (imported-but-
+    // unpromoted) engram is invisible to ALL AI-facing recall. We enforce it
+    // HERE, at the one chokepoint every recall path flows through (recall,
+    // recall_with_citations/_structured fallbacks, compare_engrams,
+    // cross_search, recall_source-adjacent, llm_query fallback, dig_deeper).
+    // Whether the caller passes an explicit onlyGraphIds (intersect-minus-
+    // quarantined) or relies on the default all-graphs scope (the snapshot /
+    // federation scope filters below subtract via exceptGraphIds), the
+    // quarantined set is removed before any retrieval. The trusted review path
+    // (list_quarantined / promote / lint) opts in with includeQuarantined.
+    if (!opts?.includeQuarantined) {
+      const quarantined = host.listGraphs().filter((gid) => host.isQuarantined(gid));
+      if (quarantined.length > 0) {
+        const qSet = new Set(quarantined);
+        const baseOpts = opts ?? {};
+        // Explicit scope: intersect-minus-quarantined. If the caller passed a
+        // non-empty onlyGraphIds that fully collapses to quarantined engrams,
+        // the effective scope is EMPTY — return an empty result rather than
+        // letting an empty onlyGraphIds fall back to the all-graphs default
+        // (the `?.length ? … : allGraphs` branches below). That fallback would
+        // re-open the recall to every engram and was the exact leak this guard
+        // closes for host.recall({onlyGraphIds:[quarantineId]}).
+        if (baseOpts.onlyGraphIds && baseOpts.onlyGraphIds.length > 0) {
+          const narrowed = baseOpts.onlyGraphIds.filter((id) => !qSet.has(id));
+          if (narrowed.length === 0) {
+            return { byGraph: new Map(), prompt: '', tokensUsed: 0, nodesIncluded: 0, audit: [] };
+          }
+        }
+        opts = {
+          ...baseOpts,
+          // Explicit scope: intersect-minus-quarantined.
+          ...(baseOpts.onlyGraphIds
+            ? { onlyGraphIds: baseOpts.onlyGraphIds.filter((id) => !qSet.has(id)) }
+            : {}),
+          // Default (all-graphs) scope: subtract via exceptGraphIds so the
+          // snapshot + federation scope filters never touch a quarantined engram.
+          exceptGraphIds: [...new Set([...(baseOpts.exceptGraphIds ?? []), ...quarantined])],
+        };
+      }
+    }
     // ── Recall enrichment (non-mutating) ─────────────────────────────────
     // When the user has llmEnabled + llmCapabilities.recallEnrichment on AND
     // Ollama is reachable, ask the LLM to rewrite the raw user query into a
@@ -105,11 +160,15 @@ export async function hostRecall(
       ? host.llmGetter()
       : null;
     let enrichmentPromise: Promise<string | null> = Promise.resolve(null);
-    if (llm && !shouldSkipRecallEnrichment(recallPriority)) {
+    if (llm && !shouldSkipRecallEnrichment(recallPriority) && !isEnrichmentCircuitOpen()) {
       const slotPriority = enrichmentLlmPriority(recallPriority);
       const slot = tryAcquireLlmSlot(slotPriority);
       if (slot) {
         enrichmentPromise = enrichRecallQuery(llm, query, slot.signal)
+          .then((enriched) => {
+            if (enriched !== null) recordEnrichmentSuccess();
+            return enriched;
+          })
           .catch((e: unknown) => {
             const msg = (e as Error).message ?? String(e);
             if ((e as Error).name === 'AbortError' || msg.includes('aborted') || msg.includes('preempted')) {
@@ -120,7 +179,7 @@ export async function hostRecall(
             if (msg.includes('enrichment timed out')) {
               dbg(`[host] recall enrichment timed out, using raw query: ${msg}`);
             } else {
-              console.error(`[host] recall enrichment failed, using raw query: ${msg}`);
+              logEnrichmentFailure(msg);
             }
             return null;
           })
@@ -473,8 +532,11 @@ export async function hostDigDeeper(
     }
     const stage1AvgScore = stage1ScoreCount > 0 ? stage1ScoreSum / stage1ScoreCount : 0;
 
-    // Resolve effective engram scope.
-    const allGraphIds = host.listGraphs();
+    // Resolve effective engram scope. Quarantined engrams are excluded here too
+    // (stage 1 host.recall already enforces the boundary; stages 2/3 read the
+    // source-filename index + cross-engram connection store directly, so they
+    // must subtract the quarantined set as well — defense-in-depth).
+    const allGraphIds = host.listGraphs().filter((id) => !host.isQuarantined(id));
     const scopedGraphIds = opts?.onlyGraphIds?.length
       ? allGraphIds.filter((id) => opts.onlyGraphIds!.includes(id))
       : opts?.exceptGraphIds?.length

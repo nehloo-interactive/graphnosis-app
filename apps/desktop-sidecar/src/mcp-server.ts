@@ -511,6 +511,17 @@ function mcpError(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true as const };
 }
 
+/**
+ * Refusal returned by the direct skill-read tools (get_skill, walk_skill,
+ * walk_skill_structured, list_skills with an explicit engram) when their named
+ * engram is quarantined. Federated recall is handled centrally in host.recall;
+ * these tools resolve an engram by explicit id and would otherwise bypass it,
+ * so each guards on host.isQuarantined and returns this message. The owner's
+ * review tooling (list_quarantined) reads the host directly and is unaffected.
+ */
+const QUARANTINE_READ_REFUSAL =
+  'Engram is quarantined; review via list_quarantined and promote_import before reading.';
+
 // ── Anomaly heads-up ──────────────────────────────────────────────────────
 //
 // A handful of tool results carry signals that are hard for the AI to judge
@@ -790,9 +801,13 @@ function recordMcpRecallSavings(
   if (nodesIncluded <= 0) return;
   import('./savings-tracker.js').then(({ recordRecallOnlySavings, resolveSavingsBaseline }) => {
     const baseline = resolveSavingsBaseline(deps.host.getSettings());
+    // Conservative estimate of the answer the baseline model would have had to
+    // GENERATE from this served context (~25%, capped at 600 tokens). Counting
+    // input only previously understated the true recall-only saving.
+    const outputTokensSaved = Math.min(Math.round(tokensUsed * 0.25), 600);
     void recordRecallOnlySavings(deps.host.getCortexDir(), {
       inputTokensSaved: tokensUsed,
-      outputTokensSaved: 0,
+      outputTokensSaved,
       source: `mcp:${toolName}`,
     }, baseline).catch(() => { /* non-fatal */ });
   }).catch(() => { /* dynamic import failed — skip silently */ });
@@ -1195,15 +1210,49 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     onlyResolved: string[] | undefined,
     exceptGraphIds: string[],
   ): string[] | undefined {
-    if (onlyResolved?.length) return onlyResolved;
+    if (onlyResolved?.length) {
+      // QUARANTINE CONTRACT: even an explicit only-scope can never reach into a
+      // quarantined (imported-but-unpromoted) engram via federated recall.
+      const filtered = onlyResolved.filter((gid) => !deps.host.isQuarantined(gid));
+      return filtered.length ? filtered : undefined;
+    }
     if (!isInternalGhampusCaller()) return undefined;
     const exceptSet = new Set(exceptGraphIds);
     const sensitive = deps.host.listGraphs().filter((gid) => {
       if (exceptSet.has(gid)) return false;
+      // QUARANTINE CONTRACT: quarantined engrams are sensitive-tier by
+      // construction, so they must NOT be auto-consented for Ghampus recall.
+      if (deps.host.isQuarantined(gid)) return false;
       const tier = (deps.host.getGraphMetadata(gid) as { sensitivityTier?: string } | undefined)?.sensitivityTier;
       return tier === 'sensitive';
     });
     return sensitive.length ? sensitive : undefined;
+  }
+
+  /**
+   * Every loaded graph that is QUARANTINED — the centralized exclusion list to
+   * merge into a recall's `exceptGraphIds`. Belt-and-suspenders alongside the
+   * consented-set filter above: a quarantined engram is dropped from recall scope
+   * at BOTH the consent gate and the host exclude path. Routed through
+   * host.isQuarantined so there is one source of truth.
+   */
+  function quarantinedGraphIds(): string[] {
+    return deps.host.listGraphs().filter((gid) => deps.host.isQuarantined(gid));
+  }
+
+  /** Normalize the MCP `encrypt_for` argument into an engram-pack EncryptForOption.
+   *  Returns undefined when no usable encryption option was supplied. */
+  function parseEncryptForArg(
+    arg: { passphrase?: string | undefined; recipient_pubkey?: string | string[] | undefined } | undefined,
+  ): import('./pack-crypto.js').EncryptForOption | undefined {
+    if (!arg) return undefined;
+    if (arg.passphrase) return { passphrase: arg.passphrase };
+    if (arg.recipient_pubkey) {
+      const keys = Array.isArray(arg.recipient_pubkey) ? arg.recipient_pubkey : [arg.recipient_pubkey];
+      const filtered = keys.filter((k) => !!k);
+      if (filtered.length) return { recipientPubKeys: filtered };
+    }
+    return undefined;
   }
 
   // Read the toggle live each time a fresh MCP server is built (per
@@ -2775,6 +2824,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               type: 'boolean',
               description: 'Opt into the Pro LLM-rewrite path (clean goal/step structure from source text). Requires the Local LLM to be enabled (Foresight → Local LLM); falls back to source-only compile if unavailable. Default false.',
             },
+            bind_recipes: {
+              type: 'boolean',
+              description: 'Opt in: bind recall RECIPES at train time. Runs a relevance-gated recall to find which engrams hold context relevant to this skill and emits a `recall(… only_engrams: […])` recipe into the body — a binding (query + engram names), not frozen personal content, resolved live at walk time. Default false keeps the empty-engram train contract.',
+            },
+            autonomy_level: {
+              type: 'string',
+              enum: ['L0', 'L1', 'L2', 'L3'],
+              description: 'Optional per-skill execution-autonomy override to set AFTER the skill is saved (L0 manual · L1 suggest · L2 preview · L3 auto). Omit to leave the skill INHERITING the engram default — no override is written. CLAMPED to the skill\'s authored dispatch-safe cap (a requested level above the cap is lowered to the cap, with a note in the response). Stored in metadata (not the skill body), so it survives future retraining.',
+            },
           },
           required: ['skill'],
         },
@@ -2818,6 +2876,64 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         },
       },
       {
+        name: 'debug_inject_drift',
+        description:
+          'DEV/TEST ONLY (requires GRAPHNOSIS_DEV=1). Deterministically inject cited-memory drift into a ' +
+          'SANDBOX skill so the paper-#3 Appendix-S7 pilot can estimate the baseline staleness rate. Drives ' +
+          'the REAL vitality path: citedDriftPenalty = round(missing_count / (bodyNodes + missing_count) * 40). ' +
+          'Refuses any non-sandbox engram (allowlist: s7-pilot*, sandbox-*). Returns the recomputed skill ' +
+          'vitality. Errors in production.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            graph_id: { type: 'string', description: 'Sandbox engram slug (must match s7-pilot* / sandbox-*).' },
+            source_id: { type: 'string', description: 'sourceId of the sandbox skill.' },
+            missing_count: { type: 'number', description: 'How many cited nodes to mark drifted this call (cumulative).' },
+          },
+          required: ['graph_id', 'source_id', 'missing_count'],
+        },
+        annotations: {
+          title: 'Inject cited-drift (dev)',
+          readOnlyHint: false,
+        },
+      },
+      {
+        name: 'savings_summary',
+        description:
+          'DETERMINISM — Deterministic: reads the local savings ledger; no LLM.\n\n' +
+          'How much has Graphnosis saved the user? Aggregates the on-device savings log ' +
+          '(recall-only substitutions + per-step model routing) against the counterfactual ' +
+          'baseline model, over a look-back window.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• User asks "how much have I saved?" / "what has my memory saved me?"\n' +
+          '• At session end, to report the value delivered.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            window_days: { type: 'number', description: 'Look-back window in days. Default 30.' },
+          },
+        },
+        annotations: { title: 'Savings summary', readOnlyHint: true },
+      },
+      {
+        name: 'skill_lint',
+        description:
+          'DETERMINISM — Deterministic: scans stored skill text; no LLM.\n\n' +
+          'Health-check trained skills for data-quality issues: retrieval/knowledge-subgraph ' +
+          'dumps accidentally baked into the body, duplicate metadata blocks, incomplete goal ' +
+          'sets (<8 categories), and missing @needs routing tags. Returns a per-skill report.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• Periodically, or after a bulk import/retrain, to catch corruption.\n' +
+          '• When a skill walks oddly or its body looks polluted.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Skills engram to scan. Defaults to "Skills".' },
+          },
+        },
+        annotations: { title: 'Skill lint', readOnlyHint: true },
+      },
+      {
         name: 'export_skill',
         description:
           'DETERMINISM — Deterministic: format conversion; no LLM, no recall.\n\n' +
@@ -2847,6 +2963,14 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               type: 'string',
               enum: ['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gsk'],
               description: 'Target format.',
+            },
+            encrypt_for: {
+              type: 'object',
+              description: 'Optional recipient-controlled confidentiality for the `gsk` format (builds a v2 GSK2 pack). Pass `{ "passphrase": "…" }` or `{ "recipient_pubkey": "<base64>" }` / array. Ignored for non-gsk formats. Default stays signed-public.',
+              properties: {
+                passphrase: { type: 'string', description: 'Passphrase to derive the content key (Argon2id).' },
+                recipient_pubkey: { description: 'A single base64 recipient public key, or an array of them.' },
+              },
             },
           },
           required: ['skill_text', 'format'],
@@ -2879,10 +3003,131 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               type: 'boolean',
               description: 'Sign the pack with this cortex\'s Ed25519 key (default: true). Recipients can verify authorship offline.',
             },
+            encrypt_for: {
+              type: 'object',
+              description: 'Optional recipient-controlled confidentiality (builds a v2 GEZ2 pack). Pass `{ "passphrase": "…" }` for Argon2id passphrase encryption (shared out-of-band), or `{ "recipient_pubkey": "<base64>" }` / `{ "recipient_pubkey": ["<b64>", …] }` to seal to one or more recipients\' X25519 public keys (obtain via get_recipient_public_key). Omit for the default signed-public pack.',
+              properties: {
+                passphrase: { type: 'string', description: 'Passphrase to derive the content key (Argon2id).' },
+                recipient_pubkey: { description: 'A single base64 recipient public key, or an array of them.' },
+              },
+            },
           },
           required: ['engram'],
         },
         annotations: { title: 'Export engram pack' },
+      },
+      {
+        name: 'create_engram',
+        description:
+          'DETERMINISM — Deterministic: creates an empty engram with a template + display name. No LLM, no recall.\n\n' +
+          'Create a new, EMPTY engram (knowledge-graph collection) so memories or skills can be saved into it. Creation is a base ownership operation — it is NOT behind the Pro/Teams tier (a free plan allows up to 3 user engrams; any paid plan, unlimited). Use this before train_skill or remember when the target engram does not exist yet.\n\n' +
+          'For a trainable-skills library, pass template "skill". The slug is derived from name (made unique on collision); pass graph_id to choose it explicitly.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Create a Code Skills engram" / "make a new engram called X"\n' +
+          '• Before train_skill when target_engram reports "no engram matched"',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Human-readable display name (e.g. "Code Skills").',
+            },
+            template: {
+              type: 'string',
+              enum: ['personal', 'journal', 'reading', 'learning', 'project', 'research', 'codebase', 'health', 'team', 'compliance', 'onboarding', 'skill'],
+              description: 'Engram template. Use "skill" for a trainable-skills library. Default "personal".',
+            },
+            graph_id: {
+              type: 'string',
+              description: 'Optional explicit slug (letters, digits, -, _). If omitted, a unique slug is derived from name.',
+            },
+          },
+          required: ['name'],
+        },
+        annotations: { title: 'Create engram' },
+      },
+      {
+        name: 'get_engram_autonomy',
+        description:
+          'DETERMINISM — Deterministic: a direct read of engram metadata + skill safety tags; no LLM.\n\n' +
+          'Read an engram\'s execution-autonomy dial — how far Ghampus may take a skill matched from this engram automatically. ' +
+          'Returns the CONFIGURED level (L0 manual · L1 suggest · L2 preview · L3 auto), the authored dispatch-safe CAP derived from the engram\'s skills\' `[dispatch-safe: yes|partial|no]` tags, the EFFECTIVE level = min(configured, cap), and a per-skill breakdown. ' +
+          'The cap is the highest level the engram\'s skills can meaningfully reach; an engram with no skills is uncapped (L3). Each skill is still individually capped at dispatch time.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "What autonomy level is my Code Skills engram set to?"\n' +
+          '• Before set_engram_autonomy, to see the cap you cannot exceed',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram ID or display name to read.' },
+          },
+          required: ['engram'],
+        },
+        annotations: { title: 'Get engram autonomy', readOnlyHint: true },
+      },
+      {
+        name: 'set_engram_autonomy',
+        description:
+          'DETERMINISM — Deterministic: persists the engram\'s execution-autonomy dial in metadata; no LLM.\n\n' +
+          'Set an engram\'s execution-autonomy level (L0 manual · L1 suggest · L2 preview · L3 auto) — the ceiling for how far Ghampus may take a skill matched from this engram automatically. ' +
+          'REFUSES to set a level ABOVE the computed dispatch-safe cap (derived from the engram\'s skills\' authored `[dispatch-safe: …]` tags); L3 is selectable only when the cap allows it. ' +
+          'Each skill is still individually capped at dispatch time via the autonomy engine.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Set my Code Skills engram to preview-then-run (L2)"\n' +
+          '• "Let this engram run skills autonomously" (only succeeds if the cap is L3)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram ID or display name to update.' },
+            level: { type: 'string', enum: ['L0', 'L1', 'L2', 'L3'], description: 'L0 manual · L1 suggest · L2 preview · L3 auto.' },
+          },
+          required: ['engram', 'level'],
+        },
+        annotations: { title: 'Set engram autonomy' },
+      },
+      {
+        name: 'get_skill_autonomy',
+        description:
+          'DETERMINISM — Deterministic: a direct read of engram metadata + the skill\'s safety tag; no LLM.\n\n' +
+          'Read ONE skill\'s execution-autonomy state — how far Ghampus may take THIS skill automatically. ' +
+          'Per-skill autonomy is three layers: effective = min( authored cap , per-skill override ?? engram default ?? global default ). ' +
+          'Returns the authored dispatch-safe value + CAP (from `[dispatch-safe: yes|partial|no]`: yes→L3, partial→L2, no→L1, meta-skill→L1), ' +
+          'the CONFIGURED per-skill override (null = inheriting), the ENGRAM default, and the EFFECTIVE (capped) level.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "What autonomy is my code-review skill set to?"\n' +
+          '• Before set_skill_autonomy, to see the cap you cannot exceed',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram ID or display name the skill lives in.' },
+            sourceId: { type: 'string', description: 'The skill\'s sourceId (stable across retrain; returned by train_skill as skill_id / by list_skills).' },
+          },
+          required: ['engram', 'sourceId'],
+        },
+        annotations: { title: 'Get skill autonomy', readOnlyHint: true },
+      },
+      {
+        name: 'set_skill_autonomy',
+        description:
+          'DETERMINISM — Deterministic: persists ONE skill\'s execution-autonomy override in engram metadata; no LLM.\n\n' +
+          'Set (or clear) a single SKILL\'s execution-autonomy level (L0 manual · L1 suggest · L2 preview · L3 auto), keyed by its sourceId. ' +
+          'Pass level: "inherit" to CLEAR the override so the skill falls back to the engram default (then the global level). ' +
+          'REFUSES to set a level ABOVE the skill\'s authored dispatch-safe CAP (from its `[dispatch-safe: …]` tag); L3 only when the cap allows it. ' +
+          'The override is stored in metadata (not the skill body), so it survives retraining.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Let my deploy skill run autonomously" (only succeeds if its cap is L3)\n' +
+          '• "Set just the code-review skill to preview-then-run (L2)"\n' +
+          '• "Reset this skill back to inheriting the engram\'s level" (level: inherit)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram ID or display name the skill lives in.' },
+            sourceId: { type: 'string', description: 'The skill\'s sourceId (stable across retrain).' },
+            level: { type: 'string', enum: ['L0', 'L1', 'L2', 'L3', 'inherit'], description: 'L0 manual · L1 suggest · L2 preview · L3 auto · inherit (clear the override).' },
+          },
+          required: ['engram', 'sourceId', 'level'],
+        },
+        annotations: { title: 'Set skill autonomy' },
       },
       {
         name: 'import_engram',
@@ -2908,12 +3153,87 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             skip_existing: {
               type: 'boolean',
-              description: 'Skip sources whose sourceId already exists in the target engram (default: true). Set false to re-ingest and overwrite.',
+              description: 'Skip sources whose sourceId already exists in the target engram (default: true). Set false to re-ingest and overwrite. Only applies when quarantine is false.',
+            },
+            quarantine: {
+              type: 'boolean',
+              description: 'Land the import in a fresh QUARANTINE engram (default: TRUE) that is invisible to recall, dispatch, the proactive watcher, and cross-skill resolution until the owner reviews and promotes individual items via promote_import. Set false ONLY for a trusted in-app merge into target_engram.',
+            },
+            passphrase: {
+              type: 'string',
+              description: 'Passphrase to decrypt a passphrase-encrypted (v2) pack.',
             },
           },
           required: ['pack_base64'],
         },
         annotations: { title: 'Import engram pack' },
+      },
+      {
+        name: 'list_quarantined',
+        description:
+          'DETERMINISM — Deterministic: a direct read of quarantine engram metadata + a skill_lint pass. No LLM.\n\n' +
+          'List every QUARANTINED import batch — sources received via import_engram / a received `.gsk` that are held out of recall, dispatch, the proactive watcher, and cross-skill resolution until you review them. For each batch returns the quarantine engram id, provenance (origin pack), signature state (verified / unsigned / who signed), and a per-item state plus a skill_lint pass over any imported skills.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "What imports are waiting for review?"\n' +
+          '• Before promote_import / reject_import, to see what landed and its signature/lint findings',
+        inputSchema: { type: 'object', properties: {} },
+        annotations: { title: 'List quarantined imports', readOnlyHint: true },
+      },
+      {
+        name: 'promote_import',
+        description:
+          'DETERMINISM — Deterministic: moves reviewed sources out of quarantine via the trusted in-app moveSource and lifts the quarantine flag. No LLM.\n\n' +
+          'OWNER-ADJUDICATED promotion: move specific reviewed items out of a quarantine engram into a real target engram, making them visible to recall/dispatch. This is the trusted in-app promotion path — it routes AROUND the agent-facing transfer_source tier-lowering refusal by design (you, the owner, are explicitly promoting). Imported skills remain `[dispatch-safe: no]` after promotion, so the autonomy gate still requires a separate owner action before any auto-dispatch.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Promote the reviewed skill into my Code Skills engram"\n' +
+          '• After list_quarantined, to accept specific items',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              description: 'sourceIds (within the quarantine engram) to promote.',
+              items: { type: 'string' },
+            },
+            target_engram: {
+              type: 'string',
+              description: 'Target engram ID or display name to move the promoted items into. Created if it does not exist.',
+            },
+          },
+          required: ['items', 'target_engram'],
+        },
+        annotations: { title: 'Promote quarantined import' },
+      },
+      {
+        name: 'reject_import',
+        description:
+          'DETERMINISM — Deterministic: discards quarantined sources (forget) and records an op-log audit. No LLM.\n\n' +
+          'Discard specific quarantined items you do not want to keep. The discard is reversible via the op-log (every ingress decision is auditable). Items already promoted are left untouched.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Reject this imported skill — I don\'t trust it"\n' +
+          '• After list_quarantined, to decline specific items',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              description: 'sourceIds (within the quarantine engram) to reject/discard.',
+              items: { type: 'string' },
+            },
+          },
+          required: ['items'],
+        },
+        annotations: { title: 'Reject quarantined import' },
+      },
+      {
+        name: 'get_recipient_public_key',
+        description:
+          'DETERMINISM — Deterministic: derives + returns this cortex\'s X25519 recipient public key. No LLM.\n\n' +
+          'Return this cortex\'s base64 X25519 RECIPIENT public key — hand it to a peer who wants to encrypt a `.gez` / `.gsk` pack TO you via export_engram/export_skill `encrypt_for: { recipient_pubkey }`. The key is derived from this cortex\'s existing Ed25519 pack-signing key, so "verified signer" and "sealed-to recipient" are the same published identity.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "What\'s my recipient key so a colleague can send me an encrypted pack?"',
+        inputSchema: { type: 'object', properties: {} },
+        annotations: { title: 'Get recipient public key', readOnlyHint: true },
       },
         {
           name: 'list_skills',
@@ -3160,7 +3480,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { autoExceptGraphIds: ssoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         // Merge any auto-excluded engrams (e.g. un-consented sensitive
         // tier on a federated recall) with the AI-provided exceptions.
-        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
+        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds, ...quarantinedGraphIds()];
         const endP1 = beginScope(WorkPriority.P1_USER);
         try {
         const sub = await withRecallEmbedding(() => deps.host.recall(args.query, {
@@ -3267,7 +3587,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceReplayBlocker(args.query, name);
         const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: ssoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
-        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
+        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds, ...quarantinedGraphIds()];
         const endP1 = beginScope(WorkPriority.P1_USER);
         try {
         const sub = await withRecallEmbedding(() => deps.host.digDeeper(args.query, {
@@ -3456,6 +3776,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             ...(obligationOpt ? { obligation: obligationOpt } : {}),
           })
         ) as import('@graphnosis-app/core').SourceRecord & { contradictions?: unknown[] };
+        // Tag the target engram on the audit event (mirrors recall tagging its
+        // contributing engrams) so the durable log records where this landed.
+        mcpAuditExtras.engramIds = [graphId];
         let msg = `Saved to ${graphId} as ${rec.sourceId}.`;
         if (rec.contradictions && rec.contradictions.length > 0) {
           msg +=
@@ -3828,6 +4151,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           template: metadata.template,
           archived: (metadata as any).archived ?? false,
           loaded,
+          // QUARANTINE CONTRACT: flag imported-but-unpromoted engrams so the AI
+          // sees the id is off-limits. The read guards (get_skill/walk_skill/
+          // recall_source) + the centralized host.recall exclusion make the id
+          // inert; this flag is clarity + defense-in-depth. Not hidden from the
+          // owner's own tooling (review needs to see them).
+          quarantined: deps.host.isQuarantined(graphId),
           // `loaded` can be true for LRU-evicted engrams (everLoaded) while the
           // graph is not resident — listSources() would throw "Graph not loaded".
           sources: resident.has(graphId) ? deps.host.listSources(graphId).length : null,
@@ -3981,8 +4310,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { consentFooter: rsFooter, autoExceptGraphIds: rsAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: rsSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
-        const rsExcept = new Set([...(except?.resolved ?? []), ...rsAutoExcept, ...rsSsoExcept]);
-        const scopedIds = only ? only.resolved : allIds.filter(id => !rsExcept.has(id));
+        const rsExcept = new Set([...(except?.resolved ?? []), ...rsAutoExcept, ...rsSsoExcept, ...quarantinedGraphIds()]);
+        // recall_structured reads via searchNodes (not host.recall), so the
+        // quarantine boundary is enforced here. The default branch already
+        // subtracts via rsExcept; the explicit-only branch must too — a named
+        // quarantine engram in only_engrams cannot become a search target.
+        const scopedIds = only ? only.resolved.filter(id => !rsExcept.has(id)) : allIds.filter(id => !rsExcept.has(id));
         const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
         const nodes: unknown[] = [];
         for (const graphId of scopedIds) {
@@ -4042,17 +4375,28 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { consentFooter: obFooter, autoExceptGraphIds: obAutoExcept } =
           await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: obSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
+        // recall_obligations reads the obligation index directly (not host.recall),
+        // so the quarantine boundary must be enforced here like recall_structured/
+        // recall_with_citations do. Subtract quarantined ids from BOTH branches —
+        // a named quarantine engram in only_engrams must not surface its
+        // obligations, and the default scope must skip quarantined engrams.
+        const obExcept = new Set([...obAutoExcept, ...obSsoExcept, ...quarantinedGraphIds()]);
         const scopedIds = only
-          ? only.resolved.filter((id) => !obAutoExcept.includes(id) && !obSsoExcept.includes(id))
-          : deps.host.listGraphs().filter((id) => !obAutoExcept.includes(id) && !obSsoExcept.includes(id));
+          ? only.resolved.filter((id) => !obExcept.has(id))
+          : deps.host.listGraphs().filter((id) => !obExcept.has(id));
 
         await deps.host.obligationIndex.ensureLoaded();
         const now = Date.now();
         const dueWithinMs = args.due_within_days !== undefined
           ? args.due_within_days * 24 * 60 * 60 * 1000
           : undefined;
-        const rows = deps.host.obligationIndex.list({
-          ...(scopedIds.length ? { graphIds: scopedIds } : {}),
+        // An empty scope means every candidate engram was excluded (quarantined,
+        // un-consented, or SSO-gated). filterObligations treats an empty graphIds
+        // list as "no filter" and returns ALL obligations, so we must short-circuit
+        // rather than fall through to an unscoped list — otherwise a request naming
+        // only a quarantined engram would leak every engram's obligations.
+        const rows = scopedIds.length === 0 ? [] : deps.host.obligationIndex.list({
+          graphIds: scopedIds,
           ...(args.obligation_type ? { obligationType: args.obligation_type } : {}),
           ...(dueWithinMs !== undefined ? { dueWithinMs, includeOverdue: true } : {}),
           maxResults: args.max_results ?? 20,
@@ -4094,8 +4438,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { consentFooter: rwcFooter, autoExceptGraphIds: rwcAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: rwcSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
-        const rwcExcept = new Set([...(except?.resolved ?? []), ...rwcAutoExcept, ...rwcSsoExcept]);
-        const scopedIds = only ? only.resolved : allIds.filter(id => !rwcExcept.has(id));
+        const rwcExcept = new Set([...(except?.resolved ?? []), ...rwcAutoExcept, ...rwcSsoExcept, ...quarantinedGraphIds()]);
+        // recall_with_citations reads via searchNodes (not host.recall) — enforce
+        // the quarantine boundary on BOTH branches (see recall_structured).
+        const scopedIds = only ? only.resolved.filter(id => !rwcExcept.has(id)) : allIds.filter(id => !rwcExcept.has(id));
         const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
         const sections: string[] = [];
         for (const graphId of scopedIds) {
@@ -4332,6 +4678,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             `Use find_source to locate it by keyword or content.${hint}`,
           );
         }
+        // QUARANTINE CONTRACT: recall_source reads node text directly (it does
+        // not route through host.recall), so it must enforce the boundary here —
+        // a source resolved into a quarantined engram (by id, ref, or the
+        // truncated-ref fallback above) must not be readable on the AI path.
+        if (deps.host.isQuarantined(rec.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
         const { consentFooter: rsrcFooter } = await checkConsentOrThrow([rec.graphId]);
         checkRecallSsoGate(deps.host, deps, [rec.graphId]);
         const meta = deps.host.getGraphMetadata(rec.graphId);
@@ -4470,6 +4821,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = EngramSummaryInput.parse(rawInput);
         const res = requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
+        // engram_summary reads node text directly via listNodes (not host.recall),
+        // so the centralized quarantine boundary is bypassed. Guard the named
+        // engram here — otherwise a caller could read a content preview sample of
+        // an imported-but-unpromoted engram. Mirrors get_skill/walk_skill/etc.
+        if (deps.host.isQuarantined(res.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
         const meta = deps.host.getGraphMetadata(res.graphId);
         const nodes = deps.host.listNodes(res.graphId);
         const active = (nodes as any[]).filter((n: any) => (n.confidence ?? 1) > 0.2);
@@ -4591,7 +4947,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           const sub = await withRecallEmbedding(() => deps.host.recall(args.question, {
             budget: { maxTokens: args.maxTokens ?? 2000, maxNodes: 20 },
             ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
-            ...(lqAutoExcept.length ? { exceptGraphIds: lqAutoExcept } : {}),
+            ...((): { exceptGraphIds?: string[] } => {
+              const ex = [...lqAutoExcept, ...quarantinedGraphIds()];
+              return ex.length ? { exceptGraphIds: ex } : {};
+            })(),
             ...((): { consentedGraphIds?: string[] } => {
               const ids = resolveConsentedGraphIds(only?.resolved, lqAutoExcept);
               return ids?.length ? { consentedGraphIds: ids } : {};
@@ -4802,6 +5161,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // Accept boolean or "true"/"false" string — some MCP clients stringify
           // booleans for params absent from their cached tool schema.
           use_llm_rewrite: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
+          bind_recipes: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
+          autonomy_level: z.enum(['L0', 'L1', 'L2', 'L3']).optional(),
         });
         const args = TrainSkillInput.parse(rawInput);
 
@@ -4890,8 +5251,13 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(clientName !== undefined ? { addedBy: clientName } : {}),
           ...(args.recall_breadth !== undefined ? { recallBreadth: args.recall_breadth } : {}),
           ...(args.use_llm_rewrite !== undefined ? { useLlmRewrite: args.use_llm_rewrite === true || args.use_llm_rewrite === 'true' } : {}),
+          ...(args.bind_recipes !== undefined ? { bindRecipes: args.bind_recipes === true || args.bind_recipes === 'true' } : {}),
+          // Optional per-skill autonomy override applied (clamped to the authored
+          // cap) AFTER the skill is saved — omitted = keep inheriting the engram.
+          ...(args.autonomy_level !== undefined ? { autonomyLevel: args.autonomy_level } : {}),
         };
         const result = await deps.skillTrainer.trainSkill(trainInput);
+        const autonomyNote = result.autonomyNote;
 
         const lines: string[] = [];
         lines.push(`## Skill Training Complete`);
@@ -4903,6 +5269,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         lines.push(`**Influential memories:** ${result.influentialNodes.length} node(s) surfaced`);
         if (result.skillId) {
           lines.push(`**Saved as:** \`${result.skillId}\` in ${engramName} engram`);
+        }
+        if (autonomyNote) {
+          lines.push(`**Autonomy:** ${autonomyNote}`);
         }
         lines.push('');
         lines.push('### Trained Skill');
@@ -4922,6 +5291,29 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           });
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'debug_inject_drift': {
+        if (process.env.GRAPHNOSIS_DEV !== '1') {
+          return mcpError('debug_inject_drift is dev-only — set GRAPHNOSIS_DEV=1.');
+        }
+        const DriftInput = z.object({
+          graph_id: z.string().min(1),
+          source_id: z.string().min(1),
+          missing_count: z.number().int().min(0),
+        });
+        const dargs = DriftInput.parse(rawInput);
+        if (!deps.skillTrainer) {
+          return mcpError('Skill trainer is not available. Open the Graphnosis app to enable it.');
+        }
+        try {
+          const v = await deps.skillTrainer.debugInjectCitedDrift(dargs.graph_id, dargs.source_id, dargs.missing_count);
+          return { content: [{ type: 'text' as const, text:
+            `injected drift into ${dargs.graph_id}/${dargs.source_id}: missing_count=${dargs.missing_count} → ` +
+            `score ${v.score}/100 (cited-drift −${v.citedDriftPenalty}, age −${v.agePenalty}, superseded −${v.stalenessPenalty})` }] };
+        } catch (e) {
+          return mcpError((e as Error).message);
+        }
       }
 
       case 'skill_vitality': {
@@ -4965,13 +5357,78 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (vitality.staleNodesCount > 0) {
           lines.push(`**Stale nodes:** ${vitality.staleNodesCount} (superseded by a newer version)`);
         }
+        if (vitality.score < 100) {
+          const parts: string[] = [];
+          if (vitality.agePenalty) parts.push(`age −${vitality.agePenalty}`);
+          if (vitality.stalenessPenalty) parts.push(`superseded nodes −${vitality.stalenessPenalty}`);
+          if (vitality.citedDriftPenalty) parts.push(`cited-memory drift −${vitality.citedDriftPenalty}`);
+          if (parts.length > 0) {
+            lines.push(`**Why below 100:** ${parts.join(' · ')}`);
+            lines.push('_Retrain resets the age penalty and clears superseded nodes._');
+          }
+        }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'savings_summary': {
+        const a = z.object({ window_days: z.number().positive().max(3650).optional() }).parse(rawInput);
+        const { summariseSavings, resolveSavingsBaseline } = await import('./savings-tracker.js');
+        const baseline = resolveSavingsBaseline(deps.host.getSettings());
+        const sum = await summariseSavings(deps.host.getCortexDir(), a.window_days ?? 30, baseline);
+        const out: string[] = [];
+        out.push('## Graphnosis Savings');
+        out.push('');
+        out.push(sum.reportLine);
+        out.push('');
+        out.push(`**Window:** last ${sum.windowDays} days · ${sum.totalEvents} events`);
+        out.push(`**Saved:** $${sum.totalSavedUsd.toFixed(4)}  (baseline $${sum.totalBaselineUsd.toFixed(4)} − actual $${sum.totalActualUsd.toFixed(4)})  vs ${sum.baselineModel}`);
+        out.push(`**By kind:** recall-only ${sum.byKind['recall-only'].events} ev / $${sum.byKind['recall-only'].savedUsd.toFixed(4)}  ·  routing ${sum.byKind.routing.events} ev / $${sum.byKind.routing.savedUsd.toFixed(4)}`);
+        return { content: [{ type: 'text', text: out.join('\n') }] };
+      }
+
+      case 'skill_lint': {
+        const a = z.object({ engram: z.string().optional() }).parse(rawInput);
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        const res = requireEngram(deps.host, a.engram ?? 'Skills');
+        if ('error' in res) return res.error;
+        const graphId = res.graphId;
+        const skills = deps.skillTrainer.listSkills(graphId);
+        if (!skills.length) return { content: [{ type: 'text', text: 'No trained skills to lint.' }] };
+        const GOALS = ['Trigger:', 'Prerequisites:', 'Requires:', 'Produces:', 'Success:', 'Out of scope:', 'On failure:', 'On completion:'];
+        const POLLUTION = /=== ?KNOWLEDGE SUBGRAPH|--- ?INFERRED LAYER|_\(from cortex recall\)_|Personal Context/i;
+        const flagged: string[] = [];
+        let clean = 0;
+        for (const s of skills) {
+          const body = deps.skillTrainer.getSkill(graphId, s.sourceId)?.text ?? '';
+          const issues: string[] = [];
+          if (POLLUTION.test(body)) issues.push('retrieval/knowledge-dump baked into body');
+          if ((body.match(/<!-- Graphnosis skill training metadata/g) ?? []).length > 1) issues.push('duplicate metadata blocks');
+          const goalCount = GOALS.filter((g) =>
+            body.split('\n').some((l) => l.trimStart().toLowerCase().startsWith(g.toLowerCase())),
+          ).length;
+          if (goalCount < 8) issues.push(`${goalCount}/8 goal categories`);
+          if (!/@needs?:/i.test(body)) issues.push('no @needs routing tags');
+          if (issues.length > 0) flagged.push(`- **${s.label}** (${s.sourceId})\n    ${issues.join(' · ')}`);
+          else clean++;
+        }
+        const out: string[] = [];
+        out.push(`## Skill Lint — ${skills.length} skills`);
+        out.push('');
+        out.push(`**Clean:** ${clean}  ·  **Flagged:** ${flagged.length}`);
+        if (flagged.length > 0) { out.push(''); out.push(...flagged); }
+        out.push('');
+        out.push('_Retrieval-dump and duplicate-metadata indicate body corruption — retrain from clean source to fix. Goal-completeness and @needs are quality hints, not errors._');
+        return { content: [{ type: 'text', text: out.join('\n') }] };
       }
 
       case 'export_skill': {
         const ExportSkillInput = z.object({
           skill_text: z.string().min(1),
           format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gsk']),
+          encrypt_for: z.object({
+            passphrase: z.string().optional(),
+            recipient_pubkey: z.union([z.string(), z.array(z.string())]).optional(),
+          }).optional(),
         });
         const args = ExportSkillInput.parse(rawInput);
 
@@ -4998,10 +5455,21 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           }
         }
 
-        const exported = deps.skillTrainer.exportSkill(
+        let exported = deps.skillTrainer.exportSkill(
           args.skill_text,
           args.format as ExportFormat,
         );
+
+        // Recipient-controlled confidentiality for the gsk format → re-pack as v2.
+        // Default stays signed-public; encryption is applied only when requested.
+        let gskEncrypted = false;
+        const skEncryptFor = parseEncryptForArg(args.encrypt_for);
+        if (args.format === 'gsk' && skEncryptFor && Buffer.isBuffer(exported)) {
+          const { parseGskPackage, buildGskPackageV2 } = await import('./gsk-format.js');
+          const v1Payload = parseGskPackage(exported);
+          exported = await buildGskPackageV2(v1Payload, { encrypt: skEncryptFor });
+          gskEncrypted = true;
+        }
 
         if (Buffer.isBuffer(exported)) {
           // GSK format: return as base64 so the MCP transport can carry it.
@@ -5010,6 +5478,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               type: 'text',
               text: `## Exported Skill Pack (.gsk)\n\n` +
                 `**Format:** Graphnosis Skills Kit (encrypted JSON)\n` +
+                `**Encryption:** ${gskEncrypted ? 'recipient-controlled (v2)' : 'signed-public (v1 obfuscation)'}\n` +
                 `**Encoding:** base64 (save as \`.gsk\` after decoding)\n\n` +
                 '```\n' + exported.toString('base64') + '\n```\n\n' +
                 '_This pack contains only your trained skill text and recall recipes. ' +
@@ -5036,6 +5505,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = z.object({
           engram: z.string().min(1),
           sign: z.boolean().optional(),
+          encrypt_for: z.object({
+            passphrase: z.string().optional(),
+            recipient_pubkey: z.union([z.string(), z.array(z.string())]).optional(),
+          }).optional(),
         }).parse(rawInput);
 
         const { requireEngram: _req } = { requireEngram };
@@ -5072,6 +5545,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           exportedBy: (engramMeta as any).displayName ?? graphId,
         };
         if (signingKeyHex !== undefined) exportOpts.signingKeyHex = signingKeyHex;
+        const encryptFor = parseEncryptForArg(args.encrypt_for);
+        if (encryptFor) exportOpts.encryptFor = encryptFor;
         const result = await exportEngram(deps.host, graphId, exportOpts);
 
         return {
@@ -5082,6 +5557,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               `**Engram:** ${(engramMeta as any).displayName ?? graphId}\n` +
               `**Sources:** ${result.sourceCount}\n` +
               `**Signed:** ${result.signed ? 'Yes (Ed25519)' : 'No (unsigned)'}\n` +
+              `**Encrypted:** ${result.encrypted ? 'Yes (recipient-controlled, v2)' : 'No (v1 obfuscation — treat as public)'}\n` +
               `**Encoding:** base64 — save as \`.gez\` after decoding\n\n` +
               '```\n' + result.pack.toString('base64') + '\n```\n\n' +
               '_This pack contains the full text of every source in the engram. ' +
@@ -5091,11 +5567,182 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         };
       }
 
+      case 'create_engram': {
+        const args = z.object({
+          name: z.string().min(1),
+          template: z.enum(['personal', 'journal', 'reading', 'learning', 'project', 'research', 'codebase', 'health', 'team', 'compliance', 'onboarding', 'skill']).optional(),
+          graph_id: z.string().regex(/^[a-zA-Z0-9_-]+$/, 'graph_id must be slug-like').optional(),
+        }).parse(rawInput);
+
+        if (deps.sharingScope) {
+          return mcpError('⛔ Engram creation is only available to the cortex owner.');
+        }
+
+        const template = args.template ?? 'personal';
+
+        // Derive a unique slug from the name unless an explicit graph_id is given.
+        const existing = new Set(deps.host.listGraphs());
+        let graphId = args.graph_id;
+        if (!graphId) {
+          const base = args.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'engram';
+          graphId = base;
+          let n = 2;
+          while (existing.has(graphId)) graphId = `${base}-${n++}`;
+        }
+        if (existing.has(graphId)) {
+          return mcpError(`An engram with id "${graphId}" already exists — pick a different name or graph_id.`);
+        }
+
+        // Free-tier quantity cap (3 user engrams). Creation is base-tier, NOT a
+        // Pro/Teams feature gate — only the free count limit applies.
+        const licenseToken = await getEffectiveLicenseToken(deps);
+        const hasPaidPlan = (deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null) !== null;
+        if (!hasPaidPlan) {
+          const SYSTEM = new Set(['graphnosis-docs', 'graphnosis-skill-demos']);
+          const userEngrams = deps.host.listGraphs().filter((id) => !SYSTEM.has(id));
+          if (userEngrams.length >= 3) {
+            return mcpError('Free plan is limited to 3 engrams. Upgrade to Pro for unlimited engrams: https://graphnosis.com/upgrade');
+          }
+        }
+
+        await deps.host.createGraph(graphId);
+        await deps.host.setGraphMetadata(graphId, {
+          template,
+          displayName: args.name,
+          createdAt: Date.now(),
+        });
+
+        return { content: [{ type: 'text', text: `Created engram "${args.name}" (id: ${graphId}, template: ${template}).` }] };
+      }
+      case 'get_engram_autonomy': {
+        const args = z.object({ engram: z.string().min(1) }).parse(rawInput);
+        const resEngram = requireEngram(deps.host, args.engram);
+        if ('error' in resEngram) return resEngram.error;
+        const readout = deps.host.dispatchSafeReadout(resEngram.graphId)[0];
+        if (!readout) return mcpError(`No autonomy readout for engram "${args.engram}".`);
+        const meta = deps.host.getGraphMetadata(resEngram.graphId);
+        const payload = {
+          graphId: readout.graphId,
+          engramName: meta?.displayName ?? readout.graphId,
+          configuredLevel: readout.configuredLevel,
+          dispatchSafeCap: readout.dispatchSafeCap,
+          effectiveLevel: readout.effectiveLevel,
+          perSkill: readout.perSkill,
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      }
+      case 'set_engram_autonomy': {
+        const args = z.object({
+          engram: z.string().min(1),
+          level: z.enum(['L0', 'L1', 'L2', 'L3']),
+        }).parse(rawInput);
+        if (deps.sharingScope) {
+          return mcpError('⛔ Setting engram autonomy is only available to the cortex owner.');
+        }
+        const resEngram = requireEngram(deps.host, args.engram);
+        if ('error' in resEngram) return resEngram.error;
+        const { levelRank } = await import('./skill-autonomy.js');
+        // Read the current cap BEFORE writing so we refuse to exceed the authored
+        // dispatch-safe ceiling. The requested level must be ≤ cap; L3 is only
+        // selectable when the cap allows it.
+        const before = deps.host.dispatchSafeReadout(resEngram.graphId)[0];
+        const cap = before?.dispatchSafeCap ?? 'L3';
+        if (levelRank(args.level) > levelRank(cap)) {
+          return mcpError(
+            `Cannot set engram "${args.engram}" to ${args.level}: the authored dispatch-safe cap is ${cap}. ` +
+            `Lower the requested level to ${cap} or below, or relax the skills' [dispatch-safe: …] tags.`,
+          );
+        }
+        await deps.host.setGraphExecutionAutonomy(resEngram.graphId, args.level);
+        const after = deps.host.dispatchSafeReadout(resEngram.graphId)[0];
+        const meta = deps.host.getGraphMetadata(resEngram.graphId);
+        const payload = {
+          graphId: resEngram.graphId,
+          engramName: meta?.displayName ?? resEngram.graphId,
+          configuredLevel: after?.configuredLevel ?? args.level,
+          dispatchSafeCap: after?.dispatchSafeCap ?? cap,
+          effectiveLevel: after?.effectiveLevel ?? args.level,
+          set: true,
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      }
+      case 'get_skill_autonomy': {
+        const args = z.object({
+          engram: z.string().min(1),
+          sourceId: z.string().min(1),
+        }).parse(rawInput);
+        const resEngram = requireEngram(deps.host, args.engram);
+        if ('error' in resEngram) return resEngram.error;
+        const readout = deps.host.dispatchSafeReadout(resEngram.graphId)[0];
+        const entry = readout?.perSkill.find((p) => p.sourceId === args.sourceId);
+        if (!entry) {
+          return mcpError(`No skill with sourceId "${args.sourceId}" found in engram "${args.engram}".`);
+        }
+        const meta = deps.host.getGraphMetadata(resEngram.graphId);
+        const payload = {
+          sourceId: entry.sourceId,
+          label: entry.label,
+          dispatchSafe: entry.dispatchSafe,
+          authoredCap: entry.cap,
+          configuredSkillLevel: entry.configuredSkillLevel,
+          engramDefault: readout!.configuredLevel,
+          effectiveLevel: entry.effectiveLevel,
+          engramName: meta?.displayName ?? resEngram.graphId,
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      }
+      case 'set_skill_autonomy': {
+        const args = z.object({
+          engram: z.string().min(1),
+          sourceId: z.string().min(1),
+          level: z.enum(['L0', 'L1', 'L2', 'L3', 'inherit']),
+        }).parse(rawInput);
+        // Owner-only — mirrors set_engram_autonomy. Reject scoped (sharing) sessions.
+        if (deps.sharingScope) {
+          return mcpError('⛔ Setting skill autonomy is only available to the cortex owner.');
+        }
+        const resEngram = requireEngram(deps.host, args.engram);
+        if ('error' in resEngram) return resEngram.error;
+        const readout = deps.host.dispatchSafeReadout(resEngram.graphId)[0];
+        const entry = readout?.perSkill.find((p) => p.sourceId === args.sourceId);
+        if (!entry) {
+          return mcpError(`No skill with sourceId "${args.sourceId}" found in engram "${args.engram}".`);
+        }
+        if (args.level === 'inherit') {
+          await deps.host.setSkillExecutionAutonomy(resEngram.graphId, args.sourceId, null);
+        } else {
+          const { levelRank, isMetaSkillLabel } = await import('./skill-autonomy.js');
+          // Refuse a level above the skill's authored dispatch-safe cap — L3 is
+          // only selectable when the cap allows it.
+          if (levelRank(args.level) > levelRank(entry.cap)) {
+            return mcpError(
+              `Cannot set skill "${entry.label}" to ${args.level}: the authored dispatch-safe cap is ${entry.cap} ` +
+              `(dispatch-safe:${entry.dispatchSafe}${isMetaSkillLabel(entry.label) ? ', meta/router' : ''}). ` +
+              `Lower the requested level to ${entry.cap} or below, or relax the skill's [dispatch-safe: …] tag.`,
+            );
+          }
+          await deps.host.setSkillExecutionAutonomy(resEngram.graphId, args.sourceId, args.level);
+        }
+        const after = deps.host.dispatchSafeReadout(resEngram.graphId)[0];
+        const afterEntry = after?.perSkill.find((p) => p.sourceId === args.sourceId);
+        const payload = {
+          sourceId: args.sourceId,
+          label: entry.label,
+          authoredCap: afterEntry?.cap ?? entry.cap,
+          configuredSkillLevel: afterEntry?.configuredSkillLevel ?? null,
+          engramDefault: after?.configuredLevel ?? readout!.configuredLevel,
+          effectiveLevel: afterEntry?.effectiveLevel ?? entry.effectiveLevel,
+          set: true,
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      }
       case 'import_engram': {
         const args = z.object({
           pack_base64: z.string().min(1),
           target_engram: z.string().optional(),
           skip_existing: z.boolean().optional(),
+          quarantine: z.boolean().optional(),
+          passphrase: z.string().optional(),
         }).parse(rawInput);
 
         // Reject scoped (sharing) sessions
@@ -5103,15 +5750,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError('⛔ Engram import is only available to the cortex owner.');
         }
 
-        // Pro gate
-        const licenseToken = await getEffectiveLicenseToken(deps);
-        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
-        if (!licensed) {
-          return mcpError(
-            'Engram Pack import requires a Graphnosis Pro subscription. ' +
-            'Subscribe at https://graphnosis.com/upgrade',
-          );
-        }
+        // NOTE: NO license gate on IMPORT (locked decision #1). Import is an
+        // adoption funnel and lands in quarantine by default, so it carries no
+        // confidentiality/authoring cost. Authoring/training/export gates stay.
 
         let packBuffer: Buffer;
         try {
@@ -5120,9 +5761,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError('Invalid base64 data in pack_base64.');
         }
 
-        // Resolve optional target engram
+        const quarantine = args.quarantine !== false; // DEFAULT TRUE
+
+        // Resolve optional target engram (only used when quarantine is off).
         let targetEngramId: string | undefined;
-        if (args.target_engram) {
+        if (!quarantine && args.target_engram) {
           const res = requireEngram(deps.host, args.target_engram);
           if ('error' in res) {
             // Not found — use the string as a new engram ID
@@ -5135,10 +5778,18 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { importEngram } = await import('./engram-pack.js');
         const importOpts: import('./engram-pack.js').ImportEngramOptions = {
           skipExisting: args.skip_existing !== false,
+          quarantine,
           withEmbedding: (fn) => withEmbedding(fn),
         };
         if (targetEngramId !== undefined) importOpts.targetEngramId = targetEngramId;
-        const { result, payload } = await importEngram(deps.host, packBuffer, importOpts);
+        if (args.passphrase !== undefined) importOpts.passphrase = args.passphrase;
+
+        let result; let payload;
+        try {
+          ({ result, payload } = await importEngram(deps.host, packBuffer, importOpts));
+        } catch (e) {
+          return mcpError(`Import failed: ${(e as Error).message}`);
+        }
 
         const sigLine = result.unsigned
           ? 'unsigned pack'
@@ -5150,13 +5801,20 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `**Source engram:** ${payload.engramDisplayName} (${payload.engramId})`,
           `**Exported by:** ${payload.exportedBy} on ${new Date(payload.exportedAt).toISOString().split('T')[0]}`,
           `**Signature:** ${sigLine}`,
+        ];
+        if (result.quarantineEngramId) {
+          lines.push(
+            `**Quarantine:** 🔒 landed in \`${result.quarantineEngramId}\` — invisible to recall, dispatch, the proactive watcher, and cross-skill resolution until you review and promote it. Use list_quarantined → promote_import / reject_import.`,
+          );
+        }
+        lines.push(
           ``,
           `| Outcome | Count |`,
           `|---|---|`,
           `| Imported | ${result.imported} |`,
           `| Skipped (already existed) | ${result.skipped} |`,
           `| Failed | ${result.failed} |`,
-        ];
+        );
 
         if (result.failed > 0) {
           lines.push('', '**Failures:**');
@@ -5166,6 +5824,177 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'list_quarantined': {
+        if (deps.sharingScope) {
+          return mcpError('⛔ Quarantine review is only available to the cortex owner.');
+        }
+        const batches = deps.host.listGraphs()
+          .map((gid) => ({ gid, meta: deps.host.getGraphMetadata(gid) }))
+          .filter((x) => !!x.meta?.quarantine);
+        if (batches.length === 0) {
+          return { content: [{ type: 'text', text: 'No quarantined imports awaiting review.' }] };
+        }
+        const out: string[] = [`## Quarantined imports (${batches.length})`, ''];
+        for (const { gid, meta } of batches) {
+          const q = meta!.quarantine!;
+          const sig = q.verified
+            ? `✅ verified (${q.signerPublicKey ? q.signerPublicKey.slice(0, 16) + '…' : 'signed'})`
+            : q.signerPublicKey ? '⚠️ signature present but not verified' : 'unsigned';
+          const active = deps.host.isQuarantined(gid);
+          out.push(`### \`${gid}\`${active ? '' : ' (fully adjudicated)'}`);
+          out.push(`- From pack: ${q.fromPack}`);
+          out.push(`- Signature: ${sig}`);
+          out.push(`- Imported: ${new Date(q.importedAt).toISOString()}`);
+          // skill_lint pass over any imported skills in this engram.
+          const skills = deps.skillTrainer?.listSkills(gid) ?? [];
+          out.push(`- Items: ${q.items.length} | Skills: ${skills.length}`);
+          for (const it of q.items) {
+            const src = deps.host.getSourceRecord(gid, it.sourceId);
+            const isSkill = src?.kind === 'skill';
+            let lint = '';
+            if (isSkill && deps.skillTrainer) {
+              const body = deps.skillTrainer.getSkill(gid, it.sourceId)?.text ?? '';
+              const issues: string[] = [];
+              if (/=== ?KNOWLEDGE SUBGRAPH|--- ?INFERRED LAYER|_\(from cortex recall\)_/i.test(body)) issues.push('retrieval-dump in body');
+              if (/recall|cross_search|recall_structured/i.test(body)) issues.push('recalls memory');
+              if (!/\[dispatch-safe:\s*no\s*\]/i.test(body)) issues.push('MISSING forced dispatch-safe:no');
+              lint = issues.length ? ` — lint: ${issues.join(', ')}` : ' — lint: clean';
+            }
+            out.push(`  - \`${it.sourceId}\` [${it.state}]${isSkill ? ' (skill)' : ''}${lint}`);
+          }
+          out.push('');
+        }
+        return { content: [{ type: 'text', text: out.join('\n') }] };
+      }
+
+      case 'promote_import': {
+        const args = z.object({
+          items: z.array(z.string().min(1)).min(1),
+          target_engram: z.string().min(1),
+        }).parse(rawInput);
+        if (deps.sharingScope) {
+          return mcpError('⛔ Promotion is only available to the cortex owner.');
+        }
+
+        // Locate the quarantine engram that holds the requested items.
+        const qEngrams = deps.host.listGraphs().filter((gid) => deps.host.getGraphMetadata(gid)?.quarantine);
+        const itemSet = new Set(args.items);
+        const fromGid = qEngrams.find((gid) =>
+          (deps.host.getGraphMetadata(gid)?.quarantine?.items ?? []).some((it) => itemSet.has(it.sourceId)),
+        );
+        if (!fromGid) {
+          return mcpError('None of the requested items were found in any quarantine engram. Call list_quarantined first.');
+        }
+
+        // Resolve / create the target engram. promote bypasses the agent-facing
+        // transfer_source tier-lowering refusal by design — this IS the trusted
+        // in-app owner path. host.moveSource is the primitive behind transfer_source.
+        let targetGid: string;
+        const tres = requireEngram(deps.host, args.target_engram);
+        if ('error' in tres) {
+          targetGid = args.target_engram;
+          if (!deps.host.listGraphs().includes(targetGid)) {
+            await deps.host.createGraph(targetGid);
+            await deps.host.setGraphMetadata(targetGid, {
+              template: 'personal',
+              displayName: args.target_engram,
+              createdAt: Date.now(),
+            });
+          }
+        } else {
+          targetGid = tres.graphId;
+        }
+
+        const meta = deps.host.getGraphMetadata(fromGid)!;
+        const promoted: string[] = [];
+        const failures: string[] = [];
+        for (const sourceId of args.items) {
+          const item = meta.quarantine!.items.find((it) => it.sourceId === sourceId);
+          if (!item || item.state !== 'quarantined') { failures.push(`${sourceId} (not quarantined)`); continue; }
+          try {
+            await deps.host.moveSource(fromGid, sourceId, targetGid);
+            item.state = 'promoted';
+            promoted.push(sourceId);
+          } catch (e) {
+            failures.push(`${sourceId} (${(e as Error).message})`);
+          }
+        }
+        // Persist the updated per-item states (lifts quarantine once all items done).
+        await deps.host.setGraphMetadata(fromGid, {
+          ...meta,
+          quarantine: { ...meta.quarantine!, items: meta.quarantine!.items.map((it) => ({ ...it })) },
+        });
+
+        const out = [
+          `## Promotion complete`,
+          ``,
+          `**From quarantine:** \`${fromGid}\``,
+          `**To engram:** \`${targetGid}\``,
+          `**Promoted:** ${promoted.length}`,
+        ];
+        if (failures.length) { out.push('', '**Skipped/failed:**'); for (const f of failures) out.push(`- ${f}`); }
+        if (!deps.host.isQuarantined(fromGid)) out.push('', '_All items adjudicated — quarantine lifted for this batch._');
+        out.push('', '_Promoted skills remain `[dispatch-safe: no]`; raise their autonomy explicitly to enable auto-dispatch._');
+        return { content: [{ type: 'text', text: out.join('\n') }] };
+      }
+
+      case 'reject_import': {
+        const args = z.object({
+          items: z.array(z.string().min(1)).min(1),
+        }).parse(rawInput);
+        if (deps.sharingScope) {
+          return mcpError('⛔ Rejection is only available to the cortex owner.');
+        }
+        const qEngrams = deps.host.listGraphs().filter((gid) => deps.host.getGraphMetadata(gid)?.quarantine);
+        const itemSet = new Set(args.items);
+        const fromGid = qEngrams.find((gid) =>
+          (deps.host.getGraphMetadata(gid)?.quarantine?.items ?? []).some((it) => itemSet.has(it.sourceId)),
+        );
+        if (!fromGid) {
+          return mcpError('None of the requested items were found in any quarantine engram. Call list_quarantined first.');
+        }
+        const meta = deps.host.getGraphMetadata(fromGid)!;
+        const rejected: string[] = [];
+        const failures: string[] = [];
+        for (const sourceId of args.items) {
+          const item = meta.quarantine!.items.find((it) => it.sourceId === sourceId);
+          if (!item || item.state !== 'quarantined') { failures.push(`${sourceId} (not quarantined)`); continue; }
+          try {
+            await deps.host.forgetSource(fromGid, sourceId, { triggeredBy: 'user:reject-import' });
+            item.state = 'rejected';
+            rejected.push(sourceId);
+          } catch (e) {
+            failures.push(`${sourceId} (${(e as Error).message})`);
+          }
+        }
+        await deps.host.setGraphMetadata(fromGid, {
+          ...meta,
+          quarantine: { ...meta.quarantine!, items: meta.quarantine!.items.map((it) => ({ ...it })) },
+        });
+        const out = [
+          `## Rejection complete`,
+          ``,
+          `**Quarantine:** \`${fromGid}\``,
+          `**Rejected (discarded):** ${rejected.length}`,
+        ];
+        if (failures.length) { out.push('', '**Skipped/failed:**'); for (const f of failures) out.push(`- ${f}`); }
+        out.push('', '_Discards are recorded in the op-log and recoverable._');
+        return { content: [{ type: 'text', text: out.join('\n') }] };
+      }
+
+      case 'get_recipient_public_key': {
+        if (!deps.cortexDir) return mcpError('Recipient key is unavailable (cortex directory not set).');
+        const { getCortexRecipientPublicKeyB64 } = await import('./engram-pack.js');
+        const pub = await getCortexRecipientPublicKeyB64(deps.cortexDir);
+        return { content: [{ type: 'text', text:
+          `## Your recipient public key (X25519)\n\n` +
+          '```\n' + pub + '\n```\n\n' +
+          '_Hand this to a peer so they can encrypt a `.gez` / `.gsk` pack to you via ' +
+          '`encrypt_for: { recipient_pubkey }`. Derived from your Ed25519 signing key, so ' +
+          '"verified signer" and "sealed-to recipient" are the same identity._',
+        }] };
       }
 
       case 'list_skills': {
@@ -5178,6 +6007,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           const res = requireEngram(deps.host, args.engram);
           if ('error' in res) return res.error;
           graphId = res.graphId;
+          // QUARANTINE CONTRACT: the trainer's DEFAULT scope already drops
+          // quarantined engrams, but an explicit `engram` arg passes the
+          // graphId straight through — refuse it on the AI path so a named
+          // quarantine engram can't be enumerated. (Review tooling calls
+          // skillTrainer.listSkills(gid) on the host directly, not this tool.)
+          if (deps.host.isQuarantined(graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
         }
         const skills = deps.skillTrainer.listSkills(graphId);
         if (!skills.length) {
@@ -5200,6 +6035,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }).parse(rawInput);
         const resEngramW = requireEngram(deps.host, args.graphId);
         if ('error' in resEngramW) return resEngramW.error;
+        // QUARANTINE CONTRACT: refuse to walk a quarantined skill (see get_skill).
+        if (deps.host.isQuarantined(resEngramW.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
         const { walkSkillSequence: walkFn, formatSkillForRecall: formatFn } =
           await import('./skill-trainer.js');
         // D1 — pre-load cross-engram call links (the walk is sync) so any
@@ -5220,6 +6057,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }).parse(rawInput);
         const resEngramS = requireEngram(deps.host, args.graphId);
         if ('error' in resEngramS) return resEngramS.error;
+        // QUARANTINE CONTRACT: refuse to walk a quarantined skill (see get_skill).
+        if (deps.host.isQuarantined(resEngramS.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
         const { walkSkillSequence: walkFn2, walkSkillToJson } =
           await import('./skill-trainer.js');
         const crossLinksS = await deps.host.skillCallLinks.getForSource(resEngramS.graphId, args.sourceId);
@@ -5336,6 +6175,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
+        // QUARANTINE CONTRACT: an explicit (graphId, sourceId) can name a
+        // quarantined engram directly — get_skill must refuse so imported-but-
+        // unpromoted skill text never reaches the AI. The review path reads the
+        // host (list_quarantined → skillTrainer.getSkill) directly, not this tool.
+        if (deps.host.isQuarantined(resEngram.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
         const detail = deps.skillTrainer.getSkill(resEngram.graphId, args.sourceId);
         if (!detail) return mcpError(`Skill "${args.sourceId}" not found in engram "${args.graphId}".`);
         const header =

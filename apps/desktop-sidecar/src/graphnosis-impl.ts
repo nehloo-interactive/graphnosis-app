@@ -254,6 +254,39 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       }
     }
 
+    // ── Single-node guarantee (opt-in) ───────────────────────────────────────
+    // Skill inserts (steps, goal lines, recipes) are ONE semantic unit each.
+    // The SDK's chunker may still split a single step across multiple nodes
+    // at a sentence boundary it mis-detects — most often a step ending in an
+    // abbreviation period ("...letters of support, etc.) and verify..." →
+    // two nodes). When `singleNode` is set we collapse to exactly one node
+    // carrying the verbatim input text. Runs AFTER the sourceRef-artifact
+    // filter so we only ever operate on real body nodes.
+    if (opts.singleNode && typeof input.content === 'string' && newNodeIds.length > 0) {
+      const verbatim = input.content;
+      const firstId = newNodeIds[0]!;
+      if (newNodeIds.length > 1) {
+        try {
+          h.instance.edit(firstId, verbatim, 'skill single-node insert');
+          for (const extraId of newNodeIds.slice(1)) {
+            try { h.instance.deleteNode(extraId, 'skill single-node insert — fragment merged'); } catch { /* ignore */ }
+          }
+          newNodeIds = [firstId];
+        } catch {
+          // SDK refused the edit — leave the SDK's chunking as-is rather than
+          // returning a worse state. The caller still gets a valid first id.
+          newNodeIds = [firstId];
+        }
+      } else {
+        // Exactly one node — make sure its content is the verbatim input
+        // (the SDK may have trimmed/normalized it during chunking).
+        const n = h.instance.graph.nodes.get(firstId);
+        if (n && typeof n.content === 'string' && n.content !== verbatim) {
+          try { h.instance.edit(firstId, verbatim, 'skill single-node insert — verbatim'); } catch { /* ignore */ }
+        }
+      }
+    }
+
     return { newNodeIds, newNodes: result.newNodes, contradictions: result.contradictions };
   }
 
