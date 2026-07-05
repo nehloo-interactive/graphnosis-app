@@ -13,7 +13,7 @@
 //   3. Cheapest-meets-spec.      Tiebreak on cost, then latency.
 
 import type { ModelCapability, KnownModel, CustomRateOverride, CallCostEstimate, ModelProviderId } from './model-registry.js';
-import { KNOWN_MODELS, getKnownProvider, estimateCallCost, isSensitiveEngramSafe } from './model-registry.js';
+import { ALL_CAPABILITIES, KNOWN_MODELS, getKnownProvider, estimateCallCost, isSensitiveEngramSafe } from './model-registry.js';
 import { isProviderDisabled } from './admin-policy.js';
 
 /** One step in the plan request — typically derived from a SkillExecutionPlan step. */
@@ -326,16 +326,42 @@ export function deriveStepsFromText(
     return {
       index: s.index,
       label,
-      capabilities: valid.length > 0 ? valid : (['general'] as ModelCapability[]),
+      capabilities: valid.length > 0 ? valid : inferCapabilities(s.text),
       ...(privacyLocked ? { privacyLocked: true, privacyLockReason: `step touches sensitive engram` } : {}),
     };
   });
 }
 
-const VALID_CAPABILITIES: ModelCapability[] = [
-  'general', 'fast', 'low-context', 'high-context', 'reasoning', 'summarization',
-  'writing', 'tone-match', 'structured-output', 'cited', 'code', 'vision',
-];
+// Validate declared @needs tags against the registry's single source of truth
+// (`ALL_CAPABILITIES`) so this list can never drift from the `ModelCapability`
+// union — an unknown tag is dropped and the step falls back to inference.
 function isKnownCapability(c: string): c is ModelCapability {
-  return (VALID_CAPABILITIES as string[]).includes(c);
+  return (ALL_CAPABILITIES as readonly string[]).includes(c);
+}
+
+// ── Auto-@needs inference ────────────────────────────────────────────────
+// Most trained skills carry no explicit @needs, so every step would default to
+// ['general'] and route to the cheapest model (a 1B) — fine for trivial steps,
+// but a quality risk for reasoning/code/writing steps. We infer a single best-fit
+// capability from the step text so the router can right-size. Heavy capabilities
+// are ordered first: under-routing a reasoning/code/writing step to a 1B is the
+// costly mistake, while over-routing a trivial step to a 7B is free locally.
+// An explicit @needs tag always overrides this.
+const CAPABILITY_HINTS: Array<[RegExp, ModelCapability]> = [
+  [/\b(implement|refactor|patch|debug|compile|lint|stack ?trace|exception|regex|code|coding|function|script|diff)\b/i, 'code'],
+  [/\b(analy[sz]e|assess|evaluate|reason|diagnos|root.?cause|trade.?off|compare|strateg|prioriti[sz]e|decide|decision|weigh|\bplan\b)\b/i, 'reasoning'],
+  [/\b(draft|write|compose|rephrase|reword|rewrite|announce|announcement|email|blog|post|narrat|prose|caption|copy)\b/i, 'writing'],
+  [/\b(json|schema|structured|extract fields|key-?value|emit (?:a )?(?:json|object|list)|table of)\b/i, 'structured-output'],
+  [/\b(extract|pull (?:out|the)|retriev(?:e|al|ing)|parse (?:out|the)|grab the|get the (?:value|field|number|date|email|amount|name|id)|find the (?:value|field|number|date|email|amount))\b/i, 'extraction'],
+  [/\b(summari[sz]|digest|tl;?dr|recap|condense|abstract)\b/i, 'summarization'],
+  [/\b(\blist\b|\bcheck\b|verify|confirm|look ?up|fetch|status|\bcount\b|classify|\broute\b|\bmatch\b|quick|simple)\b/i, 'fast'],
+];
+
+/** Infer one best-fit capability for a step that declares no explicit @needs.
+ *  Returns ['general'] when no hint matches. Exported for testing. */
+export function inferCapabilities(text: string): ModelCapability[] {
+  for (const [re, cap] of CAPABILITY_HINTS) {
+    if (re.test(text)) return [cap];
+  }
+  return ['general'];
 }

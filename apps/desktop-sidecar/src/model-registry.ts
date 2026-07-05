@@ -15,24 +15,33 @@
 
 /**
  * Capability tags a skill step can require, and a model can claim.
- * Defined as a closed union so the planner can constraint-solve over
- * them without runtime string surprises. Adding a capability is a
- * breaking change for older skills and older model catalogs — be
- * conservative.
+ *
+ * Single source of truth: both the runtime list (`ALL_CAPABILITIES`) and the
+ * `ModelCapability` type below are derived from this one array, so the planner
+ * can constraint-solve over a closed set AND validate capability strings at
+ * runtime (see `isKnownCapability` in model-router.ts) without the list ever
+ * drifting from the type. Add a capability here and both stay in sync.
+ *
+ * Adding a capability is a breaking change for older skills and older model
+ * catalogs — be conservative.
  */
-export type ModelCapability =
-  | 'general'           // catch-all; any model meets this
-  | 'fast'              // sub-1s typical for short prompts
-  | 'low-context'       // ≤8k tokens — fits on resource-constrained local
-  | 'high-context'      // ≥32k tokens
-  | 'reasoning'         // chain-of-thought, multi-step deduction
-  | 'summarization'     // condense longer inputs into shorter outputs
-  | 'writing'           // generate fluent narrative prose
-  | 'tone-match'        // adapt voice / register to examples
-  | 'structured-output' // reliably produce JSON / typed schemas
-  | 'cited'             // attach citations to claims
-  | 'code'              // generate / refactor source code
-  | 'vision';           // accept images alongside text
+export const ALL_CAPABILITIES = [
+  'general',           // catch-all; any model meets this
+  'fast',              // sub-1s typical for short prompts
+  'low-context',       // ≤8k tokens — fits on resource-constrained local
+  'high-context',      // ≥32k tokens
+  'reasoning',         // chain-of-thought, multi-step deduction
+  'summarization',     // condense longer inputs into shorter outputs
+  'writing',           // generate fluent narrative prose
+  'tone-match',        // adapt voice / register to examples
+  'structured-output', // reliably produce JSON / typed schemas
+  'extraction',        // pull specific fields / values out of text or recalled facts
+  'cited',             // attach citations to claims
+  'code',              // generate / refactor source code
+  'vision',            // accept images alongside text
+] as const;
+
+export type ModelCapability = typeof ALL_CAPABILITIES[number];
 
 /** The companies / runtimes Ghampus can route to. */
 export type ModelProviderId =
@@ -272,7 +281,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'ollama',
     modelTag: 'qwen2.5:7b-instruct-q4_K_M',
     displayName: 'Qwen 2.5 7B',
-    capabilities: ['general', 'reasoning', 'code', 'summarization', 'structured-output'],
+    capabilities: ['general', 'reasoning', 'extraction', 'code', 'summarization', 'structured-output', 'writing'],
     pricing: { kind: 'free' },
     typicalLatencyMs: 2100,
     contextWindow: 32768,
@@ -294,7 +303,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'mlx',
     modelTag: 'mlx-community/Meta-Llama-3-8B-Instruct-4bit',
     displayName: 'MLX Local',
-    capabilities: ['general', 'fast', 'reasoning', 'summarization', 'structured-output', 'code'],
+    capabilities: ['general', 'fast', 'reasoning', 'extraction', 'summarization', 'structured-output', 'code', 'writing'],
     pricing: { kind: 'free' },
     typicalLatencyMs: 1200,
     contextWindow: 8192,
@@ -306,7 +315,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'vllm',
     modelTag: 'meta-llama/Meta-Llama-3-8B-Instruct',
     displayName: 'vLLM Local',
-    capabilities: ['general', 'reasoning', 'summarization', 'structured-output', 'code', 'high-context'],
+    capabilities: ['general', 'reasoning', 'extraction', 'summarization', 'structured-output', 'code', 'high-context', 'writing'],
     pricing: { kind: 'free' },
     typicalLatencyMs: 1500,
     contextWindow: 32768,
@@ -318,7 +327,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'anthropic',
     modelTag: 'claude-haiku-4-5-20251001',
     displayName: 'Claude Haiku 4.5',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code'],
     pricing: { kind: 'per-token', inputUsdPer1M: 0.80, outputUsdPer1M: 4.00 },
     typicalLatencyMs: 1200,
     contextWindow: 200_000,
@@ -328,7 +337,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'anthropic',
     modelTag: 'claude-sonnet-4-6',
     displayName: 'Claude Sonnet 4.6',
-    capabilities: ['general', 'high-context', 'reasoning', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code', 'vision'],
+    capabilities: ['general', 'high-context', 'reasoning', 'extraction', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code', 'vision'],
     pricing: { kind: 'per-token', inputUsdPer1M: 3.00, outputUsdPer1M: 15.00 },
     typicalLatencyMs: 2800,
     contextWindow: 200_000,
@@ -338,7 +347,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'anthropic',
     modelTag: 'claude-opus-4-8',
     displayName: 'Claude Opus 4.8',
-    capabilities: ['general', 'high-context', 'reasoning', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code', 'vision'],
+    capabilities: ['general', 'high-context', 'reasoning', 'extraction', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code', 'vision'],
     pricing: { kind: 'per-token', inputUsdPer1M: 15.00, outputUsdPer1M: 75.00 },
     typicalLatencyMs: 3500,
     contextWindow: 200_000,
@@ -350,7 +359,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'openai',
     modelTag: 'gpt-4o-mini',
     displayName: 'GPT-4o mini',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'summarization', 'writing', 'structured-output', 'code', 'vision'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'summarization', 'writing', 'structured-output', 'code', 'vision'],
     pricing: { kind: 'per-token', inputUsdPer1M: 0.15, outputUsdPer1M: 0.60 },
     typicalLatencyMs: 900,
     contextWindow: 128_000,
@@ -360,7 +369,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'openai',
     modelTag: 'gpt-4o',
     displayName: 'GPT-4o',
-    capabilities: ['general', 'high-context', 'reasoning', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code', 'vision'],
+    capabilities: ['general', 'high-context', 'reasoning', 'extraction', 'summarization', 'writing', 'tone-match', 'structured-output', 'cited', 'code', 'vision'],
     pricing: { kind: 'per-token', inputUsdPer1M: 2.50, outputUsdPer1M: 10.00 },
     typicalLatencyMs: 2200,
     contextWindow: 128_000,
@@ -386,7 +395,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'github-copilot',
     modelTag: 'copilot-free',
     displayName: 'Copilot Free',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'code'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'code'],
     pricing: {
       kind: 'subscription-pool',
       monthlyUsd: 0,
@@ -401,7 +410,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'github-copilot',
     modelTag: 'copilot-pro',
     displayName: 'Copilot Pro',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'code', 'writing'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'code', 'writing'],
     pricing: {
       kind: 'subscription-pool',
       monthlyUsd: 10,
@@ -417,7 +426,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'github-copilot',
     modelTag: 'copilot-pro-plus',
     displayName: 'Copilot Pro+',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'code', 'writing', 'structured-output'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'code', 'writing', 'structured-output'],
     pricing: {
       kind: 'subscription-pool',
       monthlyUsd: 39,
@@ -434,7 +443,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'github-copilot',
     modelTag: 'copilot-max',
     displayName: 'Copilot Max',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'code', 'writing', 'structured-output', 'cited', 'vision'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'code', 'writing', 'structured-output', 'cited', 'vision'],
     pricing: {
       kind: 'subscription-pool',
       monthlyUsd: 100,
@@ -450,7 +459,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'github-copilot',
     modelTag: 'copilot-business',
     displayName: 'Copilot Business',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'code', 'writing', 'structured-output'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'code', 'writing', 'structured-output'],
     pricing: {
       kind: 'subscription-pool',
       monthlyUsd: 19,
@@ -468,7 +477,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'github-copilot',
     modelTag: 'copilot-enterprise',
     displayName: 'Copilot Enterprise',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'code', 'writing', 'structured-output', 'cited'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'code', 'writing', 'structured-output', 'cited'],
     pricing: {
       kind: 'subscription-pool',
       monthlyUsd: 39,
@@ -485,7 +494,7 @@ export const KNOWN_MODELS: KnownModel[] = [
     provider: 'google',
     modelTag: 'gemini-2.0-flash',
     displayName: 'Gemini 2.0 Flash',
-    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'summarization', 'structured-output', 'code', 'vision'],
+    capabilities: ['general', 'fast', 'high-context', 'reasoning', 'extraction', 'summarization', 'structured-output', 'code', 'vision'],
     pricing: { kind: 'per-token', inputUsdPer1M: 0.10, outputUsdPer1M: 0.40 },
     typicalLatencyMs: 750,
     contextWindow: 1_000_000,
