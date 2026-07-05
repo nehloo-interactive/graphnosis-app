@@ -18,6 +18,14 @@
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import sodium from 'libsodium-wrappers-sumo';
+import {
+  encodePackV2Body,
+  decodePackV2Body,
+  peekEncMode,
+  type EncMode,
+  type EncryptForOption,
+  type DecryptOptions,
+} from './pack-crypto.js';
 
 // ── GEZ payload types ─────────────────────────────────────────────────────────
 
@@ -85,6 +93,13 @@ export interface GezImportResult {
   signatureVerified: boolean;
   /** True if the pack was unsigned (no signature to verify). */
   unsigned: boolean;
+  /**
+   * Quarantine landing info. When the import was quarantined (the default), the
+   * sources land in this dedicated quarantine engram — excluded from recall,
+   * dispatch, the proactive watcher, and cross-skill resolution until the owner
+   * promotes them. Absent only for an explicit non-quarantined import.
+   */
+  quarantineEngramId?: string;
 }
 
 // ── Encryption constants ──────────────────────────────────────────────────────
@@ -100,6 +115,29 @@ const GEZ_ENC_KEY = Buffer.from([
 ]);
 
 const MAGIC = Buffer.from('GEZ1');
+const MAGIC_V2 = Buffer.from('GEZ2');
+
+/** Sign a GezPayload in place, returning the finalized payload + JSON string.
+ *  The Ed25519 signature path is IDENTICAL for v1 and v2 — confidentiality and
+ *  authenticity are orthogonal layers. */
+function signGezPayload(payload: GezPayload, signingKeyHex?: string): { finalPayload: GezPayload; json: string } {
+  let signature = '';
+  let signerPublicKey = '';
+
+  if (signingKeyHex) {
+    const secretKey = Buffer.from(signingKeyHex, 'hex');
+    if (secretKey.length === 64) {
+      signerPublicKey = Buffer.from(secretKey.subarray(32)).toString('base64');
+      const payloadForSigning = JSON.stringify({ ...payload, signature: '', signerPublicKey });
+      const payloadBytes = new TextEncoder().encode(payloadForSigning);
+      const sigBytes = sodium.crypto_sign_detached(payloadBytes, secretKey);
+      signature = Buffer.from(sigBytes).toString('base64');
+    }
+  }
+
+  const finalPayload: GezPayload = { ...payload, signature, signerPublicKey };
+  return { finalPayload, json: JSON.stringify(finalPayload) };
+}
 
 // ── buildGezPackage ───────────────────────────────────────────────────────────
 
@@ -113,24 +151,7 @@ const MAGIC = Buffer.from('GEZ1');
  * so recipients can verify without contacting the exporter.
  */
 export function buildGezPackage(payload: GezPayload, signingKeyHex?: string): Buffer {
-  let signature = '';
-  let signerPublicKey = '';
-
-  if (signingKeyHex) {
-    const secretKey = Buffer.from(signingKeyHex, 'hex');
-    if (secretKey.length === 64) {
-      // Extract public key from secret key (last 32 bytes in libsodium's combined format)
-      signerPublicKey = Buffer.from(secretKey.subarray(32)).toString('base64');
-
-      const payloadForSigning = JSON.stringify({ ...payload, signature: '', signerPublicKey });
-      const payloadBytes = new TextEncoder().encode(payloadForSigning);
-      const sigBytes = sodium.crypto_sign_detached(payloadBytes, secretKey);
-      signature = Buffer.from(sigBytes).toString('base64');
-    }
-  }
-
-  const finalPayload: GezPayload = { ...payload, signature, signerPublicKey };
-  const json = JSON.stringify(finalPayload);
+  const { json } = signGezPayload(payload, signingKeyHex);
 
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', GEZ_ENC_KEY, iv);
@@ -176,6 +197,78 @@ export function parseGezPackage(data: Buffer): GezPayload {
   } catch {
     throw new Error('GEZ payload is not valid JSON.');
   }
+}
+
+// ── v2: buildGezPackageV2 / parseGezPackageV2 ──────────────────────────────────
+
+/**
+ * Build a v2 `.gez` pack (`GEZ2` magic) with recipient-controlled confidentiality.
+ *
+ * The Ed25519 signature path is unchanged from v1. The payload JSON is encrypted
+ * under a per-pack random content key (CEK) that is itself wrapped per `encrypt`:
+ *   - omit `encrypt`            → encMode 'none' (v2 framing, treat as public)
+ *   - `{ passphrase }`          → Argon2id-derived CEK
+ *   - `{ recipientPubKeys }`    → CEK sealed to each X25519 recipient
+ */
+export async function buildGezPackageV2(
+  payload: GezPayload,
+  opts: { signingKeyHex?: string; encrypt?: EncryptForOption } = {},
+): Promise<Buffer> {
+  await sodium.ready;
+  const { json } = signGezPayload(payload, opts.signingKeyHex);
+  const body = await encodePackV2Body(json, GEZ_ENC_KEY, opts.encrypt);
+  return Buffer.concat([MAGIC_V2, body]);
+}
+
+/**
+ * Decrypt + parse a v2 `.gez` pack. Supply `passphrase` / `recipientSecretKeyB64`
+ * matching the pack's encMode. Returns the payload plus the detected encMode.
+ * Does NOT verify the Ed25519 signature — call `verifyGezSignature` separately.
+ */
+export async function parseGezPackageV2(
+  data: Buffer,
+  opts: DecryptOptions = {},
+): Promise<{ payload: GezPayload; encMode: EncMode }> {
+  await sodium.ready;
+  if (data.length < MAGIC_V2.length + 1 + 4) {
+    throw new Error('GEZ v2 data is too short to be a valid pack.');
+  }
+  if (!data.subarray(0, 4).equals(MAGIC_V2)) {
+    throw new Error('Not a valid GEZ v2 pack (bad magic bytes). Expected GEZ2 header.');
+  }
+  const { json, encMode } = await decodePackV2Body(data.subarray(4), GEZ_ENC_KEY, opts);
+  let payload: GezPayload;
+  try {
+    payload = JSON.parse(json) as GezPayload;
+  } catch {
+    throw new Error('GEZ v2 payload is not valid JSON.');
+  }
+  return { payload, encMode };
+}
+
+/**
+ * Magic-byte dispatcher: parse a `.gez` Buffer regardless of version.
+ *   - GEZ1 → v1 obfuscation path (no key needed; flagged encMode 'none').
+ *   - GEZ2 → v2 path (passphrase / recipientSecretKeyB64 from `opts` as needed).
+ * Returns the payload plus the encMode (v1 always reports 'none').
+ */
+export async function parseGezPackageAny(
+  data: Buffer,
+  opts: DecryptOptions = {},
+): Promise<{ payload: GezPayload; encMode: EncMode; version: 1 | 2 }> {
+  if (data.length >= 4 && data.subarray(0, 4).equals(MAGIC_V2)) {
+    const { payload, encMode } = await parseGezPackageV2(data, opts);
+    return { payload, encMode, version: 2 };
+  }
+  return { payload: parseGezPackage(data), encMode: 'none', version: 1 };
+}
+
+/** Read a `.gez` pack's encMode without decrypting (provenance display). */
+export function peekGezEncMode(data: Buffer): EncMode {
+  if (data.length >= 4 && data.subarray(0, 4).equals(MAGIC_V2)) {
+    return peekEncMode(data.subarray(4)) ?? 'none';
+  }
+  return 'none';
 }
 
 // ── verifyGezSignature ────────────────────────────────────────────────────────

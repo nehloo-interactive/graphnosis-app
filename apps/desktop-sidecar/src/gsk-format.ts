@@ -15,6 +15,14 @@
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import sodium from 'libsodium-wrappers-sumo';
+import {
+  encodePackV2Body,
+  decodePackV2Body,
+  peekEncMode,
+  type EncMode,
+  type EncryptForOption,
+  type DecryptOptions,
+} from './pack-crypto.js';
 
 // ── GSK format types ──────────────────────────────────────────────────────────
 
@@ -81,6 +89,10 @@ export interface GskPayload {
   tierRequired: 'free' | 'pro';
   /** When this pack is a semver bump of a prior official/community pack. */
   upstreamPackId?: string;
+  /** Upstream KIT lineage: the id of the upstream kit this pack derives from and
+   *  the pinned upstream version. Both-or-neither — see `validateGskLineage`. */
+  upstreamKitId?: string;
+  upstreamKitVersion?: string;
   skills: GskSkill[];
   /**
    * Full GRAPHNOSIS.md content to write into the user's project root.
@@ -119,6 +131,25 @@ const GSK_SIGNING_PUBLIC_KEY = new Uint8Array([
 
 // ── Wire format: [4-byte magic][12-byte IV][16-byte auth tag][N-byte ciphertext]
 const MAGIC = Buffer.from('GSK1');
+const MAGIC_V2 = Buffer.from('GSK2');
+
+/** Sign a GskPayload, returning the finalized payload + JSON string. The Ed25519
+ *  signature path is IDENTICAL for v1 and v2 — confidentiality and authenticity
+ *  are orthogonal layers. */
+function signGskPayload(payload: GskPayload, signingKeyHex?: string): { json: string } {
+  let signature = '';
+  if (signingKeyHex) {
+    const payloadForSigning = JSON.stringify({ ...payload, signature: '' });
+    const payloadBytes = new TextEncoder().encode(payloadForSigning);
+    const secretKey = Buffer.from(signingKeyHex, 'hex');
+    if (secretKey.length === 64) {
+      const sigBytes = sodium.crypto_sign_detached(payloadBytes, secretKey);
+      signature = Buffer.from(sigBytes).toString('base64');
+    }
+  }
+  const finalPayload: GskPayload = { ...payload, signature };
+  return { json: JSON.stringify(finalPayload) };
+}
 
 // ── Semver helpers ──────────────────────────────────────────────────────────
 
@@ -187,23 +218,37 @@ export function catalogVersionDrift(
  * recipes, graphnosisMd). It never sees personal memory engrams — the caller
  * is responsible for scoping the payload to Skills-engram data only.
  */
-export function buildGskPackage(payload: GskPayload, signingKeyHex?: string): Buffer {
-  // Sign if a secret key was provided
-  let signature = '';
-  if (signingKeyHex) {
-    const payloadForSigning = JSON.stringify({ ...payload, signature: '' });
-    const payloadBytes = new TextEncoder().encode(payloadForSigning);
-    const secretKey = Buffer.from(signingKeyHex, 'hex');
-    if (secretKey.length === 64) {
-      // libsodium must be ready — callers should ensure this is called
-      // only after LicenseValidator.create() has awaited sodium.ready.
-      const sigBytes = sodium.crypto_sign_detached(payloadBytes, secretKey);
-      signature = Buffer.from(sigBytes).toString('base64');
-    }
-  }
+/** True when `version` is valid 3-part semver (optional prerelease/build), e.g.
+ *  "1.0.0" or "2.1.0-beta.1". Rejects two-part ("2.0") and v-prefixed ("v2.0"). */
+export function isValidSemver(version: string): boolean {
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version.trim());
+}
 
-  const finalPayload: GskPayload = { ...payload, signature };
-  const json = JSON.stringify(finalPayload);
+/** Validate a pack's version + upstream-kit lineage header. Throws on a non-semver
+ *  version or an inconsistent upstream chain (a version without its id, or an id
+ *  without its version, or a non-semver upstream version). No-op when the pack
+ *  declares no upstream kit. */
+export function validateGskLineage(payload: GskPayload): void {
+  if (!isValidSemver(payload.version)) {
+    throw new Error(`Invalid pack version "${payload.version}": expected semver (e.g. 1.0.0).`);
+  }
+  const hasId = typeof payload.upstreamKitId === 'string' && payload.upstreamKitId.length > 0;
+  const hasVer = typeof payload.upstreamKitVersion === 'string' && payload.upstreamKitVersion.length > 0;
+  if (hasVer && !hasId) {
+    throw new Error('upstreamKitVersion set without upstreamKitId: an upstream version must name its upstreamKitId.');
+  }
+  if (hasId && !hasVer) {
+    throw new Error('upstreamKitId set without upstreamKitVersion: an upstream kit must pin its upstreamKitVersion.');
+  }
+  if (hasVer && !isValidSemver(payload.upstreamKitVersion!)) {
+    throw new Error(`Invalid upstreamKitVersion "${payload.upstreamKitVersion}": expected semver.`);
+  }
+}
+
+export function buildGskPackage(payload: GskPayload, signingKeyHex?: string): Buffer {
+  // libsodium must be ready — callers should ensure this is called
+  // only after LicenseValidator.create() has awaited sodium.ready.
+  const { json } = signGskPayload(payload, signingKeyHex);
 
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', GSK_ENC_KEY, iv);
@@ -249,6 +294,73 @@ export function parseGskPackage(data: Buffer): GskPayload {
   } catch {
     throw new Error('GSK payload is not valid JSON.');
   }
+}
+
+// ── v2: buildGskPackageV2 / parseGskPackageV2 ──────────────────────────────────
+
+/**
+ * Build a v2 `.gsk` pack (`GSK2` magic) with recipient-controlled confidentiality.
+ * Mirrors `buildGezPackageV2` — the Ed25519 signature path is unchanged; the
+ * payload is encrypted under a per-pack random CEK wrapped per `encrypt`.
+ * DEFAULT stays signed-public: pass `encrypt` only when confidentiality is wanted.
+ */
+export async function buildGskPackageV2(
+  payload: GskPayload,
+  opts: { signingKeyHex?: string; encrypt?: EncryptForOption } = {},
+): Promise<Buffer> {
+  await sodium.ready;
+  const { json } = signGskPayload(payload, opts.signingKeyHex);
+  const body = await encodePackV2Body(json, GSK_ENC_KEY, opts.encrypt);
+  return Buffer.concat([MAGIC_V2, body]);
+}
+
+/**
+ * Decrypt + parse a v2 `.gsk` pack. Supply `passphrase` / `recipientSecretKeyB64`
+ * matching the pack's encMode. Does NOT verify the Ed25519 signature.
+ */
+export async function parseGskPackageV2(
+  data: Buffer,
+  opts: DecryptOptions = {},
+): Promise<{ payload: GskPayload; encMode: EncMode }> {
+  await sodium.ready;
+  if (data.length < MAGIC_V2.length + 1 + 4) {
+    throw new Error('GSK v2 data is too short to be a valid pack.');
+  }
+  if (!data.subarray(0, 4).equals(MAGIC_V2)) {
+    throw new Error('Not a valid GSK v2 pack (bad magic bytes). Expected GSK2 header.');
+  }
+  const { json, encMode } = await decodePackV2Body(data.subarray(4), GSK_ENC_KEY, opts);
+  let payload: GskPayload;
+  try {
+    payload = JSON.parse(json) as GskPayload;
+  } catch {
+    throw new Error('GSK v2 payload is not valid JSON.');
+  }
+  return { payload, encMode };
+}
+
+/**
+ * Magic-byte dispatcher: parse a `.gsk` Buffer regardless of version.
+ *   - GSK1 → v1 obfuscation path (no key needed; flagged encMode 'none').
+ *   - GSK2 → v2 path (passphrase / recipientSecretKeyB64 from `opts` as needed).
+ */
+export async function parseGskPackageAny(
+  data: Buffer,
+  opts: DecryptOptions = {},
+): Promise<{ payload: GskPayload; encMode: EncMode; version: 1 | 2 }> {
+  if (data.length >= 4 && data.subarray(0, 4).equals(MAGIC_V2)) {
+    const { payload, encMode } = await parseGskPackageV2(data, opts);
+    return { payload, encMode, version: 2 };
+  }
+  return { payload: parseGskPackage(data), encMode: 'none', version: 1 };
+}
+
+/** Read a `.gsk` pack's encMode without decrypting (provenance display). */
+export function peekGskEncMode(data: Buffer): EncMode {
+  if (data.length >= 4 && data.subarray(0, 4).equals(MAGIC_V2)) {
+    return peekEncMode(data.subarray(4)) ?? 'none';
+  }
+  return 'none';
 }
 
 // ── verifyGskSignature ────────────────────────────────────────────────────────
