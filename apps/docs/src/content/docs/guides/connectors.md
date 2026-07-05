@@ -9,7 +9,7 @@ The first version of Graphnosis was a memory you talk to. The point of connector
 
 There are two families:
 
-- **Network connectors** (RSS, GitHub, Slack, Trello, Linear, Webhook) — reach out to a service on a schedule (or receive a push) using credentials you supply.
+- **Network connectors** (RSS, GitHub, Slack, Trello, Linear, X, Webhook) — reach out to a service on a schedule (or receive a push) using credentials you supply.
 - **Local-file connectors** (Obsidian, GBrain, AI Context Files) — watch a folder on your own disk and ingest new or changed files within seconds.
 
 All credentials and paths are stored locally, encrypted at rest in your cortex.
@@ -224,6 +224,44 @@ That's it. Linear's personal API keys are first-class — no OAuth dance, no app
 
 ---
 
+## X (formerly Twitter) — your bookmarks and posts
+
+**What it pulls (v1):** your own **bookmarks** and your own recent **posts** — nothing else. Uses X API v2 with OAuth 2.0 (Authorization Code + PKCE), so Graphnosis never sees your X password, only a scoped access token.
+
+**Setup time:** ~5 minutes, plus X's own API access approval. Similar in shape to the Slack connector, but with a real OAuth redirect instead of copy-pasting a token.
+
+**⚠️ Paid API tier required for most useful access.** X's free API tier is extremely limited (and has historically excluded write-adjacent read endpoints like bookmarks from free access entirely). To reliably pull bookmarks and posts you will very likely need at least the **Basic** paid tier on the [X Developer Portal](https://developer.x.com/en/portal/products). Check current pricing and endpoint access before setting this up — Graphnosis has no control over X's API tiers or pricing.
+
+### Step 1: create an X Developer app
+
+1. Go to **[developer.x.com/en/portal/dashboard](https://developer.x.com/en/portal/dashboard)** and create (or open) a Project + App.
+2. In the app's settings, open **User authentication settings** → **Set up**.
+3. **App permissions:** Read.
+4. **Type of App:** **Web App, Automated App or Bot** — this is the *confidential client* type, which is required because it issues a Client Secret (Graphnosis's OAuth flow needs one).
+5. **Callback URI / Redirect URL:** must **exactly** match Graphnosis's OAuth callback for this connector: `http://localhost:3458/oauth/<connector-id>/callback`, where `<connector-id>` is the slug you'll set for this connector in Graphnosis (default port 3458 — see your **Settings → Connectors** webhook port if you've changed it).
+6. **Website URL:** anything valid (e.g. `https://graphnosis.com`).
+7. Save, then open the **Keys and tokens** tab and copy the **OAuth 2.0 Client ID** and **Client Secret**.
+
+### Step 2: add the connector in Graphnosis
+
+1. **Settings → Connectors → X**
+2. Set the connector ID (or accept the auto-generated one) — this must match the callback URI you registered in Step 1
+3. Paste the Client ID + Client Secret
+4. Check the boxes for what to pull (bookmarks, own posts)
+5. Pick the target engram
+6. Click **Save**
+7. Re-open **Edit** on the connector row — a **Connect X account →** button now appears. Click it, approve access in the browser tab that opens, then return to Graphnosis.
+
+Graphnosis captures the resulting access + refresh tokens automatically via the OAuth callback — no copy-pasting a token like Trello.
+
+### Tips
+
+- **Access tokens expire; Graphnosis refreshes them automatically.** X issues short-lived access tokens plus a `refresh_token` (granted by the `offline.access` scope). The connector refreshes proactively before each pull and stores the rotated refresh token — no manual re-auth needed unless X revokes the grant.
+- **Bookmarks endpoint has no incremental filter.** X API v2's bookmarks endpoint doesn't support a `since`/`start_time` filter — each pull re-fetches your most recent bookmarks (one page); already-ingested ones dedupe by their tweet ID, so re-pulls are cheap no-ops.
+- **What's deliberately NOT included in v1:** mentions, your home/search timeline, trending topics, Articles (X's long-form format), and DMs. These may come in a follow-up if there's demand — bookmarks + own posts covers the highest-signal "things I decided were worth keeping" use case for now.
+
+---
+
 ## Local-file connectors — watch a folder
 
 The next three connectors don't reach out to any service. They watch a folder on your own disk and ingest files as they appear or change — no credentials, no network. They share one behavior worth understanding up front:
@@ -377,6 +415,7 @@ If one of these is the connector you most want, let us know — demand shapes th
 
 **"auth expired" status on a connector**
 - GitHub PATs, Slack tokens, Trello tokens, and Linear keys all have expiration / rotation policies. When yours expires, the service returns 401 and the connector surfaces "auth expired." Re-generate in the service, paste the new value via **Edit** on the connector row, save.
+- X access tokens are short-lived by design, but the connector refreshes them automatically using the stored refresh token before every pull — you shouldn't need to manually re-auth. If you *do* see "auth expired" on the X connector, it means X revoked the refresh token (e.g. you revoked app access in your X account settings, or the app's OAuth config changed) — click **Connect X account →** again in Edit to re-authorize.
 
 **Connector shows "error" with cryptic message**
 - The error message comes verbatim from the service's API. Common cases:
@@ -384,6 +423,7 @@ If one of these is the connector you most want, let us know — demand shapes th
   - Slack: `not_authed` means the token is wrong; `missing_scope` means you didn't grant the scope at app install (re-install the app with new scopes).
   - Trello: `invalid token` means the personal token was revoked; regenerate.
   - Linear: `Authentication failed` means the API key is wrong or rotated.
+  - X: a `403`/`401` on bookmarks or posts most often means your API access tier doesn't include that endpoint — check your plan at developer.x.com/portal/products.
 
 **Pulls happen but events don't show up in the engram**
 - Check the **target engram** dropdown in the connector's row — events go to the engram set at install time. Connectors automatically skip archived engrams; if the target engram is archived, re-activate it or edit the connector to point to a different engram.

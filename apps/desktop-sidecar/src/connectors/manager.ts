@@ -14,6 +14,7 @@ import { GitHubConnector } from './github.js';
 import { SlackConnector } from './slack.js';
 import { TrelloConnector } from './trello.js';
 import { LinearConnector } from './linear.js';
+import { XConnector } from './x.js';
 import { ObsidianConnector } from './obsidian.js';
 import { GBrainConnector } from './gbrain.js';
 import { AiContextConnector } from './ai-context.js';
@@ -879,6 +880,7 @@ function buildConnector(cfg: ConnectorConfig): Connector {
     case 'slack':   return new SlackConnector(cfg);
     case 'trello':   return new TrelloConnector(cfg);
     case 'linear':   return new LinearConnector(cfg);
+    case 'x':        return new XConnector(cfg);
     case 'obsidian': return new ObsidianConnector(cfg);
     case 'gbrain':      return new GBrainConnector(cfg);
     case 'ai-context':  return new AiContextConnector(cfg);

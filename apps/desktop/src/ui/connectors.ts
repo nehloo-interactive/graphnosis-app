@@ -43,11 +43,13 @@ const CONNECTOR_KIND_LABEL: Record<ConnectorKind, string> = {
   rss: 'RSS', github: 'GitHub', slack: 'Slack',
   trello: 'Trello', linear: 'Linear', webhook: 'Webhook',
   obsidian: 'Obsidian', gbrain: 'GBrain', 'ai-context': 'AI Context Files',
+  x: 'X',
 };
 const CONNECTOR_KIND_GLYPH: Record<ConnectorKind, string> = {
   rss: '📰', github: '🐙', slack: '💬',
   trello: '📋', linear: '📐', webhook: '🪝',
   obsidian: '🔮', gbrain: '🧠', 'ai-context': '📎',
+  x: '𝕏',
 };
 
 /** Paint the configured-connector instances onto the Get Connected page
@@ -388,6 +390,23 @@ export function openConnectorSetupModal(kind: ConnectorKind, existing?: Connecto
     const inp = document.getElementById('connector-gbrain-repo') as HTMLInputElement | null;
     if (inp && picked[0]) inp.value = picked[0];
   });
+  document.getElementById('connector-x-connect')?.addEventListener('click', async () => {
+    if (!existing?.id) return; // button is only rendered when `existing` is set
+    const btn = document.getElementById('connector-x-connect') as HTMLButtonElement | null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }
+    try {
+      const res = await invokeRetry<{ url: string; note?: string }>('get_connector_auth_url', { id: existing.id });
+      if (IS_TAURI) await invoke('plugin:opener|open_url', { url: res.url });
+      else window.open(res.url, '_blank', 'noopener,noreferrer');
+      const tid = app().addIngestToast('X authorization opened', res.note ?? 'Approve in your browser, then return here.');
+      app().finishIngestToast(tid, 'success', res.note ?? 'Approve in your browser, then return here.');
+    } catch (e) {
+      const tid = app().addIngestToast('Could not start X OAuth', String(e));
+      app().finishIngestToast(tid, 'error', String(e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Connect X account →'; }
+    }
+  });
   modal.classList.remove('hidden');
   // This modal lives OUTSIDE <main>, so the page-level Presentation masking +
   // MutationObserver never reach it. Mask it explicitly so the Target Engram
@@ -473,6 +492,7 @@ function connectorSubtitleFor(kind: ConnectorKind): string {
     case 'obsidian': return 'Auto-ingest notes from your local Obsidian vault. No API key needed.';
     case 'gbrain': return 'Auto-ingest notes from your local GBrain repo. No API key needed.';
     case 'ai-context': return 'Index CLAUDE.md, AGENTS.md, .cursorrules and other AI context files from your projects.';
+    case 'x': return 'Pull your own bookmarks and recent posts from X. Requires a paid X API tier.';
   }
 }
 
@@ -481,7 +501,7 @@ function connectorSubtitleFor(kind: ConnectorKind): string {
 const CONNECTOR_SUGGEST_BASE: Record<ConnectorKind, string> = {
   rss: 'RSS Feeds', github: 'GitHub', slack: 'Slack', trello: 'Trello',
   linear: 'Linear', obsidian: 'Obsidian Notes', gbrain: 'GBrain Notes',
-  'ai-context': 'AI Context', webhook: 'Webhook Inbox',
+  'ai-context': 'AI Context', webhook: 'Webhook Inbox', x: 'X',
 };
 
 /** A slug like "obsidian-7f3a" — relevant + unlikely to collide. */
@@ -759,6 +779,54 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
         </div>
         ${mirrorDeletesField}`;
       break;
+    case 'x': {
+      const authUrlNote = existing
+        ? `<div class="connector-help connector-help-accent">
+            🔑 Client ID/Secret saved. Click <strong>Connect X account</strong> below to authorize via OAuth 2.0 — Graphnosis captures the token automatically via the callback.
+          </div>
+          <div class="connector-field">
+            <button type="button" id="connector-x-connect" class="btn-secondary">Connect X account →</button>
+            <span class="field-hint">Opens X's authorization page in your browser. After you approve, come back here — this modal can be closed once it says "authentication complete."</span>
+          </div>`
+        : `<div class="connector-help connector-help-accent">
+            🔑 Save this form first (Client ID + Secret) — then re-open Edit on this connector to see the <strong>Connect X account</strong> button.
+          </div>`;
+      html = `
+        <div class="connector-help">
+          <strong>Bring your own X Developer app.</strong>
+          <ol>
+            <li><a href="#" data-extlink="https://developer.x.com/en/portal/dashboard">Open developer.x.com/portal →</a> and create (or pick) a Project + App.</li>
+            <li>App settings → <strong>User authentication settings</strong> → <strong>Set up</strong>.</li>
+            <li>Type of App: <strong>Web App, Automated App or Bot</strong> (confidential client — issues a Client Secret).</li>
+            <li>App permissions: <strong>Read</strong>. OAuth 2.0: enabled.</li>
+            <li><strong>Callback URI / Redirect URL</strong>: must exactly match Graphnosis's OAuth callback — <code>http://localhost:3458/oauth/&lt;connector-id&gt;/callback</code> (use the connector ID you set below; default webhook port is 3458).</li>
+            <li>Keys and tokens tab → copy the <strong>OAuth 2.0 Client ID</strong> and <strong>Client Secret</strong>.</li>
+          </ol>
+          <strong>Most useful endpoints (bookmarks, posts) require a paid X API tier</strong> — the free tier is very limited. Check <a href="#" data-extlink="https://developer.x.com/en/portal/products">developer.x.com/portal/products →</a> before relying on this connector.
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field-row">
+          <div class="connector-field">
+            <label for="connector-x-client-id">OAuth 2.0 Client ID</label>
+            <input type="password" id="connector-x-client-id" value="${escapeHtml(creds['clientId'] ?? '')}" />
+          </div>
+          <div class="connector-field">
+            <label for="connector-x-client-secret">Client Secret</label>
+            <input type="password" id="connector-x-client-secret" value="${escapeHtml(creds['clientSecret'] ?? '')}" />
+          </div>
+        </div>
+        ${authUrlNote}
+        <div class="connector-field">
+          <label>What to pull</label>
+          <div class="connector-checkboxes">
+            <label><input type="checkbox" id="connector-x-bookmarks" ${((opts['includeBookmarks'] as boolean) ?? true) ? 'checked' : ''} /> Your bookmarks</label>
+            <label><input type="checkbox" id="connector-x-posts" ${((opts['includeOwnPosts'] as boolean) ?? true) ? 'checked' : ''} /> Your recent posts</label>
+          </div>
+          <span class="field-hint">v1 covers your own bookmarks + own posts only. Mentions, timelines, trends, Articles, and DMs are not ingested yet.</span>
+        </div>`;
+      break;
+    }
     case 'webhook': {
       const token = (opts['webhookToken'] as string) || '<generated on save>';
       const url = `http://localhost:3458/webhook/${existing?.id ?? '<id>'}/${token}`;
@@ -881,6 +949,16 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
         .split('\n').map((s) => s.trim()).filter(Boolean);
       options['paths'] = paths;
       options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
+      break;
+    }
+    case 'x': {
+      const clientId = $m<HTMLInputElement>('connector-x-client-id')?.value || '';
+      const clientSecret = $m<HTMLInputElement>('connector-x-client-secret')?.value || '';
+      if (!clientId || !clientSecret) { alert('X Client ID + Client Secret are both required.'); return null; }
+      credentials['clientId'] = clientId;
+      credentials['clientSecret'] = clientSecret;
+      options['includeBookmarks'] = $m<HTMLInputElement>('connector-x-bookmarks')?.checked ?? true;
+      options['includeOwnPosts'] = $m<HTMLInputElement>('connector-x-posts')?.checked ?? true;
       break;
     }
     case 'webhook': {
