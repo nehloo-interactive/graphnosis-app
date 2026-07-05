@@ -101,6 +101,14 @@ test.yml
 # patches the public key into gsk-format.ts. Never shipped.
 scripts/gen-gsk-keypair.mjs
 
+# Local pack-build tooling: builds the public trained-skills .gsk pack from a
+# local skills.json, and checks whether GSK_SIGNING_KEY_HEX is the official
+# key (MATCH/NO-MATCH; never prints the key). Not shipped — the pack is built
+# + signed locally, then committed to the separate graphnosis-trained-skills
+# repo, not this one.
+apps/desktop-sidecar/scripts/build-trained-skills.mjs
+apps/desktop-sidecar/scripts/check-gsk-key.mjs
+
 
 # Author-side skill pack catalog (95+3 demos, all original prose). Stays
 # local — the public-facing 95 packs ship as compiled .gsk files via the
