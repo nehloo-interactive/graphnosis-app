@@ -49,6 +49,9 @@ import {
   initSkillRunsActivity, refreshSkillRunsSegment,
 } from './ui/skill-runs-activity';
 import {
+  initUnattendedRuns, refreshUnattendedSegment, onUnattendedRunEvent,
+} from './ui/unattended-runs';
+import {
   initConnectors, refreshConnectorsList, openConnectorSetupModal,
   installedConnectorKinds, connectorPullingGraphIds, lastConnectorList, updateConnectorPullSnapshot,
   type ConnectorKind, type ConnectorConfigShape, type ConnectorStatus,
@@ -113,6 +116,7 @@ import {
   showSkillsToast,
   type SkillListEntry,
 } from './ui/skills';
+import { renderAgentsView } from './ui/agents';
 import { renderSettingsGraphsList } from './ui/settings-graphs';
 import {
   refreshComplianceSettingsPanel,
@@ -894,6 +898,10 @@ const els = {
   skillRunsToolbar: $<HTMLElement>('skill-runs-toolbar'),
   skillRunsList: $<HTMLDivElement>('skill-runs-list'),
   skillRunsStats: $<HTMLSpanElement>('skill-runs-stats'),
+  unattendedToolbar: $<HTMLElement>('unattended-toolbar'),
+  unattendedBanner: $<HTMLDivElement>('unattended-banner'),
+  unattendedList: $<HTMLDivElement>('unattended-list'),
+  unattendedStats: $<HTMLSpanElement>('unattended-stats'),
   // Snapshot offer (pre-ingest prompt)
   snapshotOfferModal: $<HTMLDivElement>('snapshot-offer-modal'),
   snapshotOfferNote: $<HTMLSpanElement>('snapshot-offer-note'),
@@ -2573,6 +2581,8 @@ const GC_RECIPES: GcRecipe[] = [
     desc: 'Pull cards from your Trello boards on a schedule.', run: () => openConnectorSetupModal('trello') },
   { id: 'linear', icon: '📐', title: 'Linear', tags: 'linear issues tickets project tracker online',
     desc: 'Ingest issues from your Linear workspace on a schedule.', run: () => openConnectorSetupModal('linear') },
+  { id: 'x', icon: '𝕏', title: 'X (formerly Twitter)', tags: 'x twitter bookmarks posts tweets oauth online',
+    desc: 'Pull your own bookmarks and recent posts via X API v2 OAuth 2.0. Requires a paid X API tier.', run: () => openConnectorSetupModal('x') },
 
   // ── Online sources via a no-code bridge (Zapier / IFTTT / Make → Webhook).
   //    Zero backend: the bridge POSTs to your local webhook. ──
@@ -2588,8 +2598,8 @@ const GC_RECIPES: GcRecipe[] = [
     desc: 'Saved messages or channel posts → via Zapier/IFTTT → your webhook.', run: () => openConnectorSetupModal('webhook') },
   { id: 'reddit', icon: '👽', title: 'Reddit', tags: 'reddit saved posts subreddit online ifttt',
     desc: 'Saved posts or a subreddit feed → via IFTTT/Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
-  { id: 'social', icon: '🐦', title: 'X / Bluesky', tags: 'twitter x bluesky social posts bookmarks online ifttt zapier',
-    desc: 'Your posts, likes, or bookmarks → via IFTTT/Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'social', icon: '🦋', title: 'Bluesky & other socials', tags: 'bluesky mastodon social posts bookmarks online ifttt zapier',
+    desc: 'Your posts, likes, or bookmarks → via IFTTT/Zapier → your webhook. (X has a native connector above.)', run: () => openConnectorSetupModal('webhook') },
   { id: 'youtube', icon: '▶️', title: 'YouTube', tags: 'youtube video uploads likes watch later online ifttt',
     desc: 'New uploads from a channel, or your likes → via IFTTT/Zapier → your webhook (titles + descriptions).', run: () => openConnectorSetupModal('webhook') },
   { id: 'tasks', icon: '✅', title: 'Todoist / Asana', tags: 'todoist asana tasks projects online zapier',
@@ -3065,6 +3075,7 @@ type Mode =
   | 'engram'       // 3D Engram (the atlas sub-tab)
   | 'goals'        // Foresight — goals + predict + insights + GNN/GLL/Local-LLM (the brain sub-tab)
   | 'skills'       // Skills library/trainer (a studio tool inside checkin)
+  | 'agents'       // Agents/Agempi roster — read-only domain-agent view (feature #41)
   | 'search'       // Dedicated memory-search page (checkin sub-mode, body.search-mode)
   | 'power-tools'  // Manual recall/remember/edit/GNN page (checkin sub-mode, body.powertools-mode)
   | 'sources'
@@ -3087,7 +3098,7 @@ type Mode =
 //   - Brand-new cortexes with no preference → 'atlas' (Your Cortex is the
 //     primary surface; Ghampus is the AI assistant, not the landing page).
 const LANDING_MODE_STORAGE_KEY = 'graphnosis.landingMode';
-const VALID_LANDING_MODES: Mode[] = ['ghampus', 'atlas', 'engram', 'goals', 'skills', 'sources', 'activity', 'get-connected', 'power-tools', 'mcp-tools'];
+const VALID_LANDING_MODES: Mode[] = ['ghampus', 'atlas', 'engram', 'goals', 'skills', 'agents', 'sources', 'activity', 'get-connected', 'power-tools', 'mcp-tools'];
 function resolveLandingMode(raw: string | null | undefined): Mode {
   return raw && (VALID_LANDING_MODES as string[]).includes(raw) ? (raw as Mode) : 'atlas';
 }
@@ -3124,7 +3135,7 @@ function isAtlasPaneMode(mode: Mode = currentMode): boolean {
   return paneForMode(mode) === 'atlas';
 }
 
-type ActivitySegment = 'memory' | 'mcp' | 'skill-runs';
+type ActivitySegment = 'memory' | 'mcp' | 'skill-runs' | 'unattended';
 let activitySegment: ActivitySegment = 'memory';
 
 function applyActivitySegment(seg: ActivitySegment): void {
@@ -3132,9 +3143,11 @@ function applyActivitySegment(seg: ActivitySegment): void {
   els.activityMemoryToolbar.classList.toggle('hidden', seg !== 'memory');
   els.activityMcpToolbar.classList.toggle('hidden', seg !== 'mcp');
   els.skillRunsToolbar.classList.toggle('hidden', seg !== 'skill-runs');
+  els.unattendedToolbar.classList.toggle('hidden', seg !== 'unattended');
   els.activityList.classList.toggle('hidden', seg !== 'memory');
   els.mcpActivityList.classList.toggle('hidden', seg !== 'mcp');
   els.skillRunsList.classList.toggle('hidden', seg !== 'skill-runs');
+  els.unattendedList.classList.toggle('hidden', seg !== 'unattended');
   document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {
     const active = btn.dataset.activitySegment === seg;
     btn.classList.toggle('active', active);
@@ -3145,7 +3158,8 @@ function applyActivitySegment(seg: ActivitySegment): void {
 function refreshActiveActivitySegment(): void {
   if (activitySegment === 'memory') void refreshActivityView();
   else if (activitySegment === 'mcp') void refreshMcpActivitySegment();
-  else void refreshSkillRunsSegment();
+  else if (activitySegment === 'skill-runs') void refreshSkillRunsSegment();
+  else void refreshUnattendedSegment();
 }
 
 function activateMode(mode: Mode): void {
@@ -3261,6 +3275,13 @@ function activateMode(mode: Mode): void {
     refreshActiveActivitySegment();
     void refreshAiActivityRollup();
     void refreshActivityCompliancePanel();
+  }
+  if (mode === 'agents') {
+    // Agents/Agempi roster (read-only). Batched fetch on each entry; the
+    // autonomy + vitality caches are reused across entries (renderAgentsView
+    // re-fetches only the list + call graph). Scroll to top on entry.
+    void renderAgentsView();
+    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
   if (mode === 'presentation') {
     renderPresentationPane();
@@ -8651,6 +8672,19 @@ const homeDigestSinceAnchor: number = (() => {
 const HOME_ACTIVITY_IPC_TIMEOUT_MS = 60_000;
 const HOME_ACTIVITY_TRANSIENT_RE =
   /connect to sidecar|ECONNREFUSED|ENOENT.*sock|cortex is locked|not running|timed out|did not respond/i;
+const HOME_OPLOG_BACKOFF_MS = 60_000;
+let homeOplogBackoffUntil = 0;
+
+function isHomeOplogBackoff(): boolean {
+  return Date.now() < homeOplogBackoffUntil;
+}
+
+function noteHomeOplogEnomem(e: unknown): void {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/ENOMEM|not enough memory/i.test(msg)) {
+    homeOplogBackoffUntil = Date.now() + HOME_OPLOG_BACKOFF_MS;
+  }
+}
 
 /** Serialize Home digest activity.list — parallel digest+growth doubled cold op-log I/O
  *  and the second call often hit the 25s client timeout while queued behind the first.
@@ -8700,7 +8734,8 @@ async function refreshHomeDigest(): Promise<void> {
     try {
       const r = await homeActivityList<{ events: OpLogEvent[] }>({ since: anchor, limit: 5000 });
       since = r.events ?? [];
-    } catch {
+    } catch (e) {
+      noteHomeOplogEnomem(e);
       card.style.display = '';
       body.innerHTML = homeCardEmptyHtml('Couldn’t load recent activity right now.', { retry: () => scheduleHomeDataLoad() });
       wireHomeCardRetry(body, () => scheduleHomeDataLoad());
@@ -9024,7 +9059,8 @@ async function refreshHomeGrowth(): Promise<void> {
       { days: HOME_GROWTH_DAYS },
       HOME_GROWTH_IPC_TIMEOUT_MS,
     );
-  } catch {
+  } catch (e) {
+    noteHomeOplogEnomem(e);
     if (cached) return; // keep stale cache visible
     card.style.display = '';
     body.innerHTML = homeCardEmptyHtml('Couldn’t load growth right now.', { retry: () => kickSingleHomeAsyncCard('home-growth') });
@@ -9350,6 +9386,7 @@ const HOME_ASYNC_CARD_LOADERS: Record<(typeof HOME_ASYNC_CARD_IDS)[number], () =
 /** Self-contained IPC + render for one async Home card (mirrors kickHomeBrainCardLoads). */
 function kickSingleHomeAsyncCard(id: (typeof HOME_ASYNC_CARD_IDS)[number]): void {
   if (homeAsyncCardInFlight.has(id)) return;
+  if ((id === 'home-digest' || id === 'home-growth') && isHomeOplogBackoff()) return;
   const gen = ++homeAsyncCardGen[id];
   const fn = HOME_ASYNC_CARD_LOADERS[id];
   homeAsyncCardInFlight.add(id);
@@ -22776,6 +22813,16 @@ initMcpActivity({
 initSkillRunsActivity({
   skillRunsList: els.skillRunsList,
   skillRunsStats: els.skillRunsStats,
+});
+initUnattendedRuns({
+  unattendedList: els.unattendedList,
+  unattendedBanner: els.unattendedBanner,
+  unattendedStats: els.unattendedStats,
+});
+// Live-update the unattended pane when the executor broadcasts a run, but only
+// while the user is actually looking at that segment (avoid background churn).
+void listen('graphnosis://unattended-run', () => {
+  if (activitySegment === 'unattended') onUnattendedRunEvent();
 });
 
 document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {

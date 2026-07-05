@@ -1070,7 +1070,7 @@ export async function refreshGhampusSharingPanel(): Promise<void> {
 
 type GhampusChatMessage =
   | { kind: 'user'; text: string; ts: number; turnId?: string }
-  | { kind: 'ghampus'; text: string; ts: number; turnId?: string; trace?: GhampusTurnTrace }
+  | { kind: 'ghampus'; text: string; ts: number; turnId?: string; trace?: GhampusTurnTrace; handledBy?: HandledByChip }
   | { kind: 'skill-match'; skill: SkillMatchPayload; ts: number }
   | { kind: 'walk-plan'; plan: WalkPlan; ts: number }
   | { kind: 'walk-progress'; steps: WalkStep[]; ts: number }
@@ -1091,6 +1091,17 @@ interface RecoveryNudgePayload {
   displayName: string;
   title: string;
   text: string;
+}
+
+/** "Handled by {Agempus}" routing chip (feature #41). Names the domain Agempus
+ *  (engram) + skill that handled a dispatched turn. Descriptive only — no
+ *  re-dispatch action. Optional/additive: absent on non-dispatched turns and
+ *  on pre-feature history (the normalizer carries it through when present). */
+interface HandledByChip {
+  engramName: string;
+  engramId: string;
+  skillLabel: string;
+  skillSlug: string;
 }
 
 interface SkillPreviewImproveCardPayload {
@@ -1698,11 +1709,18 @@ function renderChatMessage(msg: GhampusChatMessage): string {
       const msgId = String(msg.turnId ?? msg.ts);
       const traceMeta = msg.trace ? renderTraceMetaSummary(msg.trace) : '';
       const traceSteps = msg.trace ? renderTraceStepsOnly(msg.trace) : '';
+      // Routing-legibility chip — only when this turn was dispatched to a
+      // domain Agempus's skill. Descriptive (no re-dispatch action); clicking
+      // deep-links to the Agents roster scrolled to that Agempus card.
+      const handledByChip = msg.handledBy
+        ? `<span class="ghampus-handled-by-chip" data-handled-by-engram="${escapeHtml(msg.handledBy.engramId)}" title="Routed to the ${escapeHtml(msg.handledBy.engramName)} Agempus — open the Agents roster"${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>Handled by <strong${presSurfaceAttr(PRES_GHAMPUS_CHAT)}>${escapeHtml(msg.handledBy.engramName)}</strong> · ${escapeHtml(msg.handledBy.skillLabel)}</span>`
+        : '';
       return `<div class="chat-msg ghampus"${turnAttr} data-msg-id="${escapeHtml(msgId)}">
         <div class="chat-msg-avatar">
           <img src="/graphnosis-logo-transparent-bg.png" alt="" />
         </div>
         <div class="chat-msg-wrap">
+          ${handledByChip}
           <div class="chat-msg-bubble chat-msg-bubble--markdown">${app().renderMarkdownLite(msg.text)}</div>
           <div class="chat-msg-meta">
             <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
@@ -3513,6 +3531,13 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
     });
   });
 
+  // "Handled by {Agempus}" chip — descriptive routing chip; clicking deep-links
+  // to the Agents roster. No re-dispatch action.
+  node.querySelector<HTMLElement>('.ghampus-handled-by-chip')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    app().activateMode('agents');
+  });
+
   if (msg.kind === 'skill-match') {
     node.querySelector<HTMLButtonElement>('.btn-skill-run')?.addEventListener('click', (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
@@ -4159,9 +4184,28 @@ function ghampusRecommendedPullTag(catalog?: Array<{ model: string; recommended?
   return short ? short[1] : rec.model;
 }
 
+/**
+ * Detect the host OS from the renderer alone — fully local, no network and no
+ * IPC round-trip. Used only to pick OS-appropriate Ollama install/start steps
+ * so the proactive setup card never tells a Windows or Linux user to `brew`.
+ */
+function ghampusHostOS(): 'mac' | 'windows' | 'linux' | 'unknown' {
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const hint = (nav.userAgentData?.platform || nav.platform || nav.userAgent || '').toLowerCase();
+  if (hint.includes('mac') || hint.includes('darwin')) return 'mac';
+  if (hint.includes('win')) return 'windows';
+  if (hint.includes('linux') || hint.includes('x11') || hint.includes('ubuntu') || hint.includes('fedora')) return 'linux';
+  return 'unknown';
+}
+
+function ghampusHostOSLabel(os: ReturnType<typeof ghampusHostOS>): string {
+  return os === 'mac' ? 'Mac' : os === 'windows' ? 'PC' : os === 'linux' ? 'Linux machine' : 'machine';
+}
+
 function ghampusLlmSetupIntro(status: GhampusLlmStatus): string {
   if (!status.ollamaReachable) {
-    return 'Ghampus chat needs Ollama running on your Mac. Embeddings and recall work without it; synthesis does not.';
+    return `Ghampus chat needs Ollama running on your ${ghampusHostOSLabel(ghampusHostOS())}. `
+      + 'Embeddings and recall work without it; synthesis does not.';
   }
   if (status.installedModels.length === 0) {
     return 'Ollama is connected — pull a recommended model, then enable the local LLM in Graphnosis.';
@@ -4172,13 +4216,38 @@ function ghampusLlmSetupIntro(status: GhampusLlmStatus): string {
 function ghampusLlmSetupSteps(status: GhampusLlmStatus, pullTag: string): string {
   const steps: string[] = [];
   if (!status.ollamaReachable) {
-    steps.push(
-      `<li><strong>Install Ollama.</strong> Download from `
-      + `<a href="#" id="btn-ghampus-llm-ollama-site">ollama.com</a> or run `
-      + `<code class="ghampus-llm-setup-cmd">brew install ollama</code> in Terminal.</li>`,
-      `<li><strong>Start Ollama.</strong> Open the Ollama app once (menu-bar icon on macOS), `
-      + `or run <code class="ghampus-llm-setup-cmd">ollama serve</code> if you prefer Terminal.</li>`,
-    );
+    const os = ghampusHostOS();
+    const site = `<a href="#" id="btn-ghampus-llm-ollama-site">ollama.com</a>`;
+    if (os === 'mac') {
+      steps.push(
+        `<li><strong>Install Ollama.</strong> Download from ${site} or run `
+        + `<code class="ghampus-llm-setup-cmd">brew install ollama</code> in Terminal.</li>`,
+        `<li><strong>Start Ollama.</strong> Open the Ollama app once (menu-bar icon), `
+        + `or run <code class="ghampus-llm-setup-cmd">ollama serve</code> if you prefer Terminal.</li>`,
+      );
+    } else if (os === 'windows') {
+      steps.push(
+        `<li><strong>Install Ollama.</strong> Download the Windows installer from ${site} `
+        + `(or run <code class="ghampus-llm-setup-cmd">winget install Ollama.Ollama</code>) and run it.</li>`,
+        `<li><strong>Start Ollama.</strong> Launch Ollama from the Start menu — it runs in the system tray — `
+        + `or run <code class="ghampus-llm-setup-cmd">ollama serve</code> in a terminal.</li>`,
+      );
+    } else if (os === 'linux') {
+      steps.push(
+        `<li><strong>Install Ollama.</strong> Run `
+        + `<code class="ghampus-llm-setup-cmd">curl -fsSL https://ollama.com/install.sh | sh</code>, `
+        + `or see ${site} for manual packages.</li>`,
+        `<li><strong>Start Ollama.</strong> Run `
+        + `<code class="ghampus-llm-setup-cmd">ollama serve</code> `
+        + `(or <code class="ghampus-llm-setup-cmd">systemctl start ollama</code> if installed as a service).</li>`,
+      );
+    } else {
+      steps.push(
+        `<li><strong>Install Ollama.</strong> Download from ${site} — builds for macOS, Windows, and Linux.</li>`,
+        `<li><strong>Start Ollama.</strong> Launch the Ollama app, or run `
+        + `<code class="ghampus-llm-setup-cmd">ollama serve</code> in a terminal.</li>`,
+      );
+    }
   }
   if (!status.ollamaReachable || status.installedModels.length === 0) {
     steps.push(

@@ -5774,6 +5774,235 @@
       .skill-engram-group-children { display: none; padding: 6px 0 2px 6px; }
       .skill-engram-group.expanded > .skill-engram-group-children { display: block; }
 
+      /* ── Agempus framing (engram-as-agent) ──────────────────────────────
+         Every skill-template engram in this library IS an Agempus (a domain
+         agent). The badge marks it as such (accent color, reserved — memory
+         engrams never get it); the autonomy dial below reflects/sets its
+         per-engram executionAutonomyLevel. */
+      .agempus-badge {
+        font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+        text-transform: uppercase; line-height: 1;
+        color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 38%, transparent);
+        padding: 2px 6px; border-radius: 5px; white-space: nowrap;
+      }
+      .agempus-dial {
+        display: none;
+        align-items: center; flex-wrap: wrap; gap: 8px;
+        padding: 7px 8px 4px 22px; font-size: 11px; color: var(--fg-dim);
+      }
+      .skill-engram-group.expanded > .agempus-dial { display: flex; }
+      .agempus-dial-label { font-weight: 600; color: var(--fg); }
+      .agempus-dial-track {
+        display: inline-flex; border: 1px solid var(--border);
+        border-radius: 6px; overflow: hidden;
+      }
+      .agempus-dial-seg {
+        appearance: none; border: 0; cursor: pointer;
+        background: var(--bg-elev); color: var(--fg-dim);
+        font-size: 11px; font-weight: 600; padding: 3px 9px;
+        border-right: 1px solid var(--border);
+      }
+      .agempus-dial-seg:last-child { border-right: 0; }
+      .agempus-dial-seg:not(:disabled):hover {
+        background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev));
+        color: var(--fg);
+      }
+      .agempus-dial-seg.active {
+        background: color-mix(in oklab, var(--accent) 72%, white);
+        color: white;
+      }
+      :root:not([data-theme="light"]) .agempus-dial-seg.active { color: #000; }
+      .agempus-dial-seg:disabled { cursor: not-allowed; opacity: 0.5; }
+      .agempus-dial-note {
+        flex-basis: 100%; font-size: 10px; color: var(--fg-dim);
+        line-height: 1.4; opacity: 0.85;
+      }
+
+      /* ── Agents / Agempi roster (data-pane="agents", feature #41) ────────── */
+      .mode-pane[data-pane="agents"] { padding-bottom: 40px; }
+      #agents-list { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+      .agents-empty { padding: 24px; text-align: center; color: var(--fg-dim); }
+      .agents-card {
+        border: 1px solid var(--border); border-radius: 8px;
+        background: var(--bg-elev); overflow: hidden;
+      }
+      .agents-card-header {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px;
+      }
+      .agents-card-toggle {
+        appearance: none; border: 0; background: transparent; cursor: pointer;
+        display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+        color: var(--fg); font: inherit; text-align: left; padding: 0;
+      }
+      .agents-card-arrow {
+        font-size: 10px; color: var(--fg-dim); transition: transform .15s ease;
+      }
+      .agents-card.expanded .agents-card-arrow { transform: rotate(90deg); }
+      .agents-card-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .agents-card-count { font-size: 11px; color: var(--fg-dim); }
+      .agents-rollup {
+        font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px;
+        white-space: nowrap; background: color-mix(in oklab, var(--fg) 8%, transparent);
+        color: var(--fg-dim);
+      }
+      .agents-rollup-pending { opacity: 0.6; }
+      .agents-vitality-grade--a { background: rgba(34,197,94,.14); color: #16a34a; }
+      .agents-vitality-grade--b { background: rgba(132,204,22,.14); color: #65a30d; }
+      .agents-vitality-grade--c { background: rgba(245,158,11,.14); color: #d97706; }
+      .agents-vitality-grade--d { background: rgba(239,68,68,.14); color: #dc2626; }
+      .agents-card-body {
+        border-top: 1px solid var(--border);
+        padding: 8px 12px 14px; display: flex; flex-direction: column; gap: 14px;
+      }
+      .agents-card-body[hidden] { display: none; }
+      /* In the Agents roster the family dial is always visible (the Skills page
+         only shows it on group-expand via .skill-engram-group.expanded). */
+      .agents-card-dial .agempus-dial { display: flex; padding-left: 0; }
+      .agents-region { display: flex; flex-direction: column; gap: 6px; }
+      .agents-region-title {
+        margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+        text-transform: uppercase; color: var(--fg-dim);
+      }
+      .agents-region-empty { margin: 0; font-size: 12px; color: var(--fg-dim); opacity: 0.8; }
+      .agents-skill-rows { display: flex; flex-direction: column; gap: 4px; }
+      .agents-skill-row {
+        appearance: none; border: 1px solid var(--border); border-radius: 6px;
+        background: var(--bg); cursor: pointer; color: var(--fg); font: inherit;
+        display: flex; align-items: center; gap: 8px; padding: 6px 9px; text-align: left;
+      }
+      .agents-skill-row:hover { background: color-mix(in oklab, var(--accent) 8%, var(--bg)); }
+      .agents-skill-name { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .agents-skill-steps { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
+      .agents-grade-chip {
+        font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px; line-height: 1.4;
+      }
+      .agents-grade-chip--pending { background: color-mix(in oklab, var(--fg) 8%, transparent); color: var(--fg-dim); }
+      .agents-trigger-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+      .agents-trigger-chip {
+        font-size: 11px; padding: 2px 8px; border-radius: 10px;
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 28%, transparent);
+        color: var(--fg); max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .agents-call-graph { display: flex; flex-direction: column; gap: 4px; }
+      .agents-edge {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        font-size: 12px; padding: 4px 0;
+      }
+      .agents-edge-from, .agents-edge-to { font-weight: 600; }
+      .agents-edge-kind {
+        font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em;
+        position: relative; padding: 0 16px;
+      }
+      .agents-edge-kind::before {
+        content: ""; position: absolute; left: 0; right: 0; top: 50%;
+        border-top: 1.5px solid var(--border);
+      }
+      .agents-edge--cross .agents-edge-kind::before { border-top-style: dashed; border-top-color: var(--accent); }
+      .agents-edge-cross-note {
+        font-size: 11px; color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        padding: 1px 7px; border-radius: 8px;
+      }
+      .agents-autonomy-table {
+        width: 100%; border-collapse: collapse; font-size: 12px;
+      }
+      .agents-autonomy-table th {
+        text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+        color: var(--fg-dim); font-weight: 700; padding: 2px 8px 4px 0; border-bottom: 1px solid var(--border);
+      }
+      .agents-autonomy-table td { padding: 4px 8px 4px 0; border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent); }
+      .agents-autonomy-skill { font-weight: 600; }
+      .agents-autonomy-cap, .agents-autonomy-note { color: var(--fg-dim); font-size: 11px; }
+      .agents-eff-level {
+        font-weight: 700; font-size: 11px; padding: 1px 7px; border-radius: 5px;
+        background: color-mix(in oklab, var(--fg) 8%, transparent);
+      }
+      .agents-eff-level--l0 { background: rgba(148,163,184,.18); color: #64748b; }
+      .agents-eff-level--l1 { background: rgba(59,130,246,.16); color: #2563eb; }
+      .agents-eff-level--l2 { background: rgba(168,85,247,.16); color: #9333ea; }
+      .agents-eff-level--l3 { background: rgba(239,68,68,.16); color: #dc2626; }
+
+      /* ── "Handled by {Agempus}" chat chip (feature #41) ─────────────────────
+         Clone of .skill-meta-chip styling; descriptive routing chip, clickable
+         to deep-link to the Agents roster. */
+      .ghampus-handled-by-chip {
+        display: inline-flex; align-items: center; gap: 4px;
+        align-self: flex-start; cursor: pointer;
+        font-size: 11px; padding: 2px 8px; border-radius: 8px; margin: 0 0 5px;
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 26%, transparent);
+        color: var(--fg-dim);
+      }
+      .ghampus-handled-by-chip:hover { background: color-mix(in oklab, var(--accent) 16%, transparent); color: var(--fg); }
+      .ghampus-handled-by-chip strong { color: var(--accent); font-weight: 700; }
+
+      /* ── Per-skill autonomy control (in each skill row) ──────────────────── */
+      /* Mirrors the Agempus family dial but scoped to one skill. The dial shows
+         the EFFECTIVE (capped) level; segments above the authored cap are greyed,
+         and an "Inherit" pill clears the override. */
+      .skill-autonomy {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+        margin-top: 6px; font-size: 11px; color: var(--fg-dim);
+      }
+      .skill-autonomy-label {
+        font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+        text-transform: uppercase; color: var(--fg-dim);
+      }
+      .skill-autonomy-loading { opacity: 0.55; }
+      .skill-autonomy-inherit {
+        appearance: none; cursor: pointer;
+        background: var(--bg-elev); color: var(--fg-dim);
+        border: 1px solid var(--border); border-radius: 6px;
+        font-size: 10px; font-weight: 600; padding: 2px 8px;
+      }
+      .skill-autonomy-inherit:hover {
+        background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev));
+        color: var(--fg);
+      }
+      .skill-autonomy-inherit.active {
+        background: color-mix(in oklab, var(--accent) 72%, white);
+        color: white; border-color: transparent;
+      }
+      :root:not([data-theme="light"]) .skill-autonomy-inherit.active { color: #000; }
+      .skill-autonomy-track {
+        display: inline-flex; border: 1px solid var(--border);
+        border-radius: 6px; overflow: hidden;
+      }
+      .skill-autonomy-seg {
+        appearance: none; border: 0; cursor: pointer;
+        background: var(--bg-elev); color: var(--fg-dim);
+        font-size: 10px; font-weight: 600; padding: 2px 8px;
+        border-right: 1px solid var(--border);
+      }
+      .skill-autonomy-seg:last-child { border-right: 0; }
+      .skill-autonomy-seg:not(:disabled):hover {
+        background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev));
+        color: var(--fg);
+      }
+      .skill-autonomy-seg.active {
+        background: color-mix(in oklab, var(--accent) 72%, white);
+        color: white;
+      }
+      :root:not([data-theme="light"]) .skill-autonomy-seg.active { color: #000; }
+      .skill-autonomy-seg:disabled { cursor: not-allowed; opacity: 0.45; }
+      /* Segments above the skill's authored cap read as inert/greyed. */
+      .skill-autonomy-seg.above-cap {
+        opacity: 0.32; text-decoration: line-through;
+      }
+      .skill-autonomy-note {
+        flex-basis: 100%; font-size: 10px; color: var(--fg-dim);
+        line-height: 1.4; opacity: 0.85;
+      }
+      .skill-autonomy-note.pinned { color: var(--warn, var(--fg-dim)); opacity: 1; }
+      .skill-autonomy-note code {
+        font-size: 9px; padding: 0 3px; border-radius: 3px;
+        background: color-mix(in oklab, var(--fg) 10%, transparent);
+      }
+
       /* ── Skill group (parent + collapsible trained children) ─────────────── */
       .skill-group { border-radius: 6px; overflow: hidden; }
       .skill-group + .skill-group { margin-top: 4px; }
@@ -12363,6 +12592,16 @@
       .mcp-rollup-skills code { font-size: 11px; color: var(--fg); }
       .mcp-rollup-empty { margin: 0; font-size: 12px; }
       .activity-list { display: flex; flex-direction: column; gap: 8px; }
+      /* Unattended executor (#40) — review pane + in-UI kill-switch banner. */
+      .unattended-banner-host { margin-bottom: 8px; }
+      .unattended-banner {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; padding: 10px 12px; border-radius: 8px; font-size: 14px;
+      }
+      .unattended-banner-off { background: var(--bg-elev); border: 1px solid var(--border, #333); }
+      .unattended-banner-on  { background: rgba(204, 68, 119, 0.12); border: 1px solid var(--warn, #c47); }
+      .unattended-banner .subtitle { font-size: 12px; }
+      .unattended-run-row { grid-template-columns: 110px 14px 1fr auto; }
       .activity-row {
         display: grid;
         grid-template-columns: 110px 14px 1fr;  /* matches .activity-group-head so single + group rows align */
@@ -12981,6 +13220,10 @@
                  settings.ui.defaultLandingMode). Gated to Teams/Enterprise
                  on entry; the pane itself shows the upgrade card for free
                  plans, or the chat shell once licensed. -->
+            <button class="rail-btn" data-mode="ghampus" title="Ghampus Hush — your confidential AI: chat over your memory, run skills, save and recall">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5z"/><circle cx="5" cy="5" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="19" r="1.2" fill="currentColor" stroke="none"/></svg></span>
+              <span class="rail-label">Ghampus Hush</span>
+            </button>
             <button class="rail-btn active" data-mode="atlas" title="Your Cortex — your memory at a glance: search, check-in deck, health, live AI-client status">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5"/><path d="M5 9v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 21v-7h6v7"/></svg></span>
               <span class="rail-label">Your Cortex</span>
@@ -12991,10 +13234,6 @@
                 <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
                 <span id="rail-mcp-indicator" class="rail-mcp-indicator" data-pres="surface:mcpClients"></span>
               </span>
-            </button>
-            <button class="rail-btn" data-mode="ghampus" title="Ghampus Hush — your confidential AI: chat over your memory, run skills, save and recall">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5z"/><circle cx="5" cy="5" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="19" r="1.2" fill="currentColor" stroke="none"/></svg></span>
-              <span class="rail-label">Ghampus Hush</span>
             </button>
             <!-- Get Connected — directly under Home: grow your cortex (AI clients
                  read it, data sources feed it). Chips/recipes live on its page. -->
@@ -13022,6 +13261,11 @@
             <button class="rail-btn" data-mode="skills" title="Autonomous Skills — walkable SOPs dispatched each session, self-improving with each run">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 2.7 3 6 3s6-2 6-3v-5"/></svg></span>
               <span class="rail-label">Autonomous Skills</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="agents" title="Agents — your Agempi roster: each skill-template engram as a domain agent, with its skills, dispatch triggers, call graph, and autonomy at a glance">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg></span>
+              <span class="rail-label">Agents</span>
               <span></span>
             </button>
             <button class="rail-btn" data-mode="goals" title="Foresight — predict the future from your growing memory (develop · predict · insights)">
@@ -13677,6 +13921,21 @@
                                     </span>
                                     <input id="skills-input-breadth" type="range" min="0" max="100" step="1" value="50" />
                                     <span class="skills-field-hint">Deprecated — train-time recall is disabled; breadth applies only if re-enabled server-side.</span>
+                                  </label>
+                                  <!-- Per-skill autonomy — how far Ghampus may run THIS skill on its
+                                       own once trained. Default "Inherit from engram" writes no
+                                       override; an explicit L0–L3 is persisted (capped by the skill's
+                                       authored dispatch-safe tag) right after the skill is saved. -->
+                                  <label class="skills-field" id="skills-autonomy-field">
+                                    <span class="skills-field-label">Autonomy</span>
+                                    <select id="skills-input-autonomy" class="studio-select">
+                                      <option value="inherit">Inherit from engram</option>
+                                      <option value="L0">L0 — Manual (never auto-surface)</option>
+                                      <option value="L1">L1 — Suggest (propose-card)</option>
+                                      <option value="L2">L2 — Preview (preview-then-run)</option>
+                                      <option value="L3" disabled>L3 — Autonomous (not available yet)</option>
+                                    </select>
+                                    <span class="skills-field-hint">How far Ghampus may run this skill on its own. Capped by the skill's authored <code>dispatch-safe:</code> — a request above the cap is clamped and reported.</span>
                                   </label>
                                 </div>
                                 <div class="skills-actions">
@@ -14919,6 +15178,15 @@ ollama list</code></pre>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
 
+            <!-- AGENTS / AGEMPI ROSTER (feature #41) — read-only -->
+            <section class="mode-pane hidden" data-pane="agents">
+              <header class="pane-header">
+                <h2>Agents</h2>
+                <p class="brain-subtitle">your Agempi — each skill-template engram as a domain agent Ghampus dispatches to</p>
+              </header>
+              <div id="agents-list"><p class="subtitle">Loading Agempi…</p></div>
+            </section>
+
             <!-- Nodes pane removed — its functionality (search, per-node
                  inspect, edit, forget) is covered by the Graphnosis
                  pane's search + detail pane + check-in deck. -->
@@ -14938,6 +15206,7 @@ ollama list</code></pre>
                 <button type="button" class="activity-segment-btn active" data-activity-segment="memory" role="tab" aria-selected="true">Memory changes</button>
                 <button type="button" class="activity-segment-btn" data-activity-segment="mcp" role="tab" aria-selected="false">AI access log</button>
                 <button type="button" class="activity-segment-btn" data-activity-segment="skill-runs" role="tab" aria-selected="false">Skill runs</button>
+                <button type="button" class="activity-segment-btn" data-activity-segment="unattended" role="tab" aria-selected="false">Unattended</button>
               </div>
               <div id="activity-memory-toolbar" class="activity-toolbar">
                 <div class="activity-controls-row">
@@ -15050,6 +15319,18 @@ ollama list</code></pre>
                 <span id="skill-runs-stats" class="subtitle"></span>
               </div>
               <div id="skill-runs-list" class="activity-list hidden">
+                <p class="subtitle">Loading…</p>
+              </div>
+              <!-- UNATTENDED EXECUTOR review + undo (#40). SAFETY-CRITICAL:
+                   the banner carries the in-UI kill switch. -->
+              <div id="unattended-toolbar" class="activity-toolbar hidden">
+                <div id="unattended-banner" class="unattended-banner-host"></div>
+                <div class="activity-controls-row">
+                  <button id="btn-unattended-refresh" class="btn-sm" title="Reload the unattended run ledger">↻ Refresh</button>
+                </div>
+                <span id="unattended-stats" class="subtitle"></span>
+              </div>
+              <div id="unattended-list" class="activity-list hidden">
                 <p class="subtitle">Loading…</p>
               </div>
             </section>
@@ -18063,6 +18344,7 @@ ollama list</code></pre>
       <div class="mobile-more-panel" role="dialog" aria-label="More destinations">
         <div class="mobile-more-grip" aria-hidden="true"></div>
         <button class="mobile-more-item" data-mode="engram">3D Engram</button>
+        <button class="mobile-more-item" data-mode="agents">Agents</button>
         <button class="mobile-more-item" data-mode="sources">Sources</button>
         <button class="mobile-more-item" data-mode="activity">Activity</button>
         <button class="mobile-more-item" data-mode="goals">Foresight</button>

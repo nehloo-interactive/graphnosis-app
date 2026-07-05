@@ -21,6 +21,27 @@ export interface GraphMetadata {
   template: string;
   archived?: boolean;
   sensitivity?: 'public' | 'personal' | 'sensitive';
+  /**
+   * Per-engram (Agempus) execution-autonomy override — mirrors the core
+   * GraphMetadata field. Absent → the engram inherits the global level.
+   * Resolved/capped server-side; see resolveEngramAutonomyLevel and
+   * the `graphs.setExecutionAutonomy` IPC setter.
+   */
+  executionAutonomyLevel?: 'L0' | 'L1' | 'L2' | 'L3';
+  /**
+   * Quarantine marker for engrams created by an untrusted IMPORT (#39). While
+   * present with any item still in the 'quarantined' state the engram is
+   * QUARANTINED — excluded at the host boundary from recall/dispatch/cross-skill
+   * resolution, and (feature #41) from the Agents roster. Mirrors core
+   * GraphMetadata.quarantine; resolve via host.isQuarantined server-side.
+   */
+  quarantine?: {
+    fromPack: string;
+    signerPublicKey?: string;
+    verified: boolean;
+    importedAt: number;
+    items: Array<{ sourceId: string; lint?: string[]; state: 'quarantined' | 'promoted' | 'rejected' }>;
+  };
 }
 
 export interface GraphWithMetadata {
@@ -54,7 +75,7 @@ export interface SnapshotInfo {
 
 export type ConnectorKind =
   | 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear'
-  | 'obsidian' | 'gbrain' | 'ai-context';
+  | 'obsidian' | 'gbrain' | 'ai-context' | 'x';
 
 export interface ConnectorConfigShape {
   id: string;

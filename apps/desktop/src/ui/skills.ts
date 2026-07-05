@@ -8,6 +8,20 @@ import { gAlert, gConfirm } from './dialogs';
 import { ipcCall, ipcCallTimeout, invokeRetry } from './ipc';
 import { escape, escapeHtml } from './util';
 import type { GraphWithMetadata } from './types';
+import {
+  AGEMPUS_LEVELS,
+  currentAgempusLevel,
+  renderAgempusDial,
+  vitalityGrade,
+  levelRankUi,
+  perSkillReadout,
+  fetchDispatchReadout,
+  skillsDispatchReadoutCache,
+  type AutonomyLevel,
+  type DispatchSafety,
+  type PerSkillDispatchSafe,
+  type DispatchSafeReadout,
+} from './skills-shared';
 
 type StudioTool = 'skills' | 'recall' | 'dig-deeper' | 'remember' | 'edit' | 'gnn';
 type Mode = string;
@@ -364,13 +378,6 @@ let skillsTrainedOutputGen = 0;
 // Identifies goal/constraint nodes by text prefix. Kept in sync with the
 // sidecar's GOAL_NODE_RE in skill-trainer.ts.
 const SKILL_GOAL_CARD_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:|Requires:|Produces:)/i;
-
-function vitalityGrade(score: number): 'a' | 'b' | 'c' | 'd' {
-  if (score >= 85) return 'a';
-  if (score >= 65) return 'b';
-  if (score >= 40) return 'c';
-  return 'd';
-}
 
 function formatRelativeTime(ms: number | undefined): string {
   if (!ms) return '—';
@@ -862,20 +869,33 @@ interface SkillTreeNode {
  * retrained version of an import shows as root → child → grandchild.
  */
 function buildSkillTree(library: SkillListEntry[], sortMode: 'recent' | 'vitality' | 'name' = 'recent'): SkillTreeNode[] {
-  // Map displayName → node for quick parent lookup.
+  // Map (engram graphId + displayName) → node for parent lookup. The key MUST
+  // be scoped to the backing engram: lineage (import → trained → retrained)
+  // only ever lives inside a single engram, while DIFFERENT engrams routinely
+  // hold skills that share a display name (e.g. each skill-template family has
+  // its own "Untitled skill" / same-named capability). Keying on displayName
+  // alone let those cross-engram collisions overwrite each other in the map —
+  // entire engrams vanished from the grouped list and per-engram counts came
+  // out wrong, while the single-engram filter (which slices to one graphId
+  // before this runs) stayed correct. The NUL separator can't appear in a
+  // graphId slug or a label, so it's a safe composite delimiter.
+  const keyFor = (graphId: string, display: string): string => `${graphId}\u0000${display}`;
   const byDisplay = new Map<string, SkillTreeNode>();
   for (const s of library) {
     const display = skillDisplayName(s.label);
-    byDisplay.set(display, { entry: s, children: [] });
+    byDisplay.set(keyFor(s.graphId, display), { entry: s, children: [] });
   }
 
   const roots: SkillTreeNode[] = [];
   for (const node of byDisplay.values()) {
     const display = skillDisplayName(node.entry.label);
-    // Strip the last "(imported|trained DATE)" suffix to get the parent display name.
+    // Strip the last "(imported|trained DATE)" suffix to get the parent display
+    // name, then look the parent up WITHIN the same engram.
     const parentDisplayMatch = display.match(/^(.*?)\s+\((?:imported|trained) \d{4}-\d{2}-\d{2}\)$/);
     const parentDisplay = parentDisplayMatch?.[1]?.trim();
-    const parentNode = parentDisplay ? byDisplay.get(parentDisplay) : undefined;
+    const parentNode = parentDisplay
+      ? byDisplay.get(keyFor(node.entry.graphId, parentDisplay))
+      : undefined;
     if (parentNode) {
       parentNode.children.push(node);
     } else {
@@ -1064,19 +1084,27 @@ export function renderSkillsLibrary(): void {
   const countNodes = (nodes: SkillTreeNode[]): number =>
     nodes.reduce((n, node) => n + 1 + countNodes(node.children), 0);
 
+  // Engrams whose group is currently expanded — their per-skill autonomy
+  // readouts are warmed after paint so the dials fill in (one IPC per engram,
+  // cached). Collapsed groups are skipped until the user opens them.
+  const expandedEngramIds: string[] = [];
   listEl.innerHTML = groupEntries.map(([gid, rootsInGroup]) => {
     // A filter force-expands every group it matches. Otherwise: user state if
     // set, else default (open only when there's a single engram).
     const userState = skillEngramGroupState.get(gid);
     const expanded = filterActive ? true : (userState !== undefined ? userState : onlyOneGroup);
+    if (expanded) expandedEngramIds.push(gid);
     const count = countNodes(rootsInGroup);
     const childrenHtml = rootsInGroup.map((n) => renderSkillTreeNode(n)).join('');
+    // Every engram in this library is a skill-template engram → an Agempus.
     return `<div class="skill-engram-group${expanded ? ' expanded' : ''}" data-engram-id="${escape(gid)}">
       <button class="skill-engram-group-toggle" aria-expanded="${expanded}">
         <span class="skill-engram-group-arrow">▶</span>
         <span class="skill-engram-group-name" data-pres="engram:${escape(gid)}">${escape(engramDisplayName(gid))}</span>
+        <span class="agempus-badge" title="This skill-template engram is an Agempus — a domain agent Ghampus can dispatch to.">Agempus</span>
         <span class="skill-engram-group-count">${count}</span>
       </button>
+      ${renderAgempusDial(gid)}
       <div class="skill-engram-group-children">${childrenHtml}</div>
     </div>`;
   }).join('');
@@ -1091,6 +1119,36 @@ export function renderSkillsLibrary(): void {
   listEl.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
 
+    // Agempus autonomy dial segment — set this engram's executionAutonomyLevel.
+    // Checked BEFORE the group toggle so clicking the dial never collapses the
+    // section. Disabled (L3) segments are inert.
+    const dialSeg = target.closest<HTMLButtonElement>('.agempus-dial-seg');
+    if (dialSeg) {
+      e.stopPropagation();
+      if (dialSeg.disabled) return;
+      const dialEl = dialSeg.closest<HTMLElement>('.agempus-dial');
+      const gid = dialEl?.dataset['agempusEngram'] ?? '';
+      const level = dialSeg.dataset['agempusLevel'] as 'L0' | 'L1' | 'L2' | 'L3' | undefined;
+      if (gid && level) void setAgempusLevel(gid, level);
+      return;
+    }
+
+    // Per-skill autonomy control — Inherit toggle or an L0–L3 segment. Checked
+    // BEFORE the row-click handler so adjusting a skill's autonomy never opens
+    // the trainer. Disabled segments (above the authored dispatch-safe cap) are
+    // inert. Reads graphId+sourceId off the wrapping control.
+    const skillAutBtn = target.closest<HTMLButtonElement>('.skill-autonomy-seg, .skill-autonomy-inherit');
+    if (skillAutBtn) {
+      e.stopPropagation();
+      if (skillAutBtn.disabled) return;
+      const ctl = skillAutBtn.closest<HTMLElement>('.skill-autonomy');
+      const gid = ctl?.dataset['skillAutonomyGraph'] ?? '';
+      const sid = ctl?.dataset['skillAutonomySource'] ?? '';
+      const lvl = skillAutBtn.dataset['skillLevel'] as 'L0' | 'L1' | 'L2' | 'L3' | 'inherit' | undefined;
+      if (gid && sid && lvl) void setSkillAutonomyLevel(gid, sid, lvl);
+      return;
+    }
+
     // Engram group header — expand/collapse the whole engram section.
     const engramToggle = target.closest<HTMLButtonElement>('.skill-engram-group-toggle');
     if (engramToggle) {
@@ -1101,6 +1159,9 @@ export function renderSkillsLibrary(): void {
       groupEl.classList.toggle('expanded', nowExpanded);
       skillEngramGroupState.set(gid, nowExpanded);
       engramToggle.setAttribute('aria-expanded', String(nowExpanded));
+      // Lazily warm this engram's per-skill autonomy readout the first time it
+      // opens so the in-row dials populate without a full library re-render.
+      if (nowExpanded) void warmDispatchReadouts([gid]);
       e.stopPropagation();
       return;
     }
@@ -1169,6 +1230,174 @@ export function renderSkillsLibrary(): void {
     }
   });
   } // end once-guard
+
+  // Warm per-skill autonomy readouts for the engrams that are currently
+  // expanded. Cached engrams are skipped, so this is a no-op once warmed; it
+  // repaints (once) when a fresh readout lands so the per-skill dials fill in.
+  if (expandedEngramIds.length > 0) void warmDispatchReadouts(expandedEngramIds);
+}
+
+// ── Agempus autonomy dial (engram-as-agent) ──────────────────────────────────
+//
+// Each skill-template engram is an Agempus — a domain agent. Its per-engram
+// `executionAutonomyLevel` (GraphMetadata) is the dial: how far Ghampus may take
+// a skill matched from THIS engram automatically. We READ the current level off
+// loaded-graph metadata and WRITE it via the `graphs.setExecutionAutonomy` IPC.
+//
+// Guardrails (match what the runtime can actually deliver — see the design note):
+//   • The effective level is ALSO capped per skill by each skill's authored
+//     `[dispatch-safe:]` tag (decideSkillAutonomy, sidecar). We surface that as a
+//     note rather than computing a per-Agempus cap — the skill texts aren't in
+//     the list payload, and a real cap readout belongs with the larger Agents
+//     view. (SCOPED OUT.)
+//   • L3 ("autonomous") drives the live unattended executor + review UI. The
+//     segment is selectable but stays capped per skill by the authored
+//     `[dispatch-safe:]` tag, and the executor itself is opt-in / OFF by default
+//     (toggle + run review in the Unattended tab).
+// AGEMPUS_LEVELS, currentAgempusLevel, renderAgempusDial, the DispatchSafe*
+// types, levelRankUi, perSkillReadout, fetchDispatchReadout, and the shared
+// readout cache now live in ./skills-shared (imported above) so the Agents
+// roster (agents.ts) reuses them without forking. See that module.
+
+/** Warm the dispatch-safe readout for the given engrams, then repaint so the
+ *  per-skill dials fill in. No-op for engrams already cached. */
+async function warmDispatchReadouts(graphIds: Iterable<string>): Promise<void> {
+  const due = [...new Set(graphIds)].filter((gid) => !skillsDispatchReadoutCache.has(gid));
+  if (due.length === 0) return;
+  await Promise.all(due.map((gid) => fetchDispatchReadout(gid)));
+  renderSkillsLibrary();
+}
+
+const SKILL_AUTONOMY_LEVELS: ReadonlyArray<{ level: AutonomyLevel; label: string; title: string; locked?: boolean }> = [
+  { level: 'L0', label: 'L0', title: 'Manual — never surface a card for this skill.' },
+  { level: 'L1', label: 'L1', title: 'Suggest — surface a propose-card.' },
+  { level: 'L2', label: 'L2', title: 'Preview — surface a preview-then-run card.' },
+  { level: 'L3', label: 'L3', title: 'Autonomous — eligible for unattended auto-run when the executor is enabled (opt-in, OFF by default). Capped by this skill’s authored dispatch-safe.' },
+];
+
+/**
+ * Render a per-skill autonomy control: an "Inherit" toggle + an L0–L3
+ * segmented dial showing the skill's EFFECTIVE (capped) level. Segments above
+ * the skill's authored cap are greyed/disabled; when the effective level is
+ * pinned BELOW the chosen level by the cap, an annotation explains it.
+ *
+ * Falls back to a "loading" stub when the engram's readout hasn't arrived yet
+ * (warmDispatchReadouts repaints when it lands).
+ */
+function renderSkillAutonomyControl(graphId: string, sourceId: string): string {
+  const entry = perSkillReadout(graphId, sourceId);
+  if (!entry) {
+    // If the engram's readout is already cached but this sourceId isn't in it
+    // (e.g. a lineage row that isn't a distinct backing source), render nothing
+    // rather than a stuck "loading" stub. Only show the loading stub while the
+    // engram's readout is genuinely still pending.
+    if (skillsDispatchReadoutCache.has(graphId)) return '';
+    // Readout not yet cached — render a passive stub; warm-fetch repaints it.
+    return `<div class="skill-autonomy" data-skill-autonomy-graph="${escape(graphId)}" data-skill-autonomy-source="${escape(sourceId)}" data-pending="1">
+      <span class="skill-autonomy-label">Autonomy</span>
+      <span class="skill-autonomy-loading">…</span>
+    </div>`;
+  }
+  const inheriting = entry.configuredSkillLevel === null;
+  const capRank = levelRankUi(entry.cap);
+  // The dial highlights the EFFECTIVE level (what the dispatcher honors). When
+  // inheriting, that is the family default capped by this skill's safety.
+  const active = entry.effectiveLevel;
+  // The skill is "pinned by its cap" when the user explicitly chose a level
+  // above what the authored dispatch-safe tag allows → effective < configured.
+  const pinnedByCap = entry.configuredSkillLevel !== null
+    && levelRankUi(entry.configuredSkillLevel) > capRank;
+
+  const segs = SKILL_AUTONOMY_LEVELS.map((s) => {
+    const aboveCap = levelRankUi(s.level) > capRank;
+    const isActive = !inheriting && s.level === active;
+    const disabled = s.locked || aboveCap;
+    const cls = `skill-autonomy-seg${isActive ? ' active' : ''}${aboveCap ? ' above-cap' : ''}`;
+    const title = aboveCap
+      ? `${s.label} exceeds this skill's authored dispatch-safe cap (${entry.cap}).`
+      : s.title;
+    return `<button type="button" class="${cls}"${disabled ? ' disabled' : ''} data-skill-level="${s.level}" title="${escape(title)}">${escape(s.label)}</button>`;
+  }).join('');
+
+  const inheritCls = `skill-autonomy-inherit${inheriting ? ' active' : ''}`;
+  const note = pinnedByCap
+    ? `<span class="skill-autonomy-note pinned">Pinned to ${entry.effectiveLevel} by authored cap (<code>dispatch-safe: ${escape(entry.dispatchSafe)}</code>).</span>`
+    : inheriting
+      ? `<span class="skill-autonomy-note">Inheriting family default — effective <strong>${entry.effectiveLevel}</strong> (cap ${entry.cap}).</span>`
+      : `<span class="skill-autonomy-note">Override <strong>${entry.configuredSkillLevel}</strong> — effective <strong>${entry.effectiveLevel}</strong> (cap ${entry.cap}).</span>`;
+
+  return `<div class="skill-autonomy" data-skill-autonomy-graph="${escape(graphId)}" data-skill-autonomy-source="${escape(sourceId)}">
+    <span class="skill-autonomy-label">Autonomy</span>
+    <button type="button" class="${inheritCls}" data-skill-level="inherit" title="Clear the override — inherit the Agempus family default.">Inherit</button>
+    <span class="skill-autonomy-track">${segs}</span>
+    ${note}
+  </div>`;
+}
+
+/** Persist (or clear) a per-skill autonomy override, then refresh the engram's
+ *  readout + repaint. `level === 'inherit'` clears the override (sends null). */
+async function setSkillAutonomyLevel(
+  graphId: string,
+  sourceId: string,
+  level: AutonomyLevel | 'inherit',
+): Promise<void> {
+  const entry = perSkillReadout(graphId, sourceId);
+  // No-op guards: don't write the same override / re-clear when already inherit.
+  if (level === 'inherit') {
+    if (entry && entry.configuredSkillLevel === null) return;
+  } else {
+    if (entry && entry.configuredSkillLevel === level) return;
+    // Block requests above the authored cap at the UI layer (segment is also
+    // disabled). The backend would refuse anyway; this avoids a wasted call.
+    if (entry && levelRankUi(level) > levelRankUi(entry.cap)) {
+      showSkillsToast(`${level} exceeds this skill's authored dispatch-safe cap (${entry.cap}).`, 'error');
+      return;
+    }
+  }
+  try {
+    const res = await ipcCall<{ ok: boolean; effectiveLevel: AutonomyLevel }>(
+      'skills.setSkillAutonomy',
+      { graphId, sourceId, level: level === 'inherit' ? null : level },
+    );
+    // Invalidate + refetch the readout so the dial reflects the committed
+    // configured/effective state (and any cap clamp the backend applied).
+    skillsDispatchReadoutCache.delete(graphId);
+    await fetchDispatchReadout(graphId);
+    renderSkillsLibrary();
+    const eff = res?.effectiveLevel;
+    if (level === 'inherit') {
+      showSkillsToast('Autonomy override cleared — inheriting the family default.', 'success');
+    } else if (eff && eff !== level) {
+      showSkillsToast(`Requested ${level}, clamped to ${eff} by the authored dispatch-safe cap.`, 'success');
+    } else {
+      showSkillsToast(`Per-skill autonomy set to ${eff ?? level}.`, 'success');
+    }
+  } catch (e) {
+    console.warn('[skills] setSkillAutonomy failed', e);
+    showSkillsToast('Could not update the skill autonomy level. Try again.', 'error');
+  }
+}
+
+/** Persist an Agempus's autonomy level via IPC, then refresh metadata + repaint
+ *  so the dial reflects the committed value. Skipped when unchanged. L3 is a
+ *  valid family default — it drives the opt-in unattended executor (OFF by
+ *  default), and each skill stays capped by its authored dispatch-safe. */
+async function setAgempusLevel(graphId: string, level: 'L0' | 'L1' | 'L2' | 'L3'): Promise<void> {
+  if (currentAgempusLevel(graphId) === level) return;
+  try {
+    await ipcCall('graphs.setExecutionAutonomy', { graphId, level });
+    await app().reloadGraphsMetadata();
+    // The family default changed → every inheriting skill's effective level may
+    // shift. Invalidate + refetch this engram's readout so the per-skill dials
+    // repaint with their new effective levels.
+    skillsDispatchReadoutCache.delete(graphId);
+    await fetchDispatchReadout(graphId);
+    renderSkillsLibrary();
+    showSkillsToast(`Autonomy set to ${level} for ${engramDisplayName(graphId)}`, 'success');
+  } catch (e) {
+    console.warn('[agempus] set autonomy failed', e);
+    showSkillsToast('Could not update autonomy level. Try again.', 'error');
+  }
 }
 
 /**
@@ -1280,6 +1509,7 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
         <span>${escape(formatRelativeTime(trainedAtTs))}</span>
         ${s.nodeCount ? `<span>· ${s.nodeCount} nodes</span>` : ''}
       </div>
+      ${isHidden ? '' : renderSkillAutonomyControl(s.graphId, s.sourceId)}
       <div class="skill-history-panel hidden" data-history-for="${escape(s.sourceId)}"></div>
     </div>
   `;
@@ -1367,6 +1597,8 @@ function resetSkillsComposeForm(): void {
     ta.style.height = '';
   }
   if (nameEl) nameEl.value = '';
+  const autonomyEl = document.getElementById('skills-input-autonomy') as HTMLSelectElement | null;
+  if (autonomyEl) autonomyEl.value = 'inherit';
   clearSkillsDraft();
   renderSkillsChunkPreview();
   updateSkillsResetButton();
@@ -2482,7 +2714,7 @@ function renderInfluentialNode(n: SkillInfluentialNode): string {
  *  slow-loading skill stacks N "Failed to load" toasts. */
 let _openSkillInFlight: string | null = null;
 
-async function openSkillInTrainer(
+export async function openSkillInTrainer(
   sourceId: string,
   graphId: string,
   opts: { retrain?: boolean; scrollToExport?: boolean } = {},
@@ -3005,6 +3237,7 @@ function showTrainingBanner(): void {
     'skills-input-engram',
     'skills-input-model',
     'skills-input-breadth',
+    'skills-input-autonomy',
     'btn-skills-create-engram',
     'skills-goal-success',
     'skills-goal-scope',
@@ -3096,6 +3329,7 @@ function hideTrainingBanner(): void {
     'skills-input-engram',
     'skills-input-model',
     'skills-input-breadth',
+    'skills-input-autonomy',
     'btn-skills-create-engram',
     'skills-goal-success',
     'skills-goal-scope',
@@ -3118,9 +3352,50 @@ document.getElementById('btn-skills-train-cancel')?.addEventListener('click', ()
   if (trainingBannerCancelFn) trainingBannerCancelFn();
 });
 
+/** Read the Train-a-Skill form's Autonomy selector. Returns the chosen
+ *  per-skill level, or null when "Inherit from engram" (write no override).
+ *  Read BEFORE the form is disabled for the training run. */
+function readSkillsComposeAutonomy(): 'L0' | 'L1' | 'L2' | 'L3' | null {
+  const v = (document.getElementById('skills-input-autonomy') as HTMLSelectElement | null)?.value ?? 'inherit';
+  return v === 'L0' || v === 'L1' || v === 'L2' || v === 'L3' ? v : null;
+}
+
+/** Persist the chosen per-skill autonomy override for a just-saved skill.
+ *  Mirrors the trainer's clamp policy: the backend caps the level by the
+ *  skill's authored dispatch-safe tag and echoes back the EFFECTIVE level —
+ *  if it differs from the requested level we surface the clamp note rather
+ *  than failing. Skipped silently when the user left "Inherit". */
+async function applySkillsComposeAutonomy(
+  graphId: string,
+  sourceId: string,
+  requested: 'L0' | 'L1' | 'L2' | 'L3' | null,
+): Promise<void> {
+  if (!requested) return; // inherit — no override written
+  try {
+    const res = await ipcCall<{ ok: boolean; effectiveLevel: 'L0' | 'L1' | 'L2' | 'L3' }>(
+      'skills.setSkillAutonomy',
+      { graphId, sourceId, level: requested },
+    );
+    const effective = res?.effectiveLevel ?? requested;
+    if (effective !== requested) {
+      showSkillsToast(
+        `Autonomy requested ${requested} but the skill's authored dispatch-safe cap is lower — clamped to ${effective}.`,
+        'success',
+      );
+    } else {
+      showSkillsToast(`Per-skill autonomy set to ${effective}.`, 'success');
+    }
+  } catch (e) {
+    console.warn('[skills] setSkillAutonomy after train failed', e);
+    showSkillsToast('Trained, but could not set the per-skill autonomy level. Set it from the library.', 'error');
+  }
+}
+
 async function runSkillTraining(): Promise<void> {
   const params = readSkillsComposeForm();
   if (!params) return;
+  // Captured before the form is disabled for the run; applied after save.
+  const requestedAutonomy = readSkillsComposeAutonomy();
   const status = document.getElementById('skills-train-status');
   const btn = document.getElementById('btn-skills-train') as HTMLButtonElement | null;
   if (status) status.textContent = 'Recalling memory… then training…';
@@ -3190,10 +3465,16 @@ async function runSkillTraining(): Promise<void> {
     // this, the panel stays on the compose form and the user has to click
     // the row manually to see what was produced.
     if (params.save && result.skillId) {
+      // Persist the chosen per-skill autonomy override (if any) before the
+      // library refresh so the new row paints with the right effective level.
+      await applySkillsComposeAutonomy(params.graphId, result.skillId, requestedAutonomy);
       await fetchSkillsLibrary();
       renderSkillsLibrary();
       skillsActiveSourceId = result.skillId;
       skillsVitalityCache.delete(result.skillId);
+      // Drop any cached dispatch-safe readout for this engram so the per-skill
+      // dials repaint with the freshly-set effective level.
+      skillsDispatchReadoutCache.delete(params.graphId);
       void warmVitalityCache();
       // Review panel already painted from `result` above — do not re-open via
       // skill:get here; a second listNodes pass can race the sidecar flush and

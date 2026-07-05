@@ -485,6 +485,7 @@ const SSE_TO_TAURI: Record<string, string> = {
   'ghampus.thinking':             'graphnosis://ghampus-thinking',
   'ghampus.trace':                'graphnosis://ghampus-trace',
   'ghampus.card':                 'graphnosis://ghampus-card',
+  'unattended.run':               'graphnosis://unattended-run',
   'ghampus.reminder':             'graphnosis://ghampus-reminder',
   'ghampus.tip':                  'graphnosis://ghampus-tip',
   'ghampus.vitality-nudge':       'graphnosis://ghampus-vitality-nudge',
