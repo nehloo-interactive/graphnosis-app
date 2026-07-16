@@ -10,8 +10,16 @@ Stdio ↔ Unix socket relay for Graphnosis MCP. Works with **any MCP client that
 ## Usage
 
 ```bash
+npx --yes @graphnosis/mcp-relay          # defaults to ~/.graphnosis/mcp.sock
+# or pass an explicit path:
 npx --yes @graphnosis/mcp-relay ~/.graphnosis/mcp.sock
 ```
+
+The socket-path argument is **optional** — when omitted it defaults to
+`~/.graphnosis/mcp.sock`. A provided path may use `~` or `${HOME}`/`$HOME`;
+the relay expands them itself via `os.homedir()`, so it works even when the
+MCP host spawns it without a shell (notably on Windows, where `HOME` is often
+unset and would otherwise reach the relay as a literal path).
 
 Monorepo CI does not build this package — the app uses the relay from
 `apps/desktop-sidecar/dist/mcp-relay.js`. To rebuild for npm publish:

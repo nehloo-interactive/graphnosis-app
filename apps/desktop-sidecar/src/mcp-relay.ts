@@ -28,6 +28,7 @@
  */
 
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -50,14 +51,22 @@ const FALLBACK_RECONNECT_WAIT_MS = Infinity;
 const POLL_INTERVAL_MS = 400;
 const PROGRESS_LOG_EVERY_MS = 3_000;
 
-const rawSocketPath = process.argv[2];
-if (!rawSocketPath) {
-  process.stderr.write('[graphnosis-relay] missing socket path. usage: mcp-relay.js <socket-path>\n');
-  process.exit(2);
+// Resolve the socket path. When no arg is given, default to the standard
+// ~/.graphnosis/mcp.sock so callers can omit it entirely. When a path IS
+// given, expand a leading `~` and `${HOME}`/`$HOME` ourselves: some MCP hosts
+// spawn stdio servers without a shell and don't interpolate these — notably
+// on Windows, where `HOME` is usually unset and `${HOME}` would otherwise
+// reach us as a literal, unusable path. os.homedir() is cross-platform.
+function resolveSocketPath(raw: string | undefined): string {
+  if (!raw || !raw.trim()) {
+    return path.join(os.homedir(), '.graphnosis', 'mcp.sock');
+  }
+  return raw
+    .trim()
+    .replace(/^~(?=$|[/\\])/, os.homedir())
+    .replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, os.homedir());
 }
-// After the exit-guard, the path is definitely a string — re-bind so TS
-// (and readers) can see it as non-nullable for the rest of the file.
-const socketPath: string = rawSocketPath;
+const socketPath: string = resolveSocketPath(process.argv[2]);
 
 /**
  * Resolve the relay timings, preferring (in order):

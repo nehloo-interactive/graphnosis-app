@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis/mcp-relay",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Stdio MCP relay for Graphnosis — connects AI clients to ~/.graphnosis/mcp.sock",
   "type": "module",
   "author": "Nehloo Interactive LLC",
