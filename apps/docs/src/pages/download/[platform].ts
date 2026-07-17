@@ -26,7 +26,7 @@ const RELEASES =
 
 // Keep in sync with tauri.conf.json version. Only used if CURRENT_VERSION is
 // absent from Cloudflare env vars (should never happen after a successful release).
-const FALLBACK_VERSION = 'v1.23.3';
+const FALLBACK_VERSION = 'v1.25.0';
 
 export const GET: APIRoute = ({ params, locals, request }) => {
   const env = getEnv(locals);
