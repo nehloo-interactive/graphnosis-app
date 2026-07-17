@@ -11,7 +11,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractJson, scopeLlmCorrectionDiff, resolveCandidateNodeId } from '../dist/correction.js';
+import { extractJson, scopeLlmCorrectionDiff, resolveCandidateNodeId, proposeCorrection } from '../dist/correction.js';
 
 const FENCE = '```'; // three backticks, no escaping headaches
 
@@ -96,4 +96,48 @@ test('transposed nodeId recovers the correct target (does NOT drop the edit)', (
   assert.equal(diff.edits.length, 1);
   assert.equal(diff.edits[0].nodeId, 'qqpR_gIDLNHrB-rkJ1j3J', 'must resolve to the correct node, not the file-path one');
   assert.equal(scopeWarnings.length, 0);
+});
+
+test('honours a non-top in-pool candidate — no forced candidates[0]', () => {
+  // Recall ranks the "lives in Madrid" node #1 (shared entity "Diana Gini"),
+  // but the model correctly targets the TODO node at #2. The guardrail must keep
+  // the model's choice, not force the top match.
+  const candidates = [
+    { graphId: 'g1', nodeId: 'KC5nq3w3XSEMGX0rl76kp', text: 'Diana Gini lives in Madrid', viaGnn: false },
+    { graphId: 'g1', nodeId: 'qqpR_gIDLNHrB-rkJ1j3J', text: 'TODO: press release for Game On launch', viaGnn: false },
+  ];
+  const { diff, scopeWarnings } = scopeLlmCorrectionDiff(
+    { edits: [{ kind: 'supersede', nodeId: 'qqpR_gIDLNHrB-rkJ1j3J', content: 'DONE - press release', reason: 'done' }], adds: [] },
+    candidates,
+    'mark the press release todo as done',
+  );
+  assert.equal(diff.edits.length, 1, 'the model-chosen non-top candidate must survive');
+  assert.equal(diff.edits[0].nodeId, 'qqpR_gIDLNHrB-rkJ1j3J', 'must NOT be forced onto the unrelated top match');
+  assert.equal(scopeWarnings.length, 0);
+});
+
+test('proposeCorrection NEVER substitutes an unrelated top-match on an unmatched id', async () => {
+  const fakeHost = {
+    recall: async () => ({
+      byGraph: new Map([['g1', [
+        { nodeId: 'KC5nq3w3XSEMGX0rl76kp', text: 'Diana Gini lives in Madrid' },
+        { nodeId: 'qqpR_gIDLNHrB-rkJ1j3J', text: 'TODO press release' },
+      ]]]),
+    }),
+  };
+  const fakeLlm = {
+    name: 'fake',
+    // Model returns a nodeId that matches NO candidate (and isn't fuzzy-close).
+    complete: async () => JSON.stringify({
+      edits: [{ kind: 'supersede', nodeId: 'ZZZZ-not-a-real-id', content: 'DONE', reason: 'done' }],
+      adds: [],
+    }),
+  };
+  const res = await proposeCorrection({ host: fakeHost, llm: fakeLlm, correction: 'mark the todo done' });
+  assert.equal(res.diff.edits.length, 0, 'no edit should be proposed');
+  assert.ok(
+    !res.diff.edits.some((e) => e.nodeId === 'KC5nq3w3XSEMGX0rl76kp'),
+    'must NOT fall back to superseding the unrelated top recall match',
+  );
+  assert.match(res.diff.reasoning ?? '', /scope|match|change/i);
 });

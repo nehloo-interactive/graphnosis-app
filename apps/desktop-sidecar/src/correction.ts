@@ -240,7 +240,6 @@ export function scopeLlmCorrectionDiff(
 ): { diff: CorrectionDiff; scopeWarnings: string[] } {
   const warnings: string[] = [];
   const candidateIdList = candidates.map((c) => c.nodeId);
-  const primaryNodeId = candidates[0]?.nodeId;
   const multiAllowed = correctionImpliesMultiNodeEdit(correction);
   const deleteAllowed = correctionImpliesDelete(correction);
   const maxEdits = multiAllowed ? MAX_LLM_EDITS_MULTI : MAX_LLM_EDITS_SINGLE;
@@ -262,10 +261,11 @@ export function scopeLlmCorrectionDiff(
       warnings.push(`Dropped delete on ${nodeId}: correction did not request removal.`);
       continue;
     }
-    if (!multiAllowed && primaryNodeId && nodeId !== primaryNodeId) {
-      warnings.push(`Dropped edit on ${nodeId}: scoped to top recall match only.`);
-      continue;
-    }
+    // Deliberately DO NOT force the edit onto candidates[0]. The recall top-match
+    // is ranked by similarity, and a shared entity (a person's name) can rank an
+    // UNRELATED node #1 — so the model's choice of a different IN-POOL candidate
+    // is the right target and is honoured here. The maxEdits cap below still
+    // bounds how many nodes a single correction may touch.
     if (validEdits.length >= maxEdits) {
       warnings.push(`Dropped edit on ${nodeId}: capped at ${maxEdits} operation(s).`);
       continue;
@@ -519,37 +519,21 @@ export async function proposeCorrection(opts: {
     && diff.adds.length === 0
     && hadLlmChanges;
   if (strippedAll) {
-    // CRITICAL: only fall back to superseding the top recall match for
-    // OVER-SCOPING drops (the model tried to edit too many nodes). When EVERY
-    // drop was an unmatched nodeId, the model aimed at a specific node we could
-    // not resolve even fuzzily — superseding an unrelated top-recall node with
-    // the raw correction text would DESTROY real data (the reported bug). Return
-    // a clear empty diff instead of guessing.
-    if (scoped.scopeWarnings.every((w) => /was not in the candidate pool/.test(w))) {
-      return {
-        diff: {
-          edits: [],
-          adds: [],
-          reasoning: 'The local model targeted a node id that matches no recalled candidate (a mis-copied id). '
-            + 'No safe edit was made — rephrase the correction to describe the memory in words, or edit the node '
-            + 'directly in the app.',
-        },
-        candidates,
-        mode: 'llm-assisted',
-      };
-    }
-    const det = proposeDeterministicCorrection({
-      correction: opts.correction,
+    // The model proposed changes but scope guardrails removed them all. NEVER
+    // substitute an arbitrary "top recall match" node: recall ranks by
+    // similarity, which a shared entity (a person's name) can inflate for a node
+    // that is NOT the edit target — superseding it with the correction text would
+    // overwrite unrelated data (the reported bug). Return a clear empty diff so
+    // the user re-specifies or edits the node directly in the app.
+    return {
+      diff: {
+        edits: [],
+        adds: [],
+        reasoning: `The proposed edit did not pass scope validation, so nothing was changed. ${scoped.scopeWarnings.join(' ')} `
+          + 'Rephrase the correction to name the memory more precisely, or edit the node directly in the app.',
+      },
       candidates,
-      gnnExpanded,
-      ...(opts.graphIdHint !== undefined ? { graphIdHint: opts.graphIdHint } : {}),
-    });
-    diff = {
-      ...det.diff,
-      reasoning: [
-        diff.reasoning,
-        'Local LLM proposed out-of-scope changes; fell back to superseding the top recall match only.',
-      ].filter(Boolean).join('\n\n'),
+      mode: 'llm-assisted',
     };
   }
   return { diff, candidates, mode: 'llm-assisted' };
