@@ -114,7 +114,10 @@ import {
   isSimplePersonLookupQuestion,
   responseLanguageLabel,
   shouldDefaultBriefAnswer,
+  TASK_NOUN_RE,
+  TASK_DEADLINE_NOUN_RE,
 } from './ghampus-language.js';
+import { SYSTEM_ENGRAM_IDS } from './docs-ingest.js';
 import { listMcpToolsForGhampus } from './mcp-tool-catalog.js';
 import {
   formatGhampusToolErrorPreview,
@@ -1460,6 +1463,19 @@ export async function runGhampusSend(
           scopedEngrams = extractEngramScopeFromQuery(priorScopeText, allEngramIds);
         }
       }
+      // Personal-state queries (todos, tasks, deadlines) never live in the
+      // bundled system engrams (docs / skill demos) — exclude them from
+      // unscoped recall so website copy can't masquerade as the user's todos.
+      if (
+        scopedEngrams.length === 0
+        && (hints.wantsTemporalTodos || hints.wantsProjectTaskList || hints.wantsTeamTaskList
+          || TASK_NOUN_RE.test(queryText) || TASK_DEADLINE_NOUN_RE.test(queryText))
+      ) {
+        const userEngramIds = allEngramIds.filter((id) => !SYSTEM_ENGRAM_IDS.has(id));
+        if (userEngramIds.length > 0 && userEngramIds.length < allEngramIds.length) {
+          scopedEngrams = userEngramIds;
+        }
+      }
       const engramListStr = allEngrams.map((e) => `${e.graphId}="${e.displayName}"`).join(', ');
       const plan = await planGhampusToolsWithLlm(queryText, hints, llm, {
         scopedEngrams,
@@ -1945,6 +1961,11 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
             "I couldn't find attested memories for that question. Try rephrasing with the event or person names you remember.",
           );
           return;
+        } else if (primaryRecall.trim()) {
+          // Recall found memories but the local LLM failed to respond — show
+          // the attested snippets instead of a dead-end "try rephrasing".
+          draft = 'The local LLM did not respond, so here is the attested memory I found, unsummarized:\n\n'
+            + primaryRecall.slice(0, 2500);
         } else {
           await emitGhampusMsg("I couldn't synthesize an answer — try rephrasing.");
           return;
