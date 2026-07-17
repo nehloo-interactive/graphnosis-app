@@ -11,7 +11,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractJson, scopeLlmCorrectionDiff } from '../dist/correction.js';
+import { extractJson, scopeLlmCorrectionDiff, resolveCandidateNodeId } from '../dist/correction.js';
 
 const FENCE = '```'; // three backticks, no escaping headaches
 
@@ -68,5 +68,32 @@ test('scope guardrails strip stray brackets the model echoed onto a nodeId', () 
   );
   assert.equal(diff.edits.length, 1, 'bracketed nodeId should still match candidate');
   assert.equal(diff.edits[0].nodeId, 'nodeA');
+  assert.equal(scopeWarnings.length, 0);
+});
+
+test('resolveCandidateNodeId — exact, transposition, ambiguous, no-match', () => {
+  const ids = ['qqpR_gIDLNHrB-rkJ1j3J', 'YDgik5pqV5LQ3RfV3e-sh'];
+  // exact
+  assert.equal(resolveCandidateNodeId('qqpR_gIDLNHrB-rkJ1j3J', ids), 'qqpR_gIDLNHrB-rkJ1j3J');
+  // transposition qqpR -> qpqR (distance 1) recovers the correct id
+  assert.equal(resolveCandidateNodeId('qpqR_gIDLNHrB-rkJ1j3J', ids), 'qqpR_gIDLNHrB-rkJ1j3J');
+  // no close match -> null (do not guess)
+  assert.equal(resolveCandidateNodeId('totally-different-id', ids), null);
+  // ambiguous: two candidates equidistant -> null
+  assert.equal(resolveCandidateNodeId('aaa', ['aab', 'aac']), null);
+});
+
+test('transposed nodeId recovers the correct target (does NOT drop the edit)', () => {
+  const candidates = [
+    { graphId: 'g1', nodeId: 'qqpR_gIDLNHrB-rkJ1j3J', text: 'the todo node', viaGnn: false },
+    { graphId: 'g1', nodeId: 'YDgik5pqV5LQ3RfV3e-sh', text: 'unrelated file-path node', viaGnn: false },
+  ];
+  const { diff, scopeWarnings } = scopeLlmCorrectionDiff(
+    { edits: [{ kind: 'supersede', nodeId: 'qpqR_gIDLNHrB-rkJ1j3J', content: 'DONE', reason: 'done' }], adds: [] },
+    candidates,
+    'mark the press release todo as done, node qqpR_gIDLNHrB-rkJ1j3J only',
+  );
+  assert.equal(diff.edits.length, 1);
+  assert.equal(diff.edits[0].nodeId, 'qqpR_gIDLNHrB-rkJ1j3J', 'must resolve to the correct node, not the file-path one');
   assert.equal(scopeWarnings.length, 0);
 });

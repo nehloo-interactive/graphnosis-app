@@ -182,10 +182,56 @@ export function correctionImpliesDelete(correction: string): boolean {
   return /\b(delete|remove|forget|drop|discard|erase|purge)\b/.test(c);
 }
 
+/** Levenshtein distance, early-exiting once it provably exceeds `max`. */
+function boundedEditDistance(a: string, b: string, max: number): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur: number[] = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const v = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + cost);
+      cur.push(v);
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length]!;
+}
+
+/**
+ * Resolve an LLM-returned nodeId to a REAL candidate id. Exact match wins;
+ * otherwise the single candidate within a small edit distance is used. Small
+ * local models transpose/typo opaque ids (e.g. "qpqR…" for "qqpR…") — an
+ * exact-only check dropped the correct target AND (worse) let the caller fall
+ * back to superseding an unrelated node. Ambiguous (two candidates equally
+ * close) or no-close-match → null, so the caller drops the edit rather than
+ * guessing. Random 20+ char ids make a false fuzzy match astronomically
+ * unlikely, so this recovers typos without risking a wrong target.
+ */
+export function resolveCandidateNodeId(nodeId: string, candidateIds: readonly string[]): string | null {
+  if (candidateIds.includes(nodeId)) return nodeId;
+  const MAX = 2;
+  let best: string | null = null;
+  let bestDist = MAX + 1;
+  let tie = false;
+  for (const cid of candidateIds) {
+    const d = boundedEditDistance(nodeId, cid, MAX);
+    if (d <= MAX) {
+      if (d < bestDist) { bestDist = d; best = cid; tie = false; }
+      else if (d === bestDist) tie = true;
+    }
+  }
+  return best && !tie ? best : null;
+}
+
 /**
  * Post-process a local-LLM edit proposal so it cannot silently rewrite unrelated
- * memories. Drops out-of-pool nodeIds, caps edit count, and strips deletes unless
- * the user asked for removal.
+ * memories. Resolves near-miss nodeIds to a candidate, drops truly out-of-pool
+ * ids, caps edit count, and strips deletes unless the user asked for removal.
  */
 export function scopeLlmCorrectionDiff(
   diff: CorrectionDiff,
@@ -193,7 +239,7 @@ export function scopeLlmCorrectionDiff(
   correction: string,
 ): { diff: CorrectionDiff; scopeWarnings: string[] } {
   const warnings: string[] = [];
-  const candidateIds = new Set(candidates.map((c) => c.nodeId));
+  const candidateIdList = candidates.map((c) => c.nodeId);
   const primaryNodeId = candidates[0]?.nodeId;
   const multiAllowed = correctionImpliesMultiNodeEdit(correction);
   const deleteAllowed = correctionImpliesDelete(correction);
@@ -202,16 +248,16 @@ export function scopeLlmCorrectionDiff(
 
   const validEdits: CorrectionDiff['edits'] = [];
   for (const rawEdit of diff.edits ?? []) {
-    // Defensive: strip stray surrounding brackets/quotes the model sometimes
-    // echoes from the prompt (e.g. "[abc]" or "\"abc\"") so the id still matches
-    // a candidate. The prompt no longer wraps ids in brackets, but a small
-    // model can still add them — and an unmatched id silently drops the edit.
-    const nodeId = rawEdit.nodeId.trim().replace(/^[["'\s]+|[\]"'\s]+$/g, '');
-    const edit = { ...rawEdit, nodeId };
-    if (!candidateIds.has(nodeId)) {
-      warnings.push(`Dropped edit on ${nodeId}: node was not in the candidate pool.`);
+    // Strip stray surrounding brackets/quotes the model may echo, then resolve
+    // to a real candidate id — tolerating the transpositions/typos small local
+    // models make on opaque ids ("qpqR…" → "qqpR…"). null = no confident match.
+    const stripped = rawEdit.nodeId.trim().replace(/^[["'\s]+|[\]"'\s]+$/g, '');
+    const nodeId = resolveCandidateNodeId(stripped, candidateIdList);
+    if (!nodeId) {
+      warnings.push(`Dropped edit on ${stripped}: node was not in the candidate pool.`);
       continue;
     }
+    const edit = { ...rawEdit, nodeId };
     if (edit.kind === 'delete' && !deleteAllowed) {
       warnings.push(`Dropped delete on ${nodeId}: correction did not request removal.`);
       continue;
@@ -473,6 +519,25 @@ export async function proposeCorrection(opts: {
     && diff.adds.length === 0
     && hadLlmChanges;
   if (strippedAll) {
+    // CRITICAL: only fall back to superseding the top recall match for
+    // OVER-SCOPING drops (the model tried to edit too many nodes). When EVERY
+    // drop was an unmatched nodeId, the model aimed at a specific node we could
+    // not resolve even fuzzily — superseding an unrelated top-recall node with
+    // the raw correction text would DESTROY real data (the reported bug). Return
+    // a clear empty diff instead of guessing.
+    if (scoped.scopeWarnings.every((w) => /was not in the candidate pool/.test(w))) {
+      return {
+        diff: {
+          edits: [],
+          adds: [],
+          reasoning: 'The local model targeted a node id that matches no recalled candidate (a mis-copied id). '
+            + 'No safe edit was made — rephrase the correction to describe the memory in words, or edit the node '
+            + 'directly in the app.',
+        },
+        candidates,
+        mode: 'llm-assisted',
+      };
+    }
     const det = proposeDeterministicCorrection({
       correction: opts.correction,
       candidates,
