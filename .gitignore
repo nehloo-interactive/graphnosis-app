@@ -135,3 +135,4 @@ apps/desktop-sidecar/src/smoketest-license.ts
 apps/desktop-sidecar/dist/smoketest.js
 apps/desktop-sidecar/dist/smoketest-brain.js
 apps/desktop-sidecar/dist/smoketest-license.js
+sbom.cdx.json

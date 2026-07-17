@@ -36,6 +36,12 @@ Monorepo: Tauri shell (`apps/desktop`) + Node sidecar (`apps/desktop-sidecar`) +
 
 **Prerequisites:** Node 20+, pnpm 9+, Rust (for the desktop shell). Ollama only if you exercise Foresight locally.
 
+### Supply chain & dependency security
+
+- Transitive-dependency fixes are applied explicitly and documented inline in the root `package.json`: `fastembed`'s pinned `tar` is overridden to a patched major (the advisories it carried have no fix on the 6.x line), paired with a patch that keeps `fastembed` working on tar 7; `libsodium-wrappers-sumo`'s broken ESM entry is corrected via `packageExtensions` + patch. See the `_comment_overrides` / `_comment_packageExtensions` keys for the full rationale.
+- Generate a CycloneDX SBOM with `pnpm sbom` (writes `sbom.cdx.json`; uses `cdxgen` via npx, no repo dependency).
+- Review production license obligations with `pnpm licenses`.
+
 ```bash
 git clone https://github.com/nehloo-interactive/GraphnosisApp.git
 cd GraphnosisApp
