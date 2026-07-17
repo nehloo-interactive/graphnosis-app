@@ -1,0 +1,72 @@
+/**
+ * Unit tests for the correction diff parser (correction.ts:extractJson) and the
+ * nodeId bracket-strip in scopeLlmCorrectionDiff. Guards the "Local LLM returned
+ * malformed JSON" regressions:
+ *   - a ```json fence wrapping the object
+ *   - an inner ```code``` fence inside a superseding-content string (the case a
+ *     non-greedy fence capture used to truncate)
+ *   - trailing commas / truncated (unbalanced-brace) output
+ *   - a nodeId the model echoed with stray brackets, e.g. "[abc]"
+ * Run after build: node --test tests/correction-parse.test.mjs
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { extractJson, scopeLlmCorrectionDiff } from '../dist/correction.js';
+
+const FENCE = '```'; // three backticks, no escaping headaches
+
+test('parses a clean JSON object', () => {
+  const out = extractJson('{ "edits": [], "adds": [], "reasoning": "ok" }');
+  assert.deepEqual(out, { edits: [], adds: [], reasoning: 'ok' });
+});
+
+test('strips a ```json code fence', () => {
+  const raw = FENCE + 'json\n{ "edits": [], "adds": [] }\n' + FENCE;
+  assert.deepEqual(extractJson(raw), { edits: [], adds: [] });
+});
+
+test('survives an inner ```code``` fence inside superseding content', () => {
+  // The regression: a non-greedy fence capture stopped at the first inner
+  // fence and truncated the object. The brace-slice parser keeps the whole
+  // object, inner fences and all.
+  const content = 'see ' + FENCE + 'js const x = 1 ' + FENCE + ' end';
+  const raw = FENCE + 'json\n{ "edits": [ { "kind": "supersede", "nodeId": "qqpR", "content": '
+    + JSON.stringify(content) + ', "reason": "fix" } ], "adds": [] }\n' + FENCE;
+  const out = extractJson(raw);
+  assert.equal(out.edits.length, 1);
+  assert.equal(out.edits[0].nodeId, 'qqpR');
+  assert.equal(out.edits[0].content, content);
+});
+
+test('drops trailing commas', () => {
+  const out = extractJson('{ "edits": [ { "kind": "delete", "nodeId": "a", "reason": "r" }, ], "adds": [], }');
+  assert.equal(out.edits.length, 1);
+  assert.equal(out.edits[0].nodeId, 'a');
+});
+
+test('repairs a truncated (unbalanced-brace) object', () => {
+  // Model ran out of tokens mid-array: missing the closing ] and }.
+  const out = extractJson('{ "edits": [ { "kind": "supersede", "nodeId": "a", "content": "x", "reason": "r" }');
+  assert.equal(out.edits.length, 1);
+  assert.equal(out.edits[0].nodeId, 'a');
+});
+
+test('throws when there is no JSON object at all', () => {
+  assert.throws(() => extractJson('I could not do that.'), /no JSON object/);
+});
+
+test('throws on unrecoverable garbage', () => {
+  assert.throws(() => extractJson('{ "edits": [ {{{ nonsense ]]] '), /unparseable JSON/);
+});
+
+test('scope guardrails strip stray brackets the model echoed onto a nodeId', () => {
+  const candidates = [{ graphId: 'g1', nodeId: 'nodeA', text: 'Top', viaGnn: false }];
+  const { diff, scopeWarnings } = scopeLlmCorrectionDiff(
+    { edits: [{ kind: 'supersede', nodeId: '[nodeA]', content: 'fixed', reason: 'r' }], adds: [] },
+    candidates,
+    'fix the title',
+  );
+  assert.equal(diff.edits.length, 1, 'bracketed nodeId should still match candidate');
+  assert.equal(diff.edits[0].nodeId, 'nodeA');
+  assert.equal(scopeWarnings.length, 0);
+});

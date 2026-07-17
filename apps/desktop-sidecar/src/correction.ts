@@ -66,12 +66,52 @@ export type CorrectionDiff = z.infer<typeof DiffSchema>;
 export type LlmCompleteInput = {
   system: string;
   user: string;
+  /** When set, the implementation enables its constrained-JSON mode (Ollama
+   *  `format:'json'`) so the model can only emit a valid JSON object — no code
+   *  fences, no trailing prose. The value may be a real JSON Schema for
+   *  backends that support structured outputs. */
   jsonSchema?: unknown;
   /** Explicit override — rare; normally preset comes from settings. */
   temperature?: number;
+  /** Hard cap on generated tokens (Ollama `num_predict`). Sized to fit the
+   *  full expected object so the JSON isn't truncated mid-value. */
+  maxTokens?: number;
   /** When aborted (e.g. work-priority preemption), implementations must cancel in-flight HTTP. */
   signal?: AbortSignal;
 };
+
+/** JSON Schema for the correction diff — passed to the local model to enable
+ *  constrained-JSON output (the root fix for "malformed JSON": without it the
+ *  model runs free-form and wraps the object in ```json fences / trailing
+ *  prose that small models often mangle). */
+const DIFF_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    edits: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['edit', 'supersede', 'delete'] },
+          nodeId: { type: 'string' },
+          content: { type: 'string' },
+          reason: { type: 'string' },
+        },
+        required: ['kind', 'nodeId'],
+      },
+    },
+    adds: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { text: { type: 'string' }, label: { type: 'string' } },
+        required: ['text'],
+      },
+    },
+    reasoning: { type: 'string' },
+  },
+  required: ['edits', 'adds'],
+} as const;
 
 export interface LocalLlm {
   /** Single-shot completion. Implementations: llama.cpp server, Ollama, MLX, etc. */
@@ -105,15 +145,15 @@ You will be given:
   1. A user correction in natural language.
   2. A small list of candidate nodes (best match first).
 
-Return a JSON object with this exact shape:
+Return a JSON object with this exact shape. Emit "edits" and "adds" FIRST; keep "reasoning" last and to one short sentence:
 {
-  "reasoning": string?,
   "edits": [
     { "kind": "edit",      "nodeId": "...", "content": "...", "reason": "..." } |
     { "kind": "supersede", "nodeId": "...", "content": "...", "reason": "..." } |
     { "kind": "delete",    "nodeId": "...", "reason": "..." }
   ],
-  "adds": [ { "text": "...", "label": "..." } ]
+  "adds": [ { "text": "...", "label": "..." } ],
+  "reasoning": "one short sentence (optional)"
 }
 
 Rules:
@@ -161,21 +201,27 @@ export function scopeLlmCorrectionDiff(
   const maxAdds = multiAllowed ? 2 : 1;
 
   const validEdits: CorrectionDiff['edits'] = [];
-  for (const edit of diff.edits ?? []) {
-    if (!candidateIds.has(edit.nodeId)) {
-      warnings.push(`Dropped edit on ${edit.nodeId}: node was not in the candidate pool.`);
+  for (const rawEdit of diff.edits ?? []) {
+    // Defensive: strip stray surrounding brackets/quotes the model sometimes
+    // echoes from the prompt (e.g. "[abc]" or "\"abc\"") so the id still matches
+    // a candidate. The prompt no longer wraps ids in brackets, but a small
+    // model can still add them — and an unmatched id silently drops the edit.
+    const nodeId = rawEdit.nodeId.trim().replace(/^[["'\s]+|[\]"'\s]+$/g, '');
+    const edit = { ...rawEdit, nodeId };
+    if (!candidateIds.has(nodeId)) {
+      warnings.push(`Dropped edit on ${nodeId}: node was not in the candidate pool.`);
       continue;
     }
     if (edit.kind === 'delete' && !deleteAllowed) {
-      warnings.push(`Dropped delete on ${edit.nodeId}: correction did not request removal.`);
+      warnings.push(`Dropped delete on ${nodeId}: correction did not request removal.`);
       continue;
     }
-    if (!multiAllowed && primaryNodeId && edit.nodeId !== primaryNodeId) {
-      warnings.push(`Dropped edit on ${edit.nodeId}: scoped to top recall match only.`);
+    if (!multiAllowed && primaryNodeId && nodeId !== primaryNodeId) {
+      warnings.push(`Dropped edit on ${nodeId}: scoped to top recall match only.`);
       continue;
     }
     if (validEdits.length >= maxEdits) {
-      warnings.push(`Dropped edit on ${edit.nodeId}: capped at ${maxEdits} operation(s).`);
+      warnings.push(`Dropped edit on ${nodeId}: capped at ${maxEdits} operation(s).`);
       continue;
     }
     validEdits.push(edit);
@@ -375,17 +421,53 @@ export async function proposeCorrection(opts: {
   const user = [
     `Correction: ${opts.correction}`,
     '',
-    'Candidate nodes (best match first — edit ONLY the first unless the correction explicitly targets more):',
+    'Candidate nodes (best match first — edit ONLY the first unless the correction explicitly targets more).',
+    'Copy the nodeId value AS-IS (the token after "nodeId=") — do NOT add brackets or quotes around it:',
+    // NOTE: the nodeId is presented as `nodeId=<id>`, NOT `[<id>]`. Wrapping it
+    // in square brackets made small models echo the brackets into the output
+    // ("nodeId":"[abc]"), which then failed the exact-match candidate check in
+    // scopeLlmCorrectionDiff and silently dropped every edit.
     ...candidatesForLlm.map(c =>
-      `- [${c.nodeId}] (graph: ${c.graphId})${c.viaGnn ? ' [neural-network-predicted]' : ''} ${c.text}`),
+      `- nodeId=${c.nodeId} (graph: ${c.graphId})${c.viaGnn ? ' [neural-network-predicted]' : ''}: ${c.text}`),
   ].join('\n');
 
-  const raw = await opts.llm.complete({ system: SYSTEM_PROMPT, user });
-  const parsed = DiffSchema.parse(extractJson(raw));
-  const scoped = scopeLlmCorrectionDiff(parsed, candidatesForLlm, opts.correction);
+  // Constrained-JSON mode (jsonSchema → Ollama format:'json') so the model can
+  // only emit a valid JSON object — no ```json fences or trailing prose for the
+  // parser to choke on. maxTokens is sized for reasoning + edits + superseding
+  // content so the object isn't truncated mid-value. Retry once with a stricter
+  // instruction if the first response still won't parse; then surface a CLEAR
+  // empty diff instead of a silent one.
+  const complete = (extra = ''): Promise<string> => opts.llm!.complete({
+    system: SYSTEM_PROMPT,
+    user: extra ? `${user}\n\n${extra}` : user,
+    jsonSchema: DIFF_JSON_SCHEMA,
+    maxTokens: 1024,
+  });
+  let parsedDiff: CorrectionDiff;
+  try {
+    parsedDiff = DiffSchema.parse(extractJson(await complete()));
+  } catch {
+    try {
+      parsedDiff = DiffSchema.parse(extractJson(
+        await complete('Respond with ONLY the JSON object described above — no code fences, no commentary.'),
+      ));
+    } catch (e) {
+      return {
+        diff: {
+          edits: [],
+          adds: [],
+          reasoning: `The local model did not return a usable edit (${e instanceof Error ? e.message : 'unparseable output'}). `
+            + 'Try rephrasing the correction, or turn off the Local LLM in Settings to use the deterministic supersede path.',
+        },
+        candidates,
+        mode: 'llm-assisted',
+      };
+    }
+  }
+  const scoped = scopeLlmCorrectionDiff(parsedDiff, candidatesForLlm, opts.correction);
   let diff = scoped.diff;
 
-  const hadLlmChanges = (parsed.edits?.length ?? 0) > 0 || (parsed.adds?.length ?? 0) > 0;
+  const hadLlmChanges = (parsedDiff.edits?.length ?? 0) > 0 || (parsedDiff.adds?.length ?? 0) > 0;
   const strippedAll = scoped.scopeWarnings.length > 0
     && diff.edits.length === 0
     && diff.adds.length === 0
@@ -466,56 +548,40 @@ export async function applyCorrection(opts: {
 
 /** Pull a JSON object out of a raw LLM completion. Small local models emit a
  *  variety of malformed shapes: bare prose + JSON, code-fenced JSON, JSON
- *  with trailing commas, JSON that just stops mid-object because the model
- *  ran out of budget. We try plain parse first, then progressively repair
- *  the common failure modes, then give up cleanly so the caller can show
- *  the user a usable empty-diff state instead of a stack trace. */
-function extractJson(raw: string): unknown {
-  // Strip ```json ... ``` and ``` ... ``` fences if present. The model
-  // sometimes wraps the object even when the prompt says "JSON only".
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
-  let candidate = fenced ? fenced[1]! : raw;
-  // Slice from first `{` to last `}` so leading/trailing prose is dropped.
-  const start = candidate.indexOf('{');
-  const end = candidate.lastIndexOf('}');
-  if (start === -1) throw new Error('Local LLM did not return JSON');
-  candidate = end === -1 ? candidate.slice(start) : candidate.slice(start, end + 1);
+ *  with trailing commas, JSON that stops mid-object on a token budget. We slice
+ *  to the outermost braces, try plain parse, then repair the common failure
+ *  modes. THROWS on unrecoverable output so the caller can retry once and then
+ *  surface a clear error — rather than silently queuing an empty diff.
+ *  Exported for unit tests (tests/correction-parse.test.mjs). */
+export function extractJson(raw: string): unknown {
+  // Slice from the FIRST `{` to the LAST `}` of the RAW output. A ```json
+  // wrapper carries no braces, so this drops the fence — and, unlike a
+  // non-greedy ```...``` capture, it is immune to an inner ```code``` fence
+  // inside a superseding-content string (which used to truncate the object at
+  // the first inner fence and fail the parse).
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1) throw new Error('model returned no JSON object');
+  const candidate = end > start ? raw.slice(start, end + 1) : raw.slice(start);
 
   // 1. Try as-is. Most well-formed responses land here.
   try { return JSON.parse(candidate); } catch { /* fall through to repair */ }
 
-  // 2. Repair pass — handles the three most common small-LLM failure modes:
-  //    (a) Trailing commas before `]` or `}` (e.g. `[1, 2, 3,]`).
-  //    (b) Unbalanced braces — usually missing close-braces because the
-  //        model was truncated by max-tokens mid-object.
-  //    (c) Unbalanced brackets — same reason.
-  let repaired = candidate
-    // (a) drop trailing commas
-    .replace(/,(\s*[}\]])/g, '$1');
-  // (b) + (c) — naive bracket balancer: count unclosed { and [ and append.
-  const opens = (repaired.match(/[{[]/g) ?? []);
-  const closes = (repaired.match(/[}\]]/g) ?? []);
+  // 2. Repair pass — small-LLM failure modes: (a) trailing commas before
+  //    `]`/`}`; (b)/(c) unbalanced braces/brackets from mid-object truncation.
+  let repaired = candidate.replace(/,(\s*[}\]])/g, '$1');
   const openCurly = (repaired.match(/\{/g) ?? []).length;
   const closeCurly = (repaired.match(/\}/g) ?? []).length;
   const openSquare = (repaired.match(/\[/g) ?? []).length;
   const closeSquare = (repaired.match(/\]/g) ?? []).length;
-  const missingCurly = Math.max(0, openCurly - closeCurly);
   const missingSquare = Math.max(0, openSquare - closeSquare);
-  // Order matters: arrays close first because they're usually nested inside
-  // objects. Adding `]` before `}` matches the most common ordering.
-  void opens; void closes;
+  const missingCurly = Math.max(0, openCurly - closeCurly);
+  // Arrays close first (usually nested inside the object): `]` before `}`.
   repaired = repaired + ']'.repeat(missingSquare) + '}'.repeat(missingCurly);
-  try { return JSON.parse(repaired); } catch { /* fall through to empty */ }
+  try { return JSON.parse(repaired); } catch { /* fall through to throw */ }
 
-  // 3. Give up cleanly. Returning an empty-but-valid diff means the caller
-  // (proposeCorrection) ships a "no changes proposed" preview to the App,
-  // and the user sees the friendly "could not match" message instead of a
-  // red Zod / SyntaxError banner. The reasoning string carries the raw
-  // model output (truncated) so the user can see what actually came back.
-  const preview = raw.slice(0, 240).replace(/\s+/g, ' ').trim();
-  return {
-    reasoning: `Local LLM returned malformed JSON; correction skipped. Raw start: ${preview}…`,
-    edits: [],
-    adds: [],
-  };
+  // 3. Unrecoverable. Throw with a short preview of what the model actually
+  //    sent so the caller's fallback message can show it.
+  const preview = raw.slice(0, 200).replace(/\s+/g, ' ').trim();
+  throw new Error(`unparseable JSON from local model — raw start: ${preview}…`);
 }

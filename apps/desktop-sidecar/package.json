@@ -20,6 +20,7 @@
     "smoke:license": "node --enable-source-maps dist/smoketest-license.js",
     "test:contradiction": "node tests/contradiction-eval/run-eval.mjs",
     "test:correction-scope": "node --test tests/correction-scope.test.mjs",
+    "test:correction-parse": "node --test tests/correction-parse.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

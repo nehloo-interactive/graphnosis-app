@@ -146,7 +146,7 @@ export class OllamaLlm implements LocalLlm {
     return this.getDefaultTemperature();
   }
 
-  async complete(input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; signal?: AbortSignal }): Promise<string> {
+  async complete(input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; maxTokens?: number; signal?: AbortSignal }): Promise<string> {
     if (input.signal?.aborted) {
       throw new DOMException('LLM request aborted', 'AbortError');
     }
@@ -158,7 +158,12 @@ export class OllamaLlm implements LocalLlm {
         model: this.model,
         stream: false,
         format: input.jsonSchema ? 'json' : undefined,
-        options: { temperature: this.ollamaTemperature(input) },
+        options: {
+          temperature: this.ollamaTemperature(input),
+          // Cap generation length when the caller sized it (e.g. the correction
+          // diff) so a long object isn't truncated mid-value by Ollama's default.
+          ...(input.maxTokens ? { num_predict: input.maxTokens } : {}),
+        },
         messages: [
           { role: 'system', content: input.system },
           { role: 'user', content: input.user },
