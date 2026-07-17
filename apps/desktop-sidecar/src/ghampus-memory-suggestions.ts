@@ -15,6 +15,7 @@ import type { LocalLlm } from './correction.js';
 import { listRecentSaves } from './agent-tools.js';
 import { augmentMemoryWithTemporalContext, inferObligationFromText } from './ghampus-temporal-parse.js';
 import { extractEngramScopeFromQuery } from './ghampus-intent.js';
+import { isExplicitMemoryRecallQuery } from './ghampus-language.js';
 import { isGhampusBusy } from './ghampus-busy.js';
 
 export type MemorySuggestionKind = 'remember' | 'obligation' | 'create_engram';
@@ -84,6 +85,12 @@ const MEMORY_SIGNAL_RE = new RegExp(
 const CHITCHAT_ONLY_RE = /^(hi|hello|hey|thanks|thank you|ok|okay|sure|got it|cool|great|bye|goodbye|salut|mersi|mulțumesc)[\s!.?]*$/i;
 
 const QUESTION_ONLY_RE = /^(what|who|when|where|why|how|which|can you|could you|tell me|show me|list|recall|remind me)\b/i;
+
+/** Explicit save requests — the only questions that may still trigger a
+ * suggestion ("can you note that the deadline is Friday?"). Signal words like
+ * "decide" must NOT rescue a question: "What did we decide on X?" is a recall
+ * question, and offering to save it would write the question into the cortex. */
+const EXPLICIT_SAVE_VERB_RE = /\b(remember\s+that|note\s+that|save\s+this|keep\s+in\s+mind|don'?t\s+forget|[țt]ine\s+minte|noteaz[aă]|recuerda\s+que|apunta|souviens-toi\s+que|merke\s+dir)\b/i;
 
 const CREATE_ENGRAM_RE = /\b(new\s+project|starting\s+(a\s+)?project|working\s+on\s+(a\s+)?project)\b/i;
 
@@ -165,12 +172,13 @@ function detectObligation(userText: string): MemorySuggestionObligation | undefi
   return inferObligationFromText(userText);
 }
 
-function shouldSkipUserMessage(userText: string): string | null {
+export function shouldSkipUserMessage(userText: string): string | null {
   const t = userText.trim();
   if (t.length < MIN_USER_MSG_CHARS) return 'message too short';
   if (t.startsWith('/')) return 'slash command';
   if (CHITCHAT_ONLY_RE.test(t)) return 'chitchat';
-  if (QUESTION_ONLY_RE.test(t) && !MEMORY_SIGNAL_RE.test(t) && t.endsWith('?')) return 'question only';
+  if (QUESTION_ONLY_RE.test(t) && t.endsWith('?') && !EXPLICIT_SAVE_VERB_RE.test(t)) return 'question only';
+  if (isExplicitMemoryRecallQuery(t) && !EXPLICIT_SAVE_VERB_RE.test(t)) return 'recall query';
   return null;
 }
 
