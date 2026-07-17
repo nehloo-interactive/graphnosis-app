@@ -6494,12 +6494,14 @@ export class GraphnosisHost {
     const liveSources = this.buildLiveSourceMapFromOplog(graphId, graphEvents, entry);
 
     const bundleHadSources = entry.bundleSourcesAtLoad > 0;
+    const graphHasLiveNodes = this.opts.adapter.inspectNodes(entry.handle).length > 0;
     for (const [sourceId, rec] of liveSources) {
       const local = entry.sourceIndex.get(sourceId);
       if (!local) {
-        // Empty .gai shell with no bundle metadata (save-guards pattern) — do not
-        // hydrate solely from op-log; hollow engrams must carry sources in .bundle.
-        if (!bundleHadSources) continue;
+        // Hollow shell (empty .gai AND no bundle metadata — save-guards pattern):
+        // do not hydrate solely from op-log. A graph with live nodes but an empty
+        // bundle lost its source index (partial sync) — recover from op-log.
+        if (!bundleHadSources && !graphHasLiveNodes) continue;
         if (await this.recoverSourceFromOplog(graphId, entry, rec)) dirty = true;
       } else if (JSON.stringify(local.nodeIds) !== JSON.stringify(rec.nodeIds)) {
         try {
