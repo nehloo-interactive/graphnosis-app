@@ -59,6 +59,27 @@ interface SkillDetail extends SkillListEntry {
   text: string;
 }
 
+/** One imported-but-unpromoted skill in a quarantine batch (quarantine:list). */
+interface QuarantineItemView {
+  sourceId: string;
+  state: 'quarantined' | 'promoted' | 'rejected';
+  /** Human skill name derived from the source ref by the sidecar. */
+  label: string;
+  lint?: string[];
+}
+/** A per-import quarantine engram + the skills held in it for owner review. */
+interface QuarantineBatchView {
+  /** The quarantine engram id (the promote/reject `items` live here). */
+  graphId: string;
+  displayName: string;
+  active: boolean;
+  fromPack: string;
+  verified: boolean;
+  signerPublicKey?: string;
+  importedAt: number;
+  items: QuarantineItemView[];
+}
+
 interface SkillInfluentialNode {
   nodeId: string;
   graphId: string;
@@ -607,6 +628,29 @@ export async function fetchSkillsLibrary(): Promise<void> {
   }
 }
 
+/** Imported .gsk packs still awaiting owner review. Rendered as a promote/reject
+ *  panel atop the library — quarantined skills are excluded from skill:list, so
+ *  without this they would be completely invisible in the UI. */
+let skillsQuarantineBatches: QuarantineBatchView[] = [];
+/** True while a promote/reject batch is in flight — disables the review panel's
+ *  buttons so a second click can't race the running operation. */
+let skillsQuarantineBusy = false;
+
+export async function fetchQuarantineBatches(): Promise<void> {
+  try {
+    const res = await ipcCall<{ ok: boolean; batches?: QuarantineBatchView[] }>('quarantine:list', {});
+    const batches = res?.ok ? (res.batches ?? []) : [];
+    // Keep only batches with ≥1 item still awaiting review; drop promoted/
+    // rejected items so a fully-adjudicated batch disappears from the panel.
+    skillsQuarantineBatches = batches
+      .map((b) => ({ ...b, items: b.items.filter((it) => it.state === 'quarantined') }))
+      .filter((b) => b.items.length > 0);
+  } catch (e) {
+    console.warn('[skills] quarantine:list failed', e);
+    skillsQuarantineBatches = [];
+  }
+}
+
 /**
  * Remove sourceIds from the hidden-skills set that no longer exist in any
  * loaded engram. Called once at startup after fetchSkillsLibrary() resolves.
@@ -678,6 +722,7 @@ export async function mountSkillsPane(): Promise<void> {
         console.warn('[skills] reloadGraphsMetadata failed', e);
       }),
       fetchSkillsLibrary(),
+      fetchQuarantineBatches(),
     ]);
     if (gen !== _mountSkillsGen) return;
 
@@ -1046,6 +1091,252 @@ function updateSkillsStickyOffsets(): void {
 }
 let _skillsStickyResizeBound = false;
 
+// ── Imported-skill review (quarantine promote / reject) ────────────────────
+
+/** Human pack name from a quarantine engram's "Quarantine - <pack>" title.
+ *  Accepts a hyphen (current) or em-dash (older engrams) as the separator. */
+function quarantinePackName(batch: QuarantineBatchView): string {
+  return batch.displayName.replace(/^Quarantine\s*[—-]\s*/, '').trim() || batch.fromPack;
+}
+
+/** Skills-template engrams eligible as promotion targets — excludes quarantine
+ *  engrams themselves and archived/unloaded engrams. */
+function listPromoteTargetEngrams(): GraphWithMetadata[] {
+  return getLoadedGraphs()
+    .filter((g) => !g.metadata.archived && g.loaded !== false
+      && g.metadata.template === 'skill' && !g.metadata.quarantine)
+    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+}
+
+/**
+ * Render the "imported skills awaiting review" panel. Returns '' when nothing is
+ * pending. Rendered ABOVE the engram groups and even when the library is empty,
+ * because quarantined skills are excluded from skill:list and would otherwise be
+ * invisible. Each batch offers a promotion target (existing Skills engram or a
+ * fresh one) plus per-skill and whole-batch Promote / Reject.
+ */
+function renderQuarantineReview(): string {
+  if (skillsQuarantineBatches.length === 0) return '';
+  const targets = listPromoteTargetEngrams();
+  const totalPending = skillsQuarantineBatches.reduce((n, b) => n + b.items.length, 0);
+  // While a batch is promoting/rejecting, disable every control in the panel so
+  // a second click can't race the running operation.
+  const dis = skillsQuarantineBusy ? ' disabled' : '';
+
+  const cards = skillsQuarantineBatches.map((b) => {
+    const packName = quarantinePackName(b);
+    const badge = b.verified
+      ? '<span class="g-pack-badge g-pack-badge--verified">✓ verified official pack</span>'
+      : '<span class="g-pack-badge g-pack-badge--community">community pack</span>';
+
+    // Default target: an existing Skills engram whose slug matches the pack
+    // name, else the sole existing Skills engram, else a new per-pack engram.
+    const slug = app().slugifyEngramName(packName);
+    const collision = targets.find((g) => g.graphId === slug);
+    const soleTarget = targets.length === 1 ? targets[0] : undefined;
+    const defaultExisting = collision ?? soleTarget;
+    const options = [
+      ...targets.map((g) => {
+        const sel = defaultExisting && g.graphId === defaultExisting.graphId ? ' selected' : '';
+        return `<option value="existing:${escapeHtml(g.graphId)}"${sel}>${escapeHtml(app().formatEngramLabel(g))}</option>`;
+      }),
+      `<option value="new"${defaultExisting ? '' : ' selected'}>＋ New engram: "${escapeHtml(packName)}"</option>`,
+    ].join('');
+
+    const rows = b.items.map((it) => {
+      const name = humanizeSkillName(it.label) || skillDisplayName(it.label) || it.label;
+      return `<li class="gts-review-row">
+          <span class="gts-review-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+          <span class="gts-review-row-actions">
+            <button type="button" class="btn-sm gts-review-action" data-gts-act="promote-one" data-gts-batch="${escapeHtml(b.graphId)}" data-gts-source="${escapeHtml(it.sourceId)}"${dis}>Promote</button>
+            <button type="button" class="btn-sm btn-ghost gts-review-action" data-gts-act="reject-one" data-gts-batch="${escapeHtml(b.graphId)}" data-gts-source="${escapeHtml(it.sourceId)}"${dis}>Reject</button>
+          </span>
+        </li>`;
+    }).join('');
+
+    return `<div class="gts-review-batch" data-gts-batch="${escapeHtml(b.graphId)}">
+        <div class="gts-review-batch-head">
+          <span class="gts-review-pack">${escapeHtml(packName)}</span>${badge}
+          <span class="gts-review-count">${b.items.length}</span>
+        </div>
+        <ul class="gts-review-list">${rows}</ul>
+        <div class="gts-review-batch-foot">
+          <label class="gts-review-target">Promote into
+            <select class="gts-review-target-select" data-gts-batch="${escapeHtml(b.graphId)}"${dis}>${options}</select>
+          </label>
+          <span class="gts-review-batch-actions">
+            <button type="button" class="btn-sm primary gts-review-action" data-gts-act="promote-all" data-gts-batch="${escapeHtml(b.graphId)}"${dis}>Promote all ${b.items.length}</button>
+            <button type="button" class="btn-sm btn-ghost gts-review-action" data-gts-act="reject-all" data-gts-batch="${escapeHtml(b.graphId)}"${dis}>Reject all</button>
+          </span>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `<section class="gts-review" aria-label="Imported skills awaiting review">
+      <div class="gts-review-head">
+        <span class="gts-review-title">🛡️ ${totalPending} imported skill${totalPending === 1 ? '' : 's'} awaiting your review</span>
+        ${skillsQuarantineBusy ? '<span class="gts-review-busy">Working…</span>' : ''}
+      </div>
+      <p class="gts-review-note">Imported skills are quarantined — invisible to recall and dispatch — until you promote them. After promotion they stay <code>[dispatch-safe: no]</code> (autonomy capped at L1); raise a skill's autonomy yourself once you trust it.</p>
+      ${cards}
+    </section>`;
+}
+
+/** Read the chosen promotion target from a batch's target <select>. Returns
+ *  'existing:<graphId>' or 'new'. */
+function readPromoteTargetChoice(batchGid: string): string {
+  const sel = document.querySelector<HTMLSelectElement>(
+    `.gts-review-target-select[data-gts-batch="${CSS.escape(batchGid)}"]`,
+  );
+  return sel?.value ?? 'new';
+}
+
+/** Drop one adjudicated item from the in-memory panel state, removing the whole
+ *  batch when its last item is gone. Caller re-renders. */
+function dropQuarantineItemLocally(batchGid: string, sourceId: string): void {
+  const b = skillsQuarantineBatches.find((x) => x.graphId === batchGid);
+  if (!b) return;
+  b.items = b.items.filter((it) => it.sourceId !== sourceId);
+  if (b.items.length === 0) {
+    skillsQuarantineBatches = skillsQuarantineBatches.filter((x) => x.graphId !== batchGid);
+  }
+}
+
+async function promoteQuarantined(batch: QuarantineBatchView, sourceIds: string[]): Promise<void> {
+  if (sourceIds.length === 0) return;
+  const packName = quarantinePackName(batch);
+  const choice = readPromoteTargetChoice(batch.graphId);
+
+  let targetEngramId: string;
+  let targetLabel: string;
+  if (choice.startsWith('existing:')) {
+    targetEngramId = choice.slice('existing:'.length);
+    targetLabel = getLoadedGraphs().find((g) => g.graphId === targetEngramId)?.metadata.displayName ?? targetEngramId;
+  } else {
+    // New engram — create it first (handles the free-plan limit + proper slug).
+    const created = await createSkillsEngramQuiet(packName);
+    if (!created) return; // toast already shown by createSkillsEngramQuiet
+    targetEngramId = created;
+    targetLabel = packName;
+  }
+
+  skillsQuarantineBusy = true;
+  renderSkillsLibrary(); // disable the panel's controls for the duration
+  const toastId = app().addIngestToast('Promoting imported skills…', `to "${targetLabel}"`);
+  let promoted = 0;
+  const failures: string[] = [];
+  try {
+    // Promote ONE skill at a time so its row leaves the review list the moment
+    // it lands, instead of the whole panel freezing until all N finish. The
+    // sidecar auto-deletes the quarantine engram when its last item is promoted.
+    for (const sid of sourceIds) {
+      try {
+        const res = await ipcCall<{ ok: boolean; promoted?: string[] }>(
+          'quarantine:promote', { items: [sid], targetEngramId },
+        );
+        if (res?.ok && (res.promoted?.length ?? 0) > 0) {
+          promoted++;
+          dropQuarantineItemLocally(batch.graphId, sid);
+          renderSkillsLibrary(); // panel shrinks now; the live list fills after the loop
+        } else {
+          failures.push(sid);
+        }
+      } catch { failures.push(sid); }
+    }
+
+    // Reconcile the live view once. Load the (possibly new) target into the
+    // sidecar graph set, refresh metadata + library + quarantine, and INVALIDATE
+    // the target's dispatch-safe readout — otherwise a stale cache leaves the
+    // freshly-promoted skills without their autonomy dials (only the skills that
+    // were already in the engram, or one warmed row, would show them).
+    await ipcCall('graphs.load', { graphId: targetEngramId }).catch(() => {});
+    await app().reloadGraphsMetadata().catch(() => {});
+    skillsDispatchReadoutCache.delete(targetEngramId);
+    await Promise.all([fetchSkillsLibrary(), fetchQuarantineBatches()]);
+    populateSkillsEngramPickers();
+    expandSkillEngramGroups(new Set([targetEngramId]));
+    app().finishIngestToast(
+      toastId,
+      failures.length > 0 ? 'error' : 'success',
+      `Promoted ${promoted} skill${promoted === 1 ? '' : 's'} into "${targetLabel}"${failures.length > 0 ? ` · ${failures.length} failed` : ''}`,
+    );
+    void warmVitalityCache();
+  } finally {
+    skillsQuarantineBusy = false;
+    renderSkillsLibrary();
+  }
+}
+
+async function rejectQuarantined(batch: QuarantineBatchView, sourceIds: string[]): Promise<void> {
+  if (sourceIds.length === 0) return;
+  const n = sourceIds.length;
+  const packName = quarantinePackName(batch);
+  const ok = await gConfirm(
+    `Reject ${n} imported skill${n === 1 ? '' : 's'}?`,
+    `${n === 1 ? 'This skill' : 'These skills'} from "${packName}" will be discarded from quarantine. You can re-import the pack later if you change your mind.`,
+  );
+  if (!ok) return;
+  skillsQuarantineBusy = true;
+  renderSkillsLibrary(); // disable the panel's controls for the duration
+  const toastId = app().addIngestToast('Rejecting imported skills…', packName);
+  let rejected = 0;
+  const failures: string[] = [];
+  try {
+    // Per-skill, like promote — each row leaves the list as it's discarded.
+    for (const sid of sourceIds) {
+      try {
+        const res = await ipcCall<{ ok: boolean; rejected?: string[] }>('quarantine:reject', { items: [sid] });
+        if (res?.ok && (res.rejected?.length ?? 0) > 0) {
+          rejected++;
+          dropQuarantineItemLocally(batch.graphId, sid);
+          renderSkillsLibrary();
+        } else {
+          failures.push(sid);
+        }
+      } catch { failures.push(sid); }
+    }
+    await app().reloadGraphsMetadata().catch(() => {});
+    await fetchQuarantineBatches();
+    app().finishIngestToast(
+      toastId,
+      failures.length > 0 ? 'error' : 'success',
+      `Rejected ${rejected} imported skill${rejected === 1 ? '' : 's'}${failures.length > 0 ? ` · ${failures.length} failed` : ''}`,
+    );
+  } finally {
+    skillsQuarantineBusy = false;
+    renderSkillsLibrary();
+  }
+}
+
+/** Delegated click handler for the review panel's promote/reject buttons. Bound
+ *  once on the library list element; independent of the main list listener (a
+ *  .gts-review-action never matches the main handler's selectors, so the two
+ *  co-exist on the same element without conflict). */
+function bindQuarantineReviewOnce(listEl: HTMLElement): void {
+  if (listEl.dataset['gtsListenerBound']) return;
+  listEl.dataset['gtsListenerBound'] = '1';
+  listEl.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.gts-review-action');
+    if (!btn) return;
+    e.stopPropagation();
+    if (skillsQuarantineBusy) return; // a promote/reject batch is already running
+    const act = btn.dataset['gtsAct'];
+    const batchGid = btn.dataset['gtsBatch'] ?? '';
+    const batch = skillsQuarantineBatches.find((b) => b.graphId === batchGid);
+    if (!act || !batch) return;
+    if (act === 'promote-one' || act === 'reject-one') {
+      const sid = btn.dataset['gtsSource'] ?? '';
+      if (!sid) return;
+      if (act === 'promote-one') void promoteQuarantined(batch, [sid]);
+      else void rejectQuarantined(batch, [sid]);
+    } else if (act === 'promote-all') {
+      void promoteQuarantined(batch, batch.items.map((it) => it.sourceId));
+    } else if (act === 'reject-all') {
+      void rejectQuarantined(batch, batch.items.map((it) => it.sourceId));
+    }
+  });
+}
+
 export function renderSkillsLibrary(): void {
   syncSkillsEngramFilterOptions();
   updateSkillsStickyOffsets();
@@ -1064,12 +1355,29 @@ export function renderSkillsLibrary(): void {
     hiddenBtn.style.visibility = totalHidden > 0 ? 'visible' : 'hidden';
   }
   if (!listEl) return;
+  // If the skill open in the trainer no longer exists — e.g. its engram was just
+  // deleted from Settings → Graphs — reset the trainer to compose mode instead of
+  // leaving an orphaned skill on screen. Inline reset (not showSkillsComposeMode)
+  // so we don't re-enter this function. Guard on skillsActiveSourceId only: a
+  // fresh unsaved compose result has no backing library row and must be kept.
+  if (skillsActiveSourceId && !skillsLibrary.some((s) => s.sourceId === skillsActiveSourceId)) {
+    applyComposeModeDom();
+    updateSkillsResetButton();
+    syncSkillsPreviewWarning();
+  }
+  // The imported-skill review panel renders above the library and must be bound
+  // + shown even when the library itself is empty (a cortex whose only skills
+  // are still quarantined lists zero rows in skill:list).
+  bindQuarantineReviewOnce(listEl);
+  const reviewHtml = renderQuarantineReview();
   if (list.length === 0) {
     let msg: string;
     if (skillsLibraryLoadError) {
       msg = `Could not load skills (${skillsLibraryLoadError}). Try ↻ or reopen this tab.`;
     } else if (skillsLibraryFetching && skillsLibrary.length === 0) {
       msg = 'Loading skills…';
+    } else if (reviewHtml && skillsLibrary.length === 0) {
+      msg = 'Promote an imported skill above to add it to your library.';
     } else if (skillsLibrary.length === 0) {
       msg = 'You haven\'t trained any skills yet. Compose one on the right to begin.';
     } else if (skillsShowHidden) {
@@ -1080,7 +1388,7 @@ export function renderSkillsLibrary(): void {
         ? 'All your skills are hidden. Click "Show hidden" to bring them back.'
         : 'No skills match your filter.';
     }
-    listEl.innerHTML = `<p class="subtitle skills-library-empty">${escape(msg)}</p>`;
+    listEl.innerHTML = reviewHtml + `<p class="subtitle skills-library-empty">${escape(msg)}</p>`;
     return;
   }
 
@@ -1104,7 +1412,7 @@ export function renderSkillsLibrary(): void {
   // readouts are warmed after paint so the dials fill in (one IPC per engram,
   // cached). Collapsed groups are skipped until the user opens them.
   const expandedEngramIds: string[] = [];
-  listEl.innerHTML = groupEntries.map(([gid, rootsInGroup]) => {
+  listEl.innerHTML = reviewHtml + groupEntries.map(([gid, rootsInGroup]) => {
     // A filter force-expands every group it matches. Otherwise: user state if
     // set, else default (open only when there's a single engram).
     const userState = skillEngramGroupState.get(gid);
@@ -1161,7 +1469,13 @@ export function renderSkillsLibrary(): void {
       const gid = ctl?.dataset['skillAutonomyGraph'] ?? '';
       const sid = ctl?.dataset['skillAutonomySource'] ?? '';
       const lvl = skillAutBtn.dataset['skillLevel'] as 'L0' | 'L1' | 'L2' | 'L3' | 'inherit' | undefined;
-      if (gid && sid && lvl) void setSkillAutonomyLevel(gid, sid, lvl);
+      // A greyed L2/L3 segment carrying data-skill-raise is an "unlock" — it
+      // lifts the skill's dispatch-safe cap before setting the level.
+      const raise = skillAutBtn.dataset['skillRaise'] as 'partial' | 'yes' | undefined;
+      if (gid && sid && lvl) {
+        if (raise && (lvl === 'L2' || lvl === 'L3')) void raiseSkillAutonomy(gid, sid, lvl, raise);
+        else void setSkillAutonomyLevel(gid, sid, lvl);
+      }
       return;
     }
 
@@ -1324,15 +1638,28 @@ function renderSkillAutonomyControl(graphId: string, sourceId: string): string {
   const pinnedByCap = entry.configuredSkillLevel !== null
     && levelRankUi(entry.configuredSkillLevel) > capRank;
 
+  // The skill is limited by its dispatch-safe TAG (not a meta/router pin or an
+  // unresolved contradiction) exactly when its actual cap equals the cap that
+  // tag alone implies. Only then can the owner lift it by re-tagging — clicking
+  // a greyed L2/L3 segment raises dispatch-safe (no→partial→yes).
+  const DS_CAP: Record<string, AutonomyLevel> = { no: 'L1', partial: 'L2', yes: 'L3' };
+  const raisableByTag = entry.cap === (DS_CAP[entry.dispatchSafe] ?? 'L3') && entry.dispatchSafe !== 'yes';
+
   const segs = SKILL_AUTONOMY_LEVELS.map((s) => {
     const aboveCap = levelRankUi(s.level) > capRank;
     const isActive = !inheriting && s.level === active;
-    const disabled = s.locked || aboveCap;
-    const cls = `skill-autonomy-seg${isActive ? ' active' : ''}${aboveCap ? ' above-cap' : ''}`;
-    const title = aboveCap
-      ? `${s.label} exceeds this skill's authored dispatch-safe cap (${entry.cap}).`
-      : s.title;
-    return `<button type="button" class="${cls}"${disabled ? ' disabled' : ''} data-skill-level="${s.level}" title="${escape(title)}">${escape(s.label)}</button>`;
+    const raiseTo = aboveCap && raisableByTag
+      ? (s.level === 'L2' ? 'partial' : s.level === 'L3' ? 'yes' : null)
+      : null;
+    const disabled = s.locked || (aboveCap && !raiseTo);
+    const cls = `skill-autonomy-seg${isActive ? ' active' : ''}${aboveCap ? ' above-cap' : ''}${raiseTo ? ' raisable' : ''}`;
+    const title = raiseTo
+      ? `Raise this skill to ${s.label} — sets dispatch-safe: ${raiseTo} so it can ${s.level === 'L2' ? 'preview-then-run' : 'auto-run'} when dispatched. Only raise skills you trust.`
+      : aboveCap
+        ? `${s.label} exceeds this skill's authored dispatch-safe cap (${entry.cap}).`
+        : s.title;
+    const raiseAttr = raiseTo ? ` data-skill-raise="${raiseTo}"` : '';
+    return `<button type="button" class="${cls}"${disabled ? ' disabled' : ''} data-skill-level="${s.level}"${raiseAttr} title="${escape(title)}">${escape(s.label)}</button>`;
   }).join('');
 
   const inheritCls = `skill-autonomy-inherit${inheriting ? ' active' : ''}`;
@@ -1391,6 +1718,41 @@ async function setSkillAutonomyLevel(
   } catch (e) {
     console.warn('[skills] setSkillAutonomy failed', e);
     showSkillsToast('Could not update the skill autonomy level. Try again.', 'error');
+  }
+}
+
+/** Owner "unlock" for a skill capped by its dispatch-safe tag (e.g. any imported
+ *  skill, which imports as dispatch-safe: no → cap L1). Raises the authored tag
+ *  (no→partial for L2, →yes for L3) so the cap lifts, then pins the per-skill
+ *  override to the requested level. Behind a confirm — this permits the skill to
+ *  preview-then-run (L2) or auto-run (L3) when dispatched. */
+async function raiseSkillAutonomy(
+  graphId: string,
+  sourceId: string,
+  level: 'L2' | 'L3',
+  dispatchSafe: 'partial' | 'yes',
+): Promise<void> {
+  const libEntry = skillsLibrary.find((s) => s.sourceId === sourceId);
+  const name = libEntry ? (skillBaseName(libEntry.label) || skillDisplayName(libEntry.label)) : 'this skill';
+  const ok = await gConfirm(
+    `Raise "${name}" to ${level}?`,
+    `This sets the skill's dispatch-safe to "${dispatchSafe}", lifting its autonomy cap so it can ${level === 'L2' ? 'surface a preview-then-run card' : 'auto-run unattended (only when you enable the executor)'} when dispatched. Imported skills default to dispatch-safe: no — raise only skills you have reviewed and trust.`,
+  );
+  if (!ok) return;
+  try {
+    const res = await ipcCall<{ ok: boolean; cap?: AutonomyLevel; changed?: number }>(
+      'skills.setSkillDispatchSafe', { graphId, sourceId, dispatchSafe },
+    );
+    if (!res?.ok) { showSkillsToast('Could not raise the skill\'s dispatch-safe cap.', 'error'); return; }
+    // Cap is lifted — now pin the per-skill override to the requested level.
+    await ipcCall('skills.setSkillAutonomy', { graphId, sourceId, level });
+    skillsDispatchReadoutCache.delete(graphId);
+    await fetchDispatchReadout(graphId);
+    renderSkillsLibrary();
+    showSkillsToast(`Raised "${name}" to ${level} (dispatch-safe: ${dispatchSafe}).`, 'success');
+  } catch (e) {
+    console.warn('[skills] raiseSkillAutonomy failed', e);
+    showSkillsToast(`Raise failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
   }
 }
 
@@ -1620,7 +1982,10 @@ function resetSkillsComposeForm(): void {
   updateSkillsResetButton();
 }
 
-function showSkillsComposeMode(): void {
+/** Reset the trainer pane to compose mode WITHOUT re-rendering the library — so
+ *  it is safe to call from inside renderSkillsLibrary (showSkillsComposeMode
+ *  re-enters renderSkillsLibrary and would recurse). */
+function applyComposeModeDom(): void {
   document.getElementById('skills-compose')?.classList.remove('hidden');
   document.getElementById('skills-review')?.classList.add('hidden');
   document.getElementById('skills-license-card')?.classList.add('hidden');
@@ -1633,6 +1998,10 @@ function showSkillsComposeMode(): void {
   }
   skillsActiveSourceId = null;
   skillsActiveResult = null;
+}
+
+function showSkillsComposeMode(): void {
+  applyComposeModeDom();
   renderSkillsLibrary();
   updateSkillsResetButton();
   syncSkillsPreviewWarning();
@@ -4166,6 +4535,10 @@ interface SkillImportResult {
   graphId?: string;
   imported?: Array<{ name: string; sourceId: string }>;
   skippedEmpty?: string[];
+  /** True when the pack landed in a fresh quarantine engram (the default) —
+   *  its skills are held for owner review, NOT merged into the live library. */
+  quarantined?: boolean;
+  quarantineEngramId?: string;
 }
 
 /** Read a File picked from the hidden Import .gsk input and ship it to the
@@ -4239,23 +4612,20 @@ async function runGskImport(): Promise<void> {
   const choice = await chooseSkillImportDestination(peek);
   if (!choice) return; // user cancelled the modal
 
-  let graphId = choice.existingGraphId;
-  if (!graphId) {
-    const created = await createSkillsEngramQuiet(choice.newEngramName ?? peek.pack.displayName);
-    if (!created) return; // toast already shown
-    graphId = created;
-  }
+  // Imports land in QUARANTINE by default — the real destination engram is
+  // chosen later in the review panel's "Promote into …" picker, NOT here. So we
+  // do NOT pre-create the picked destination (which used to leave an empty orphan
+  // engram sitting beside the quarantine one — the "why are two engrams created?"
+  // report). Pass the picked existing engram if the user chose one, else a
+  // placeholder the sidecar ignores when quarantining.
+  const graphId = choice.existingGraphId ?? 'quarantine-import';
 
   // ── Import ───────────────────────────────────────────────────────────
   // A multi-skill pack takes several seconds to ingest (one source + several
   // node inserts per skill, plus relink). Hold a persistent progress toast up
-  // for the whole duration — ingest AND the library refresh — so the user
-  // isn't left wondering whether anything is happening before the new engram
-  // appears.
-  const destLabel = choice.existingGraphId
-    ? (getLoadedGraphs().find((g) => g.graphId === choice.existingGraphId)?.metadata.displayName ?? choice.existingGraphId)
-    : (choice.newEngramName ?? peek.pack?.displayName ?? 'new engram');
-  const importToastId = app().addIngestToast('Importing memory-trained skills…', `to "${destLabel}"`);
+  // for the whole duration so the user isn't left wondering whether anything is
+  // happening.
+  const importToastId = app().addIngestToast('Importing memory-trained skills…', 'to quarantine — review before use');
   try {
     const result = await ipcCall<SkillImportResult>('skill:importGsk', {
       graphId,
@@ -4272,12 +4642,30 @@ async function runGskImport(): Promise<void> {
     const verifiedTag = result.verified ? ' (verified official pack)' : (result.pack?.kind === 'community' ? ' (community pack)' : '');
     const skippedTag = skipped > 0 ? ` · ${skipped} skipped (empty)` : '';
     scrollSkillsPaneToTop();
-    // The destination engram may have been freshly created (Tauri side) and
-    // not yet pulled into the sidecar's loaded-graph set, so the no-arg
-    // skill:list enumeration (graphs.list) can miss it — leaving the library
-    // stuck on its prior contents even though the import succeeded. Load the
-    // graph into the sidecar first, refresh the engram pickers/group state,
-    // then re-list.
+
+    if (result.quarantined) {
+      // DEFAULT PATH — the pack landed in a quarantine engram. Its skills are
+      // held for owner review, so do NOT merge them into the live library.
+      // Surface the review panel (Promote / Reject) instead. Merging quarantined
+      // skills here was the cause of the "skills appeared then vanished" report:
+      // the per-graph fallback below pulled them in, then the next no-arg
+      // skill:list — which excludes quarantine — dropped them again.
+      await Promise.all([fetchSkillsLibrary(), fetchQuarantineBatches()]);
+      populateSkillsEngramPickers();
+      renderSkillsLibrary();
+      app().finishIngestToast(
+        importToastId,
+        'success',
+        `Imported ${n} skill${n === 1 ? '' : 's'} to quarantine${verifiedTag}${skippedTag} — review and promote below.`,
+      );
+      return;
+    }
+
+    // LEGACY trusted-merge path (quarantine:false) — skills land directly in the
+    // target engram and should show in the library immediately. The destination
+    // engram may have been freshly created (Tauri side) and not yet pulled into
+    // the sidecar's loaded-graph set, so the no-arg skill:list enumeration can
+    // miss it — load the graph into the sidecar first, then re-list.
     const intoGraph = result.graphId ?? graphId;
     if (intoGraph) await ipcCall('graphs.load', { graphId: intoGraph }).catch(() => {});
     await fetchSkillsLibrary();

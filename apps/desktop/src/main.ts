@@ -24924,7 +24924,9 @@ document.getElementById('whats-new-modal')?.addEventListener('click', (e) => {
 // of the `.hidden` class. All modal-backdrops + the whats-new overlay are
 // static, direct children of <body>, so a per-element observer is cheap and
 // fires only on their own class/style changes (no app-wide mutation churn).
-const modalBlurEls = document.querySelectorAll<HTMLElement>('.modal-backdrop, #whats-new-modal');
+const modalBlurEls = new Set<HTMLElement>(
+  document.querySelectorAll<HTMLElement>('.modal-backdrop, #whats-new-modal'),
+);
 function syncModalBlur(): void {
   const anyOpen = Array.from(modalBlurEls).some((el) => {
     // .over-sidebar modals are scoped to a sidebar section — they never blur
@@ -24945,6 +24947,24 @@ function syncModalBlur(): void {
 }
 const modalBlurObserver = new MutationObserver(syncModalBlur);
 modalBlurEls.forEach((el) => modalBlurObserver.observe(el, { attributes: true, attributeFilter: ['class', 'style'] }));
+// Some .modal-backdrop overlays are created lazily on first use (e.g. the .gsk
+// skill-import modal, built dynamically in skills.ts) — AFTER the static query
+// above ran, so they'd never blur `main`. Watch <body>'s direct children so
+// those late modals register too. childList-only, no subtree → cheap; modal
+// backdrops are always direct children of <body>.
+new MutationObserver((muts) => {
+  let added = false;
+  for (const m of muts) {
+    for (const n of Array.from(m.addedNodes)) {
+      if (n instanceof HTMLElement && n.classList.contains('modal-backdrop') && !modalBlurEls.has(n)) {
+        modalBlurEls.add(n);
+        modalBlurObserver.observe(n, { attributes: true, attributeFilter: ['class', 'style'] });
+        added = true;
+      }
+    }
+  }
+  if (added) syncModalBlur();
+}).observe(document.body, { childList: true });
 syncModalBlur();
 
 // ── Paywall buttons ─────────────────────────────────────────────────────────

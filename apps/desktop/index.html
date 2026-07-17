@@ -5774,6 +5774,59 @@
       .skill-engram-group-children { display: none; padding: 6px 0 2px 6px; }
       .skill-engram-group.expanded > .skill-engram-group-children { display: block; }
 
+      /* ── Imported-skill review panel (quarantine promote / reject) ────────
+         Shown above the engram groups whenever a .gsk import is awaiting owner
+         review. Accent-tinted so it reads as an action item, not library chrome. */
+      .gts-review {
+        margin: 4px 4px 12px; padding: 10px 12px;
+        border: 1px solid color-mix(in oklab, var(--accent) 34%, transparent);
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--accent) 7%, var(--bg-elev));
+      }
+      .gts-review-head { display: flex; align-items: center; gap: 8px; }
+      .gts-review-title { font-size: 12.5px; font-weight: 700; color: var(--fg); }
+      .gts-review-note { margin: 6px 0 10px; font-size: 11px; line-height: 1.5; color: var(--fg-dim); }
+      .gts-review-note code {
+        font-size: 10.5px; padding: 1px 4px; border-radius: 4px;
+        background: color-mix(in oklab, var(--fg) 12%, transparent); color: var(--fg);
+      }
+      .gts-review-batch {
+        border: 1px solid var(--border); border-radius: 6px;
+        background: var(--bg); padding: 8px 10px;
+      }
+      .gts-review-batch + .gts-review-batch { margin-top: 8px; }
+      .gts-review-batch-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+      .gts-review-pack { font-size: 12px; font-weight: 600; color: var(--fg); }
+      .gts-review-count {
+        margin-left: auto; font-size: 11px; font-weight: 600; color: var(--fg-dim);
+        background: color-mix(in oklab, var(--fg) 12%, transparent);
+        padding: 1px 8px; border-radius: 10px;
+      }
+      .gts-review-list { list-style: none; margin: 0; padding: 0; }
+      .gts-review-row {
+        display: flex; align-items: center; gap: 8px; padding: 4px 0;
+        border-top: 1px solid color-mix(in oklab, var(--fg) 7%, transparent);
+      }
+      .gts-review-row:first-child { border-top: none; }
+      .gts-review-name {
+        flex: 1; min-width: 0; font-size: 12px; color: var(--fg);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .gts-review-row-actions { display: flex; gap: 5px; flex-shrink: 0; }
+      .gts-review-batch-foot {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+      }
+      .gts-review-target { font-size: 11px; color: var(--fg-dim); display: flex; align-items: center; gap: 5px; }
+      .gts-review-target-select {
+        font-size: 11px; padding: 3px 6px; border-radius: 6px; max-width: 200px;
+        border: 1px solid var(--border); background: var(--bg-elev); color: var(--fg);
+      }
+      .gts-review-batch-actions { margin-left: auto; display: flex; gap: 6px; }
+      .gts-review-busy { margin-left: auto; font-size: 11px; font-style: italic; color: var(--fg-dim); }
+      .gts-review-action:disabled,
+      .gts-review-target-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
       /* ── Agempus framing (engram-as-agent) ──────────────────────────────
          Every skill-template engram in this library IS an Agempus (a domain
          agent). The badge marks it as such (accent color, reserved — memory
@@ -5992,6 +6045,15 @@
       /* Segments above the skill's authored cap read as inert/greyed. */
       .skill-autonomy-seg.above-cap {
         opacity: 0.32; text-decoration: line-through;
+      }
+      /* …unless the cap is set by the skill's own dispatch-safe tag, in which
+         case the segment is an owner "unlock" — dashed + clickable, not struck. */
+      .skill-autonomy-seg.above-cap.raisable {
+        opacity: 0.7; text-decoration: none; cursor: pointer; border-style: dashed;
+      }
+      .skill-autonomy-seg.above-cap.raisable:hover {
+        opacity: 1; color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
       }
       .skill-autonomy-note {
         flex-basis: 100%; font-size: 10px; color: var(--fg-dim);
