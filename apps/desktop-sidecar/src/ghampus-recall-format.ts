@@ -465,7 +465,11 @@ export function looksLikePersonName(name: string) {
     const wl = w.toLowerCase();
     if (ROSTER_META_LABELS.has(wl) || ROSTER_FORM_FIELD_LABELS.has(wl)) return false;
     if (isRecallQueryStopWord(wl) && words.length === 1) return false;
-    if (["game", "press", "release", "todo", "target", "mission", "tier", "note", "on", "off"].includes(wl)) {
+    if ([
+      "game", "press", "release", "todo", "target", "mission", "tier", "note", "on", "off",
+      "calendar", "engram", "engrams", "cortex", "one", "two", "three", "top", "app", "docs",
+      "email", "update", "fix", "bug", "sprint", "sync", "backup", "task", "deadline",
+    ].includes(wl)) {
       return false;
     }
     if (/^[A-ZĂÂÎȘȚ]/.test(w)) hasCapitalized = true;
@@ -878,14 +882,15 @@ export function formatProjectTodosAnswer(nodes: StructuredRecallNode[], query: s
     );
     if (scoped.length > 0) filtered = scoped;
   }
-  const todos = [];
+  const todos: Array<{ bullet: string; category: string }> = [];
   const seen = /* @__PURE__ */ new Set();
+  const categoryOf = (n: StructuredRecallNode) => (n.engram ?? n.graphId ?? "").trim();
   for (const n of filtered) {
     for (const bullet of extractTodoBulletsFromText(n.text ?? "", scope)) {
       const key = bullet.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      todos.push(bullet);
+      todos.push({ bullet, category: categoryOf(n) });
     }
   }
   if (todos.length === 0) {
@@ -898,7 +903,7 @@ export function formatProjectTodosAnswer(nodes: StructuredRecallNode[], query: s
           const key = bullet.toLowerCase();
           if (!seen.has(key)) {
             seen.add(key);
-            todos.push(bullet);
+            todos.push({ bullet, category: categoryOf(n) });
           }
         }
       }
@@ -908,9 +913,29 @@ export function formatProjectTodosAnswer(nodes: StructuredRecallNode[], query: s
   const fmt = formatterStrings(query);
   const label = scope ? scope.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : fmt.projectFallback;
   const header = fmt.tasksHeader(label);
+  // Group by source engram when more than one contributes — indented bullets
+  // under a bold category line instead of one flat mixed list.
+  const categories = [...new Set(todos.map((t) => t.category))].filter(Boolean);
+  if (categories.length > 1) {
+    const groups = categories.map((cat) => {
+      const catLabel = cat.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      const items = todos
+        .filter((t) => t.category === cat)
+        .map((t) => `  ${t.bullet}`)
+        .join("\n");
+      return `- **${catLabel}**\n${items}`;
+    });
+    const uncategorized = todos.filter((t) => !t.category);
+    if (uncategorized.length > 0) {
+      groups.push(`- **Other**\n${uncategorized.map((t) => `  ${t.bullet}`).join("\n")}`);
+    }
+    return `${header}
+
+${groups.join("\n")}`;
+  }
   return `${header}
 
-${todos.join("\n")}`;
+${todos.map((t) => t.bullet).join("\n")}`;
 }
 
 export type ObligationRecallRow = {

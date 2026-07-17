@@ -24,6 +24,8 @@ import {
   isMultilingualSearchVerbFirstWord,
   MULTILINGUAL_RECALL_QUESTION_RE,
   TASK_NOUN_RE,
+  TASK_DEADLINE_NOUN_RE,
+  TEAM_NOUN_RE,
 } from './ghampus-language.js';
 import {
   extractPersonNamesFromQuery,
@@ -212,7 +214,20 @@ export function tryFormatterFallback(opts: FormatterFallbackOpts): string | null
     if (top) return top;
   }
 
-  if (hints.wantsExhaustive && extractTeamRosterEntries(nodes).length >= 2) {
+  // Any task/todo question ("list my todos", "what are my todos?") — format as
+  // todos, never as a roster and never via LLM synthesis: todo bullets
+  // ("Calendar — fix sync") match the roster "Name — role" shape, and synthesis
+  // pads thin recall with invented items.
+  if (TASK_NOUN_RE.test(text) || TASK_DEADLINE_NOUN_RE.test(text)) {
+    return formatProjectTodosAnswer(nodes, text, extractProjectScopeFromQuery(text))
+      ?? formatTeamTasksByPerson(nodes, text);
+  }
+
+  if (
+    hints.wantsExhaustive
+    && TEAM_NOUN_RE.test(text)
+    && extractTeamRosterEntries(nodes).length >= 2
+  ) {
     return asksForRoles
       ? formatTeamRosterWithRoles(nodes, text)
       : formatTeamRosterList(nodes, text);
