@@ -710,10 +710,26 @@ export async function mountSkillsPane(): Promise<void> {
     // failure → empty) and we're NOT mid-ingest (a post-ingest refresh can race
     // ahead of skill:list repopulating). Otherwise this fires the alarming
     // "you removed your skills" message during normal, healthy states.
-    const skillEngrams = getLoadedGraphs().filter(
-      (g) => !g.metadata.archived && g.loaded !== false && g.metadata.template === 'skill',
+    // Quarantine engrams have template:'skill' too, but their imported skills are
+    // held for owner review — they are NOT "lost skills". Exclude them from the
+    // orphan alarm, and surface any pending import as an accurate "promote" prompt
+    // instead of the misleading "you accidentally removed them" error.
+    const loadedForSkillCheck = getLoadedGraphs().filter(
+      (g) => !g.metadata.archived && g.loaded !== false,
     );
-    if (skillEngrams.length > 0 && skillsLibrary.length === 0 && skillsLibraryLoadOk && app().getIngestJobCount() === 0) {
+    const pendingQuarantine = loadedForSkillCheck.reduce(
+      (n, g) => n + (g.metadata.quarantine?.items.filter((it) => it.state === 'quarantined').length ?? 0),
+      0,
+    );
+    const skillEngrams = loadedForSkillCheck.filter(
+      (g) => g.metadata.template === 'skill' && !g.metadata.quarantine,
+    );
+    if (pendingQuarantine > 0) {
+      showSkillsToast(
+        `${pendingQuarantine} imported skill${pendingQuarantine === 1 ? '' : 's'} waiting in quarantine — review and promote to use ${pendingQuarantine === 1 ? 'it' : 'them'}.`,
+        'success',
+      );
+    } else if (skillEngrams.length > 0 && skillsLibrary.length === 0 && skillsLibraryLoadOk && app().getIngestJobCount() === 0) {
       showSkillsToast(
         `You have ${skillEngrams.length} Skills engram${skillEngrams.length === 1 ? '' : 's'} but no skills — you may have accidentally removed them. Check Sources in each Skills engram.`,
         'error',
