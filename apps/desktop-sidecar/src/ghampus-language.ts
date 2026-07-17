@@ -544,6 +544,35 @@ export function isMemorySearchRetryCommand(msg: string): boolean {
   );
 }
 
+/**
+ * Explicit memory-recall phrasing — the user is asking to look something up in
+ * memory ("recall …", "look in the memory …", "what did we decide …"). These
+ * must always take the recall path; the implicit skill router may not hijack
+ * them no matter how well a skill trigger scores.
+ */
+export function isExplicitMemoryRecallQuery(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return (
+    /^\/?(?:recall|remind)\b/i.test(t)
+    || /\b(?:recall|remind me|remember what|do you remember)\b/i.test(t)
+    || /\b(?:look|search|check|dig)\s+(?:in|into|at|through|up)?\s*(?:the\s+|my\s+)?(?:memory|memories|cortex)\b/i.test(t)
+    || /\bfrom\s+(?:my\s+|the\s+)?(?:memory|memories|cortex)\b/i.test(t)
+    || /\bwhat\s+(?:did|have|had)\s+(?:we|i|you)\s+(?:decide|decided|say|said|agree|agreed|discuss|discussed|choose|chose|pick|picked|settle|settled|conclude|concluded)\b/i.test(t)
+    || /\bwhat\s+was\s+(?:decided|said|agreed|discussed|chosen|settled|concluded)\b/i.test(t)
+    // Romanian equivalents
+    || /\b(?:adu-?mi\s+aminte|aminte[sș]te-?mi|ce\s+am\s+(?:decis|zis|spus|stabilit|hot[aă]r[aâ]t|discutat)|caut[aă]\s+[îi]n\s+memor)/i.test(t)
+    // Spanish
+    || /\b(?:recu[eé]rdame|qu[eé]\s+(?:decidimos|dijimos|acordamos|discutimos)|busca(?:r)?\s+en\s+(?:la\s+|mi\s+)?memoria|de\s+(?:la\s+|mi\s+)memoria)\b/i.test(t)
+    // French — no trailing \b: ASCII \b misfires after accented finals ("décidé")
+    || /\b(?:souviens-toi|rappelle-moi|qu(?:['’]|e\s+)avons-nous\s+(?:d[eé]cid[eé]|dit|convenu|discut[eé])|cherche(?:r)?\s+dans\s+(?:la\s+|ma\s+)?m[eé]moire)/i.test(t)
+    // German — verb-final: allow words between "was haben wir" and the participle
+    || /\b(?:erinnere\s+mich|was\s+haben\s+wir\b[\s\S]{0,48}?\b(?:entschieden|gesagt|beschlossen|vereinbart|besprochen)|such(?:e)?\s+im\s+(?:ged[aä]chtnis|speicher)|aus\s+dem\s+ged[aä]chtnis)\b/i.test(t)
+    // Language-neutral: the query explicitly names the memory store
+    || /\b(?:memoria|m[eé]moire|ged[aä]chtnis|cortex)\b/i.test(t) && /\b(?:busca|cherche|such|caut[aă]|search|check|look)/i.test(t)
+  );
+}
+
 /** Comparative / procedural advice — prefer attested memory over general-knowledge direct answer. */
 export function isProceduralAdviceQuery(text: string): boolean {
   const t = text.trim().replace(/[?.!]+$/, '');

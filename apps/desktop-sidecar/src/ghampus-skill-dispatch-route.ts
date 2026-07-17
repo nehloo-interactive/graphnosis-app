@@ -8,6 +8,7 @@ import type { SkillTrainer } from './skill-trainer.js';
 import { baseSkillName } from './skill-trainer.js';
 import { findSkillDispatchSourceId, extractDispatchTriggerLines } from './skill-dispatch-sync.js';
 import { matchDispatchTriggers } from './proactive-dispatch-match.js';
+import { isExplicitMemoryRecallQuery } from './ghampus-language.js';
 import type { GhampusQueryHints } from './ghampus-intent.js';
 import {
   normalizeSkillSearchPhrase,
@@ -234,6 +235,7 @@ export function canUseImplicitSkillWalk(text: string, hints: GhampusQueryHints):
   if (hints.wantsExplicitSkillWalk || hints.wantsSkillTrain || hints.wantsSkillList || hints.wantsMcpToolList) {
     return false;
   }
+  if (isExplicitMemoryRecallQuery(text)) return false;
   if (hints.skipMemoryTools && hints.directAnswerKind) return false;
   if (hints.wantsDocSource) return false;
   if (hints.wantsTeamRoster || hints.wantsPersonRole || hints.wantsPersonInContext) return false;
