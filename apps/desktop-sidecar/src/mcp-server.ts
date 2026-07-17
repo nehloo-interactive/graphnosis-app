@@ -33,7 +33,7 @@ import {
 import { registerPrompt as registerConsentPrompt, listPendingPrompts, recordGatedRequest, getGatedRequest, type ConsentEngram } from './consent-prompts.js';
 import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
-import { SkillTrainer, type ExportFormat } from './skill-trainer.js';
+import { SkillTrainer, type ExportFormat, promoteSkillSourcePreservingNodes } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
 import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
 import { dispatchAuditMcpTool } from './mcp/handlers-audit.js';
@@ -5919,7 +5919,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           const item = meta.quarantine!.items.find((it) => it.sourceId === sourceId);
           if (!item || item.state !== 'quarantined') { failures.push(`${sourceId} (not quarantined)`); continue; }
           try {
-            await deps.host.moveSource(fromGid, sourceId, targetGid);
+            // moveSource drops non-seed nodes for multi-node skill sources; this
+            // wrapper repairs the drop so promoted skills stay walkable.
+            await promoteSkillSourcePreservingNodes(deps.host, fromGid, sourceId, targetGid);
             item.state = 'promoted';
             promoted.push(sourceId);
           } catch (e) {

@@ -1940,6 +1940,75 @@ export async function linkSkillSequence(
   await host.linkNodesDirectedBatch(graphId, edges);
 }
 
+/** Re-derive a promoted skill node's role from its section prefix — mirrors the
+ *  role tags `skill:importGsk` assigns — so re-inserted nodes rewire correctly. */
+function deriveSkillNodeRole(text: string): string {
+  const t = text.trimStart();
+  if (t.startsWith('<!--')) return 'metadata';
+  if (/^Trigger:/i.test(t)) return 'goal-trigger';
+  if (/^Prerequisites:/i.test(t)) return 'goal-prereq';
+  if (/^Requires:/i.test(t)) return 'goal-requires';
+  if (/^Produces:/i.test(t)) return 'goal-produces';
+  if (/^Success:/i.test(t)) return 'goal-success';
+  if (/^Out of scope:/i.test(t)) return 'goal-scope';
+  if (/^On failure:/i.test(t)) return 'goal-failure';
+  if (/^On completion:/i.test(t)) return 'goal-done';
+  return 'body';
+}
+
+/**
+ * Promote a quarantined skill source into a target engram WITHOUT losing its
+ * body/goal nodes.
+ *
+ * `host.moveSource` (the SDK primitive) drops all but the seed node for a
+ * multi-node skill source, so a promoted imported skill collapses to a one-node
+ * provenance stub and can no longer be walked. This wrapper snapshots the full
+ * node content BEFORE the move, performs the move (which preserves the sourceId),
+ * then re-inserts any content node the move dropped — re-deriving each node's
+ * role from its section prefix — and re-wires the skill's typed sequence + goal
+ * edges. Returns how many nodes it had to repair (0 = move was lossless).
+ */
+export async function promoteSkillSourcePreservingNodes(
+  host: GraphnosisHost,
+  fromGraphId: string,
+  sourceId: string,
+  targetGraphId: string,
+): Promise<{ repaired: number }> {
+  // Snapshot every content node's full text, in source order, BEFORE moving.
+  const before = host.getSourceRecord(fromGraphId, sourceId);
+  const snapshot = (before?.nodeIds ?? [])
+    .map((nid) => (host.getFullNodeContent(fromGraphId, nid) ?? '').trim())
+    .filter((t) => t.length > 0);
+
+  await host.moveSource(fromGraphId, sourceId, targetGraphId);
+
+  // Which snapshot contents survived the move (compared by full content)?
+  const after = host.getSourceRecord(targetGraphId, sourceId);
+  const survived = new Set(
+    (after?.nodeIds ?? []).map((nid) => (host.getFullNodeContent(targetGraphId, nid) ?? '').trim()),
+  );
+
+  let repaired = 0;
+  for (const text of snapshot) {
+    if (survived.has(text)) continue;
+    const len = host.getSourceRecord(targetGraphId, sourceId)?.nodeIds.length ?? 1;
+    await host.insertNodeAt(targetGraphId, sourceId, len, text, {
+      skipRelink: true,
+      role: deriveSkillNodeRole(text),
+      singleNode: true,
+      triggeredBy: 'skill:promote-preserve',
+    });
+    repaired++;
+  }
+
+  if (repaired > 0) {
+    host.triggerRelink(targetGraphId);
+    await linkSkillSequence(host, targetGraphId, sourceId);
+    await linkSkillGoals(host, targetGraphId, sourceId);
+  }
+  return { repaired };
+}
+
 // ── SOP edge constants ────────────────────────────────────────────────────────
 
 export const SKILL_GOAL_EVIDENCE   = 'skill:goal';

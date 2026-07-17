@@ -38,6 +38,7 @@ import {
   formatSkillForRecall,
   baseSkillName,
   classifyChunkRole,
+  promoteSkillSourcePreservingNodes,
 } from './skill-trainer.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { CorrectionDiff } from './correction.js';
@@ -6893,7 +6894,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const item = qm.quarantine!.items.find((it) => it.sourceId === sourceId);
         if (!item || item.state !== 'quarantined') { failures.push(sourceId); continue; }
         try {
-          await deps.host.moveSource(fromGid, sourceId, targetGid);
+          // moveSource drops non-seed nodes for multi-node skill sources; this
+          // wrapper repairs the drop so promoted skills stay walkable.
+          await promoteSkillSourcePreservingNodes(deps.host, fromGid, sourceId, targetGid);
           item.state = 'promoted';
           promoted.push(sourceId);
         } catch { failures.push(sourceId); }
