@@ -307,7 +307,9 @@ export async function importEngram(
     await host.createGraph(targetId);
     await host.setGraphMetadata(targetId, {
       template: payload.engramTemplate as any,
-      displayName: `Quarantine — ${payload.engramDisplayName}`,
+      // Plain hyphen, not an em-dash — the delete-confirm requires typing the
+      // display name verbatim and "—" isn't typeable on a normal keyboard.
+      displayName: `Quarantine - ${payload.engramDisplayName}`,
       createdAt: Date.now(),
       // High sensitivity + L0 so even a misconfigured promotion can't auto-dispatch.
       sensitivityTier: 'sensitive',

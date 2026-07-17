@@ -1846,6 +1846,39 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const effectiveLevel = deps.host.resolveEffectiveSkillAutonomy(args.graphId, args.sourceId, ref);
       return { ok: true, effectiveLevel };
     }
+    case 'skills.setSkillDispatchSafe': {
+      // Raise (or lower) a skill's AUTHORED dispatch-safe cap by rewriting its
+      // `[dispatch-safe: …]` body tags in place. This is the owner-driven
+      // "unlock autonomy" action for imported skills, which import as
+      // `dispatch-safe: no` (cap L1) regardless of what the pack claimed — so
+      // their L2/L3 dial segments are pinned until the owner explicitly raises
+      // them here. Writing the tag into the BODY (not metadata) means the raised
+      // cap survives a future retrain, matching how the import forced it down.
+      const args = z.object({
+        graphId: z.string(),
+        sourceId: z.string(),
+        dispatchSafe: z.enum(['no', 'partial', 'yes']),
+      }).parse(params);
+      const rec = deps.host.getSourceRecord(args.graphId, args.sourceId);
+      if (!rec) return { ok: false, reason: 'not_found' };
+      const edits: Array<{ kind: 'edit'; nodeId: string; content: string; reason: string }> = [];
+      for (const nid of rec.nodeIds) {
+        const full = deps.host.getFullNodeContent(args.graphId, nid) ?? '';
+        if (!/\[dispatch-safe:\s*[a-z]+\s*\]/i.test(full)) continue;
+        const updated = full.replace(/\[dispatch-safe:\s*[a-z]+\s*\]/gi, `[dispatch-safe: ${args.dispatchSafe}]`);
+        if (updated !== full) {
+          edits.push({ kind: 'edit', nodeId: nid, content: updated, reason: `Owner raised dispatch-safe to ${args.dispatchSafe}` });
+        }
+      }
+      if (edits.length > 0) {
+        await deps.host.applyCorrection(args.graphId, { edits }, { triggeredBy: 'user:raise-dispatch-safe' });
+        deps.host.triggerRelink(args.graphId);
+      }
+      // Recompute + echo the resulting cap so the UI can confirm the raise took.
+      const readout = deps.host.dispatchSafeReadout(args.graphId)[0];
+      const cap = readout?.perSkill.find((p) => p.sourceId === args.sourceId)?.cap ?? 'L3';
+      return { ok: true, changed: edits.length, cap };
+    }
     case 'graphs.dispatchSafeReadout': {
       // Read-only computed view of the effective execution-autonomy ceiling per
       // engram: min(the engram's configured executionAutonomyLevel, the authored
@@ -6644,7 +6677,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         await deps.host.createGraph(ingestGraphId);
         await deps.host.setGraphMetadata(ingestGraphId, {
           template: 'skill',
-          displayName: `Quarantine — ${payload.displayName}`,
+          // Use a plain hyphen, NOT an em-dash: the engram delete-confirm makes
+          // the user type the display name verbatim, and "—" isn't typeable on a
+          // normal keyboard — it would lock the engram against manual deletion.
+          displayName: `Quarantine - ${payload.displayName}`,
           createdAt: Date.now(),
           sensitivityTier: 'sensitive',
           executionAutonomyLevel: 'L0',
@@ -6668,10 +6704,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const quarantineItems: Array<{ sourceId: string; lint?: string[]; state: 'quarantined' }> = [];
       const skippedEmpty: string[] = [];
       for (const skill of payload.skills) {
-        // Prefer trainedTextFallback (already-applied delta) over baseText
-        // when a delta pack carries one — matches how the export side picks
-        // what to render for users without the base pack.
-        const body = (skill.trainedTextFallback?.trim() || skill.baseText?.trim() || '').trim();
+        // Use the FULL walkable body. A full pack's baseText holds the numbered
+        // SOP steps (@needs / @loop / @branch / @skill); trainedTextFallback is a
+        // short human-readable summary. Pick the LONGER of the two — a delta pack
+        // renders its full body into the fallback, a full pack keeps it in
+        // baseText — so the step sequence is never dropped in favour of a summary
+        // (which left imported skills with goals but no walkable steps).
+        const baseBody = skill.baseText?.trim() ?? '';
+        const fallbackBody = skill.trainedTextFallback?.trim() ?? '';
+        const body = baseBody.length >= fallbackBody.length ? baseBody : fallbackBody;
         if (!body) {
           skippedEmpty.push(skill.name);
           continue;
@@ -6707,46 +6748,72 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const sections: Array<{ role: string; text: string }> = [];
         sections.push({ role: 'title', text: label });
         // FORCE [dispatch-safe: no] on every imported skill, regardless of what
-        // the pack claimed. Any authored dispatch-safe tag in the body is rewritten
-        // to `no`, and a dedicated safety section is always injected so the autonomy
-        // gate (safetyCeiling → 'suggest') caps the skill even if it is later
-        // promoted out of quarantine. Carried in the body text so a retrain (which
-        // re-reads the body) cannot silently lose it.
-        sections.push({ role: 'goal-trigger', text: 'Trigger: imported skill — review before use [dispatch-safe: no]' });
-        for (const para of body.split(/\n{2,}/)) {
-          const t = para.trim().replace(/\[dispatch-safe:\s*[a-z]+\s*\]/gi, '[dispatch-safe: no]');
-          if (t) sections.push({ role: 'body', text: t });
-        }
-        for (const r of skill.recallRecipes ?? []) {
-          sections.push({ role: 'recipe', text: formatRecipePlain(r) });
-        }
-        // All 8 goal categories — must mirror the trainSkill path. Earlier
-        // versions only handled the first 3, which silently dropped Trigger /
-        // Prerequisites / On failure / Requires / Produces from every imported
-        // .gsk pack regardless of what the pack actually contained.
-        if (skill.goals?.successLooksLike) {
-          sections.push({ role: 'goal-success', text: `Success: ${skill.goals.successLooksLike}` });
-        }
-        if (skill.goals?.outOfScope) {
-          sections.push({ role: 'goal-scope', text: `Out of scope: ${skill.goals.outOfScope}` });
-        }
-        if (skill.goals?.expectedOnCompletion) {
-          sections.push({ role: 'goal-done', text: `On completion: ${skill.goals.expectedOnCompletion}` });
-        }
-        if (skill.goals?.trigger) {
-          sections.push({ role: 'goal-trigger', text: `Trigger: ${skill.goals.trigger}` });
-        }
+        // the pack claimed — the autonomy gate (safetyCeiling → 'suggest') caps a
+        // borrowed skill at L1 until the owner explicitly raises it. Carry the tag
+        // on the skill's OWN Trigger node rather than a second dedicated
+        // safety-trigger row (which duplicated "Trigger:" in the trained output);
+        // a body-carried tag also survives a retrain that re-reads the body. A
+        // skill with no authored trigger gets a review-before-use fallback so the
+        // tag always has a home. Any dispatch-safe tag already inside the pack's
+        // trigger text is stripped first to avoid a double tag.
+        //
+        // GOALS FIRST, then the walkable steps — mirror the authored SOP order (a
+        // .gsk's baseText lists Trigger / Prerequisites / … / Out-of-scope BEFORE
+        // the numbered steps), so every goal node stays contiguous above the steps.
+        const triggerBody = skill.goals?.trigger?.trim()
+          ? skill.goals.trigger.trim()
+              // Strip any dispatch-safe annotation the pack author left inline —
+              // in brackets `[dispatch-safe: partial]` OR parens `(dispatch-safe:
+              // partial)` — so the forced tag below isn't a confusing second one.
+              .replace(/\s*[[(]dispatch-safe:\s*[a-z]+\s*[\])]/gi, '')
+              .trim()
+          : 'imported skill — review before use';
+        sections.push({ role: 'goal-trigger', text: `Trigger: ${triggerBody} [dispatch-safe: no]` });
         if (skill.goals?.prerequisites) {
           sections.push({ role: 'goal-prereq', text: `Prerequisites: ${skill.goals.prerequisites}` });
-        }
-        if (skill.goals?.onFailure) {
-          sections.push({ role: 'goal-failure', text: `On failure: ${skill.goals.onFailure}` });
         }
         if (skill.goals?.requires) {
           sections.push({ role: 'goal-requires', text: `Requires: ${skill.goals.requires}` });
         }
         if (skill.goals?.produces) {
           sections.push({ role: 'goal-produces', text: `Produces: ${skill.goals.produces}` });
+        }
+        if (skill.goals?.successLooksLike) {
+          sections.push({ role: 'goal-success', text: `Success: ${skill.goals.successLooksLike}` });
+        }
+        if (skill.goals?.outOfScope) {
+          sections.push({ role: 'goal-scope', text: `Out of scope: ${skill.goals.outOfScope}` });
+        }
+        if (skill.goals?.onFailure) {
+          sections.push({ role: 'goal-failure', text: `On failure: ${skill.goals.onFailure}` });
+        }
+        if (skill.goals?.expectedOnCompletion) {
+          sections.push({ role: 'goal-done', text: `On completion: ${skill.goals.expectedOnCompletion}` });
+        }
+        // A full-pack baseText opens with the skill name as its first paragraph
+        // and repeats the goal lines (Trigger/Prerequisites/…) inline before the
+        // numbered steps. Those are already emitted as the `title` section above
+        // and the structured `skill.goals` nodes below, so filter them out here —
+        // otherwise every import would carry a duplicate title node and 6–8
+        // duplicate goal nodes. The numbered SOP steps are blank-line separated,
+        // so the split still yields exactly one walkable node per step.
+        // Title line: the skill name on its own, or as a `name — subtitle`
+        // heading (some packs render `slug — Human Readable Title`). Match the
+        // name optionally followed by a dash/colon separator so both forms are
+        // dropped; a numbered SOP step never starts with the name, so steps are
+        // never caught.
+        const nameEsc = label.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const titleLineRe = new RegExp(`^#*\\s*${nameEsc}\\s*(?:$|[—:–-])`, 'i');
+        const inlineGoalRe = /^(Trigger|Prerequisites|Requires|Produces|Success|Out of scope|On failure|On completion)\s*:/i;
+        for (const para of body.split(/\n{2,}/)) {
+          const t = para.trim().replace(/\[dispatch-safe:\s*[a-z]+\s*\]/gi, '[dispatch-safe: no]');
+          if (!t) continue;
+          if (titleLineRe.test(t)) continue;
+          if (inlineGoalRe.test(t)) continue;
+          sections.push({ role: 'body', text: t });
+        }
+        for (const r of skill.recallRecipes ?? []) {
+          sections.push({ role: 'recipe', text: formatRecipePlain(r) });
         }
 
         // Ingest the provenance comment as the SEED chunk. ingestClip's text
@@ -6812,11 +6879,27 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         }
         // Single coalesced relink pass after all paragraphs are in.
         deps.host.triggerRelink(ingestGraphId);
-        // Wire all SOP edges (sequence, goals, loops, ctx, sub-skill calls).
+        // Wire the intra-skill SOP edges now: sequence (step→step), goals, the
+        // bounded @loop:N max=M / @branch edges, and @ctx context edges all
+        // reference only THIS skill's own nodes. Cross-skill @skill: calls need
+        // every sibling present, so they are wired in a second pass below.
         await linkSkillSequence(deps.host, ingestGraphId, rec.sourceId);
         await linkSkillGoals(deps.host, ingestGraphId, rec.sourceId);
+        await linkSkillLoopsAndBranches(deps.host, ingestGraphId, rec.sourceId);
+        await linkSkillContextEdges(deps.host, ingestGraphId, rec.sourceId);
         imported.push({ name: skill.name, sourceId: rec.sourceId });
         if (quarantine) quarantineItems.push({ sourceId: rec.sourceId, state: 'quarantined' });
+      }
+
+      // Second pass — cross-skill @skill: calls. These resolve a @skill: name to
+      // a sibling skill's source in the SAME engram, so they can only be wired
+      // once every skill in the pack has landed (a forward reference like
+      // bug-investigation → runtime-diagnosis would otherwise find no target if
+      // the callee is imported later in the loop).
+      for (const { sourceId: sid } of imported) {
+        try {
+          await linkSkillCalls(deps.host, ingestGraphId, sid, ingestGraphId);
+        } catch { /* unresolved @skill: target — non-fatal, just leaves no call edge */ }
       }
 
       // Persist the per-item quarantine state now that landed sourceIds are known.
@@ -6864,7 +6947,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           verified: meta!.quarantine!.verified,
           ...(meta!.quarantine!.signerPublicKey ? { signerPublicKey: meta!.quarantine!.signerPublicKey } : {}),
           importedAt: meta!.quarantine!.importedAt,
-          items: meta!.quarantine!.items.map((it) => ({ ...it })),
+          // Enrich each item with a human label derived from its source ref so
+          // the review UI can show real skill names, not opaque sourceIds. A
+          // promoted/rejected item's source is gone from this engram → the ref
+          // lookup misses and we fall back to the id (UI only lists quarantined
+          // items anyway, whose sources are still present here).
+          items: meta!.quarantine!.items.map((it) => ({
+            ...it,
+            label: baseSkillName(deps.host.getSourceRecord(gid, it.sourceId)?.ref ?? it.sourceId),
+          })),
         }));
       return { ok: true, batches };
     }
@@ -6901,11 +6992,32 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           promoted.push(sourceId);
         } catch { failures.push(sourceId); }
       }
-      await deps.host.setGraphMetadata(fromGid, {
-        ...qm,
-        quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
-      });
-      return { ok: true, fromGraphId: fromGid, targetEngramId: targetGid, promoted, failures, stillQuarantined: deps.host.isQuarantined(fromGid) };
+      // If every item in the batch has been adjudicated (promoted or rejected),
+      // the quarantine engram is now empty scaffolding — delete it so a drained
+      // batch stops lingering in the cortex + engram picker. Otherwise persist
+      // the updated per-item states.
+      const anyLeft = qm.quarantine!.items.some((it) => it.state === 'quarantined');
+      let quarantineDeleted = false;
+      if (anyLeft) {
+        await deps.host.setGraphMetadata(fromGid, {
+          ...qm,
+          quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
+        });
+      } else {
+        try {
+          await deps.host.deleteGraph(fromGid);
+          deps.brainEngine?.purgeDeletedGraph(fromGid);
+          quarantineDeleted = true;
+        } catch {
+          // Deletion failed — persist the drained state so the batch at least
+          // reflects that nothing is left to review.
+          await deps.host.setGraphMetadata(fromGid, {
+            ...qm,
+            quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
+          });
+        }
+      }
+      return { ok: true, fromGraphId: fromGid, targetEngramId: targetGid, promoted, failures, quarantineDeleted, stillQuarantined: !quarantineDeleted && deps.host.isQuarantined(fromGid) };
     }
 
     case 'quarantine:reject': {
@@ -6930,11 +7042,28 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           rejected.push(sourceId);
         } catch { failures.push(sourceId); }
       }
-      await deps.host.setGraphMetadata(fromGid, {
-        ...qm,
-        quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
-      });
-      return { ok: true, fromGraphId: fromGid, rejected, failures };
+      // Drain-and-delete: if nothing is left quarantined, remove the now-empty
+      // quarantine engram (same as the promote path); else persist item states.
+      const anyLeft = qm.quarantine!.items.some((it) => it.state === 'quarantined');
+      let quarantineDeleted = false;
+      if (anyLeft) {
+        await deps.host.setGraphMetadata(fromGid, {
+          ...qm,
+          quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
+        });
+      } else {
+        try {
+          await deps.host.deleteGraph(fromGid);
+          deps.brainEngine?.purgeDeletedGraph(fromGid);
+          quarantineDeleted = true;
+        } catch {
+          await deps.host.setGraphMetadata(fromGid, {
+            ...qm,
+            quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
+          });
+        }
+      }
+      return { ok: true, fromGraphId: fromGid, rejected, failures, quarantineDeleted };
     }
 
     case 'crypto:recipientPublicKey': {

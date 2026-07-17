@@ -1566,7 +1566,15 @@ export class SkillTrainer {
           // from the DEFAULT (all-engrams) skill scope — feeding both the
           // proactive watcher's usableSkills and list_skills' default scope.
           // An explicit `graphId` (e.g. the quarantine-review tooling) can still
-          // enumerate them. Routed through the centralized host.isQuarantined.
+          // enumerate them.
+          //
+          // Check the quarantine METADATA object directly — it is set at engram
+          // CREATION, before any skill is ingested. host.isQuarantined() only
+          // flips true once the batch's `items` are populated at the END of
+          // import, which left the half-ingested quarantine engram (and its
+          // skills) visible in the library for the whole ~10s import. Both checks
+          // together exclude it for the entire import, not just after it finishes.
+          if (meta?.quarantine) return false;
           if (this.host.isQuarantined(gid)) return false;
           return this.host.listSources(gid).some((s) => s.kind === 'skill');
         });
@@ -1965,8 +1973,10 @@ function deriveSkillNodeRole(text: string): string {
  * provenance stub and can no longer be walked. This wrapper snapshots the full
  * node content BEFORE the move, performs the move (which preserves the sourceId),
  * then re-inserts any content node the move dropped — re-deriving each node's
- * role from its section prefix — and re-wires the skill's typed sequence + goal
- * edges. Returns how many nodes it had to repair (0 = move was lossless).
+ * role from its section prefix — and re-wires ALL of the skill's typed SOP edges
+ * (sequence, goals, @loop/@branch, @ctx, and @skill: calls) so a promoted skill
+ * is structurally identical to a natively-trained one. Returns how many nodes it
+ * had to repair (0 = move was lossless, original edges survived intact).
  */
 export async function promoteSkillSourcePreservingNodes(
   host: GraphnosisHost,
@@ -2003,8 +2013,14 @@ export async function promoteSkillSourcePreservingNodes(
 
   if (repaired > 0) {
     host.triggerRelink(targetGraphId);
+    // Dropped nodes took their edges with them — rebuild the full SOP edge set,
+    // matching the native train path so a promoted skill walks with its loops,
+    // branches, context and @skill: calls intact (not just step→step + goals).
     await linkSkillSequence(host, targetGraphId, sourceId);
     await linkSkillGoals(host, targetGraphId, sourceId);
+    await linkSkillLoopsAndBranches(host, targetGraphId, sourceId);
+    await linkSkillContextEdges(host, targetGraphId, sourceId);
+    await linkSkillCalls(host, targetGraphId, sourceId, targetGraphId);
   }
   return { repaired };
 }
@@ -2518,7 +2534,12 @@ export function parseSkillCall(text: string): ParsedSkillCall | null {
   // Prefer the full structured form. Anchored at start of line/word boundary.
   // Capture groups: 1=target, 2=arg-list (optional), 3=capture (optional)
   const structured = text.match(
-    /@skill:\s*([A-Za-z0-9 _\-]+?)\s*(?:\(([^)]*)\))?\s*(?:->\s*\$([A-Za-z_][\w]*))?(?:\s*$|[\n.;])/i,
+    // Name terminates at end-of-line OR sentence punctuation. Comma is included
+    // because packs write mid-sentence refs like "Switch to @skill: runtime-
+    // diagnosis, which instruments…" — without it the name match failed, the
+    // greedy fallback swallowed the whole clause, and the call never resolved
+    // to the sibling skill (it showed as an unresolved call in walk output).
+    /@skill:\s*([A-Za-z0-9 _\-]+?)\s*(?:\(([^)]*)\))?\s*(?:->\s*\$([A-Za-z_][\w]*))?(?:\s*$|[\n.;,])/i,
   );
   if (structured) {
     const target = (structured[1] ?? '').trim().toLowerCase();
@@ -3102,6 +3123,12 @@ export function walkSkillSequence(
   // Partition: body steps / goal constraints / recalled-memory context nodes.
   // Keep failure-goal node ids tracked separately — they may carry @skill: refs
   // that walkSkillSequence promotes into failureHandlers below.
+  // The skill's own title node (its bare name) is NOT a walkable step — exclude
+  // it so a plan never opens with "Step 1: <skill-name>". The walker classifies
+  // purely by text and a title carries no goal prefix, so it would otherwise
+  // fall through into bodyIds. (After a promote-repair the title node can also
+  // lose its 'title' role, so a content match is the robust check.)
+  const titleKey = baseSkillName(src.ref).trim().toLowerCase();
   const bodyIds: string[] = [];
   const goalNodes: GoalNode[] = [];
   const ctxIds: string[] = [];
@@ -3109,6 +3136,7 @@ export function walkSkillSequence(
   for (const id of liveIds) {
     const n = nodeMap.get(id)!;
     const preview = n.contentPreview.trim();
+    if (preview.toLowerCase() === titleKey) continue; // skill title — not a step
     const fullText = host.getFullNodeContent(graphId, id) ?? preview;
     if (RECALLED_MARKER_RE.test(preview)) {
       ctxIds.push(id);
