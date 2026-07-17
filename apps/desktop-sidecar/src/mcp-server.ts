@@ -1166,9 +1166,14 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     return resolveActingClientName() === GHAMPUS_MCP_CLIENT_ID;
   }
 
-  /** Ghampus already builds purpose-built recall queries — skip redundant LLM rewrite. */
+  /** recall/remind are DETERMINISTIC by contract (no LLM, no randomness), so the
+   *  non-deterministic LLM query-enrichment is SKIPPED by default — an identical
+   *  query returns an identical subgraph. The LLM query-expansion escalation lives
+   *  in `dig_deeper` (which owns it); a caller can opt one recall back into
+   *  enrichment with `skip_enrichment: false`. Ghampus internal turns always skip
+   *  (they build purpose-built queries). */
   function shouldSkipRecallEnrichment(args: { skip_enrichment?: boolean | undefined }): boolean {
-    return args.skip_enrichment === true || isInternalGhampusCaller();
+    return args.skip_enrichment !== false || isInternalGhampusCaller();
   }
 
   /** Ghampus user turns get queue + op timeouts so a long ingest cannot wedge chat for minutes. */
