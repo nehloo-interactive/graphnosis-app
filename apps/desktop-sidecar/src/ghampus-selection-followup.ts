@@ -310,12 +310,14 @@ Rules:
 - Never mention message IDs, turn IDs, timestamps, node IDs, or "user 1782…"-style identifiers — say "you" instead.
 - Do not use nested numbered lists (no "1. Restate… 2. Address… 3. No action needed").
 - Be concise. No filler like "No action needed" unless they literally asked whether action is required.
+- If the comment disputes a claim in the highlighted passage (e.g. "why did you link X and Y?", "that's wrong"), check the item's "Relevant attested memory" block before answering. If it supports the original claim, cite what supports it. If it does NOT, say plainly that you can't find supporting evidence in the cortex for that claim — do not invent a plausible-sounding explanation for why you originally wrote it. You do not have access to your own past reasoning, only to attested memory; never claim to "recall" why you said something unless a memory node actually says so.
 
 Do not invent cortex facts. If an action needs Pro+ skill training and you cannot execute it here, say so plainly.`;
 }
 
 export function buildFragmentReviewUserPrompt(
   payload: GhampusFragmentReviewPayload,
+  recallSnippets?: string[],
 ): string {
   const n = payload.comments.length;
   const parts = [
@@ -340,6 +342,12 @@ export function buildFragmentReviewUserPrompt(
       '',
       'User comment (quote verbatim in your blockquote before you reply):',
       `"${c.userComment.trim().replace(/"/g, '\\"')}"`,
+      '',
+    );
+    const snippet = recallSnippets?.[i]?.trim();
+    parts.push(
+      'Relevant attested memory for this item (supplemental — if empty or unrelated, say you found no supporting evidence rather than guessing):',
+      snippet || '(none found)',
       '',
     );
   });
