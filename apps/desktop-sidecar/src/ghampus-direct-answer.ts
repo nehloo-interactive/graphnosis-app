@@ -168,6 +168,14 @@ export function hasExplicitMemoryReference(text: string): boolean {
     || /\b(?:saved|stored|remembered|salvat|păstrat|guardado)\s+(?:about|despre|sobre|sur|(?:de|über|von))\b/i.test(t)
     || /\b(?:from|din|de)\s+(?:my\s+)?(?:memory|memorie|cortex|engram|memor(?:y|ies))\b/i.test(t)
     || /\b(?:check|search|look (?:up|in)|find (?:in|from))\s+(?:my\s+)?(?:memory|memorie|cortex)\b/i.test(t)
+    // "search/check/dig in [other/all/another] engram(s)" — engram is this
+    // app's own vocabulary for a memory partition; bounded gap allows
+    // intervening words ("in other", "across all") between verb and noun.
+    || /\b(?:check|search|look(?:ed)?|dig(?:ged)?|find|found)\b[\s\S]{0,24}\bengrams?\b/i.test(t)
+    // "did you [search/check/look/dig] ... [memory/cortex/engrams]?" — a
+    // retrospective question about whether Ghampus already searched more
+    // broadly, not a fresh conversational continuation.
+    || /\bdid\s+(?:you|ghampus)\b[\s\S]{0,24}\b(?:search|check|look|dig)\b[\s\S]{0,24}\b(?:memory|memories|memorie|cortex|engrams?)\b/i.test(t)
     || /\b(?:traduce|translate)\s+(?:ce|what)\s+(?:am|I|mi(?:s)?)\s+(?:salvat|saved|stored)\b/i.test(t)
   );
 }

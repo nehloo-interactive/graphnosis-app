@@ -90,6 +90,48 @@ function stripSkillInternalMarkers(text: string): string {
   return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+/**
+ * Internal grounding vocabulary ("attested memory", "Cortex Data" as a
+ * capitalized noun) is meant for the system prompt / <cortex_data> block,
+ * never for the user-facing answer — it reads like the app is asking the
+ * user to trust-but-verify, when in fact it's just internal jargon leaking
+ * through paraphrase (not caught by the literal <cortex_data> tag strip
+ * above, since the model rephrases the section header instead of copying it
+ * verbatim). Strips heading lines and trailing "Note" disclaimers that cite
+ * this vocabulary; leaves the actual content (e.g. the todo bullets) intact.
+ */
+const GROUNDING_VOCAB_RE = /\battested memor(?:y|ies)\b|\bcortex data\b/i;
+
+function stripAttestedMemoryDisclaimers(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    // Heading line naming the internal vocabulary ("#### From Cortex Data
+    // (attested memory)") — drop the heading, keep whatever follows.
+    if (/^#{1,6}\s+/.test(line) && GROUNDING_VOCAB_RE.test(line)) {
+      continue;
+    }
+    // Bare "Note"/"**Note**" heading whose very next non-blank line cites the
+    // vocabulary — drop the heading and that explanatory line together.
+    if (/^\*{0,2}Note\*{0,2}:?\s*$/i.test(line.trim())) {
+      let j = i + 1;
+      while (j < lines.length && lines[j]!.trim() === '') j++;
+      if (j < lines.length && GROUNDING_VOCAB_RE.test(lines[j]!)) {
+        i = j;
+        continue;
+      }
+    }
+    // Inline sentence citing the vocabulary as its own justification (not
+    // heading-shaped) — drop the whole line rather than leave a fragment.
+    if (GROUNDING_VOCAB_RE.test(line) && /\bextracted from\b|\bfrom your\b|\bbased on\b/i.test(line)) {
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 type CodePlaceholder = { token: string; value: string };
 
 /** Preserve fenced and inline code while transforming surrounding prose. */
@@ -177,6 +219,7 @@ export function sanitizeGhampusResponse(text: string): string {
   out = out.replace(MCP_WRONG_EXPANSION_RE, 'MCP (Model Context Protocol)');
   out = out.replace(WRONG_MCP_PHRASE_RE, 'Model Context Protocol');
   out = stripSkillInternalMarkers(out);
+  out = stripAttestedMemoryDisclaimers(out);
   out = stripLeakedSourceRefsFromUserText(out);
   out = stripInternalRecallWireFormat(out);
   out = formatGhampusReadableMarkdown(out);

@@ -83,7 +83,7 @@ export function isRawRecallDump(draft: string): boolean {
   if (/_\s*\(from [^)]+\)\s*_/i.test(t)) return true;
   if (/^\[from [^\]]+\]/im.test(t)) return true;
   if (/^## Recall hits \(structured\)/m.test(t)) return true;
-  if (/^#{1,3}\s+(?:Attested Memory|dig_deeper|Recent Chat)/im.test(t)) return true;
+  if (/^#{1,3}\s+(?:Attested Memory|dig_deeper|Recent Chat|(?:From\s+)?Cortex\s+Data)/im.test(t)) return true;
   if (/Source-filename expansion|Cross-engram entity hop/i.test(t)) return true;
   if (/\bavg\.?\s*score\b/i.test(t) && /\d+\s+node/i.test(t)) return true;
   if (/via dig_deeper \(multi-strategy\)/i.test(t)) return true;

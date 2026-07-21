@@ -565,7 +565,7 @@ export function detectWantsConsistencyWalk(text: string): boolean {
 export function detectWantsCrossEngramSearch(text: string, scopedEngramIds: string[] = []): boolean {
   if (scopedEngramIds.length > 0) return false;
   return (
-    /\b(across (?:all )?engrams?|all engrams?|every engram|cross-engram|multi-engram)\b/i.test(text)
+    /\b(across (?:all )?engrams?|all engrams?|every engram|other engrams?|another engram|cross-engram|multi-engram)\b/i.test(text)
     || /\b(everything (about|on|for)|all (?:my )?memor(?:y|ies) (about|on|for)|anything (about|on|for))\b/i.test(text)
     || /\b(în toate|in toate|peste toate|tot ce (știi|stii|ai)|totul despre)\b/i.test(text)
     || /\b(dans tous les|partout|en tout|über alles|todo lo que)\b/i.test(text)
