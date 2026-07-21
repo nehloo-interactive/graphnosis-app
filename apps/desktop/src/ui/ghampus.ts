@@ -2199,10 +2199,13 @@ function wireGhampusFragmentComments(): void {
     const chatMsg = bubble.closest<HTMLElement>('.chat-msg.ghampus');
     const messageId = chatMsg?.dataset.msgId ?? chatMsg?.dataset.turnId ?? '';
     if (!messageId) return;
-    const sourceMd = findGhampusMessageTextById(messageId);
-    if (sourceMd) {
-      bubble.innerHTML = app().renderMarkdownLite(sourceMd);
-    }
+    // Do NOT reset bubble.innerHTML here — that would replace the text nodes
+    // the live Selection points into, collapsing it before the Range below is
+    // read (selection visibly vanishes, offset/rect end up null). textContent
+    // is identical whether or not prior fragment-mark spans are present, so
+    // no reset is needed to compute parentAnswerText/offset correctly.
+    // applyGhampusFragmentMarks() already does the clean-reset-and-remark pass
+    // properly (all comments at once) right after a comment is saved.
     const parentAnswerText = getGhampusBubblePlainText(bubble);
     const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
     const quoteStartOffset = range ? getSelectionStartOffset(bubble, range) : undefined;
