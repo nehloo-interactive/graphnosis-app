@@ -6,6 +6,7 @@
 import type { DirectAnswerKind } from './ghampus-direct-answer.js';
 import type { LocalLlm } from './correction.js';
 import { llmCompleteBounded } from './ghampus-timeout.js';
+import { TASK_NOUN_RE, TASK_DEADLINE_NOUN_RE } from './ghampus-language.js';
 import {
   buildGhampusRecallQuery,
   detectGhampusQueryHints,
@@ -315,7 +316,21 @@ function entry(
   return { tool, args, phase, ...(optional ? { optional: true } : {}), ...(label ? { label } : {}) };
 }
 
-function hasStrongStructuredIntent(hints: GhampusQueryHints): boolean {
+/** True when the query is asking about the user's own todos/tasks/deadlines
+ * (as opposed to, say, docs or roster questions that happen to share nouns).
+ * Also used to route away from the free-form LLM tool planner (see
+ * hasStrongStructuredIntent) — the planner's schema has no engram-scoping
+ * field, and it commonly picks find_source/dig_deeper unscoped, which can
+ * take 20s+ scanning the bundled docs/skill-demos engrams for a query that
+ * can never find a todo there. */
+export function detectTodoIntentQuery(text: string, hints: GhampusQueryHints): boolean {
+  return Boolean(
+    hints.wantsTemporalTodos || hints.wantsProjectTaskList || hints.wantsTeamTaskList
+      || TASK_NOUN_RE.test(text) || TASK_DEADLINE_NOUN_RE.test(text),
+  );
+}
+
+function hasStrongStructuredIntent(text: string, hints: GhampusQueryHints): boolean {
   return hints.wantsMcpToolList
     || hints.wantsSkillList
     || hints.wantsExplicitSkillWalk
@@ -333,7 +348,8 @@ function hasStrongStructuredIntent(hints: GhampusQueryHints): boolean {
     || (hints.wantsExhaustive && hints.hasQuotedSearch)
     || hints.wantsStats
     || hints.wantsRecent
-    || hints.wantsSource;
+    || hints.wantsSource
+    || detectTodoIntentQuery(text, hints);
 }
 
 function appendCitationAndSourcePhase2(
@@ -675,7 +691,21 @@ export function planGhampusTools(
   if (hints.wantsTemporalTodos) {
     const dueWithinDays = /\btomorrow\b/i.test(text) ? 2 : /\btoday\b/i.test(text) ? 1 : 7;
     return {
-      phase1: [entry('list_engrams', {}, 1)],
+      // A real scoped `recall` in phase1 (not just recall_obligations/
+      // recall_structured, both phase2) matters beyond finding content here —
+      // appendPostRecallEscalation decides whether to pile on dig_deeper +
+      // recall-unscoped + cross_search purely from phase1 results. Without a
+      // recall entry, extractRecallMetricsFromResults always sees nodeCount 0
+      // and unconditionally escalates, even when this branch's own phase2
+      // tools would have found the answer — costing ~20s of guaranteed
+      // escalation calls on every single temporal-todo query, hit or miss.
+      phase1: [
+        entry('recall', recallArgs(buildRecallQueryForTool('recall', text, hints), hints, scoped, {
+          maxNodes: hints.recallMaxNodes,
+          maxTokens: hints.recallMaxTokens,
+        }), 1, true, 'recall'),
+        entry('list_engrams', {}, 1),
+      ],
       phase2: [
         entry('recall_obligations', { due_within_days: dueWithinDays, max_results: 30 }, 2),
         entry(
@@ -696,11 +726,30 @@ export function planGhampusTools(
     const srcContent = projectScope
       ? `${projectScope} todos tasks TODO checklist sarcini`
       : extractSourceKeywords(text);
-    const phase1: GhampusToolPlanEntry[] = [entry('list_engrams', {}, 1)];
-    if (srcContent.length > 2) {
+    // Same reasoning as the wantsTemporalTodos branch above: without a real
+    // `recall` in phase1, appendPostRecallEscalation always sees nodeCount 0
+    // (recall_structured/find_source don't count) and unconditionally appends
+    // dig_deeper + recall-unscoped + cross_search — ~20s of guaranteed
+    // escalation on every call, regardless of whether recall_structured below
+    // already finds the answer.
+    const phase1: GhampusToolPlanEntry[] = [
+      entry('recall', recallArgs(buildRecallQueryForTool('recall', text, hints), hints, scoped, {
+        maxNodes: hints.recallMaxNodes,
+        maxTokens: hints.recallMaxTokens,
+      }), 1, true, 'recall'),
+      entry('list_engrams', {}, 1),
+    ];
+    // find_source's MCP schema takes one `engram` string, not an only_engrams
+    // array — it can't be scoped to "every user engram except the bundled
+    // docs/skill-demos ones." Passing no engram means it embedding-searches
+    // EVERY graph including the docs bundle (observed: 20s+ alone). So: scope
+    // it when there's exactly one target engram, and skip it outright rather
+    // than run it unscoped when there are several (recall_structured/dig_deeper
+    // below already cover this query with proper multi-engram scoping).
+    if (srcContent.length > 2 && (scoped?.length ?? 0) <= 1) {
       phase1.unshift(entry(
         'find_source',
-        { content: srcContent, limit: 5 },
+        { content: srcContent, limit: 5, ...(scoped?.length === 1 ? { engram: scoped[0] } : {}) },
         1,
         false,
         'find_source',
@@ -1111,6 +1160,12 @@ export function appendEmptyRecallEscalation(
 ): boolean {
   if (hints.skipMemoryTools || hints.wantsRecent) return false;
   const csEngrams = crossSearchEngramIds ?? allEngramIds;
+  // "Unscoped" here means "widen to every engram this turn considers in
+  // scope" — NOT "remove all restriction." When allEngramIds has already been
+  // narrowed (e.g. system engrams excluded for a todo-intent query), widening
+  // to it must stay narrowed too, or every escalation wave quietly re-admits
+  // the excluded engrams and the original scoping is defeated call by call.
+  const widenScope = allEngramIds?.length ? allEngramIds : undefined;
 
   let appended = false;
 
@@ -1137,7 +1192,7 @@ export function appendEmptyRecallEscalation(
       plan.phase2.unshift(
         entry(
           'recall',
-          recallArgs(entityQ, hints, undefined, {
+          recallArgs(entityQ, hints, widenScope, {
             maxNodes: hints.recallMaxNodes,
             maxTokens: hints.recallMaxTokens,
           }),
@@ -1169,7 +1224,7 @@ export function appendEmptyRecallEscalation(
         recallArgs(
           buildRecallQueryForTool('cross_search', plan.userText, hints),
           hints,
-          undefined,
+          widenScope,
           { maxNodes: hints.recallMaxNodes, maxTokens: hints.recallMaxTokens },
         ),
         2,
@@ -1185,7 +1240,7 @@ export function appendEmptyRecallEscalation(
     plan.phase2.push(
       entry(
         'recall',
-        recallArgs(altQ, hints, undefined, {
+        recallArgs(altQ, hints, widenScope, {
           maxNodes: hints.recallMaxNodes,
           maxTokens: hints.recallMaxTokens,
         }),
@@ -1204,7 +1259,7 @@ export function appendEmptyRecallEscalation(
         digDeeperArgs(
           buildRecallQueryForTool('dig_deeper', plan.userText, hints),
           hints,
-          undefined,
+          widenScope,
           { maxNodes: hints.recallMaxNodes, maxTokens: hints.recallMaxTokens },
         ),
         2,
@@ -1224,7 +1279,7 @@ export function appendEmptyRecallEscalation(
           digDeeperArgs(
             buildRecallQueryForTool('dig_deeper', plan.userText, hints),
             hints,
-            undefined,
+            widenScope,
             { maxNodes: hints.recallMaxNodes, maxTokens: hints.recallMaxTokens },
           ),
           2,
@@ -1250,6 +1305,7 @@ export function buildPostEmptyRecallRetryEntries(
 ): GhampusToolPlanEntry[] {
   if (hints.skipMemoryTools || hints.wantsRecent || hasRecallHitsFromResults(ranResults)) return [];
   const csEngrams = crossSearchEngramIds ?? allEngramIds;
+  const widenScope = allEngramIds?.length ? allEngramIds : undefined;
 
   const entries: GhampusToolPlanEntry[] = [];
   const entityQ = entityFocusedQuery(plan.userText);
@@ -1268,7 +1324,7 @@ export function buildPostEmptyRecallRetryEntries(
         digDeeperArgs(
           buildRecallQueryForTool('dig_deeper', plan.userText, hints),
           hints,
-          undefined,
+          widenScope,
           { maxNodes: hints.recallMaxNodes, maxTokens: hints.recallMaxTokens },
         ),
         2,
@@ -1296,7 +1352,7 @@ export function buildPostEmptyRecallRetryEntries(
     entries.push(
       entry(
         'recall',
-        recallArgs(altQ, hints, undefined, {
+        recallArgs(altQ, hints, widenScope, {
           maxNodes: hints.recallMaxNodes,
           maxTokens: hints.recallMaxTokens,
         }),
@@ -1399,7 +1455,7 @@ export async function planGhampusToolsWithLlm(
   if (hints.skipMemoryTools || hints.wantsSkillList || hints.wantsExplicitSkillWalk || hints.wantsImplicitSkillWalk || hints.wantsMcpToolList) {
     return planGhampusTools(text, hints, opts);
   }
-  if (hasStrongStructuredIntent(hints)) {
+  if (hasStrongStructuredIntent(text, hints)) {
     return planGhampusTools(text, hints, opts);
   }
 

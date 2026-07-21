@@ -34,6 +34,7 @@ import {
 import {
   finalizeGhampusIntent,
   tryFormatterFallback,
+  applyProjectScopeToNodes,
 } from './ghampus-intent-guards.js';
 import {
   planGhampusToolsWithLlm,
@@ -45,6 +46,7 @@ import {
   extractRecallMetricsFromResults,
   hasRecallHitsFromResults,
   planHasDigDeeper,
+  detectTodoIntentQuery,
   type GhampusToolPlanEntry,
 } from './ghampus-tool-plan.js';
 import {
@@ -114,8 +116,6 @@ import {
   isSimplePersonLookupQuestion,
   responseLanguageLabel,
   shouldDefaultBriefAnswer,
-  TASK_NOUN_RE,
-  TASK_DEADLINE_NOUN_RE,
 } from './ghampus-language.js';
 import { SYSTEM_ENGRAM_IDS } from './docs-ingest.js';
 import { listMcpToolsForGhampus } from './mcp-tool-catalog.js';
@@ -251,6 +251,31 @@ function cleanRecallPromptAttested(attestedRaw: string): string {
 
 function cleanRecallPrompt(raw: string): string {
   return cleanRecallPromptAttested(splitAttestedInferred(raw).attested);
+}
+
+/**
+ * For an unscoped todo/task-intent query, exclude bundled system engrams
+ * (graphnosis-docs, graphnosis-skill-demos) from every recall/escalation
+ * universe — not just the initial scope, but also the "unscoped retry"
+ * fallbacks (recall-unscoped, dig_deeper-unscoped, cross_search) that
+ * empty-recall escalation runs. Without this, each escalation wave re-widens
+ * the search right back to the system engrams, defeating the initial scope,
+ * burning ~30-40s across 3 escalation layers, and letting website copy leak
+ * into a todo answer via the escalation path even when the initial scope was
+ * correct. Returns null when scoping isn't applicable (e.g. system engrams
+ * are all the user has, or none exist).
+ */
+export function applyTodoIntentEngramScope(
+  allEngramIds: string[],
+  crossSearchEngramIds: string[],
+): { scopedEngrams: string[]; allEngramIds: string[]; crossSearchEngramIds: string[] } | null {
+  const userEngramIds = allEngramIds.filter((id) => !SYSTEM_ENGRAM_IDS.has(id));
+  if (userEngramIds.length === 0 || userEngramIds.length >= allEngramIds.length) return null;
+  return {
+    scopedEngrams: userEngramIds,
+    allEngramIds: userEngramIds,
+    crossSearchEngramIds: crossSearchEngramIds.filter((id) => !SYSTEM_ENGRAM_IDS.has(id)),
+  };
 }
 
 const leakPatterns = [
@@ -922,8 +947,26 @@ export async function runGhampusSend(
         turnSuggestionMeta = { skip: true, skipReason: 'direct_answer' };
         const reviewStepId = stableTraceStepId('fragment-review');
         emitTrace({ stepId: reviewStepId, status: 'running', label: 'Reviewing your comments' });
+        // Each comment can dispute a factual claim in its highlighted passage
+        // ("why did you link X and Y?") — without grounding, the LLM can only
+        // free-associate about the quoted text, which produces an equally
+        // unverified "explanation" for its own prior claim (confirming or
+        // retracting it at random). Run a light scoped recall per item, same
+        // pattern as the single-selection follow-up below, so the model can
+        // actually check instead of rationalizing.
+        const fragmentRecallSnippets = await Promise.all(
+          fragmentReview.comments.map(async (c) => {
+            try {
+              const recallQ = buildLightRecallQuery(c.quotedText, c.userComment);
+              const recallRes = await ghampusTool('recall', { query: recallQ, maxNodes: 8, maxTokens: 1200 }) as { prompt?: string };
+              return formatProseRecallForGhampusUser(recallRes.prompt ?? '', 1200);
+            } catch {
+              return '';
+            }
+          }),
+        );
         const system = buildFragmentReviewSystemPrompt();
-        const userPrompt = buildFragmentReviewUserPrompt(fragmentReview);
+        const userPrompt = buildFragmentReviewUserPrompt(fragmentReview, fragmentRecallSnippets);
         let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
         throwIfCancelled();
         answer = formatFragmentReviewOutput(sanitizeResponse(answer ?? ''), fragmentReview);
@@ -1439,8 +1482,8 @@ export async function runGhampusSend(
         engrams?: Array<{ graphId: string; displayName: string; tier?: string }>;
       };
       const allEngrams = engListForPlan.engrams ?? [];
-      const allEngramIds = allEngrams.map((e) => e.graphId);
-      const crossSearchEngramIds = allEngrams
+      let allEngramIds = allEngrams.map((e) => e.graphId);
+      let crossSearchEngramIds = allEngrams
         .filter((e) => e.tier !== 'sensitive')
         .map((e) => e.graphId);
       const histBeforeCurrent = histForHints.slice(0, -1);
@@ -1465,15 +1508,15 @@ export async function runGhampusSend(
       }
       // Personal-state queries (todos, tasks, deadlines) never live in the
       // bundled system engrams (docs / skill demos) — exclude them from
-      // unscoped recall so website copy can't masquerade as the user's todos.
-      if (
-        scopedEngrams.length === 0
-        && (hints.wantsTemporalTodos || hints.wantsProjectTaskList || hints.wantsTeamTaskList
-          || TASK_NOUN_RE.test(queryText) || TASK_DEADLINE_NOUN_RE.test(queryText))
-      ) {
-        const userEngramIds = allEngramIds.filter((id) => !SYSTEM_ENGRAM_IDS.has(id));
-        if (userEngramIds.length > 0 && userEngramIds.length < allEngramIds.length) {
-          scopedEngrams = userEngramIds;
+      // unscoped recall so website copy can't masquerade as the user's todos,
+      // and from every empty-recall escalation wave (see helper doc comment).
+      const isTodoIntentQuery = detectTodoIntentQuery(queryText, hints);
+      if (scopedEngrams.length === 0 && isTodoIntentQuery) {
+        const scoped = applyTodoIntentEngramScope(allEngramIds, crossSearchEngramIds);
+        if (scoped) {
+          scopedEngrams = scoped.scopedEngrams;
+          allEngramIds = scoped.allEngramIds;
+          crossSearchEngramIds = scoped.crossSearchEngramIds;
         }
       }
       const engramListStr = allEngrams.map((e) => `${e.graphId}="${e.displayName}"`).join(', ');
@@ -1826,11 +1869,40 @@ export async function runGhampusSend(
         asksForRoles,
       });
       if (formatterAnswer && !isRawRecallDump(formatterAnswer)) {
+        // Mirror the SAME project-scope narrowing tryFormatterFallback applied
+        // internally (e.g. "todos for world's carols" → only World's Carols
+        // nodes). If polish/verification still ends up running on this answer
+        // for any reason, it must not see the full unscoped node set — that's
+        // exactly how a correctly-scoped 1-item answer got "helpfully"
+        // re-expanded back out to unrelated items it saw in recallContext.
+        const recallContextNodes = applyProjectScopeToNodes(structuredNodes, queryText);
         await finalizeAndEmitGhampusMsg(formatterAnswer, {
           polishSource: 'formatter',
           queryHints: hints,
-          recallContext: structuredNodes.map((n) => (n.text ?? '').trim()).join('\n'),
+          recallContext: recallContextNodes.map((n) => (n.text ?? '').trim()).join('\n'),
         });
+        return;
+      }
+
+      // Todo/task-intent query where recall found NOTHING at all (not even
+      // loosely-related nodes) — answer deterministically instead of handing
+      // an empty/irrelevant context to LLM synthesis, which has confabulated
+      // unrelated setup instructions ("configure the Linear connector...")
+      // when asked for todos that don't exist in the cortex.
+      //
+      // Gated on structuredNodes.length === 0, NOT merely on the bullet
+      // formatter returning null: extractTodoBulletsFromText only recognizes
+      // "- [ ]" checkboxes, a literal "TODO" keyword, or a bullet line
+      // containing a narrow keyword whitelist (task/todo/deadline/fix/ship/
+      // review/draft/...). Real stored todos are often plain sentences
+      // ("Discuss with X about Y") that recall_structured correctly finds but
+      // the formatter's rigid shape-matching doesn't recognize as a todo
+      // bullet. Since system engrams are already excluded from this query's
+      // recall scope, real content in structuredNodes is trustworthy — let
+      // synthesis render it (grounded by the "use only attested memory"
+      // rules) rather than incorrectly telling the user nothing was found.
+      if (isTodoIntentQuery && structuredNodes.length === 0) {
+        await emitGhampusMsg("I couldn't find any todos or tasks in your cortex. If you've saved them under different wording, try rephrasing — or add one with \"remember: <task>\".");
         return;
       }
 
@@ -1899,7 +1971,7 @@ If attested memory does not address the thread topic, say what is missing — do
         }
       }
       if (primaryRecall && !hints.wantsRecent) {
-        sections.push('## What I found in your cortex (attested memory)\n' + primaryRecall.slice(0, hints.recallMaxTokens > 4000 ? 8000 : 3000));
+        sections.push('## RECALL_CONTEXT (internal — do not name or cite this heading)\n' + primaryRecall.slice(0, hints.recallMaxTokens > 4000 ? 8000 : 3000));
       } else if (primaryRecall && hints.wantsRecent) {
         sections.push('## Additional semantic recall (secondary — prefer recency list above)\n' + primaryRecall.slice(0, 1500));
       }
@@ -1942,7 +2014,7 @@ If <cortex_data> is empty or thin, say what is missing from the user's cortex �
 Do NOT invent English titles for Romanian (or other non-English) book or work names — quote titles exactly as stored; if uncertain, use the original-language title without guessing (e.g. keep "Cânturi de pe frunte", never invent "Songs from the Shelf").
 Preserve person names exactly as in <cortex_data> — never merge spellings or create OCR-corrupted variants.
 Use <recent_chat> when the user refers to your prior Ghampus answers, earlier turns, or asks follow-ups (pronouns like "that/this/it", "you said", "the second point", "check your docs") — resolve those from recent turns FIRST; do not treat them as fresh cortex lookups unless the user pivots to a new topic or person.
-Never echo <recent_chat>, <cortex_data>, "## Attested Memory", "## dig_deeper", "## Recent Chat", node counts, avg scores, "Source-filename expansion", "Cross-engram entity hop", or other internal tags/meta in your answer.
+Never echo <recent_chat>, <cortex_data>, any "## " heading you see inside them (e.g. "RECALL_CONTEXT", "Recall hits (structured)", "Content from a recent save", "Additional semantic recall"), "## dig_deeper", "## Recent Chat", node counts, avg scores, "Source-filename expansion", "Cross-engram entity hop", or other internal tags/meta in your answer. Never tell the user their answer came "from attested memory", "from Cortex Data", or was "extracted from" their cortex — just answer; the user already knows this app only shows them their own saved content, so citing that fact reads as a strange, unprompted disclaimer.
 ${consentBlocked ? '\nNote: cross-engram search was blocked by consent — answer only from the attested memory below.\n' : ''}
 OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or recall-process narration.${contextBlock}${recent_chat_block}`;
 
