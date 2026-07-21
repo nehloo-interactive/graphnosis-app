@@ -814,10 +814,16 @@ export function extractPersonSectionsFromNodes(nodes) {
   return merged;
 }
 export function extractProjectScopeFromQuery(query: string) {
+  // Up to 4 words so multi-word project/event names survive ("world's
+  // carols", "black sea vallachs") — apostrophes (straight + curly) included
+  // so "world's carols" isn't truncated to just "world" at the apostrophe,
+  // which previously caused scope-matching to accidentally match ANY node
+  // containing the bare word "world" rather than the actual named project.
   const m = query.match(
-    /\b(?:for|pentru|from|in|at|on|about|despre|din|de la)\s+([a-z0-9][\w-]{2,})/i
+    /\b(?:for|pentru|from|in|at|on|about|despre|din|de la)\s+([a-z0-9][\w'’-]*(?:\s+[a-z0-9][\w'’-]*){0,3})/i
   );
-  return m?.[1]?.toLowerCase() ?? null;
+  if (!m?.[1]) return null;
+  return m[1].toLowerCase().replace(/[?.!,;:]+$/, '').trim();
 }
 export function scopeMatchesText(scope, text, engram) {
   const t = text.toLowerCase();
@@ -1065,7 +1071,13 @@ export function inferOwnerFromNode(n: StructuredRecallNode) {
 }
 export function formatStructuredRecallList(nodes: StructuredRecallNode[]) {
   if (nodes.length === 0) return "";
-  return `Found **${nodes.length}** matching memor${nodes.length === 1 ? "y" : "ies"} in your cortex:
+  // Deliberately NOT phrased "Found **N** matching memor..." — that exact
+  // wording collides with RAW_DUMP_HEADER_RE in ghampus-answer-finalize.ts
+  // (meant to catch hallucinated dump narration), which misclassifies this
+  // legitimate deterministic template as a raw dump needing polish/
+  // verification — and that pass then sees the FULL unscoped recall context
+  // and can re-expand an intentionally-narrowed answer back out.
+  return `You have **${nodes.length}** matching item${nodes.length === 1 ? "" : "s"} in your cortex:
 
 ${nodes.map(formatNodeBullet).join("\n")}`;
 }
@@ -1089,7 +1101,9 @@ export function formatGroupedRecallList(nodes: StructuredRecallNode[], query: st
     return `### ${key}
 ${items.map(formatNodeBullet).join("\n")}`;
   });
-  return `Found **${nodes.length}** matching memor${nodes.length === 1 ? "y" : "ies"}, grouped by ${dimension}:
+  // See formatStructuredRecallList above — avoid "Found **N** matching memor..."
+  // to not collide with RAW_DUMP_HEADER_RE and trigger unwanted re-expansion.
+  return `You have **${nodes.length}** matching item${nodes.length === 1 ? "" : "s"}, grouped by ${dimension}:
 
 ` + sections.join("\n\n");
 }

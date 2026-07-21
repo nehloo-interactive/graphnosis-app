@@ -38,8 +38,27 @@ import {
   formatProjectTodosAnswer,
   formatTeamTasksByPerson,
   extractProjectScopeFromQuery,
+  scopeMatchesText,
   type StructuredRecallNode,
 } from './ghampus-recall-format.js';
+
+/**
+ * Narrow nodes to the query's named project/topic BEFORE any formatter runs,
+ * not just inside formatProjectTodosAnswer. That function computes the same
+ * scope internally, but only to filter its OWN bullet-extraction pass — when
+ * it finds nothing bullet-shaped and returns null, the narrowing is thrown
+ * away and its caller's fallback (formatTeamTasksByPerson, which itself falls
+ * back to formatGroupedRecallList) sees the full, unscoped node set. That's
+ * how "what are my todos for world's carols?" answered with unrelated todos
+ * from other projects in the same engram — hoisting the filter here makes it
+ * apply to every formatter in the todo/task cascade, not just the first one.
+ */
+export function applyProjectScopeToNodes(nodes: StructuredRecallNode[], text: string): StructuredRecallNode[] {
+  const scope = extractProjectScopeFromQuery(text);
+  if (!scope) return nodes;
+  const scoped = nodes.filter((n) => scopeMatchesText(scope, n.text ?? '', n.engram ?? n.graphId));
+  return scoped.length > 0 ? scoped : nodes;
+}
 
 /** Re-export blocklist for tests importing from guards. */
 export { FUZZY_SAVE_BLOCKLIST };
@@ -197,8 +216,9 @@ export function tryFormatterFallback(opts: FormatterFallbackOpts): string | null
   }
 
   if (hints.wantsProjectTaskList || hints.wantsTemporalTodos) {
-    return formatProjectTodosAnswer(nodes, text, extractProjectScopeFromQuery(text))
-      ?? formatTeamTasksByPerson(nodes, text);
+    const scopedNodes = applyProjectScopeToNodes(nodes, text);
+    return formatProjectTodosAnswer(scopedNodes, text, extractProjectScopeFromQuery(text))
+      ?? formatTeamTasksByPerson(scopedNodes, text);
   }
 
   if (hints.wantsTeamTaskList) {
@@ -219,8 +239,9 @@ export function tryFormatterFallback(opts: FormatterFallbackOpts): string | null
   // ("Calendar — fix sync") match the roster "Name — role" shape, and synthesis
   // pads thin recall with invented items.
   if (TASK_NOUN_RE.test(text) || TASK_DEADLINE_NOUN_RE.test(text)) {
-    return formatProjectTodosAnswer(nodes, text, extractProjectScopeFromQuery(text))
-      ?? formatTeamTasksByPerson(nodes, text);
+    const scopedNodes = applyProjectScopeToNodes(nodes, text);
+    return formatProjectTodosAnswer(scopedNodes, text, extractProjectScopeFromQuery(text))
+      ?? formatTeamTasksByPerson(scopedNodes, text);
   }
 
   if (
