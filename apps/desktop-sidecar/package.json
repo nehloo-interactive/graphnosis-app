@@ -22,6 +22,7 @@
     "test:correction-scope": "node --test tests/correction-scope.test.mjs",
     "test:correction-parse": "node --test tests/correction-parse.test.mjs",
     "test:sharing-scope": "node --test tests/sharing-scope.test.mjs",
+    "test:memory-hygiene": "node --test tests/memory-hygiene.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

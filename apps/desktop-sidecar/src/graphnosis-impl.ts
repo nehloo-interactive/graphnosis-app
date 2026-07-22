@@ -348,6 +348,42 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       }));
   }
 
+  async queryDirect(handle: GraphHandle, query: string, k: number): Promise<QueryResult[] | null> {
+    const h = handle as Internal;
+    if (!h.built) h.instance.build(h.graphId);
+    // No embedding index → direct similarity is unavailable; the caller
+    // chooses the fallback (check_duplicate uses the TF-IDF path with a
+    // stricter threshold and says so).
+    if (!h.instance.hasEmbeddings()) return null;
+    const safeQuery = sanitizeQuery(query);
+    try {
+      // similarity:'embeddings' skips the TF-IDF seed pool entirely, and the
+      // query embedding is computed from the raw text BEFORE decomposition /
+      // synonym expansion — so seed scores are plain text-vs-node cosines.
+      const res = await h.instance.queryHybrid(safeQuery, { maxNodes: k, similarity: 'embeddings' });
+      const seedScores = new Map<string, number>(
+        (res.seeds as Array<{ nodeId: string; score: number }>).map(s => [s.nodeId, s.score]),
+      );
+      // Seeds only — structural expansion nodes carry score=0 and add noise.
+      return res.subgraph.nodes
+        .filter((n: GraphNode) => seedScores.has(n.id))
+        .map((n: GraphNode) => ({
+          nodeId: n.id,
+          score: seedScores.get(n.id)!,
+          text: n.content,
+          type: n.type,
+          source: {
+            file: n.source.file,
+            ...(n.source.line !== undefined ? { line: n.source.line } : {}),
+            ...(n.source.section !== undefined ? { section: n.source.section } : {}),
+          },
+        }));
+    } catch (e) {
+      console.error(`[graphnosis-sidecar] queryDirect failed (${(e as Error).message}) — treating direct similarity as unavailable`);
+      return null;
+    }
+  }
+
   async queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult> {
     const h = handle as Internal;
     if (!h.built) h.instance.build(h.graphId);

@@ -176,6 +176,17 @@ export interface GraphnosisAdapter {
   query(handle: GraphHandle, query: string, k: number): Promise<QueryResult[]>;
 
   /**
+   * Direct embedding-cosine similarity of `query` against node embeddings —
+   * NO query decomposition, NO synonym expansion, NO TF-IDF pool. Scores are
+   * raw BGE cosines of the ORIGINAL text (the SDK embeds the question before
+   * its recall-tuned rewriting stages run). Use for duplicate/near-duplicate
+   * detection, where recall's manufactured term overlap is exactly wrong.
+   * Returns null when the graph has no embedding index (caller decides the
+   * fallback policy).
+   */
+  queryDirect(handle: GraphHandle, query: string, k: number): Promise<QueryResult[] | null>;
+
+  /**
    * Like `query()` but also returns the traversal's edge structure and a
    * `serialize()` closure for rich === KNOWLEDGE SUBGRAPH === rendering.
    * Use this in the recall path so the federation prompt carries relationship

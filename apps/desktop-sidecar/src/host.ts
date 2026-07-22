@@ -24,6 +24,8 @@ import * as associationIndexMod from './association-index.js';
 import * as gnnStoreMod from './gnn-store.js';
 import * as gllOverlayMod from './gll-overlay.js';
 import { redactId, redactPair, dbg } from './log-redact.js';
+import { buildCommonEntityPredicate } from './memory-hygiene.js';
+import { evaluateContradictionTriage } from './contradiction-utils.js';
 import { GllWriter } from './gll.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import { SkillCallLinkStore } from './skill-call-links.js';
@@ -1373,6 +1375,30 @@ export class GraphnosisHost {
     // forgotten matches, without making queries quadratic.
     const active = this.activeNodeIds(graphId);
     const raw = await this.opts.adapter.query(g.handle, query, k * 3);
+    return raw
+      .filter((r) => active.has(r.nodeId))
+      .slice(0, k)
+      .map((r) => ({
+        nodeId: r.nodeId,
+        score: r.score,
+        text: r.text,
+        ...(r.type !== undefined ? { type: r.type } : {}),
+      }));
+  }
+
+  /**
+   * Like `searchNodes` but via the adapter's DIRECT embedding-cosine path —
+   * no synonym expansion, no TF-IDF vocab intersection, scores are raw
+   * text-vs-node cosines. Built for duplicate/near-duplicate detection
+   * (check_duplicate, audit_memory), where recall-tuned retrieval
+   * manufactures overlap that isn't in the probe text. Returns null when
+   * the engram has no embedding index — callers pick their own fallback.
+   */
+  async searchNodesDirect(graphId: GraphId, query: string, k = 30): Promise<Array<{ nodeId: string; score: number; text: string; type?: string }> | null> {
+    const g = this.must(graphId);
+    const active = this.activeNodeIds(graphId);
+    const raw = await this.opts.adapter.queryDirect(g.handle, query, k * 3);
+    if (raw === null) return null;
     return raw
       .filter((r) => active.has(r.nodeId))
       .slice(0, k)
@@ -3785,6 +3811,41 @@ export class GraphnosisHost {
       batchSize: ai.embedBatch,
     });
 
+    // Ingest-path contradiction triage: the SDK's append-time detector fires
+    // on raw shared-entity overlap, so in a themed engram every new note
+    // "contradicts" half the corpus via the ubiquitous project/brand entity
+    // (observed: one remember → 8 conflicts, all keyed on the same entity).
+    // The brain engine's periodic scan already routes detections through
+    // evaluateContradictionTriage; this applies the SAME triage (with its
+    // stricter ingest gate) here, so the SourceRecord and the MCP remember
+    // reply agree with the scan's semantics. Best-effort: on any failure the
+    // raw list passes through.
+    let ingestContradictions = result.contradictions;
+    if (ingestContradictions.length > 0) {
+      try {
+        const inspected = this.opts.adapter.inspectNodes(g.handle);
+        const byId = new Map(inspected.map((n) => [n.id, n]));
+        const isCommonEntity = buildCommonEntityPredicate(inspected);
+        const contras = ingestContradictions as Array<{ nodeA: string; nodeB: string; sharedEntities?: string[] }>;
+        const kept = contras.filter((c) => {
+          const a = byId.get(c.nodeA);
+          const b = byId.get(c.nodeB);
+          return evaluateContradictionTriage({
+            snippetA: a?.contentPreview ?? '',
+            snippetB: b?.contentPreview ?? '',
+            sharedEntities: c.sharedEntities ?? [],
+            ingest: true,
+            ...(a?.validUntil !== undefined ? { validUntilA: a.validUntil } : {}),
+            ...(b?.validUntil !== undefined ? { validUntilB: b.validUntil } : {}),
+            isCommonEntity,
+          }).queue;
+        });
+        if (kept.length < ingestContradictions.length) {
+          console.error(`[host] ingest ${redactId(graphId)}: triage suppressed ${ingestContradictions.length - kept.length}/${ingestContradictions.length} append-time contradiction(s) (shared-entity noise)`);
+        }
+        ingestContradictions = kept as typeof result.contradictions;
+      } catch { /* triage is best-effort; never fail the ingest over it */ }
+    }
     const record: SourceRecord & { contradictions?: unknown[] } = {
       sourceId,
       kind,
@@ -3794,7 +3855,7 @@ export class GraphnosisHost {
       nodeIds: result.newNodeIds,
       contentHash: hashContent(input.content),
       ...(opts?.addedBy ? { addedBy: opts.addedBy } : {}),
-      ...(result.contradictions.length > 0 ? { contradictions: result.contradictions } : {}),
+      ...(ingestContradictions.length > 0 ? { contradictions: ingestContradictions } : {}),
     };
     g.sourceIndex.add(record);
     g.dirty = true;

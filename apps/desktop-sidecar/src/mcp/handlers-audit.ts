@@ -9,6 +9,39 @@ import type { BrainEngine } from '../brain-engine.js';
 import type { LicenseValidator } from '../license-validator.js';
 import { withEmbedding } from '../embedding-queue.js';
 import { scopeCoversEngram, type SharingScope } from '@graphnosis-app/core/settings';
+import { isDegenerateDuplicateCandidate } from '../memory-hygiene.js';
+
+/** TF-IDF fallback (no embedding index) needs a stricter bar than embedding
+ *  cosine — keyword scores saturate on short label nodes. */
+const KEYWORD_FALLBACK_MIN_THRESHOLD = 0.92;
+
+/**
+ * Similarity hits for duplicate detection: the adapter's DIRECT
+ * embedding-cosine path (no synonym expansion, no TF-IDF vocab
+ * intersection) with a keyword fallback for engrams that have no
+ * embedding index yet. The fallback is labeled and held to a stricter
+ * threshold, and degenerate label-sized candidates are dropped in both
+ * modes — a 10-char heading can cosine at 1.00 against anything once a
+ * query vector collapses onto its single term.
+ */
+async function findDuplicateHits(
+  host: GraphnosisHost,
+  graphId: string,
+  probeText: string,
+  k: number,
+  threshold: number,
+): Promise<Array<{ nodeId: string; score: number; text: string; keywordFallback: boolean }>> {
+  let results = await withEmbedding(() => host.searchNodesDirect(graphId, probeText, k));
+  let keywordFallback = false;
+  if (results === null) {
+    keywordFallback = true;
+    results = await withEmbedding(() => host.searchNodes(graphId, probeText, k));
+  }
+  const effective = keywordFallback ? Math.max(threshold, KEYWORD_FALLBACK_MIN_THRESHOLD) : threshold;
+  return results
+    .filter((r) => r.score >= effective && !isDegenerateDuplicateCandidate(probeText, r.text))
+    .map((r) => ({ nodeId: r.nodeId, score: r.score, text: r.text, keywordFallback }));
+}
 
 export type McpToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
@@ -183,17 +216,17 @@ export async function dispatchAuditMcpTool(
         const activeA = nodesA.filter((n) => (n.confidence ?? 1) > 0.2).slice(0, 5);
         for (const node of activeA) {
           const nodeText = (node.contentPreview ?? node.text ?? '').toString();
-          if (!nodeText) continue;
-          const hits = await withEmbedding(() => deps.host.searchNodes(b, nodeText, 3));
+          // Label-sized probes can't anchor a meaningful duplicate pair any
+          // more than label-sized candidates can (same degeneracy, probe side).
+          if (!nodeText || nodeText.trim().length < 24) continue;
+          const hits = await findDuplicateHits(deps.host, b, nodeText, 3, threshold);
           for (const hit of hits) {
-            if (hit.score >= threshold) {
-              const srcA = deps.host.getNodeSource(a, node.id);
-              const srcB = deps.host.getNodeSource(b, hit.nodeId);
-              duplicates.push(
-                `Score ${hit.score.toFixed(2)} | ${deps.host.getGraphMetadata(a)?.displayName ?? a}${srcA ? ` [${srcA}]` : ''} ↔ ${deps.host.getGraphMetadata(b)?.displayName ?? b}${srcB ? ` [${srcB}]` : ''}\n  "${nodeText.slice(0, 80)}…"`,
-              );
-              if (duplicates.length >= 20) break;
-            }
+            const srcA = deps.host.getNodeSource(a, node.id);
+            const srcB = deps.host.getNodeSource(b, hit.nodeId);
+            duplicates.push(
+              `Score ${hit.score.toFixed(2)}${hit.keywordFallback ? ' (keyword match — embeddings unavailable)' : ''} | ${deps.host.getGraphMetadata(a)?.displayName ?? a}${srcA ? ` [${srcA}]` : ''} ↔ ${deps.host.getGraphMetadata(b)?.displayName ?? b}${srcB ? ` [${srcB}]` : ''}\n  "${nodeText.slice(0, 80)}…"`,
+            );
+            if (duplicates.length >= 20) break;
           }
           if (duplicates.length >= 20) break;
         }
@@ -220,13 +253,11 @@ export async function dispatchAuditMcpTool(
       }
       const hits: string[] = [];
       for (const graphId of graphIds) {
-        const results = await withEmbedding(() => deps.host.searchNodes(graphId, args.text, 3));
+        const results = await findDuplicateHits(deps.host, graphId, args.text, 3, threshold);
         for (const r of results) {
-          if (r.score >= threshold) {
-            const meta = deps.host.getGraphMetadata(graphId);
-            const sourceId = deps.host.getNodeSource(graphId, r.nodeId);
-            hits.push(`Score ${r.score.toFixed(2)} in ${meta?.displayName ?? graphId}${sourceId ? ` [${sourceId}]` : ''}:\n  "${r.text.slice(0, 120)}"`);
-          }
+          const meta = deps.host.getGraphMetadata(graphId);
+          const sourceId = deps.host.getNodeSource(graphId, r.nodeId);
+          hits.push(`Score ${r.score.toFixed(2)}${r.keywordFallback ? ' (keyword match — embeddings unavailable)' : ''} in ${meta?.displayName ?? graphId}${sourceId ? ` [${sourceId}]` : ''}:\n  "${r.text.slice(0, 120)}"`);
         }
       }
       return {
