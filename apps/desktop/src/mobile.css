@@ -268,6 +268,40 @@ body.mobile-more-open .mobile-more-sheet {
    two-column layout, condensed to fit (see the tablet-landscape block below). */
 
 @media (max-width: 768px), (max-width: 1024px) and (orientation: portrait) {
+  /* ── No zoom-on-focus: iOS Safari auto-zooms the viewport when a focused
+     form control's computed font-size is below 16px. Force 16px on every
+     text-entry control so the trigger never fires — the belt to the
+     viewport meta's maximum-scale=1 braces (which some engines ignore).
+     !important on purpose: app.css styles inputs at 13-14px with higher
+     specificity, and this is exactly the blanket-mobile-override case. */
+  input[type="text"],
+  input[type="search"],
+  input[type="password"],
+  input[type="email"],
+  input[type="url"],
+  input[type="number"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
+  /* ── Ghampus chat: full phone width. The desktop readable-column
+     (max-width: 100% - 32px, 14px inner padding) plus the 40px avatar
+     column costs ~60px per side of a ~390px screen. Slim gutters and a
+     smaller avatar give the bubbles the width back. */
+  #ghampus-chat-messages {
+    max-width: 100%;
+    padding: 0 8px;
+  }
+  #ghampus-chat-wrap {
+    --ghampus-chat-avatar-size: 28px;
+    --ghampus-chat-avatar-gap: 6px;
+  }
+  .ghampus-input-stack,
+  .ghampus-quiet-footer {
+    max-width: calc(100% - 16px);
+  }
+
   /* Show the bottom nav ONLY once the cortex is unlocked — the panes it
      switches between live inside #view-app, which is hidden on the lock
      screen. render() toggles body.app-unlocked. */

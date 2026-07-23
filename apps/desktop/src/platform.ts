@@ -22,21 +22,46 @@ export const IS_TAURI: boolean =
 const SESSION_KEY = 'graphnosis:session';
 let _sessionToken: string | null = null;
 
+/** True when running as an installed home-screen web app (iOS "Add to Home
+ *  Screen" / desktop PWA). Standalone apps get a fresh process on every
+ *  launch, so sessionStorage is wiped each cold start — the session must
+ *  live in localStorage there or the user re-enters the access token on
+ *  every open. Regular browser tabs keep the stricter per-tab storage. */
+function isStandaloneApp(): boolean {
+  try {
+    return window.matchMedia?.('(display-mode: standalone)').matches === true
+      || (navigator as { standalone?: boolean }).standalone === true;
+  } catch {
+    return false;
+  }
+}
+
+function sessionStore(): Storage {
+  return isStandaloneApp() ? localStorage : sessionStorage;
+}
+
 export function setBrowserSession(token: string): void {
   _sessionToken = token;
-  sessionStorage.setItem(SESSION_KEY, token);
+  sessionStore().setItem(SESSION_KEY, token);
 }
 
 export function getBrowserSession(): string | null {
   if (!_sessionToken) {
-    _sessionToken = sessionStorage.getItem(SESSION_KEY);
+    // Read the mode-appropriate store first, then the other — a session
+    // minted before an add-to-home-screen (or a mode misdetection) should
+    // still be honored rather than forcing a pointless re-auth.
+    _sessionToken = sessionStore().getItem(SESSION_KEY)
+      ?? (isStandaloneApp() ? sessionStorage : localStorage).getItem(SESSION_KEY);
   }
   return _sessionToken;
 }
 
 export function clearBrowserSession(): void {
   _sessionToken = null;
+  // Clear both stores — logout and 401-invalidation must never leave a
+  // stale copy behind in the store we didn't just write to.
   sessionStorage.removeItem(SESSION_KEY);
+  try { localStorage.removeItem(SESSION_KEY); } catch { /* private mode */ }
 }
 
 // ── WebAuthn (A8 — biometric / security-key unlock, browser mode) ─────────────
@@ -509,14 +534,24 @@ function dispatchToListeners(eventName: string, payload: unknown): void {
 
 async function sseLoop(): Promise<void> {
   const token = getBrowserSession();
-  if (!token) return;
+  if (!token) {
+    // No session yet — release the flag so the post-auth startSse() actually
+    // starts a loop instead of no-oping against a dead one.
+    _sseRunning = false;
+    return;
+  }
   _sseAbort = new AbortController();
   try {
     const res = await fetch('/api/events', {
       headers: { 'Authorization': `Bearer ${token}` },
       signal: _sseAbort.signal,
     });
-    if (!res.ok || !res.body) return;
+    // Non-ok (expired session at cold start, transient proxy 5xx) must fall
+    // through to the reconnect tail — a bare return here used to leave
+    // _sseRunning=true with no loop alive, permanently killing SSE for the
+    // session (every later startSse() call no-ops on the stale flag). The
+    // retry re-reads getBrowserSession(), so it self-heals after re-auth.
+    if (!res.ok || !res.body) throw new Error(`sse http ${res.status}`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';

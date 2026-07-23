@@ -3366,11 +3366,11 @@ document.addEventListener('graphnosis:attention-changed', () => {
 });
 
 // ── Mobile bottom nav ────────────────────────────────────────────────────────
-// The 4-slot mobile bar: Home · MCP · Skills · More. The first three carry a
-// data-mode; "More" (data-nav="more") opens a bottom sheet with the overflow
-// destinations. syncMobileNav highlights "More" whenever the active mode is one
-// of those overflow destinations.
-const MOBILE_PRIMARY_MODES = new Set<Mode>(['atlas', 'mcp-tools', 'skills']);
+// The 5-slot mobile bar: Home · Ghampus · MCP · Skills · More. The first four
+// carry a data-mode; "More" (data-nav="more") opens a bottom sheet with the
+// overflow destinations. syncMobileNav highlights "More" whenever the active
+// mode is one of those overflow destinations.
+const MOBILE_PRIMARY_MODES = new Set<Mode>(['atlas', 'ghampus', 'mcp-tools', 'skills']);
 function syncMobileNav(mode: Mode): void {
   const overflow = !MOBILE_PRIMARY_MODES.has(mode);
   document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((b) => {
@@ -9631,6 +9631,11 @@ setMemoryIntegrityBootstrap(initMemoryIntegrityWorkbenchDeps);
 setForesightLaneOpenHandler((lane) => {
   if (lane === 'insights') renderLbInsights();
   if (lane === 'integrity') refreshMemoryIntegrityWorkbench();
+  // The Local LLM card is rendered by refreshLlmStatus(), which otherwise
+  // only runs on Settings/Brain visits — on a fresh (especially mobile)
+  // session the Foresight "Set up" lane opened an inert card with every
+  // control hidden and stale Ollama status.
+  if (lane === 'llm') void refreshLlmStatus();
 });
 
 async function renderForesight(): Promise<void> {
@@ -9704,7 +9709,13 @@ let foresightLlmSetupDone = false;
 
 /** Opens Foresight (goals mode) — GNN / GLL / Local LLM lanes live there now. */
 function openNonDeterministic(): void {
+  // Land the user IN the Local LLM setup lane. activateMode('goals') alone
+  // was a visible no-op when the caller was already on Foresight (the "Set
+  // up" tile's own page): it repainted the same tiles — pinging Ollama's
+  // /api/tags each click — and opened nothing. The setup UI lives in the
+  // fcard-llm lane modal since the Foresight redesign.
   activateMode('goals');
+  openForesightLaneModal('llm');
 }
 
 function ensureForesightPageInit(): void {
@@ -18287,6 +18298,16 @@ interface LlmPullProgressPayload {
 void listen<LlmPullProgressPayload>('graphnosis://llm-pull-progress', (evt) => {
   const p = evt.payload;
   els.ollamaPullProgress.style.display = '';
+  if (p.status === 'success') {
+    // Finalize off the event stream, not just the RPC response — a long pull
+    // through a proxy (phone over tailscale serve) can outlive the request
+    // while the sidecar finishes fine; without this the UI claimed "Failed"
+    // for a pull that succeeded.
+    els.ollamaPullBar.style.width = '100%';
+    els.ollamaPullLabel.textContent = 'Model ready';
+    void refreshLlmStatus();
+    return;
+  }
   if (p.completed && p.total && p.total > 0) {
     const pct = Math.round((p.completed / p.total) * 100);
     els.ollamaPullBar.style.width = `${pct}%`;
@@ -20434,6 +20455,41 @@ function renderHttpUiBlock(preferredIp: string): void {
       .then((dataUrl) => { qrImg.src = dataUrl; qrImg.classList.remove('hidden'); })
       .catch(() => { qrImg.classList.add('hidden'); });
   }
+  void renderHttpUiLiveStatus(ui);
+}
+
+/** Compare the persisted Browser-access config with the LIVE server bind and
+ *  surface drift. Before servers hot-applied, the panel rendered a reachable-
+ *  looking URL over a loopback-bound (or dead) listener — a silent trap. On
+ *  older sidecars without mobile:liveStatus the line simply stays empty. */
+async function renderHttpUiLiveStatus(ui: MobileConnectionInfo['httpUi']): Promise<void> {
+  const details = $m<HTMLDivElement>('mobile-httpui-details');
+  if (!details || !ui?.enabled) return;
+  let liveEl = document.getElementById('mobile-httpui-live-status');
+  if (!liveEl) {
+    liveEl = document.createElement('div');
+    liveEl.id = 'mobile-httpui-live-status';
+    liveEl.style.cssText = 'margin-top:6px;font-size:12px;line-height:1.5;';
+    details.appendChild(liveEl);
+  }
+  try {
+    const live = await ipcCall<{ httpUi: { host: string; port: number } | null }>('mobile:liveStatus', {});
+    const l = live.httpUi;
+    if (!l) {
+      liveEl.textContent = '⚠️ Enabled, but the server is not running — the port may be in use, or the app needs a restart.';
+      liveEl.style.color = 'var(--warn, orange)';
+    } else if (l.host !== ui.host || l.port !== ui.port) {
+      liveEl.textContent = `⚠️ Currently bound to ${l.host}:${l.port}, but the saved config says ${ui.host}:${ui.port} — toggle Browser access off and on to re-apply.`;
+      liveEl.style.color = 'var(--warn, orange)';
+    } else {
+      liveEl.textContent = ui.host === '0.0.0.0'
+        ? `Live on ${l.host}:${l.port}. If macOS asks to allow incoming connections, click Allow.`
+        : `Live on ${l.host}:${l.port} (this Mac only).`;
+      liveEl.style.color = 'var(--fg-dim)';
+    }
+  } catch {
+    liveEl.textContent = '';
+  }
 }
 
 function mobileCopyBtn(btn: HTMLButtonElement, text: string): void {
@@ -20569,9 +20625,9 @@ async function openMobileWizard(): Promise<void> {
     if (btnNext && mobileWizardStep === 0) btnNext.disabled = !cb.checked;
   });
 
-  // Browser-access enable toggle — persists mobile.httpUi and re-fetches so
-  // the sidecar-minted token + QR render immediately. Takes effect on next
-  // cortex unlock (same as the MCP bridge).
+  // Browser-access enable toggle — persists mobile.httpUi; the sidecar
+  // hot-applies the change (update_settings restarts the server live), and
+  // renderHttpUiBlock's live-status line confirms the actual bind.
   document.getElementById('mobile-httpui-enabled')?.addEventListener('change', (e) => {
     const cb = e.currentTarget as HTMLInputElement;
     const badge = $m<HTMLElement>('mobile-httpui-badge');
@@ -20597,7 +20653,7 @@ async function openMobileWizard(): Promise<void> {
         mobileConnInfo = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo;
         const preferredIp = mobileConnInfo.tailscaleIp ?? mobileConnInfo.localIps[0] ?? '127.0.0.1';
         renderHttpUiBlock(preferredIp);
-        if (footerNote) footerNote.textContent = 'Browser access updated — takes effect on next unlock.';
+        if (footerNote) footerNote.textContent = cb.checked ? 'Browser access is live.' : 'Browser access disabled.';
       } catch (err) {
         if (footerNote) footerNote.textContent = `Save failed: ${err}`;
       }
@@ -26622,7 +26678,22 @@ function openLoopbackExplainer(args: { host: string; baseUrl: string; isLoop: bo
       } else if (!result.inferenceOk) {
         setStatus(`Inference did not run (LLM may be disabled). Probe shows ${ext.length} external remote(s).`, 'warn');
       } else if (ext.length > 0) {
-        setStatus(`⚠ Self-test detected external connection(s): ${ext.slice(0, 3).join(', ')}${ext.length > 3 ? '…' : ''}`, 'fail');
+        const unknown = ext.filter((r) => !isKnownModelRegistryRemote(r));
+        if (unknown.length === 0) {
+          // Every external remote sits in Cloudflare space — ollama.com and
+          // its model registry are Cloudflare-fronted, so this is the daemon
+          // talking to its own registry (a pull just ran, or the periodic
+          // update check). Inference traffic is what the loopback claim is
+          // about, and that stays on 127.0.0.1.
+          setStatus(
+            `⚠ External connection(s) to Ollama's registry/update CDN (${ext.slice(0, 2).join(', ')}${ext.length > 2 ? '…' : ''}) — `
+            + 'expected during and shortly after model pulls or update checks; memory content does not flow there. '
+            + 'Re-run the self-test when the daemon is idle to confirm loopback-only inference.',
+            'warn',
+          );
+        } else {
+          setStatus(`⚠ Self-test detected external connection(s): ${unknown.slice(0, 3).join(', ')}${unknown.length > 3 ? '…' : ''}`, 'fail');
+        }
       } else {
         setStatus(`Self-test inconclusive — inference ran but probe didn't confirm all-loopback. Retry, or use the wizard.`, 'warn');
       }
@@ -26632,6 +26703,45 @@ function openLoopbackExplainer(args: { host: string; baseUrl: string; isLoop: bo
       btn.disabled = false;
       btn.textContent = origText;
     }
+  });
+}
+
+/** Cloudflare IPv4 ranges. ollama.com and its model registry are fronted by
+ *  Cloudflare, so an external remote in these ranges during/after a model
+ *  pull is the daemon talking to its own registry or update check — not
+ *  inference traffic. Used to soften the loopback self-test's verdict from
+ *  "fail" to an explained "warn" when EVERY external remote classifies. */
+const MODEL_REGISTRY_CIDRS: ReadonlyArray<readonly [string, number]> = [
+  ['104.16.0.0', 13], ['104.24.0.0', 14], ['172.64.0.0', 13],
+  ['162.158.0.0', 15], ['108.162.192.0', 18], ['141.101.64.0', 18],
+  ['173.245.48.0', 20], ['188.114.96.0', 20], ['190.93.240.0', 20],
+  ['197.234.240.0', 22], ['198.41.128.0', 17], ['103.21.244.0', 22],
+  ['103.22.200.0', 22], ['103.31.4.0', 22], ['131.0.72.0', 22],
+];
+
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let out = 0;
+  for (const part of parts) {
+    const n = Number(part);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+    out = (out << 8) | n;
+  }
+  return out >>> 0;
+}
+
+/** True when a probe remote ("104.18.17.170:443") falls inside the known
+ *  model-registry CDN ranges. IPv6 remotes return false (conservative). */
+function isKnownModelRegistryRemote(remote: string): boolean {
+  const ip = remote.includes('[') ? null : remote.split(':')[0];
+  const addr = ip ? ipv4ToInt(ip) : null;
+  if (addr === null) return false;
+  return MODEL_REGISTRY_CIDRS.some(([base, bits]) => {
+    const baseInt = ipv4ToInt(base);
+    if (baseInt === null) return false;
+    const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+    return (addr & mask) === (baseInt & mask);
   });
 }
 

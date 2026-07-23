@@ -387,10 +387,9 @@ function wireForesightTileClicks(host: HTMLElement, d: ForesightPageDeps): void 
       ev.stopPropagation();
       const lane = el.dataset['foresightLane'];
       if (!lane) return;
-      if (lane === 'llm' && !getState?.().llmSetupDone) {
-        d.openNonDeterministic();
-        return;
-      }
+      // The llm lane opens its own modal like every other lane — the old
+      // pre-setup special-case routed through openNonDeterministic(), which
+      // was activateMode('goals'): a no-op on the page the tile lives on.
       openForesightLaneModal(lane);
     });
   });

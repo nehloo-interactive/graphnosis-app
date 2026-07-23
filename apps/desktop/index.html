@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+    <!-- maximum-scale=1 suppresses iOS Safari's automatic zoom-on-input-focus
+         (triggered when a focused control's font-size is under 16px). Since
+         iOS 10 Safari IGNORES it for pinch-zoom, so accessibility zoom keeps
+         working; mobile.css additionally forces 16px form controls on phones
+         as the root-cause fix for engines that ignore this hint. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, interactive-widget=resizes-content" />
     <title>Graphnosis: Your Local Encrypted Second cortex</title>
     <!-- Apply stored theme synchronously — runs before CSS is parsed so
          the webview never flashes the wrong background. Must be a plain
@@ -1826,7 +1831,10 @@
                           <div class="ollama-guide">
                             <p class="ollama-guide-intro">
                               Graphnosis can't find Ollama yet. Ollama is a free, open-source app
-                              that runs the AI model on your own computer. It takes about three steps:
+                              that runs the AI model on the computer where Graphnosis lives —
+                              nothing is sent to the cloud. Do these steps on that machine (if
+                              you're reading this on a phone, install on the Mac, then tap
+                              Recheck here):
                             </p>
                             <ol class="ollama-steps">
                               <li>
@@ -5382,6 +5390,12 @@ ollama list</code></pre>
         </svg>
         <span class="mobile-nav-label">Home</span>
       </button>
+      <button class="mobile-nav-btn" data-mode="ghampus" aria-label="Ghampus Hush">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a8.5 8.5 0 0 1-8.5 8.5c-1.4 0-2.7-.3-3.9-.9L3 21l1.4-5.6A8.5 8.5 0 1 1 21 12z"/>
+        </svg>
+        <span class="mobile-nav-label">Ghampus</span>
+      </button>
       <button class="mobile-nav-btn" data-mode="mcp-tools" aria-label="MCP Tools">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18.5" r="2.2"/>
@@ -5404,7 +5418,7 @@ ollama list</code></pre>
     </nav>
 
     <!-- "More" bottom sheet — overflow rail destinations that don't fit the
-         4-slot mobile bar. Opened by the More nav button; body.mobile-more-open
+         5-slot mobile bar. Opened by the More nav button; body.mobile-more-open
          drives the slide-up (mobile.css). Each item routes through activateMode. -->
     <div id="mobile-more-sheet" class="mobile-more-sheet" aria-hidden="true">
       <div class="mobile-more-backdrop" data-more-close></div>

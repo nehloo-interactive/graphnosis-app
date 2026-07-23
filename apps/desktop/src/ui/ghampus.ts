@@ -2641,6 +2641,11 @@ type PendingGhampusSend = {
   onSent?: () => void;
 };
 
+/** Turn ids whose user bubble THIS client already painted locally — used to
+ *  drop the sidecar's broadcast echo of our own question while still
+ *  rendering questions that originated on other devices. */
+const locallyRenderedUserTurns = new Set<string>();
+
 const ghampusSendQueue: PendingGhampusSend[] = [];
 let ghampusSendDrain: Promise<void> | null = null;
 const ghampusTurnDoneWaiters = new Map<string, Array<() => void>>();
@@ -2694,6 +2699,7 @@ async function drainGhampusSendQueue(): Promise<void> {
 
 function enqueueGhampusSend(item: PendingGhampusSend): void {
   trackGhampusSendActivity();
+  if (item.turnId) locallyRenderedUserTurns.add(item.turnId);
   appendToThread({ kind: 'user', text: item.userText, ts: item.ts, turnId: item.turnId });
   ghampusSendQueue.push(item);
   void drainGhampusSendQueue();
@@ -2785,6 +2791,10 @@ function wireGhampusSidecarEvents(): void {
     (ev) => {
       if (!ev.payload) return;
       let msg = ev.payload;
+      // A user-kind frame is the broadcast copy of a question typed on SOME
+      // device — render it so cross-device conversations stay complete, but
+      // drop the echo of a question this UI already painted locally.
+      if (msg.kind === 'user' && msg.turnId && locallyRenderedUserTurns.has(msg.turnId)) return;
       // Any sidecar turn terminal (ghampus text, insights card, …) must release the UI send queue.
       if (msg.turnId && msg.kind !== 'user') {
         if (msg.kind === 'ghampus') {

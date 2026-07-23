@@ -506,6 +506,8 @@ export async function webauthnUnlock(): Promise<void> {
   els.bootStatusText.textContent = 'Verifying…';
   try {
     await webauthnAuthenticate();
+    // This device evidently holds a usable credential — never re-offer setup.
+    markWebauthnDeviceRegistered();
     els.bootStatusText.textContent = '';
     app().render({ unlocked: true, cortex_dir: null, sidecar_running: true } as StatusSnapshot);
   } catch (e) {
@@ -513,26 +515,44 @@ export async function webauthnUnlock(): Promise<void> {
     els.bootStatusText.textContent = '';
     els.btnUnlock.disabled = false;
     if (waBtn) waBtn.disabled = false;
-    app().showError(e instanceof Error ? e.message : String(e));
+    const msg = e instanceof Error ? e.message : String(e);
+    // iOS surfaces "the request is not allowed…" (NotAllowedError) when the
+    // only matching passkey lives on another device and the user dismissed
+    // the cross-device QR sheet. Point them at the recovery path instead of
+    // echoing the cryptic platform error.
+    app().showError(/not allowed by the user agent/i.test(msg)
+      ? 'No usable passkey on this device — it may be registered on another machine. '
+        + 'Unlock with the access token once, and you\'ll be offered Face ID setup for this device.'
+      : msg);
   }
 }
 
-/** After a browser token-unlock, offer to register this device for biometric
- *  unlock — once, only when available and none registered yet. */
+/** After a browser token-unlock, offer to register THIS device for biometric
+ *  unlock — once per device. Gated on a per-device localStorage flag, NOT the
+ *  server's global registered count: a passkey registered on another machine
+ *  doesn't help this one (credentials don't always sync across devices), and
+ *  the old `registered > 0` gate locked every additional device out of setup
+ *  forever — their only auth path became the cross-device QR flow. */
+const WEBAUTHN_DEVICE_KEY = 'graphnosis:webauthn-device-registered';
+export function markWebauthnDeviceRegistered(): void {
+  try { localStorage.setItem(WEBAUTHN_DEVICE_KEY, '1'); } catch { /* private mode */ }
+}
 let biometricSetupOffered = false;
 async function maybeOfferBiometricSetup(): Promise<void> {
   if (IS_TAURI || biometricSetupOffered) return;
   biometricSetupOffered = true;
   let st: { available: boolean; registered: number };
   try { st = await webauthnStatus(); } catch { return; }
-  if (!st.available || st.registered > 0) return;
-  if (!(await gConfirm(
-    'Set up biometric unlock?',
-    'Set up biometric / security-key unlock on this device, so you don\'t need to paste the access token next time?',
-  ))) return;
+  if (!st.available) return;
+  try { if (localStorage.getItem(WEBAUTHN_DEVICE_KEY) === '1') return; } catch { /* private mode */ }
+  const body = st.registered > 0
+    ? 'A passkey exists for this cortex, but it lives on another device. Set up Face ID / biometric unlock on THIS device too, so you don\'t need the access token here?'
+    : 'Set up biometric / security-key unlock on this device, so you don\'t need to paste the access token next time?';
+  if (!(await gConfirm('Set up biometric unlock?', body))) return;
   const tid = app().addIngestToast('Setting up biometric unlock', 'Follow your device\'s prompt…');
   try {
     await webauthnRegister('This device');
+    markWebauthnDeviceRegistered();
     app().finishIngestToast(tid, 'success', 'Biometric unlock enabled for this device.');
   } catch (e) {
     app().finishIngestToast(tid, 'error', `Setup failed: ${e instanceof Error ? e.message : String(e)}`);
