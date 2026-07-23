@@ -18,6 +18,15 @@ export default defineConfig({
   // prerendered at build time, so the runtime never needs it).
   adapter: cloudflare({
     imageService: 'compile',
+    // NOTE on /packs/*: the .gsk files live in public/packs-data/ (NOT
+    // public/packs/) precisely so the adapter's auto-exclude of public/
+    // files doesn't shadow the counting route src/pages/packs/[pack].ts.
+    // With no static files under /packs/, that route is auto-included in
+    // _routes.json like any other server route and every download is
+    // counted. Do NOT move the files back under public/packs/ — forcing the
+    // path back into the Worker via routes.extend.include makes the adapter
+    // enumerate all 95 .gsk files as individual excludes (which win over
+    // includes) and blows past the 100-rule _routes.json budget.
   }),
   site: 'https://docs.graphnosis.com',
   integrations: [

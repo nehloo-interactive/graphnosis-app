@@ -32,35 +32,6 @@
     "mcpb:build": "pnpm --filter @graphnosis-app/desktop-sidecar build && node apps/desktop-sidecar/scripts/mcpb-build.mjs",
     "mcpb:pack": "cd mcpb && mcpb pack . ../graphnosis.mcpb && echo Done: graphnosis.mcpb"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "msgpackr-extract",
-      "onnxruntime-node",
-      "wtf_wikipedia"
-    ],
-    "_comment_overrides": "fastembed@2.1.0 pins tar ^6.2.0, which has NO patched release for the node-tar path-traversal / arbitrary-file-write advisories (GHSA-9ppj-qmqm-q256 and chain) — they are fixed only in tar >=7.5.11. We scope the bump to fastembed's own tar (other deps keep theirs) and pair it with the fastembed patch below, which rewrites fastembed's tar default-import usage (tar 7 removed the default export) so model extraction keeps working. Earlier history: secure-sync / @nehloo/graphnosis were once pinned to local working copies; both now come from tagged releases — see apps/desktop-sidecar/package.json.",
-    "overrides": {
-      "fastembed>tar": ">=7.5.16"
-    },
-    "_comment_packageExtensions": "libsodium-wrappers-sumo@0.7.16 ships a broken ESM entry (relative import to ./libsodium-sumo.mjs that the package doesn't include in its files array). Force its `.` export to point to the CJS file in ALL conditions so bundlers (Bun --compile, Vite, etc.) never pick the broken .mjs. Without this, `bun build --compile` of the sidecar fails with 'Could not resolve ./libsodium-sumo.mjs'.",
-    "packageExtensions": {
-      "libsodium-wrappers-sumo": {
-        "exports": {
-          ".": {
-            "import": "./dist/modules-sumo/libsodium-wrappers.js",
-            "require": "./dist/modules-sumo/libsodium-wrappers.js",
-            "default": "./dist/modules-sumo/libsodium-wrappers.js"
-          }
-        }
-      }
-    },
-    "patchedDependencies": {
-      "libsodium-wrappers-sumo": "patches/libsodium-wrappers-sumo.patch",
-      "fastembed@2.1.0": "patches/fastembed@2.1.0.patch"
-    }
-  },
   "devDependencies": {
     "tsx": "^4.22.3"
   }

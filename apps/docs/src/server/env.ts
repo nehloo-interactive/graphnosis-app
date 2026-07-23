@@ -22,6 +22,9 @@ export interface BillingEnv {
   /** Admin API key for protected /api/admin/* endpoints.
    *  Set as a Cloudflare Secret; use `Authorization: Bearer <key>` to authenticate. */
   ADMIN_API_KEY?: string;
+  /** Shared secret gating GET /api/pack-stats (pack download counters).
+   *  Set as a Cloudflare Secret; generate with `openssl rand -hex 32`. */
+  PACK_STATS_ADMIN_SECRET?: string;
   // Plain text
   STRIPE_PRICE_PRO_MONTHLY?: string;
   STRIPE_PRICE_PRO_ANNUAL?: string;
@@ -30,6 +33,10 @@ export interface BillingEnv {
   STRIPE_PRICE_ENTERPRISE_MONTHLY?: string;
   STRIPE_PRICE_ENTERPRISE_ANNUAL?: string;
   RESEND_FROM_ADDRESS?: string;
+  /** Resend segment ids for the /subscribe route (newsletter form and
+   *  enterprise waitlist). Plain vars, not secrets. */
+  RESEND_NEWSLETTER_SEGMENT_ID?: string;
+  RESEND_ENTERPRISE_SEGMENT_ID?: string;
   PUBLIC_BILLING_BASE_URL?: string;
   /** Stripe-hosted Customer Portal login URL (billing.stripe.com/p/login/…).
    *  Configured in the Stripe Dashboard → Customer portal. /account redirects
@@ -45,6 +52,10 @@ export interface BillingEnv {
   WINDOWS_FILENAME?: string;   // e.g. "Graphnosis_1.13.6_x64_en-US.msi"
   // KV namespace binding
   BILLING_KV?: KVNamespace;
+  /** Pages static-asset fetcher (present in the deployed Worker and under
+   *  `wrangler pages dev`; absent in plain `astro dev`). Serves dist/ files —
+   *  used by /packs/[pack].ts to stream the .gsk after counting. */
+  ASSETS?: { fetch(request: Request): Promise<Response> };
 }
 
 /**
