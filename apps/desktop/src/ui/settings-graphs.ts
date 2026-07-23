@@ -6,6 +6,7 @@ import { invoke } from '../platform';
 import { app } from './app-context';
 import { refreshConnectorsList } from './connectors';
 import { ipcCall, invokeRetry } from './ipc';
+import { gConfirm } from './dialogs';
 import { industryTagOptionsHtml } from './settings-compliance';
 import {
   fetchSkillsLibrary,
@@ -168,7 +169,7 @@ async function renderSettingsGraphsListInner(): Promise<void> {
   });
 
   container.querySelectorAll<HTMLButtonElement>('.btn-graph-preserve').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const graphId = btn.dataset['sgrId'] ?? '';
       const currentlyPreserved = btn.dataset['preserved'] === 'true';
       const g = loadedGraphs.find((gr) => gr.graphId === graphId);
@@ -179,7 +180,8 @@ async function renderSettingsGraphsListInner(): Promise<void> {
       if (!row) return;
 
       if (currentlyPreserved) {
-        const ok = window.confirm(
+        const ok = await gConfirm(
+          'Release preservation?',
           `Release preservation on "${displayName}"? Graphnosis will allow forget, edit, and purge again.`,
         );
         if (!ok) return;
@@ -267,8 +269,9 @@ async function renderSettingsGraphsListInner(): Promise<void> {
         if (g?.metadata.template === 'skill') {
           const skillCount = skillsLibrary.filter((s) => s.graphId === graphId).length;
           if (skillCount > 0) {
-            const ok = window.confirm(
-              `"${g.metadata.displayName ?? g.graphId}" contains ${skillCount} trained skill${skillCount === 1 ? '' : 's'}.\n\nArchiving this engram will hide those skills from your library. Continue?`
+            const ok = await gConfirm(
+              'Archive skills engram?',
+              `"${g.metadata.displayName ?? g.graphId}" contains ${skillCount} trained skill${skillCount === 1 ? '' : 's'}. Archiving this engram will hide those skills from your library. Continue?`,
             );
             if (!ok) return;
           }

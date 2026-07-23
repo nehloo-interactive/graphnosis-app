@@ -114,6 +114,8 @@ import {
   skillsLibrary,
   handleSkillTrainFrame,
   showSkillsToast,
+  isTrainStreaming,
+  renderLiveDiff,
   type SkillListEntry,
 } from './ui/skills';
 import { renderAgentsView } from './ui/agents';
@@ -3915,7 +3917,8 @@ async function handleMcpReconnect(btn: HTMLButtonElement): Promise<void> {
         } else {
           // No relay alive. Bouncing the socket can't help; user needs to
           // restart their MCP client so it spawns a fresh relay process.
-          alert(
+          void gAlert(
+            'No MCP clients reconnected',
             'Bounced the socket, but no MCP clients picked it up.\n\n' +
             'This usually means your client (e.g. Claude Desktop) gave up on the ' +
             'previous relay process and needs to be restarted.\n\n' +
@@ -4422,13 +4425,14 @@ async function runSourceExcludeToggle(row: HTMLElement, excluding: boolean): Pro
   }
 }
 
-function openSourceForgetConfirm(row: HTMLElement): void {
+async function openSourceForgetConfirm(row: HTMLElement): Promise<void> {
   const { graphId, sourceId, ref, kind } = sourceRowContext(row);
   if (!graphId || !sourceId) return;
 
   if (kind === 'skill') {
     const displayName = ref.split('/').pop() ?? ref;
-    const ok = window.confirm(
+    const ok = await gConfirm(
+      'Forget trained skill?',
       `"${displayName}" is a trained skill — forgetting it removes it from your Skills library permanently.\n\nContinue?`,
     );
     if (!ok) return;
@@ -4600,7 +4604,8 @@ async function releaseSourceLegalHold(row: HTMLElement): Promise<void> {
   const { graphId, sourceId } = sourceRowContext(row);
   if (!graphId || !sourceId) return;
   const name = row.querySelector('.source-name')?.textContent?.trim() ?? sourceId;
-  const ok = window.confirm(
+  const ok = await gConfirm(
+    'Release legal hold?',
     `Release legal hold on "${name}"? Graphnosis will allow forget, edit, and transfer again.`,
   );
   if (!ok) return;
@@ -5163,13 +5168,11 @@ els.btnPick.addEventListener('click', async () => {
   showError(null);
   const choice = cloudLocationChoiceCopy();
   const pickMsg = [
-    choice.title,
-    '',
     ...choice.options.map((o) => `• ${o.label} — ${o.hint}`),
     '',
     'Choose the folder where your encrypted cortex will live.',
   ].join('\n');
-  if (!confirm(pickMsg)) return;
+  if (!(await gConfirm(choice.title, pickMsg))) return;
   try {
     const folder = (await invoke('pick_cortex_folder')) as string | null;
     if (folder) {
@@ -12333,7 +12336,7 @@ async function saveInlineEdit(): Promise<void> {
   if (!ta) return;
   const newContent = ta.value.trim();
   if (!newContent) {
-    alert('Cannot save an empty memory. Use Forget if you want it gone.');
+    void gAlert('Empty memory', 'Cannot save an empty memory. Use Forget if you want it gone.');
     return;
   }
   const node = graphnosisAllNodes.find((n) => n.id === nodeId);
@@ -13604,7 +13607,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
   // is streaming: repaint the diff once the pane is visible. renderLiveDiff skips
   // work while hidden, so this catches it up. Deferred a frame so the tab's DOM
   // is shown first (otherwise offsetParent is still null and it'd no-op).
-  if (tab === 'checkin' && activeTrainStreamId) {
+  if (tab === 'checkin' && isTrainStreaming()) {
     requestAnimationFrame(() => renderLiveDiff());
   }
   // Pause the Autonomous Brain pane's animations whenever we leave it; the
@@ -14669,13 +14672,14 @@ async function refreshSnapshots(): Promise<void> {
       btn.addEventListener('click', async () => {
         const label = btn.dataset['snapId'] ?? '';
         if (!label) return;
-        if (!confirm(
+        if (!(await gConfirm(
+          'Restore snapshot?',
           `Restore engrams from snapshot "${label}"?\n\n` +
           `This REPLACES the current .gai files with the snapshot's copies. ` +
           `A fresh safety snapshot of the current state is taken first, so this ` +
           `action is itself reversible.\n\n` +
           `Engrams will reload from the restored disk state on next access.`,
-        )) return;
+        ))) return;
         btn.disabled = true;
         btn.textContent = 'Restoring…';
         try {
@@ -14695,7 +14699,7 @@ async function refreshSnapshots(): Promise<void> {
       btn.addEventListener('click', async () => {
         const label = btn.dataset['snapId'] ?? '';
         if (!label) return;
-        if (!confirm(`Permanently delete snapshot "${label}"? This cannot be undone.`)) return;
+        if (!(await gConfirm('Delete snapshot?', `Permanently delete snapshot "${label}"? This cannot be undone.`))) return;
         btn.disabled = true;
         try {
           await ipcCall('snapshots:delete', { label });
@@ -16839,9 +16843,12 @@ function presBuildConsentSummary(): string {
 
 /** Open the consent gate. Masking only activates after the user ticks the
  *  responsibility checkbox and clicks Enter — never silently. */
-function requestStartPresentation(): void {
+async function requestStartPresentation(): Promise<void> {
   if (presSelectionCount() === 0
-      && !confirm('You haven\'t selected anything to reveal — every screen will be fully redacted. Continue to the consent step anyway?')) {
+      && !(await gConfirm(
+        'Nothing selected to reveal',
+        'You haven\'t selected anything to reveal — every screen will be fully redacted. Continue to the consent step anyway?',
+      ))) {
     return;
   }
   const modal = document.getElementById('presentation-consent-modal');
@@ -16862,7 +16869,10 @@ function requestStopPresentation(): void {
   if (!presState.active) return;
   const modal = document.getElementById('presentation-exit-modal');
   if (!modal) {
-    if (confirm('Exit Presentation Mode? Everything hidden becomes visible again — stop sharing your screen first.')) stopPresentation();
+    void gConfirm(
+      'Exit Presentation Mode?',
+      'Everything hidden becomes visible again — stop sharing your screen first.',
+    ).then((ok) => { if (ok) stopPresentation(); });
     return;
   }
   modal.classList.remove('hidden');
@@ -18519,31 +18529,34 @@ document.addEventListener('click', (ev) => {
   const row = target.closest<HTMLElement>('.gll-edge-row');
   const score = row ? parseFloat(row.dataset.score ?? '0') : 0;
   const relationship = row?.dataset.relationship ?? 'related';
+  const doAccept = (): void => {
+    void ipcCall('gll:acceptPredictedEdge', { id }).then((result: unknown) => {
+      void refreshGllPredictedEdges();
+      // Surface the structural edge type the heuristic picked, so the user
+      // sees what was actually written (relationship label preserved as
+      // evidence, but the SDK enum slot is one of a fixed set).
+      const r = result as { ok?: boolean; edgeType?: string; reason?: string } | undefined;
+      if (r?.ok && r.edgeType) {
+        // Quiet success — no toast; the row disappearing is the feedback.
+        console.log(`[gll] promoted as [${r.edgeType}: "${relationship}"]`);
+      } else if (r && !r.ok) {
+        void gAlert('Could not promote', r.reason ?? 'unknown error');
+      }
+    });
+  };
   if (score < GLL_HIGH_CONFIDENCE) {
     const pct = Math.round(score * 100);
-    const ok = confirm(
-      `Promote this prediction to your canonical graph?\n\n` +
+    void gConfirm(
+      'Promote prediction?',
       `Confidence: ${pct}% (below the ${Math.round(GLL_HIGH_CONFIDENCE * 100)}% high-confidence bar)\n` +
       `Relationship: "${relationship}"\n\n` +
       `Once promoted, the edge lives in your engram and is treated as your attested memory. ` +
       `You can always remove it later via the engram inspector, but the action is recorded in the op-log.\n\n` +
       `Promote anyway?`,
-    );
-    if (!ok) return;
+    ).then((ok) => { if (ok) doAccept(); });
+    return;
   }
-  void ipcCall('gll:acceptPredictedEdge', { id }).then((result: unknown) => {
-    void refreshGllPredictedEdges();
-    // Surface the structural edge type the heuristic picked, so the user
-    // sees what was actually written (relationship label preserved as
-    // evidence, but the SDK enum slot is one of a fixed set).
-    const r = result as { ok?: boolean; edgeType?: string; reason?: string } | undefined;
-    if (r?.ok && r.edgeType) {
-      // Quiet success — no toast; the row disappearing is the feedback.
-      console.log(`[gll] promoted as [${r.edgeType}: "${relationship}"]`);
-    } else if (r && !r.ok) {
-      alert(`Could not promote: ${r.reason ?? 'unknown error'}`);
-    }
-  });
+  doAccept();
 });
 const btnGllRunNow = document.getElementById('btn-gll-run-now') as HTMLButtonElement | null;
 btnGllRunNow?.addEventListener('click', () => {
@@ -18717,8 +18730,10 @@ void listen<ReingestProgressPayload>('graphnosis://reingest-progress', (evt) => 
 
 const btnReingestAll = document.getElementById('btn-reingest-all') as HTMLButtonElement | null;
 btnReingestAll?.addEventListener('click', () => {
-  if (!confirm('Reingest every source across every engram?\n\nThis re-chunks and re-embeds all your saved memory using current settings. A snapshot is taken first. Can take several minutes on large cortexes.')) return;
-  openReingestModal();
+  void gConfirm(
+    'Reingest everything?',
+    'Reingest every source across every engram?\n\nThis re-chunks and re-embeds all your saved memory using current settings. A snapshot is taken first. Can take several minutes on large cortexes.',
+  ).then((ok) => { if (ok) openReingestModal(); });
 });
 
 els.btnOllamaPull.addEventListener('click', async () => {
@@ -20636,6 +20651,8 @@ interface SharingTokenInfo {
   name: string;
   role: string;
   engrams: string[] | '*';
+  /** Carve-outs — engrams excluded from a cortex-wide ('*') share. */
+  except?: string[];
   createdAt: number;
   expiresAt: number | null;
   expired: boolean;
@@ -20655,6 +20672,7 @@ interface SharingCreateResult {
   name?: string;
   role?: string;
   engrams?: string[] | '*';
+  except?: string[];
   createdAt?: number;
   expiresAt?: number | null;
   reason?: string;
@@ -20687,14 +20705,22 @@ function sharingRoleInfo(role: string): { label: string; subtitle: string; canDo
   };
 }
 
-function resolveSharingEngramDisplayNames(engrams: string[] | '*'): string[] {
-  if (engrams === '*') return ['All engrams'];
-  return engrams.map((id) => {
-    const fromPicker = sharingEngramLabels.get(id);
-    if (fromPicker) return fromPicker;
-    const g = loadedGraphs.find((x) => x.graphId === id);
-    return g?.metadata?.displayName ?? id;
-  });
+function sharingEngramDisplayName(id: string): string {
+  const fromPicker = sharingEngramLabels.get(id);
+  if (fromPicker) return fromPicker;
+  const g = loadedGraphs.find((x) => x.graphId === id);
+  return g?.metadata?.displayName ?? id;
+}
+
+function resolveSharingEngramDisplayNames(engrams: string[] | '*', except?: string[]): string[] {
+  if (engrams === '*') {
+    if (except?.length) {
+      const names = except.map(sharingEngramDisplayName).join(', ');
+      return [`Entire cortex except: ${names} (all other engrams — including future ones)`];
+    }
+    return ['Entire cortex (all engrams — including ones you create later)'];
+  }
+  return engrams.map(sharingEngramDisplayName);
 }
 
 function formatSharingExpiresAt(expiresAt: number | null | undefined): string {
@@ -20712,6 +20738,7 @@ function readSharingCreateForm(): {
   name: string;
   role: string;
   engrams: string[] | '*';
+  except?: string[];
   expiresAt: number | null;
 } {
   const nameEl = document.getElementById('sharing-new-name') as HTMLInputElement | null;
@@ -20719,25 +20746,36 @@ function readSharingCreateForm(): {
   const engramsModeEl = document.getElementById('sharing-new-engrams-mode') as HTMLSelectElement | null;
   const expiryEl = document.getElementById('sharing-new-expiry') as HTMLSelectElement | null;
 
+  const mode = engramsModeEl?.value ?? 'select';
+  const checked = Array.from(document.querySelectorAll<HTMLInputElement>('#sharing-engram-picker input:checked')).map((i) => i.value);
   let engrams: string[] | '*' = '*';
-  if (engramsModeEl?.value === 'select') {
-    const checked = Array.from(document.querySelectorAll<HTMLInputElement>('#sharing-engram-picker input:checked')).map((i) => i.value);
-    engrams = checked.length ? checked : [];
+  let except: string[] | undefined;
+  if (mode === 'select') {
+    engrams = checked;
+  } else if (mode === 'all-except') {
+    except = checked;
   }
 
   return {
     name: nameEl?.value.trim() ?? '',
     role: roleEl?.value ?? 'viewer',
     engrams,
+    ...(except !== undefined ? { except } : {}),
     expiresAt: computeSharingExpiresAtFromForm(expiryEl?.value ?? 'never'),
   };
 }
 
-function sharingNotSharedCopy(engrams: string[] | '*'): string {
-  const engramPart = engrams === '*'
-    ? 'other engrams outside this share'
-    : 'engrams not listed above';
-  return `This does not share your passphrase, ${engramPart}, or any of your app settings.`;
+function sharingNotSharedCopy(engrams: string[] | '*', except?: string[]): string {
+  if (engrams === '*') {
+    const carveOut = except?.length
+      ? ` The carved-out ${except.length === 1 ? 'engram stays' : 'engrams stay'} private — invisible to this share, now and in the future.`
+      : '';
+    return 'This share covers your entire cortex — every engram, including ones you create later.'
+      + carveOut
+      + ' Public- and personal-tier engrams flow without prompts; sensitive-tier engrams still ask'
+      + ' for your consent on each access. It does not share your passphrase or app settings.';
+  }
+  return 'This does not share your passphrase, engrams not listed above, or any of your app settings.';
 }
 
 function buildSharingCollaboratorMcpUrl(info: MobileConnectionInfo | null): {
@@ -20862,6 +20900,7 @@ function renderSharingRevealSummary(opts: {
   name: string;
   role: string;
   engrams: string[] | '*';
+  except?: string[];
   expiresAt: number | null | undefined;
 }): void {
   const summary = document.getElementById('sharing-reveal-summary');
@@ -20870,7 +20909,7 @@ function renderSharingRevealSummary(opts: {
   if (!summary || !canDoEl || !notSharedEl) return;
 
   const roleInfo = sharingRoleInfo(opts.role);
-  const engramNames = resolveSharingEngramDisplayNames(opts.engrams);
+  const engramNames = resolveSharingEngramDisplayNames(opts.engrams, opts.except);
   const engramText = engramNames.join(', ');
 
   summary.innerHTML = `
@@ -20891,7 +20930,7 @@ function renderSharingRevealSummary(opts: {
       <span>${escape(formatSharingExpiresAt(opts.expiresAt))}</span>
     </div>`;
   canDoEl.textContent = roleInfo.canDo;
-  notSharedEl.textContent = sharingNotSharedCopy(opts.engrams);
+  notSharedEl.textContent = sharingNotSharedCopy(opts.engrams, opts.except);
 }
 
 function updateSharingCreateReview(): void {
@@ -20906,7 +20945,7 @@ function updateSharingCreateReview(): void {
   }
 
   const roleInfo = sharingRoleInfo(form.role);
-  const engramNames = resolveSharingEngramDisplayNames(form.engrams);
+  const engramNames = resolveSharingEngramDisplayNames(form.engrams, form.except);
   const engramText = engramNames.length ? engramNames.join(', ') : 'select at least one engram';
   const expiryText = formatSharingExpiresAt(form.expiresAt);
 
@@ -20926,6 +20965,7 @@ async function showSharingRevealModal(result: SharingCreateResult): Promise<void
     name: result.name ?? 'Share',
     role: result.role ?? 'viewer',
     engrams: result.engrams ?? '*',
+    ...(result.except?.length ? { except: result.except } : {}),
     expiresAt: result.expiresAt,
   });
 
@@ -21000,7 +21040,9 @@ function renderSharingTokenList(
   empty.style.display = active.length === 0 ? '' : 'none';
 
   for (const t of active) {
-    const engramLabel = t.engrams === '*' ? 'all engrams' : `${(t.engrams as string[]).length} engram${(t.engrams as string[]).length === 1 ? '' : 's'}`;
+    const engramLabel = t.engrams === '*'
+      ? (t.except?.length ? `entire cortex minus ${t.except.length}` : 'entire cortex')
+      : `${(t.engrams as string[]).length} engram${(t.engrams as string[]).length === 1 ? '' : 's'}`;
     const expiryLabel = t.expiresAt ? `expires ${new Date(t.expiresAt).toLocaleDateString()}` : 'never expires';
     const activeSessions = sessions[t.id] ?? [];
     const sessionLabel = activeSessions.length > 0
@@ -21188,7 +21230,8 @@ async function openSharingModal(): Promise<void> {
 
   document.getElementById('sharing-new-engrams-mode')?.addEventListener('change', (e) => {
     const picker = document.getElementById('sharing-engram-picker');
-    if (picker) picker.classList.toggle('is-visible', (e.target as HTMLSelectElement).value === 'select');
+    const mode = (e.target as HTMLSelectElement).value;
+    if (picker) picker.classList.toggle('is-visible', mode === 'select' || mode === 'all-except');
     updateSharingCreateReview();
   });
 
@@ -21206,11 +21249,15 @@ async function openSharingModal(): Promise<void> {
     if (!nameEl || !roleEl || !engramsModeEl || !expiryEl || !btn) return;
 
     const form = readSharingCreateForm();
-    const { name, role, engrams } = form;
+    const { name, role, engrams, except } = form;
     if (!name) { void gAlert('Name required', 'Enter a name for this token.'); return; }
 
     if (Array.isArray(engrams) && !engrams.length) {
-      void gAlert('No engrams selected', 'Select at least one engram, or choose "All engrams".');
+      void gAlert('No engrams selected', 'Select at least one engram, or switch to "Entire cortex".');
+      return;
+    }
+    if (engrams === '*' && except !== undefined && !except.length) {
+      void gAlert('No carve-outs selected', 'Check the engrams to exclude, or switch to "Entire cortex" to share everything.');
       return;
     }
 
@@ -21223,6 +21270,7 @@ async function openSharingModal(): Promise<void> {
         name,
         role,
         engrams,
+        ...(except?.length ? { except } : {}),
         ...(expiresAt !== undefined ? { expiresAt } : {}),
       });
 

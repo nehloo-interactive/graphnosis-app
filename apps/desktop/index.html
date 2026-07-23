@@ -17554,11 +17554,12 @@ ollama list</code></pre>
               <label style="font-size:13px;display:block;">
                 Engrams
                 <select id="sharing-new-engrams-mode" style="display:block;width:100%;margin-top:4px;">
-                  <option value="all">All engrams</option>
                   <option value="select">Specific engrams…</option>
+                  <option value="all">Entire cortex — all engrams, current &amp; future</option>
+                  <option value="all-except">Entire cortex except…</option>
                 </select>
               </label>
-              <div id="sharing-engram-picker" class="sharing-engram-picker" aria-label="Select engrams"></div>
+              <div id="sharing-engram-picker" class="sharing-engram-picker is-visible" aria-label="Select engrams"></div>
               <label style="font-size:13px;display:block;">
                 Expires
                 <select id="sharing-new-expiry" style="display:block;width:100%;margin-top:4px;">

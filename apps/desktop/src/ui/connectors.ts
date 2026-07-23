@@ -4,6 +4,7 @@
 import { IS_TAURI, invoke } from '../platform';
 import { app } from './app-context';
 import { invokeRetry } from './ipc';
+import { gAlert } from './dialogs';
 import { escape, escapeHtml, relativeTimeShort } from './util';
 import type { ConnectorKind, ConnectorConfigShape, ConnectorStatus, GraphWithMetadata } from './types';
 
@@ -881,7 +882,7 @@ function populateEngramDropdown(selectId: string, selectedId?: string): void {
 function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigShape> | null {
   const id = ($m<HTMLInputElement>('connector-id')?.value || '').trim();
   const graphId = ($m<HTMLSelectElement>('connector-graphid')?.value || '').trim();
-  if (!graphId) { alert('Pick a target engram.'); return null; }
+  if (!graphId) { void gAlert('Missing field', 'Pick a target engram.'); return null; }
   // __new__ is resolved to a real graphId in the save handler before install.
   const credentials: Record<string, string> = {};
   const options: Record<string, unknown> = {};
@@ -889,13 +890,13 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     case 'rss': {
       const feeds = ($m<HTMLTextAreaElement>('connector-rss-feeds')?.value || '')
         .split('\n').map((s) => s.trim()).filter(Boolean);
-      if (!feeds.length) { alert('At least one feed URL is required.'); return null; }
+      if (!feeds.length) { void gAlert('Missing field', 'At least one feed URL is required.'); return null; }
       options['feeds'] = feeds;
       break;
     }
     case 'github': {
       const token = $m<HTMLInputElement>('connector-github-token')?.value || '';
-      if (!token) { alert('GitHub PAT is required.'); return null; }
+      if (!token) { void gAlert('Missing field', 'GitHub PAT is required.'); return null; }
       credentials['token'] = token;
       options['repos'] = ($m<HTMLInputElement>('connector-github-repos')?.value || '')
         .split(',').map((s) => s.trim()).filter(Boolean);
@@ -906,7 +907,7 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     }
     case 'slack': {
       const token = $m<HTMLInputElement>('connector-slack-token')?.value || '';
-      if (!token) { alert('Slack token is required.'); return null; }
+      if (!token) { void gAlert('Missing field', 'Slack token is required.'); return null; }
       credentials['token'] = token;
       options['starred'] = $m<HTMLInputElement>('connector-slack-starred')?.checked ?? true;
       options['channelHistory'] = $m<HTMLInputElement>('connector-slack-channels')?.checked ?? false;
@@ -915,7 +916,7 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     case 'trello': {
       const apiKey = $m<HTMLInputElement>('connector-trello-key')?.value || '';
       const token = $m<HTMLInputElement>('connector-trello-token')?.value || '';
-      if (!apiKey || !token) { alert('Trello API key + token are both required.'); return null; }
+      if (!apiKey || !token) { void gAlert('Missing field', 'Trello API key + token are both required.'); return null; }
       credentials['apiKey'] = apiKey;
       credentials['token'] = token;
       options['boardIds'] = ($m<HTMLInputElement>('connector-trello-boards')?.value || '')
@@ -924,7 +925,7 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     }
     case 'linear': {
       const apiKey = $m<HTMLInputElement>('connector-linear-key')?.value || '';
-      if (!apiKey) { alert('Linear API key is required.'); return null; }
+      if (!apiKey) { void gAlert('Missing field', 'Linear API key is required.'); return null; }
       credentials['apiKey'] = apiKey;
       const team = $m<HTMLInputElement>('connector-linear-team')?.value.trim() || '';
       if (team) credentials['teamKey'] = team;
@@ -932,14 +933,14 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     }
     case 'obsidian': {
       const vaultPath = $m<HTMLInputElement>('connector-obsidian-vault')?.value.trim() || '';
-      if (!vaultPath) { alert('Vault path is required.'); return null; }
+      if (!vaultPath) { void gAlert('Missing field', 'Vault path is required.'); return null; }
       options['vaultPath'] = vaultPath;
       options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
       break;
     }
     case 'gbrain': {
       const repoPath = $m<HTMLInputElement>('connector-gbrain-repo')?.value.trim() || '';
-      if (!repoPath) { alert('Repo path is required.'); return null; }
+      if (!repoPath) { void gAlert('Missing field', 'Repo path is required.'); return null; }
       options['repoPath'] = repoPath;
       options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
       break;
@@ -954,7 +955,7 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     case 'x': {
       const clientId = $m<HTMLInputElement>('connector-x-client-id')?.value || '';
       const clientSecret = $m<HTMLInputElement>('connector-x-client-secret')?.value || '';
-      if (!clientId || !clientSecret) { alert('X Client ID + Client Secret are both required.'); return null; }
+      if (!clientId || !clientSecret) { void gAlert('Missing field', 'X Client ID + Client Secret are both required.'); return null; }
       credentials['clientId'] = clientId;
       credentials['clientSecret'] = clientSecret;
       options['includeBookmarks'] = $m<HTMLInputElement>('connector-x-bookmarks')?.checked ?? true;
@@ -1037,12 +1038,12 @@ function wireConnectorsUi(): void {
       // Create a new engram on-the-fly when the user picked "New Engram…".
       if (config.graphId === '__new__') {
         const displayName = ($m<HTMLInputElement>('connector-new-engram-name')?.value || '').trim();
-        if (!displayName) { alert('Enter a name for the new engram.'); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
+        if (!displayName) { void gAlert('Name required', 'Enter a name for the new engram.'); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
         const newGraphId = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') +
           '-' + Math.random().toString(36).slice(-4);
         const connCreateResult = await invoke<{ error?: { code: string } }>('create_graph_with_template', { graphId: newGraphId, template: 'personal', displayName });
         if (connCreateResult?.error?.code === 'ENGRAM_LIMIT_REACHED') {
-          alert('Free plan: 3 engram limit reached. Upgrade to Pro at graphnosis.com/upgrade to create more engrams.');
+          void gAlert('Engram limit reached', 'Free plan: 3 engram limit reached. Upgrade to Pro at graphnosis.com/upgrade to create more engrams.');
           void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/upgrade' });
           if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
           return;

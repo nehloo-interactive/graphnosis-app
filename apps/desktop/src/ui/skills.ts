@@ -4,7 +4,7 @@
  */
 import { invoke } from '../platform';
 import { app } from './app-context';
-import { gAlert, gConfirm } from './dialogs';
+import { gAlert, gConfirm, gPrompt } from './dialogs';
 import { ipcCall, ipcCallTimeout, invokeRetry } from './ipc';
 import { escape, escapeHtml } from './util';
 import type { GraphWithMetadata } from './types';
@@ -574,7 +574,11 @@ export async function createSkillsEngramQuiet(displayName: string): Promise<stri
  *  Tauri command, then refreshes the engram list so the new entry appears
  *  in the dropdown (sorted alphabetically) with auto-selection. */
 async function createSkillEngramInline(): Promise<void> {
-  const rawName = window.prompt('Name your new Skills engram (e.g., "Skills", "Coding Skills", "Customer Support Skills"):', 'Skills');
+  const rawName = await gPrompt(
+    'New Skills engram',
+    'Name your new Skills engram (e.g., "Skills", "Coding Skills", "Customer Support Skills"):',
+    { placeholder: 'Skills', secret: false },
+  );
   if (!rawName) return;
   const displayName = rawName.trim();
   if (!displayName) return;
@@ -1525,14 +1529,16 @@ export function renderSkillsLibrary(): void {
         // moment.
         const target = skillsLibrary.find((s) => s.sourceId === sid);
         const displayName = target ? (skillBaseName(target.label) || skillDisplayName(target.label) || 'this skill') : 'this skill';
-        const ok = window.confirm(
-          `Hide "${displayName}" from the library?\n\nYou can restore it any time with the Show hidden button.`,
-        );
-        if (!ok) return;
-        skillsHiddenSet.add(sid);
-        persistSkillsHidden();
-        if (skillsActiveSourceId === sid) { skillsActiveSourceId = null; showSkillsComposeMode(); resetSkillsComposeForm(); }
-        renderSkillsLibrary();
+        void gConfirm(
+          'Hide skill?',
+          `Hide "${displayName}" from the library? You can restore it any time with the Show hidden button.`,
+        ).then((ok) => {
+          if (!ok) return;
+          skillsHiddenSet.add(sid);
+          persistSkillsHidden();
+          if (skillsActiveSourceId === sid) { skillsActiveSourceId = null; showSkillsComposeMode(); resetSkillsComposeForm(); }
+          renderSkillsLibrary();
+        });
       } else if (action === 'unhide') {
         skillsHiddenSet.delete(sid); persistSkillsHidden(); renderSkillsLibrary();
       } else if (action === 'retrain') {
@@ -1947,7 +1953,10 @@ function renderSkillHistory(versions: SkillVersionEntry[], graphId: string, sour
 }
 
 async function rollbackSkillVersion(sourceId: string, graphId: string, snapshotId: string): Promise<void> {
-  if (!window.confirm('Restore this earlier version as the current skill?\n\nThe current version is saved as a snapshot first, so this is reversible.')) return;
+  if (!(await gConfirm(
+    'Restore earlier version?',
+    'Restore this earlier version as the current skill? The current version is saved as a snapshot first, so this is reversible.',
+  ))) return;
   try {
     await ipcCall('skill:rollback', { graphId, sourceId, snapshotId });
     await fetchSkillsLibrary();
@@ -3469,6 +3478,12 @@ function setTrainingCancelHandler(fn: (() => void) | null): void {
 // the existing renderDiffView() so the user watches Ghampus rewrite live.
 
 let activeTrainStreamId: string | null = null;
+
+/** True while a train_skill stream is painting the live diff — read by
+ *  main.ts tab switching to repaint when the checkin pane becomes visible. */
+export function isTrainStreaming(): boolean {
+  return activeTrainStreamId !== null;
+}
 let activeTrainBuffer = '';
 let activeTrainBaseline = '';
 let trainDiffRerenderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3567,7 +3582,7 @@ function ensureLiveReviewModeForStreaming(): void {
 /** Re-run the line diff over the current partial buffer and update the
  *  diff view. Auto-scrolls to the last hunk so newly-added changes are
  *  visible as the stream progresses. */
-function renderLiveDiff(): void {
+export function renderLiveDiff(): void {
   if (!activeTrainStreamId) return;
   const diffEl = document.getElementById('skills-review-diff-output');
   const metaEl = document.getElementById('skills-review-diff-meta');

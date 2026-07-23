@@ -913,9 +913,12 @@ body.mobile-more-open .mobile-more-sheet {
    and that would wrongly lock tablets too). So on phone-sized devices in
    landscape we cover everything with a rotate-to-portrait gate. The
    `max-height: 500px` guard targets phones (short side ≤500px) and never
-   tablets (whose short side is ≥744px), so iPads still rotate freely. */
+   tablets (whose short side is ≥744px), so iPads still rotate freely.
+   The hover/pointer guards restrict the gate to TOUCH devices — a desktop
+   window (native shell or browser) shrunk below 500px tall is landscape
+   too, and must never see a phone-rotation prompt. */
 .rotate-portrait-overlay { display: none; }
-@media (orientation: landscape) and (max-height: 500px) {
+@media (orientation: landscape) and (max-height: 500px) and (hover: none) and (pointer: coarse) {
   .rotate-portrait-overlay {
     display: flex;
     position: fixed;

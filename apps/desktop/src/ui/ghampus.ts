@@ -390,11 +390,11 @@ export async function refreshModelsPanel(): Promise<void> {
               const result = await ipcCall<{ ok?: boolean; message?: string }>('models:setProviderEnabled', { providerId, enabled: cb.checked });
               if (result?.ok === false) {
                 cb.checked = !cb.checked;
-                alert(result.message ?? 'Could not update provider.');
+                void gAlert('Provider update failed', result.message ?? 'Could not update provider.');
               }
             } catch (e) {
               cb.checked = !cb.checked;
-              alert(e instanceof Error ? e.message : String(e));
+              void gAlert('Provider update failed', e instanceof Error ? e.message : String(e));
             }
             void refreshModelsPanel();
           })();

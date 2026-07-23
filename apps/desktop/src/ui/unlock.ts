@@ -3,6 +3,7 @@
  */
 import { IS_TAURI, invoke, webauthnAuthenticate, webauthnRegister, webauthnStatus } from '../platform';
 import { app } from './app-context';
+import { gConfirm } from './dialogs';
 import type { BiometricStatus, StatusSnapshot } from './types';
 import {
   analyzeCortexCloudLocation,
@@ -376,16 +377,16 @@ function wireCortexLockHandlers(): void {
     hideCortexLockCard();
     void retryUnlockAfterCortexLockAction(false);
   });
-  releaseBtn?.addEventListener('click', () => {
+  releaseBtn?.addEventListener('click', async () => {
     const cortexDir = (els.cortexDir as HTMLInputElement).value.trim();
     if (!cortexDir) {
       app().showError('Choose a Graphnosis cortex folder first.');
       return;
     }
-    const proceed = confirm(
-      'Continue on this Mac?\n\n' +
-      'Only do this if Graphnosis is closed on your other Mac and any connected AI apps.\n\n' +
-      'Opening here while another session is still running can damage your memory.',
+    const proceed = await gConfirm(
+      'Continue on this Mac?',
+      'Only do this if Graphnosis is closed on your other Mac and any connected AI apps. '
+      + 'Opening here while another session is still running can damage your memory.',
     );
     if (!proceed) return;
     void (async () => {
@@ -525,7 +526,10 @@ async function maybeOfferBiometricSetup(): Promise<void> {
   let st: { available: boolean; registered: number };
   try { st = await webauthnStatus(); } catch { return; }
   if (!st.available || st.registered > 0) return;
-  if (!confirm('Set up biometric / security-key unlock on this device, so you don\'t need to paste the access token next time?')) return;
+  if (!(await gConfirm(
+    'Set up biometric unlock?',
+    'Set up biometric / security-key unlock on this device, so you don\'t need to paste the access token next time?',
+  ))) return;
   const tid = app().addIngestToast('Setting up biometric unlock', 'Follow your device\'s prompt…');
   try {
     await webauthnRegister('This device');
@@ -640,10 +644,10 @@ export async function attemptUnlock(): Promise<void> {
       els.bootStatusText.textContent = '';
       progressBar?.classList.add('hidden');
       els.btnUnlock.disabled = false;
-      const proceed = confirm(
-        `The folder "${path}" doesn't exist yet.\n\n` +
-        `Create it now and continue unlocking?\n\n` +
-        `(If this is a typo, click Cancel and edit the path.)`
+      const proceed = await gConfirm(
+        'Create cortex folder?',
+        `The folder "${path}" doesn't exist yet. Create it now and continue unlocking? `
+        + '(If this is a typo, click Cancel and edit the path.)',
       );
       if (!proceed) return;
       try {

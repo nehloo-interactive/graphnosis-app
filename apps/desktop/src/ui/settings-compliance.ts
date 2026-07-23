@@ -2,7 +2,7 @@
  * Enterprise Compliance settings + Get Connected retention ops.
  */
 import { app } from './app-context';
-import { gAlert } from './dialogs';
+import { gAlert, gConfirm } from './dialogs';
 import { ipcCall } from './ipc';
 import { escape } from './util';
 import { invalidateClassificationSchemaCache, labelColorStyle } from './classification-schema';
@@ -262,7 +262,8 @@ export function wireComplianceSettingsPanel(): void {
 
 async function runRetentionOp(dryRun: boolean): Promise<void> {
   if (!dryRun) {
-    const ok = window.confirm(
+    const ok = await gConfirm(
+      'Run retention purge?',
       'Run retention purge now? Sources past their TTL will be forgotten (with export slices when configured). Legal holds are skipped.',
     );
     if (!ok) return;
