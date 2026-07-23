@@ -301,7 +301,11 @@ export async function startHttpUiServer(opts: HttpUiOptions): Promise<http.Serve
         userID: new TextEncoder().encode('graphnosis-user'),
         attestationType: 'none',
         excludeCredentials: existing.map((c) => ({ id: c.id, ...(c.transports ? { transports: c.transports as WebAuthnTransports } : {}) })),
-        authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+        // 'platform' pins registration to THIS device's authenticator (Face
+        // ID / Touch ID enclave) — matching the "This device" label the UI
+        // shows — and keeps iOS from offering the cross-device QR flow
+        // during setup. Each device registers its own credential.
+        authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'preferred', userVerification: 'preferred' },
       });
       const sessionToken = (req.headers['authorization'] as string).slice(7);
       regChallenges.set(sessionToken, { challenge: options.challenge, expiresAt: Date.now() + CHALLENGE_TTL_MS });

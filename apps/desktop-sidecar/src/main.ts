@@ -1184,31 +1184,9 @@ async function main(): Promise<void> {
     mcpServer = await startSocketMcpServer({ deps: mcpDeps, socketPath: mcpSocketPath });
   };
 
-  // Optional HTTP bridge for mobile and remote MCP clients. Disabled by
-  // default; user enables in Settings → "Mobile & Remote". Requires a
-  // sidecar restart to take effect (same as mcpRelay settings).
-  // Token is passed as a live getter so Revoke & Regenerate takes effect
-  // immediately on the running server without a restart.
-  const httpBridgeCfg = host.getSettings().mobile?.httpBridge;
-  if (httpBridgeCfg?.enabled && httpBridgeCfg.token) {
-    try {
-      const httpServer = await startHttpMcpServer({
-        deps: mcpDeps,
-        port: httpBridgeCfg.port,
-        host: httpBridgeCfg.host,
-        token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
-        allowedOrigins: httpBridgeCfg.allowedOrigins,
-        sharingTokens: () => host.getSettings().sharing?.tokens ?? [],
-      });
-      process.on('SIGINT', () => httpServer.close());
-      process.on('SIGTERM', () => httpServer.close());
-    } catch (e) {
-      // A port conflict here means another sidecar is still running and holding
-      // the same port. Log clearly but don't crash — the rest of the sidecar
-      // (IPC, MCP socket, local VS Code bridge) still works without it.
-      console.error(`[graphnosis-sidecar] mobile HTTP bridge on :${httpBridgeCfg.port} failed — port in use or another sidecar is running: ${(e as Error).message}`);
-    }
-  }
+  // Mobile HTTP bridge starts below in the "Mobile HTTP servers" section
+  // (after ipcDeps exists) — both it and the browser UI are hot-restartable
+  // when Settings → Mobile & Remote changes; no unlock cycle required.
 
   // Always-on local HTTP bridge for the VS Code / Copilot extension.
   // Binds exclusively on 127.0.0.1 — never reachable from outside the machine.
@@ -1218,9 +1196,10 @@ async function main(): Promise<void> {
   {
     const currentSettings = host.getSettings();
     const localPort = currentSettings.vscode?.localBridgePort ?? 3457;
-    const mobileConflicts = httpBridgeCfg?.enabled
-      && httpBridgeCfg.host === '127.0.0.1'
-      && httpBridgeCfg.port === localPort;
+    const mobileBridgeCfg = currentSettings.mobile?.httpBridge;
+    const mobileConflicts = mobileBridgeCfg?.enabled
+      && mobileBridgeCfg.host === '127.0.0.1'
+      && mobileBridgeCfg.port === localPort;
 
     if (!mobileConflicts) {
       let localToken = currentSettings.vscode?.localBridgeToken;
@@ -1386,55 +1365,156 @@ async function main(): Promise<void> {
   //   GRAPHNOSIS_BIND=0.0.0.0           — bind address (default 127.0.0.1)
   //   GRAPHNOSIS_HTTP_UI_TOKEN=<token>  — static auth token (auto-generated if absent)
   //   GRAPHNOSIS_HTTP_UI_STATIC=<path>  — path to compiled web UI files (optional)
+  // ── Mobile HTTP servers (MCP bridge + browser UI) — hot-restartable ───────
+  // applyMobileServers() diffs desired config (settings, or env for headless
+  // deploys) against the live servers and restarts only what changed. The
+  // update_settings IPC path calls it, so Mobile & Remote toggles take effect
+  // immediately instead of "on next unlock". Env-driven config wins over
+  // settings and is applied once — settings changes never restart it.
   {
-    const envEnabled = process.env.GRAPHNOSIS_HTTP_UI === '1';
-    const uiCfg = host.getSettings().mobile?.httpUi;
-    const settingsEnabled = uiCfg?.enabled === true && !!uiCfg.token;
-    if (envEnabled || settingsEnabled) {
-      const uiPort = process.env.GRAPHNOSIS_HTTP_UI_PORT
-        ? parseInt(process.env.GRAPHNOSIS_HTTP_UI_PORT, 10)
-        : (uiCfg?.port ?? 3456);
-      const uiBind = process.env.GRAPHNOSIS_BIND ?? uiCfg?.host ?? '127.0.0.1';
-      let uiToken = process.env.GRAPHNOSIS_HTTP_UI_TOKEN ?? uiCfg?.token ?? '';
-      if (!uiToken) {
-        uiToken = randomUUID();
-        console.error(`[graphnosis-sidecar] HTTP UI token (save this): ${uiToken}`);
+    type LiveBind = { host: string; port: number };
+    let httpBridgeServer: Awaited<ReturnType<typeof startHttpMcpServer>> | null = null;
+    let httpBridgeLive: LiveBind | null = null;
+    let httpUiServer: Awaited<ReturnType<typeof startHttpUiServer>> | null = null;
+    let httpUiLive: (LiveBind & { token: string }) | null = null;
+
+    // http.Server.close() waits for open connections, and both servers hold
+    // long-lived SSE streams — sever connections first and cap the wait so a
+    // stubborn socket can't wedge a settings apply.
+    const closeHttpServer = async (
+      s: { close: (cb?: () => void) => void; closeAllConnections?: () => void },
+    ): Promise<void> => {
+      try { s.closeAllConnections?.(); } catch { /* wrapped server */ }
+      await Promise.race([
+        new Promise<void>((resolve) => s.close(() => resolve())),
+        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+      ]);
+    };
+
+    const applyHttpBridge = async (): Promise<void> => {
+      const cfg = host.getSettings().mobile?.httpBridge;
+      const want: LiveBind | null = cfg?.enabled && cfg.token
+        ? { host: cfg.host ?? '127.0.0.1', port: cfg.port ?? 3457 }
+        : null;
+      // Token changes need no restart — it's read via a live getter.
+      const unchanged = want && httpBridgeServer && httpBridgeLive
+        && httpBridgeLive.host === want.host && httpBridgeLive.port === want.port;
+      if (unchanged || (!want && !httpBridgeServer)) return;
+      if (httpBridgeServer) {
+        await closeHttpServer(httpBridgeServer);
+        httpBridgeServer = null;
+        httpBridgeLive = null;
       }
-      // Resolve the compiled web UI to serve at `/`. Priority:
-      //   1. GRAPHNOSIS_HTTP_UI_STATIC env (explicit override / packaged app
-      //      passes the bundled resource path here)
-      //   2. The desktop package's dist in the monorepo (dev)
-      // Falls back to the built-in placeholder page if none is found.
+      if (!want) return;
+      try {
+        httpBridgeServer = await startHttpMcpServer({
+          deps: mcpDeps,
+          port: want.port,
+          host: want.host,
+          token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
+          allowedOrigins: cfg?.allowedOrigins ?? [],
+          sharingTokens: () => host.getSettings().sharing?.tokens ?? [],
+        });
+        httpBridgeLive = want;
+        console.error(`[graphnosis-sidecar] mobile HTTP bridge listening on ${want.host}:${want.port}`);
+      } catch (e) {
+        // A port conflict here means another sidecar is still running and
+        // holding the same port. Log clearly but don't crash — the rest of
+        // the sidecar (IPC, MCP socket, local VS Code bridge) still works.
+        console.error(`[graphnosis-sidecar] mobile HTTP bridge on :${want.port} failed — port in use or another sidecar is running: ${(e as Error).message}`);
+      }
+    };
+
+    // Resolve the compiled web UI to serve at `/`. Priority:
+    //   1. GRAPHNOSIS_HTTP_UI_STATIC env (explicit override / packaged app
+    //      passes the bundled resource path here)
+    //   2. The desktop package's dist in the monorepo (dev)
+    // Falls back to the built-in placeholder page if none is found.
+    const resolveUiStaticDir = (): string | undefined => {
       const here = path.dirname(fileURLToPath(import.meta.url)); // …/desktop-sidecar/dist
-      const staticCandidates = [
+      const candidates = [
         process.env.GRAPHNOSIS_HTTP_UI_STATIC,
         path.resolve(here, '../../desktop/dist'),  // monorepo: apps/desktop/dist
         path.resolve(here, '../web'),              // future: bundled-alongside layout
       ].filter((c): c is string => !!c);
-      let uiStaticDir: string | undefined;
-      for (const c of staticCandidates) {
-        if (existsSync(path.join(c, 'index.html'))) { uiStaticDir = c; break; }
+      for (const c of candidates) {
+        if (existsSync(path.join(c, 'index.html'))) return c;
       }
+      return undefined;
+    };
+
+    const uiEnvEnabled = process.env.GRAPHNOSIS_HTTP_UI === '1';
+    const applyHttpUi = async (): Promise<void> => {
+      if (uiEnvEnabled && httpUiServer) return; // env-pinned — settings never restart it
+      const uiCfg = host.getSettings().mobile?.httpUi;
+      const settingsEnabled = uiCfg?.enabled === true && !!uiCfg.token;
+      let want: (LiveBind & { token: string }) | null = null;
+      if (uiEnvEnabled || settingsEnabled) {
+        const port = process.env.GRAPHNOSIS_HTTP_UI_PORT
+          ? parseInt(process.env.GRAPHNOSIS_HTTP_UI_PORT, 10)
+          : (uiCfg?.port ?? 3456);
+        const bindHost = process.env.GRAPHNOSIS_BIND ?? uiCfg?.host ?? '127.0.0.1';
+        let token = process.env.GRAPHNOSIS_HTTP_UI_TOKEN ?? uiCfg?.token ?? '';
+        if (!token) {
+          token = randomUUID();
+          console.error(`[graphnosis-sidecar] HTTP UI token (save this): ${token}`);
+        }
+        want = { host: bindHost, port, token };
+      }
+      const unchanged = want && httpUiServer && httpUiLive
+        && httpUiLive.host === want.host && httpUiLive.port === want.port
+        && httpUiLive.token === want.token;
+      if (unchanged || (!want && !httpUiServer)) return;
+      if (httpUiServer) {
+        await closeHttpServer(httpUiServer);
+        httpUiServer = null;
+        httpUiLive = null;
+      }
+      if (!want) return;
+      const uiStaticDir = resolveUiStaticDir();
       if (uiStaticDir) {
         console.error(`[graphnosis-sidecar] HTTP UI serving web app from ${uiStaticDir}`);
       } else {
         console.error('[graphnosis-sidecar] HTTP UI: no built web app found — serving status placeholder');
       }
       try {
-        const httpUiServer = await startHttpUiServer({
+        httpUiServer = await startHttpUiServer({
           deps: ipcDeps,
-          port: uiPort,
-          host: uiBind,
-          token: uiToken,
+          port: want.port,
+          host: want.host,
+          token: want.token,
           subscribeEvents,
           ...(uiStaticDir ? { staticDir: uiStaticDir } : {}),
         });
-        process.on('SIGINT',  () => httpUiServer.close());
-        process.on('SIGTERM', () => httpUiServer.close());
+        httpUiLive = { ...want };
+        console.error(`[graphnosis-sidecar] HTTP UI listening on ${want.host}:${want.port}`);
       } catch (e) {
-        console.error(`[graphnosis-sidecar] HTTP UI on :${uiPort} failed: ${(e as Error).message}`);
+        console.error(`[graphnosis-sidecar] HTTP UI on :${want.port} failed: ${(e as Error).message}`);
       }
-    }
+    };
+
+    const applyMobileServers = async (): Promise<void> => {
+      await applyHttpBridge();
+      await applyHttpUi();
+    };
+    const mobileHooks = ipcDeps as {
+      applyMobileServers?: () => Promise<void>;
+      getLiveMobileStatus?: () => { httpBridge: LiveBind | null; httpUi: LiveBind | null };
+    };
+    mobileHooks.applyMobileServers = applyMobileServers;
+    mobileHooks.getLiveMobileStatus = () => ({
+      httpBridge: httpBridgeLive ? { ...httpBridgeLive } : null,
+      httpUi: httpUiLive ? { host: httpUiLive.host, port: httpUiLive.port } : null,
+    });
+
+    const stopMobileServers = (): void => {
+      if (httpBridgeServer) void closeHttpServer(httpBridgeServer);
+      if (httpUiServer) void closeHttpServer(httpUiServer);
+    };
+    process.on('SIGINT', stopMobileServers);
+    process.on('SIGTERM', stopMobileServers);
+
+    await applyMobileServers();
   }
 
   // Brain + connectors start after IPC unlock — activity, vitality, and IPC

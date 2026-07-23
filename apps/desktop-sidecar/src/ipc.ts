@@ -181,6 +181,15 @@ export interface IpcDeps {
   pendingDiffs: Map<string, { graphId: string; diff: CorrectionDiff; createdAt: number }>;
   /** Closes + reopens the MCP socket listener — used by the "Reconnect" button in the inspector. */
   restartMcpListener: () => Promise<void>;
+  /** Hot-applies mobile HTTP server config (bridge + browser UI) after a
+   *  settings change — assigned by main.ts once the servers exist. */
+  applyMobileServers?: () => Promise<void>;
+  /** LIVE bound address/port of each mobile HTTP server (null = not running).
+   *  The Settings panel compares this with persisted config to surface drift. */
+  getLiveMobileStatus?: () => {
+    httpBridge: { host: string; port: number } | null;
+    httpUi: { host: string; port: number } | null;
+  };
   /** Push arbitrary frames to all event-socket subscribers (e.g. ingest progress). */
   broadcastRaw: BroadcastRawFn;
   /** Service connector manager. Always present; starts with empty config if no connectors exist yet. */
@@ -2662,7 +2671,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         if (!hasCadence) intervalMs = Math.max(86_400_000, intervalMs);
         await deps.connectorManager.setPullInterval(intervalMs);
       }
-      return deps.host.setSettings(patch, { userInitiated: true });
+      const settingsResult = await deps.host.setSettings(patch, { userInitiated: true });
+      // Hot-apply mobile HTTP servers so Browser access / MCP bridge toggles
+      // take effect immediately instead of "on next unlock".
+      if (parsed.mobile) await deps.applyMobileServers?.();
+      return settingsResult;
+    }
+    case 'mobile:liveStatus': {
+      // LIVE bound address/port of the mobile HTTP servers (null = not
+      // running) — the Settings panel compares this against persisted config
+      // to warn on drift instead of rendering a URL that can't work.
+      return deps.getLiveMobileStatus?.() ?? { httpBridge: null, httpUi: null };
     }
     case 'cortex.purgeForgotten': {
       const { graphId } = z.object({ graphId: z.string() }).parse(params);
@@ -3582,30 +3601,50 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     case 'llm:pullModel': {
       const { model } = z.object({ model: z.string().min(1) }).parse(params);
-      const { spawn } = await import('node:child_process');
-      return new Promise<{ ok: boolean }>((resolve, reject) => {
-        const child = spawn('ollama', ['pull', model], { stdio: ['ignore', 'pipe', 'pipe'] });
-        child.stdout?.on('data', (chunk: Buffer) => {
-          const lines = chunk.toString().split('\n').filter(Boolean);
-          for (const line of lines) {
-            try {
-              const event = JSON.parse(line) as { status?: string; completed?: number; total?: number };
-              // Forwarded raw by the Rust event_stream as
-              // graphnosis://llm-pull-progress (see its kind allow-list).
-              deps.broadcastRaw({
-                kind: 'llm.pull-progress',
-                name: 'llm.pull-progress',
-                payload: { model, ...event },
-              });
-            } catch { /* non-JSON line — ignore */ }
-          }
-        });
-        child.on('close', (code) => {
-          if (code === 0) resolve({ ok: true });
-          else reject(new Error(`ollama pull exited with code ${code}`));
-        });
-        child.on('error', reject);
+      // Stream the pull through Ollama's HTTP API. The previous
+      // implementation spawned the `ollama pull` CLI and JSON.parsed its
+      // stdout — but the CLI prints human-readable ANSI progress, not JSON,
+      // so every line hit the catch and the UI progress bar never moved
+      // (on any platform, ever). POST /api/pull streams NDJSON frames in
+      // exactly the {status, completed, total} shape the UI expects, and
+      // needs no CLI on the GUI-spawned process's PATH.
+      const ollamaUrl = 'http://127.0.0.1:11434';
+      const res = await fetch(`${ollamaUrl}/api/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: model }),
       });
+      if (!res.ok || !res.body) {
+        throw new Error(`ollama /api/pull failed: HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let lastError: string | null = null;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line) as { status?: string; completed?: number; total?: number; error?: string };
+            if (event.error) lastError = event.error;
+            // Forwarded raw by the Rust event_stream as
+            // graphnosis://llm-pull-progress (see its kind allow-list) and
+            // over the browser SSE channel via the same frame kind.
+            deps.broadcastRaw({
+              kind: 'llm.pull-progress',
+              name: 'llm.pull-progress',
+              payload: { model, ...event },
+            });
+          } catch { /* partial NDJSON line — completed on the next chunk */ }
+        }
+      }
+      if (lastError) throw new Error(lastError);
+      return { ok: true };
     }
 
     // ── Graphnosis docs ingest ───────────────────────────────────────────────

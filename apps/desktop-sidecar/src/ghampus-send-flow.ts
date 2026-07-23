@@ -496,6 +496,12 @@ export async function runGhampusSend(
   if (cortexDirForHistory) {
     await appendGhampusHistoryMessage(cortexDirForHistory, userMsg);
   }
+  // Broadcast the question to every connected UI so a message typed on one
+  // device (phone) appears in real time on the others (desktop) — answers
+  // were always broadcast, but questions only rendered on the sender,
+  // leaving other devices with orphaned replies. The sender's own UI
+  // dedupes this echo by turnId.
+  deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: userMsg });
   const { markGhampusUserActivity } = await import('./ghampus-busy.js');
   markGhampusUserActivity();
 
