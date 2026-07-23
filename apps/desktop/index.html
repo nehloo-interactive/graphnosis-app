@@ -1664,15 +1664,14 @@
         z-index: 100;
         padding: 24px;
       }
-      /* Blur the main content whenever a full-screen modal or the studio intro
-         overlay is visible. Excludes .over-sidebar modals (position:absolute,
+      /* Blur the main content whenever a full-screen modal is visible. Excludes .over-sidebar modals (position:absolute,
          scoped to a sidebar section — no need to blur the whole view).
 
          Driven by an explicit body class (set by syncModalBlur() in main.ts),
          NOT a `body:has(.modal-backdrop:not(.hidden)) main` selector. WebKit's
          :has() style invalidation could go stale when a modal was toggled
-         during heavy DOM churn — notably the whats-new overlay that auto-opens
-         during the unlock view-swap on a fresh install — leaving `main` blurred
+         during heavy DOM churn — notably during the
+         unlock view-swap on a fresh install — leaving `main` blurred
          with NO visible dialog to dismiss. (filter:blur doesn't capture pointer
          events, so the app stayed fully clickable but permanently blurry.) The
          JS path recomputes from actual rendered visibility, so it can't get
@@ -3565,52 +3564,6 @@
         background: color-mix(in oklab, var(--accent) 18%, var(--bg-elev));
         border-color: var(--accent);
       }
-      /* ── MemoryStudio intro modal ─────────────────────────────────────── */
-      .studio-intro-overlay {
-        position: fixed; inset: 0; z-index: 600;
-        background: rgba(0,0,0,0.55);
-        backdrop-filter: blur(6px);
-        display: flex; align-items: center; justify-content: center;
-        padding: 24px;
-        box-sizing: border-box;
-      }
-      .studio-intro-overlay.hidden { display: none; }
-      .studio-intro-card {
-        background: var(--bg-elev);
-        border: 1px solid rgba(255,255,255,0.18);
-        border-radius: 16px;
-        padding: 36px 40px 28px;
-        max-width: 460px;
-        width: 100%;
-        max-height: calc(100vh - 48px);
-        overflow-y: auto;
-        text-align: center;
-        box-sizing: border-box;
-        box-shadow:
-          0 0 0 1px rgba(255,255,255,0.07),
-          0 0 40px rgba(255,255,255,0.06),
-          0 24px 72px rgba(0,0,0,0.55);
-      }
-      .studio-intro-card h2 { margin: 0 0 10px; font-size: 22px; }
-      .studio-intro-card p { color: var(--fg-dim); font-size: 14px; line-height: 1.55; margin: 0 0 20px; }
-      .studio-intro-dismiss-row {
-        display: flex; align-items: center; justify-content: center;
-        gap: 8px; margin-top: 16px;
-        font-size: 13px; color: var(--fg-dim); cursor: pointer;
-      }
-      .studio-intro-dismiss-row input[type="checkbox"] { cursor: pointer; }
-      .whats-new-dots {
-        display: flex; justify-content: center; gap: 7px; margin-bottom: 22px;
-      }
-      .whats-new-dot {
-        width: 7px; height: 7px; border-radius: 50%;
-        background: var(--fg-dim); opacity: 0.25;
-        transition: opacity 0.2s, background 0.2s;
-        cursor: pointer;
-      }
-      .whats-new-dot.active { background: var(--accent); opacity: 1; }
-      .whats-new-slide { display: none; }
-      .whats-new-slide.active { display: block; }
 
       /* ── Federated stats strip ─────────────────────────────────────────── */
       .g-federated-stats {
@@ -18297,78 +18250,6 @@ ollama list</code></pre>
     </div>
 
     <!-- What's New startup modal — multi-slide carousel -->
-    <div id="whats-new-modal" class="studio-intro-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
-      <div class="studio-intro-card">
-        <div class="whats-new-dots">
-          <span class="whats-new-dot active" data-slide="0"></span>
-          <span class="whats-new-dot" data-slide="1"></span>
-        </div>
-
-        <!-- Slide 0: MemoryStudio -->
-        <div class="whats-new-slide active" data-slide="0">
-          <h2 id="whats-new-title">MemoryStudio</h2>
-          <p style="margin-bottom:16px;">
-            Interact with your memory the way your AI client does —
-            the same MCP operations, running entirely on your device.
-            No internet. No cloud hop.
-          </p>
-          <ul style="text-align:left; list-style:none; padding:0; margin:0 0 20px; display:flex; flex-direction:column; gap:10px;">
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">🔍</span>
-              <span><strong>Recall</strong> — run a full subgraph recall and see exactly what your AI client sees, with nodes, edges, and scores.</span>
-            </li>
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">💾</span>
-              <span><strong>Remember</strong> — save new memories directly, routed to any engram, without going through an AI client.</span>
-            </li>
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">✏️</span>
-              <span><strong>Edit &amp; correct</strong> — propose diffs on existing memory nodes and approve them with a single click.</span>
-            </li>
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">🧠</span>
-              <span><strong>GNN Exploration</strong> — explore connections your neural network predicts that semantic recall alone would miss.</span>
-            </li>
-          </ul>
-        </div>
-
-        <!-- Slide 1: Graphnosis Skills -->
-        <div class="whats-new-slide" data-slide="1">
-          <h2 style="margin-bottom:6px;">Graphnosis Skills</h2>
-          <p style="margin-bottom:4px; font-size:13px; color:var(--fg-dim); font-style:italic;">Powered by Graphnosis Autonomous Praxis</p>
-          <p style="margin-bottom:16px;">
-            Train AI skills using your own cortex. Drop in a skill, let Graphnosis
-            surface the memories that shaped how you work, and produce a personalized
-            version — fully local, fully yours.
-          </p>
-          <ul style="text-align:left; list-style:none; padding:0; margin:0 0 20px; display:flex; flex-direction:column; gap:10px;">
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">🎯</span>
-              <span><strong>Skill engrams</strong> — skills live as first-class nodes in your cortex, versioned with full graph provenance and cross-engram edges to the memories that influenced them.</span>
-            </li>
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">🔁</span>
-              <span><strong>Autonomous Praxis</strong> — retrains each skill as your cortex grows. Self-tuning recall breadth learns the right scope over successive runs.</span>
-            </li>
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">🔍</span>
-              <span><strong>Memory attribution</strong> — every change in a trained skill traces back to the specific memory node that drove it, with engram source and date.</span>
-            </li>
-            <li style="display:flex; gap:10px; align-items:flex-start;">
-              <span style="font-size:16px; flex-shrink:0;">📦</span>
-              <span><strong>Skill Packs (.gsk)</strong> — export trained skills as encrypted, portable packs with a <code>GRAPHNOSIS.md</code> and embedded recall recipes.</span>
-            </li>
-          </ul>
-        </div>
-
-        <button id="btn-whats-new-next" class="primary" style="width:100%;">Next</button>
-        <label class="studio-intro-dismiss-row">
-          <input type="checkbox" id="chk-whats-new-dismiss" />
-          Don't show this on startup
-        </label>
-      </div>
-    </div>
-
     <!-- Mobile bottom navigation — hidden on desktop via mobile.css media query -->
     <nav class="mobile-bottom-nav" aria-label="Main navigation">
       <button class="mobile-nav-btn active" data-mode="atlas" aria-label="Home">

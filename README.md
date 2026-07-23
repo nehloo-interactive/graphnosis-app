@@ -34,7 +34,7 @@ Full personas, screenshots, and product depth live on **[graphnosis.com](https:/
 
 Monorepo: Tauri shell (`apps/desktop`) + Node sidecar (`apps/desktop-sidecar`) + shared core (`packages/graphnosis-app-core`). The Graphnosis engine is [`@nehloo/graphnosis`](https://github.com/nehloo/Graphnosis) (Apache 2.0); sync primitives are [`graphnosis-secure-sync`](https://github.com/nehloo-interactive/graphnosis-secure-sync).
 
-**Prerequisites:** Node 20+, pnpm 9+, Rust (for the desktop shell). Ollama only if you exercise Foresight locally.
+**Prerequisites:** Node 20+, pnpm 10+, Rust (for the desktop shell), and [Bun](https://bun.sh) — the Tauri build compiles the sidecar and MCP relay into standalone binaries via `bun build --compile` (`apps/desktop/src-tauri/build.rs` looks for bun in `~/.bun/bin` and on PATH; without it `pnpm dev:desktop` fails with `resource path binaries/graphnosis-sidecar-… doesn't exist`). Ollama only if you exercise Foresight locally.
 
 ### Supply chain & dependency security
 

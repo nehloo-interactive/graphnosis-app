@@ -1944,7 +1944,7 @@ function render(status: StatusSnapshot): void {
       scheduleHomePrefetch(); // warm home-card cache in background after boot
       scheduleGhampusThreadPrefetch(); // warm Ghampus chat history before tab visit
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
-      void loadStudioSubscriptionState().then(() => showWhatsNewModal());
+      void loadStudioSubscriptionState();
       void (async () => {
         try {
           const s = (await invoke('get_settings')) as AppSettings;
@@ -24851,81 +24851,21 @@ const STUDIO_BANNER_KEY = 'graphnosis.studioBannerV1Dismissed';
   });
 }());
 
-// ── What's New modal (multi-slide carousel) ──────────────────────────────────
-
-const WHATS_NEW_DISMISSED_KEY = 'graphnosis.whatsNewV1Dismissed';
-const WHATS_NEW_TOTAL_SLIDES = 2;
-let whatsNewCurrentSlide = 0;
-
-function showWhatsNewModal(): void {
-  if (localStorage.getItem(WHATS_NEW_DISMISSED_KEY) === '1') return;
-  whatsNewCurrentSlide = 0;
-  updateWhatsNewSlide();
-  document.getElementById('whats-new-modal')?.classList.remove('hidden');
-}
-
-function hideWhatsNewModal(): void {
-  document.getElementById('whats-new-modal')?.classList.add('hidden');
-}
-
-function updateWhatsNewSlide(): void {
-  const isLast = whatsNewCurrentSlide === WHATS_NEW_TOTAL_SLIDES - 1;
-  document.querySelectorAll<HTMLElement>('.whats-new-slide').forEach((el) => {
-    el.classList.toggle('active', Number(el.dataset['slide']) === whatsNewCurrentSlide);
-  });
-  document.querySelectorAll<HTMLElement>('.whats-new-dot').forEach((el) => {
-    el.classList.toggle('active', Number(el.dataset['slide']) === whatsNewCurrentSlide);
-  });
-  const btn = document.getElementById('btn-whats-new-next') as HTMLButtonElement | null;
-  if (btn) btn.textContent = isLast ? 'Get started' : 'Next';
-}
-
-document.getElementById('btn-whats-new-next')?.addEventListener('click', () => {
-  if (whatsNewCurrentSlide < WHATS_NEW_TOTAL_SLIDES - 1) {
-    whatsNewCurrentSlide++;
-    updateWhatsNewSlide();
-  } else {
-    hideWhatsNewModal();
-    switchGraphnosisTab('checkin');
-  }
-});
-
-document.querySelectorAll<HTMLElement>('.whats-new-dot').forEach((dot) => {
-  dot.addEventListener('click', () => {
-    whatsNewCurrentSlide = Number(dot.dataset['slide']);
-    updateWhatsNewSlide();
-  });
-});
-
-document.getElementById('chk-whats-new-dismiss')?.addEventListener('change', (e) => {
-  if ((e.target as HTMLInputElement).checked) {
-    localStorage.setItem(WHATS_NEW_DISMISSED_KEY, '1');
-    hideWhatsNewModal();
-  } else {
-    localStorage.removeItem(WHATS_NEW_DISMISSED_KEY);
-  }
-});
-
-document.getElementById('whats-new-modal')?.addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) hideWhatsNewModal();
-});
-
 // ── Modal-blur driver ────────────────────────────────────────────────────────
 // The main-content blur shown behind any open modal/overlay used to be driven
 // purely by a CSS `body:has(.modal-backdrop:not(.hidden):not(.over-sidebar))
 // main { filter: blur }` selector. WebKit's :has() style invalidation can go
-// stale when a modal is toggled during heavy DOM churn — in particular the
-// whats-new overlay that auto-opens during the unlock view-swap on a fresh
-// install — leaving `main` permanently blurred with NO visible dialog to
+// stale when a modal is toggled during heavy DOM churn — notably during the
+// unlock view-swap on a fresh install — leaving `main` permanently blurred with NO visible dialog to
 // dismiss (filter:blur doesn't capture pointer events, so the app stays fully
 // clickable but blurry). We instead toggle an explicit `has-modal-blur` class
 // on <body>, recomputed from ACTUAL rendered visibility. This is immune to
 // :has() staleness AND to any modal that hides itself via inline style instead
-// of the `.hidden` class. All modal-backdrops + the whats-new overlay are
+// of the `.hidden` class. All modal-backdrops are
 // static, direct children of <body>, so a per-element observer is cheap and
 // fires only on their own class/style changes (no app-wide mutation churn).
 const modalBlurEls = new Set<HTMLElement>(
-  document.querySelectorAll<HTMLElement>('.modal-backdrop, #whats-new-modal'),
+  document.querySelectorAll<HTMLElement>('.modal-backdrop'),
 );
 function syncModalBlur(): void {
   const anyOpen = Array.from(modalBlurEls).some((el) => {
