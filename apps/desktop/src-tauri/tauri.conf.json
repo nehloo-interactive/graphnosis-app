@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm --filter @graphnosis-app/desktop dev",
-    "beforeBuildCommand": "pnpm --filter @graphnosis-app/desktop build"
+    "beforeBuildCommand": "pnpm --filter @graphnosis-app/desktop build && node scripts/copy-webui-resource.mjs"
   },
   "app": {
     "windows": [

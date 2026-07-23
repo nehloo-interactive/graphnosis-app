@@ -24,7 +24,10 @@ integrations/hermes-desktop-upstream/
 apps/desktop-sidecar/_wip-enterprise/
 
 # One-off UI modularization extraction scripts — dev tooling only.
-apps/desktop/scripts/
+# copy-webui-resource.mjs is the exception: it runs in beforeBuildCommand on
+# every tauri build (bundles the web UI into the .app) and MUST ship to CI.
+apps/desktop/scripts/*
+!apps/desktop/scripts/copy-webui-resource.mjs
 .env.*
 !.env.example
 
