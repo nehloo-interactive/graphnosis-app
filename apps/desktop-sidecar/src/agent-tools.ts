@@ -15,6 +15,7 @@
 import type { GraphnosisHost } from './host.js';
 import type { SkillTrainer } from './skill-trainer.js';
 import type { AgentToolName } from './agent-types.js';
+import { scopeCoversEngram } from '@graphnosis-app/core/settings';
 import { augmentMemoryWithTemporalContext, inferObligationFromText } from './ghampus-temporal-parse.js';
 import { stripInternalSourceRefPrefix } from './ghampus-recall-format.js';
 
@@ -279,9 +280,7 @@ function collectSharingProvenance(
   const out: Array<{ engramId: string; shareName: string; role: string }> = [];
   for (const token of tokens) {
     if (token.expiresAt !== undefined && token.expiresAt <= now) continue;
-    const covered: Set<string> = token.scope.engrams === '*'
-      ? new Set(engramIds)
-      : new Set((token.scope.engrams as string[]).filter((id) => engramIds.includes(id)));
+    const covered = new Set(engramIds.filter((id) => scopeCoversEngram(token.scope, id)));
     for (const engramId of covered) {
       out.push({ engramId, shareName: token.name, role: token.scope.role });
     }

@@ -339,10 +339,15 @@ export function sanitizeEnterpriseSsoSettings(
  */
 export function hasActiveSsoUnlockSession(input: {
   ssoSession?: { role?: string } | null;
-  /** Full-cortex SSO unlock sets sharingScope with engrams: '*'. */
-  sharingScope?: { role?: string; engrams?: string[] | '*' } | null;
+  /** Full-cortex SSO unlock sets sharingScope with engrams: '*' and no carve-outs. */
+  sharingScope?: { role?: string; engrams?: string[] | '*'; except?: string[] } | null;
 }): boolean {
   if (input.ssoSession?.role) return true;
-  if (input.sharingScope?.role && input.sharingScope.engrams === '*') return true;
+  // A '*' scope WITH carve-outs is a cortex share, not a full-cortex SSO unlock.
+  if (
+    input.sharingScope?.role
+    && input.sharingScope.engrams === '*'
+    && !(input.sharingScope.except && input.sharingScope.except.length > 0)
+  ) return true;
   return false;
 }

@@ -20,7 +20,7 @@ export class SsoRecallRequiredError extends Error {
 
 export function catalogHasSsoSession(deps: {
   ssoSession?: { role: SharingRole } | null;
-  sharingScope?: { role: SharingRole; engrams: string[] | '*' } | null;
+  sharingScope?: { role: SharingRole; engrams: string[] | '*'; except?: string[] } | null;
 }): boolean {
   return hasActiveSsoUnlockSession({
     ...(deps.ssoSession !== undefined ? { ssoSession: deps.ssoSession } : {}),
@@ -39,7 +39,7 @@ export function checkRecallSsoGate(
   host: GraphnosisHost,
   sessionDeps: {
     ssoSession?: { role: SharingRole } | null;
-    sharingScope?: { role: SharingRole; engrams: string[] | '*' } | null;
+    sharingScope?: { role: SharingRole; engrams: string[] | '*'; except?: string[] } | null;
   },
   onlyGraphIds: string[] | null,
 ): { autoExceptGraphIds: string[] } {

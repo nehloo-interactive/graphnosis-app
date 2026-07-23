@@ -62,6 +62,7 @@ import {
   resolveCatalogEntitlements,
   buildMdmEngramCatalogBundle,
   generateCatalogEntryId,
+  scopeCoversEngram,
   type SharingRole,
   type EnterpriseSsoSettings,
   type IdpGroupRoleMapping,
@@ -809,11 +810,7 @@ async function provisionCatalogDefaultRoleToken(
   const tokenName = `Catalog: ${entry.displayName}`;
   const current = deps.host.getSettings();
   const existing = current.sharing?.tokens ?? [];
-  const match = existing.find((t) => t.name === tokenName && (
-    Array.isArray(t.scope.engrams)
-      ? t.scope.engrams.includes(engramId)
-      : t.scope.engrams === '*'
-  ));
+  const match = existing.find((t) => t.name === tokenName && scopeCoversEngram(t.scope, engramId));
   if (match) return { tokenId: match.id, created: false };
   const newToken = {
     id: randomUUID(),
@@ -8045,6 +8042,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         name: t.name,
         role: t.scope.role,
         engrams: t.scope.engrams,
+        ...(t.scope.except?.length ? { except: t.scope.except } : {}),
         createdAt: t.createdAt,
         expiresAt: t.expiresAt ?? null,
         expired: t.expiresAt !== undefined && t.expiresAt < now,
@@ -8059,8 +8057,18 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         name: z.string().min(1).max(80),
         role: z.enum(SHARING_TOKEN_ROLES as unknown as [SharingRole, ...SharingRole[]]),
         engrams: z.union([z.array(z.string().min(1)), z.literal('*')]),
+        except: z.array(z.string().min(1)).max(256).optional(), // carve-outs; '*' scope only
         expiresAt: z.number().optional(), // Unix ms; absent = never
       }).parse(params ?? {});
+
+      if (args.except?.length && args.engrams !== '*') {
+        return {
+          ok: false,
+          reason: 'invalid_params',
+          message: 'Carve-outs (except) are only valid on an entire-cortex share.',
+        };
+      }
+      const except = args.except?.length ? [...new Set(args.except)] : undefined;
 
       const enterpriseRoles = new Set<SharingRole>(['skill-train', 'admin-audit']);
       if (enterpriseRoles.has(args.role)) {
@@ -8100,6 +8108,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         name: args.name,
         scope: {
           engrams: args.engrams as string[] | '*',
+          ...(except ? { except } : {}),
           role: args.role as import('@graphnosis-app/core/settings').SharingRole,
         },
         createdAt: now,
@@ -8117,6 +8126,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         name: newToken.name,
         role: newToken.scope.role,
         engrams: newToken.scope.engrams,
+        ...(except ? { except } : {}),
         createdAt: newToken.createdAt,
         expiresAt: (newToken as { expiresAt?: number }).expiresAt ?? null,
       };

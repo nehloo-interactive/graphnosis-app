@@ -108,7 +108,7 @@ export async function applyMdmAutoInstall(
   installPackage: (entry: EngramCatalogEntry) => Promise<{ ok: true } | { ok: false }>,
   sessionDeps?: {
     ssoSession?: { role: import('@graphnosis-app/core/settings').SharingRole } | null;
-    sharingScope?: { role: import('@graphnosis-app/core/settings').SharingRole; engrams: string[] | '*' } | null;
+    sharingScope?: { role: import('@graphnosis-app/core/settings').SharingRole; engrams: string[] | '*'; except?: string[] } | null;
   },
 ): Promise<{
   ok: boolean;

@@ -38,7 +38,7 @@ The collaborator will use that URL as the MCP endpoint.
 3. Fill in:
    - **Name** — what you'll call it (shown in your list; the collaborator doesn't see it)
    - **Role** — `viewer` (recall only) or `editor` (recall + write)
-   - **Engrams** — pick specific engrams, or choose **All engrams** to include everything
+   - **Engrams** — pick specific engrams, choose **Entire cortex** to include every engram — current *and* future — or **Entire cortex except…** to share everything minus the engrams you check (see [Cortex-wide shares](#cortex-wide-shares))
    - **Expires** — optional; leave blank for no expiry
 4. Click **Create**
 
@@ -82,6 +82,18 @@ Their AI client will now see a second set of engrams alongside their own cortex 
 The consent gate still applies to sensitive-tier engrams even for editor shares — the collaborator's writes and recalls on sensitive engrams fire the same in-app approval prompt you'd see for any AI client. If you want a shared engram to flow without prompts, keep it at `personal` or `public` tier.
 
 Writes through an editor share are attributed in the op-log with the share name, so you can always see what a collaborator added.
+
+---
+
+## Cortex-wide shares
+
+Choosing **Entire cortex** in the create form makes the share cover **every engram — including engrams you create after the share exists**. Scope is evaluated at call time, so a new engram is visible to the share the moment it's created. Three things to understand before handing one out:
+
+- **Personal-tier engrams flow silently.** Only sensitive-tier engrams are protected by the consent gate; everything at `public` or `personal` tier answers a cortex-wide share without any prompt on your machine.
+- **The share is owner-equivalent in breadth** (though not in power — role limits still apply, and app settings, your passphrase, and share management are never reachable through it).
+- **Carve-outs narrow it without losing the cortex-wide default.** **Entire cortex except…** shares everything minus the engrams you check. A carved-out engram behaves as if the share doesn't exist — invisible to recall and listing, rejected for writes — while every other engram, including future ones, stays covered. (Shares are immutable once minted; to change carve-outs later, revoke and re-create.)
+
+Cortex-wide shares fit cases where the holder is effectively *you*: your own second device, or a personal AI assistant you run yourself. For collaborators, prefer specific engrams — scope is the security boundary, and the smallest scope that works is the right one.
 
 ---
 

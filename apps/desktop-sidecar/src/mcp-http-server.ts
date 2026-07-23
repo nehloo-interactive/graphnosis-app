@@ -524,12 +524,19 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         : (Array.isArray(rawEngrams) && rawEngrams.every((e) => typeof e === 'string'))
           ? (rawEngrams as string[])
           : null;
+      // Optional carve-outs — only valid on an entire-cortex ('*') scope.
+      const rawExcept = parsed['except'];
+      const exceptValid = rawExcept === undefined
+        || (Array.isArray(rawExcept) && rawExcept.every((e) => typeof e === 'string' && e.length > 0));
+      const except: string[] | undefined = exceptValid && Array.isArray(rawExcept) && rawExcept.length > 0
+        ? [...new Set(rawExcept as string[])]
+        : undefined;
 
-      if (!name || !role || !engrams) {
+      if (!name || !role || !engrams || !exceptValid || (except && engrams !== '*')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: 'invalid_params',
-          message: 'Required: name (string), role (sharing role from enterprise RBAC matrix), engrams (string[]|"*")',
+          message: 'Required: name (string), role (sharing role from enterprise RBAC matrix), engrams (string[]|"*"). Optional: except (string[], "*" scope only).',
         }));
         return;
       }
@@ -571,7 +578,11 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       const newToken: import('@graphnosis-app/core/settings').SharingToken = {
         id: newTokenId,
         name,
-        scope: { engrams, role: role as import('@graphnosis-app/core/settings').SharingRole },
+        scope: {
+          engrams,
+          ...(except ? { except } : {}),
+          role: role as import('@graphnosis-app/core/settings').SharingRole,
+        },
         createdAt: now,
       };
       if (expiresAt !== undefined) newToken.expiresAt = expiresAt;
@@ -588,6 +599,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         name: newToken.name,
         role: newToken.scope.role,
         engrams: newToken.scope.engrams,
+        ...(newToken.scope.except ? { except: newToken.scope.except } : {}),
         createdAt: newToken.createdAt,
         expiresAt: expiresAt ?? null,
       }));

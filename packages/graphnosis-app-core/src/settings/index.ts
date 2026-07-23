@@ -950,12 +950,55 @@ import { sanitizeClassificationSchema } from '../compliance/classification-schem
 
 /**
  * Engram scope attached to a sharing token.
- * `engrams: '*'` grants access to all engrams (owner-equivalent scope).
- * An array restricts access to those engram IDs only.
+ * `engrams: '*'` grants access to all engrams (owner-equivalent scope),
+ * minus any ids listed in `except`. An array restricts access to those
+ * engram IDs only.
  */
 export interface SharingScope {
   engrams: string[] | '*';
+  /**
+   * Engram ids carved out of a cortex-wide share. Only meaningful when
+   * `engrams === '*'`; ignored (and never written) for array scopes.
+   */
+  except?: string[];
   role: SharingRole;
+}
+
+/**
+ * True when the scope grants access to the given engram id.
+ *
+ * This is THE scope predicate — every enforcement site must route through it
+ * (or `resolveScopedEngramIds`) rather than re-implementing `engrams === '*'`
+ * checks, so carve-outs can never be missed. Callers must pass a resolved
+ * engram id, not a display name: carve-outs are a deny-list, and a deny-list
+ * matched against unresolved names fails open.
+ */
+export function scopeCoversEngram(
+  scope: Pick<SharingScope, 'engrams' | 'except'>,
+  engramId: string,
+): boolean {
+  if (scope.engrams === '*') return !(scope.except ?? []).includes(engramId);
+  return scope.engrams.includes(engramId);
+}
+
+/** The concrete engram ids a scope covers, given all engram ids in the cortex. */
+export function resolveScopedEngramIds(
+  scope: Pick<SharingScope, 'engrams' | 'except'>,
+  allEngramIds: readonly string[],
+): string[] {
+  return allEngramIds.filter((id) => scopeCoversEngram(scope, id));
+}
+
+/**
+ * True when the scope covers the entire cortex with no carve-outs
+ * (owner-equivalent breadth). A `'*'` scope WITH carve-outs is NOT
+ * full-cortex — callers gating owner-ish privileges on breadth (SSO
+ * full-cortex detection) must use this, not `engrams === '*'`.
+ */
+export function scopeIsFullCortex(
+  scope: Pick<SharingScope, 'engrams' | 'except'>,
+): boolean {
+  return scope.engrams === '*' && !(scope.except && scope.except.length > 0);
 }
 
 /**
@@ -2491,11 +2534,17 @@ function isSharingTokenRecord(v: unknown): v is SharingToken {
   const engramsOk = engrams === '*' || (
     Array.isArray(engrams) && engrams.every((e) => typeof e === 'string' && e.length > 0)
   );
+  // Carve-outs: optional, and only valid on '*' scopes.
+  const except = s['except'];
+  const exceptOk = except === undefined || (
+    engrams === '*' &&
+    Array.isArray(except) && except.every((e) => typeof e === 'string' && e.length > 0)
+  );
   return (
     typeof t['id'] === 'string' && t['id'].length > 0 &&
     typeof t['name'] === 'string' && t['name'].length > 0 &&
     typeof t['createdAt'] === 'number' &&
-    roleOk && engramsOk
+    roleOk && engramsOk && exceptOk
   );
 }
 

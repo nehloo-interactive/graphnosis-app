@@ -26,6 +26,9 @@ import {
   type ClientPolicy,
   type ConsentPolicyChoice,
   type SharingScope,
+  scopeCoversEngram,
+  scopeIsFullCortex,
+  resolveScopedEngramIds,
   isMcpToolAllowedForRole,
   mcpToolsForRole,
   sharingRoleViolationMessage,
@@ -3406,27 +3409,68 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
   // Both no-op when there is no scope (owner session).
 
   /**
-   * Merge the session's engram scope into tool input's `only_engrams`.
-   * If scope.engrams is an array, the result is the intersection of the
-   * AI-requested list and the allowed set (or the allowed set when none was
-   * requested). If scope.engrams is '*', no-op. When scope applies, the
-   * returned object replaces only_engrams and drops except_engrams (the
-   * allow-list supersedes the deny-list).
+   * Merge the session's engram scope into tool input's `only_engrams` /
+   * `except_engrams`. Full-cortex '*' scope → no-op. '*' with carve-outs →
+   * requested engrams are resolved to ids BEFORE filtering (carve-outs are a
+   * deny-list; matching unresolved display names would fail open), and with
+   * no request the carve-outs merge into `except_engrams`. Array scope →
+   * intersection of the AI-requested list and the allowed set (or the
+   * allowed set when none was requested); the allow-list result supersedes
+   * any caller deny-list.
+   *
+   * When a scope applies and the effective allow-list comes out EMPTY, this
+   * throws instead of returning `only_engrams: []` — downstream recall
+   * treats an empty list as "no constraint", so returning it would open the
+   * whole cortex to an out-of-scope request.
    */
   function applyEngramScope(input: {
     only_engrams?: string[] | undefined;
     except_engrams?: string[] | undefined;
   }): { only_engrams?: string[]; except_engrams?: string[] } {
     const scope = deps.sharingScope;
-    if (!scope || scope.engrams === '*') return input as { only_engrams?: string[]; except_engrams?: string[] };
-    const allowed = scope.engrams as string[];
+    if (!scope || scopeIsFullCortex(scope)) return input as { only_engrams?: string[]; except_engrams?: string[] };
+    if (scope.engrams === '*') {
+      // Cortex-wide with carve-outs.
+      const requested = input.only_engrams ?? [];
+      if (requested.length > 0) {
+        const { resolved } = resolveEngramList(deps.host, requested);
+        const covered = resolved.filter((id) => scopeCoversEngram(scope, id));
+        if (covered.length === 0) {
+          throw new ScopeViolationError('The requested engrams are outside this share\'s scope.');
+        }
+        return { only_engrams: covered };
+      }
+      const merged = new Set([...(input.except_engrams ?? []), ...(scope.except ?? [])]);
+      return { except_engrams: [...merged] };
+    }
+    const allowed = scope.engrams;
     const requested = input.only_engrams ?? [];
     const intersected = requested.length > 0
       ? requested.filter((e) => allowed.includes(e))
       : [...allowed];
+    if (intersected.length === 0) {
+      throw new ScopeViolationError('The requested engrams are outside this share\'s scope.');
+    }
     // Return only only_engrams — scope supersedes except_engrams.
     const result: { only_engrams?: string[] } = { only_engrams: intersected };
     return result;
+  }
+
+  /**
+   * True when this session may see the given engram (owner sessions see all).
+   * Every discovery/listing tool must filter through this — an engram outside
+   * the sharing scope (or carved out of a cortex-wide share) must be invisible:
+   * not named, not counted, not sampled.
+   */
+  function scopeAllowsGraph(graphId: string): boolean {
+    const scope = deps.sharingScope;
+    if (!scope) return true;
+    return scopeCoversEngram(scope, graphId);
+  }
+
+  /** Uniform refusal for an engram outside the session's sharing scope. */
+  function scopeDeniedError(label: string): McpToolResult {
+    return mcpError(`Engram "${label}" is outside your sharing scope.`);
   }
 
   /**
@@ -3704,6 +3748,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             // Truncate text payload for the broadcast; the App re-supplies
             // the full body via Tauri IPC when the user confirms, so we
             // don't ship 50KB over the socket.
+            // Scoped sessions can't reach unresolved or creatable engrams —
+            // deny before broadcasting owner-facing create banners.
+            if (deps.sharingScope) return scopeDeniedError(unresolvedName);
             const candidates = resolution.kind === 'ambiguous' ? resolution.candidates : [];
             if (deps.broadcastRaw) {
               deps.broadcastRaw({
@@ -3755,6 +3802,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         } else if (graphId === null) {
           graphId = deps.defaultGraphId();
         }
+
+        if (!scopeAllowsGraph(graphId)) return scopeDeniedError(graphId);
 
         // Attribute this ingest to the calling MCP client (e.g. "claude-ai",
         // "cursor", "claude-code"). The Sources list in the App's UI shows
@@ -3815,8 +3864,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(args.graphId !== undefined ? { graphIdHint: args.graphId } : {}),
           ...(expandWithGnn ? { expandWithGnn } : {}),
         });
+        // Scoped sessions: candidate previews from out-of-scope engrams must
+        // not reach the caller, and the diff target must be in scope.
+        const scopedCandidates = candidates.filter((c) => scopeAllowsGraph(c.graphId));
         const targetGraph =
-          targetGraphId ?? args.graphId ?? candidates[0]?.graphId ?? deps.defaultGraphId();
+          targetGraphId ?? args.graphId ?? scopedCandidates[0]?.graphId ?? deps.defaultGraphId();
+        if (!scopeAllowsGraph(targetGraph)) return scopeDeniedError(targetGraph);
         const diffId = `diff_${Date.now().toString(36)}`;
         deps.pendingDiffs.set(diffId, { graphId: targetGraph, diff, createdAt: Date.now(), mode, prompt: args.correction });
         // Surface to the App so it can refresh its pending-corrections
@@ -3839,11 +3892,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
           });
         }
-        const correctHeadsUp = anomalyHeadsUp({ kind: 'edit', candidatesFound: candidates.length });
+        const correctHeadsUp = anomalyHeadsUp({ kind: 'edit', candidatesFound: scopedCandidates.length });
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({ diffId, mode, preview: diff, candidates }, null, 2) + (correctHeadsUp ?? ''),
+            text: JSON.stringify({ diffId, mode, preview: diff, candidates: scopedCandidates }, null, 2) + (correctHeadsUp ?? ''),
           }],
         };
       }
@@ -3851,6 +3904,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = ApplyInput.parse(rawInput);
         const pending = deps.pendingDiffs.get(args.diffId);
         if (!pending) throw new Error(`No pending diff ${args.diffId}. The user must confirm in the app first.`);
+        if (!scopeAllowsGraph(pending.graphId)) return scopeDeniedError(pending.graphId);
         const correctedBy = resolveActingClientName();
         await applyCorrection({
           host: deps.host,
@@ -3875,8 +3929,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (targets.length === 0) {
           return mcpError('forget requires either `items: [{nodeId, preview}]` (preferred) or `nodeIds: [...]` (legacy).');
         }
+        const resForget = requireEngram(deps.host, args.graphId);
+        if ('error' in resForget) return resForget.error;
+        if (!scopeAllowsGraph(resForget.graphId)) return scopeDeniedError(args.graphId);
         await deps.host.applyCorrection(
-          args.graphId,
+          resForget.graphId,
           { edits: targets.map(t => ({ kind: 'delete' as const, nodeId: t.nodeId, reason: 'forgotten by AI client' })) },
           { triggeredBy: 'mcp:forget' },
         );
@@ -4008,7 +4065,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'stats': {
         const { includeNodes } = z.object({ includeNodes: z.coerce.boolean().optional() }).parse(rawInput);
         const s = deps.host.stats();
-        const summary = s.graphs.map(g => ({
+        const summary = s.graphs.filter((g) => scopeAllowsGraph(g.graphId)).map(g => ({
           graphId: g.graphId,
           totalNodes: g.totalNodes,
           activeNodes: g.activeNodes,
@@ -4149,7 +4206,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'list_engrams': {
         const statsByGraph = new Map(deps.host.stats().graphs.map(g => [g.graphId, g]));
         const resident = new Set(deps.host.listGraphs());
-        const rows = deps.host.graphsWithMetadata({ includeUnloaded: true }).map(({ graphId, metadata, loaded }) => ({
+        const rows = deps.host.graphsWithMetadata({ includeUnloaded: true })
+          .filter(({ graphId }) => scopeAllowsGraph(graphId))
+          .map(({ graphId, metadata, loaded }) => ({
           graphId,
           displayName: metadata.displayName ?? graphId,
           tier: (metadata as any).sensitivityTier ?? 'personal',
@@ -4180,8 +4239,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = z.object({ graphId: z.string().optional() }).parse(rawInput);
         const scope = deps.sharingScope;
         let allowedGraphIds: string[] | null = null;
-        if (scope && scope.engrams !== '*') {
-          allowedGraphIds = scope.engrams as string[];
+        if (scope && !scopeIsFullCortex(scope)) {
+          allowedGraphIds = resolveScopedEngramIds(scope, deps.host.listGraphs());
         }
         if (args.graphId) {
           const resolved = resolveEngramList(deps.host, [args.graphId]);
@@ -4235,7 +4294,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const topK = args.top_k ?? 3;
         const textTokens = tokenize(args.text);
         const candidates = deps.host.graphsWithMetadata()
-          .filter(({ metadata }) => !metadata.archived && metadata.sensitivityTier !== 'sensitive')
+          .filter(({ graphId, metadata }) => scopeAllowsGraph(graphId) && !metadata.archived && metadata.sensitivityTier !== 'sensitive')
           .map(({ graphId, metadata }) => {
             const display = metadata.displayName ?? graphId;
             const nameTokens = [...tokenize(graphId), ...tokenize(display)];
@@ -4257,6 +4316,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = BrowseEngramInput.parse(rawInput);
         const res = requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
+        if (!scopeAllowsGraph(res.graphId)) return scopeDeniedError(args.engram);
         enforceSessionBudget(0, 0, res.graphId);
         const meta = deps.host.getGraphMetadata(res.graphId);
         const sources = deps.host.listSources(res.graphId);
@@ -4275,9 +4335,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
           if ('error' in res) return res.error;
+          if (!scopeAllowsGraph(res.graphId)) return scopeDeniedError(args.engram);
           graphIdFilter = res.graphId;
         }
-        const sources = deps.host.listSources(graphIdFilter);
+        const sources = deps.host.listSources(graphIdFilter).filter((s) => scopeAllowsGraph(s.graphId));
         const limit = args.limit ?? 10;
         const sorted = [...sources].sort((a, b) => b.ingestedAt - a.ingestedAt).slice(0, limit);
         const rows = sorted.map(s => {
@@ -4295,6 +4356,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = GetEngramSchemaInput.parse(rawInput);
         const res = requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
+        if (!scopeAllowsGraph(res.graphId)) return scopeDeniedError(args.engram);
         const meta = deps.host.getGraphMetadata(res.graphId);
         return { content: [{ type: 'text', text: JSON.stringify({
           graphId: res.graphId,
@@ -4386,9 +4448,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // a named quarantine engram in only_engrams must not surface its
         // obligations, and the default scope must skip quarantined engrams.
         const obExcept = new Set([...obAutoExcept, ...obSsoExcept, ...quarantinedGraphIds()]);
-        const scopedIds = only
+        const scopedIds = (only
           ? only.resolved.filter((id) => !obExcept.has(id))
-          : deps.host.listGraphs().filter((id) => !obExcept.has(id));
+          : deps.host.listGraphs().filter((id) => !obExcept.has(id))
+        ).filter((id) => scopeAllowsGraph(id));
 
         await deps.host.obligationIndex.ensureLoaded();
         const now = Date.now();
@@ -4489,6 +4552,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resA) return resA.error;
         const resB = requireEngram(deps.host, args.engram_b);
         if ('error' in resB) return resB.error;
+        if (!scopeAllowsGraph(resA.graphId)) return scopeDeniedError(args.engram_a);
+        if (!scopeAllowsGraph(resB.graphId)) return scopeDeniedError(args.engram_b);
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query, name);
         const { consentFooter: ceFooter } = await checkConsentOrThrow([resA.graphId, resB.graphId]);
@@ -4522,12 +4587,14 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'cross_search': {
         const rawCsArgs = CrossSearchInput.parse(rawInput);
-        // Apply scope: intersect requested engrams with allowed set.
+        // Apply scope: resolve requested engrams to ids first (carve-outs are
+        // a deny-list — filtering unresolved display names would fail open),
+        // then keep only what the scope covers.
         const scopedCsEngrams = (() => {
           const scope = deps.sharingScope;
-          if (!scope || scope.engrams === '*') return rawCsArgs.engrams;
-          const allowed = scope.engrams as string[];
-          return rawCsArgs.engrams.filter((e) => allowed.includes(e));
+          if (!scope || scopeIsFullCortex(scope)) return rawCsArgs.engrams;
+          const { resolved: reqResolved } = resolveEngramList(deps.host, rawCsArgs.engrams);
+          return reqResolved.filter((e) => scopeCoversEngram(scope, e));
         })();
         const args = { ...rawCsArgs, engrams: scopedCsEngrams };
         const { resolved, warnings } = resolveEngramList(deps.host, args.engrams);
@@ -4574,6 +4641,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
           if ('error' in res) return res.error;
+          if (!scopeAllowsGraph(res.graphId)) return scopeDeniedError(args.engram);
           graphIdFilter = res.graphId;
         }
         const limit = args.limit ?? 10;
@@ -4583,6 +4651,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ? (() => {
               const kw = args.keyword.toLowerCase();
               return deps.host.listSources(graphIdFilter)
+                .filter(s => scopeAllowsGraph(s.graphId))
                 .filter(s => s.sourceId.toLowerCase().includes(kw) ||
                              s.ref.toLowerCase().includes(kw) ||
                              s.kind.toLowerCase().includes(kw));
@@ -4593,7 +4662,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const seenSourceIds = new Set(keywordMatches.map(m => m.sourceId));
         const contentMatches: import('@graphnosis-app/core').SourceRecord[] = [];
         if (args.content) {
-          const graphIds = graphIdFilter ? [graphIdFilter] : deps.host.listGraphs();
+          const graphIds = graphIdFilter ? [graphIdFilter] : deps.host.listGraphs().filter((id) => scopeAllowsGraph(id));
           const k = Math.ceil(limit / Math.max(1, graphIds.length));
           for (const graphId of graphIds) {
             const hits = await withEmbedding(() => deps.host.searchNodes(graphId, args.content!, k));
@@ -4627,6 +4696,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
           if ('error' in res) return res.error;
+          if (!scopeAllowsGraph(res.graphId)) return scopeDeniedError(args.engram);
           graphIdFilter = res.graphId;
         }
         // Tolerant source resolution — AI clients in the wild pass three
@@ -4644,7 +4714,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // end with `…` (or `...`) and to uniquely prefix exactly one ref —
         // never disambiguate silently. This single resolver buys us a much
         // higher success rate on recall_source calls than strict equality.
-        const sources = deps.host.listSources(graphIdFilter);
+        const sources = deps.host.listSources(graphIdFilter).filter((s) => scopeAllowsGraph(s.graphId));
         const stripEllipsis = (s: string): string =>
           s.replace(/(?:…|\.{3})\s*$/u, '');
         const target = args.sourceId;
@@ -4720,6 +4790,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resFrom) return resFrom.error;
         const resTo = requireEngram(deps.host, args.to_engram);
         if ('error' in resTo) return resTo.error;
+        if (!scopeAllowsGraph(resFrom.graphId)) return scopeDeniedError(args.from_engram);
+        if (!scopeAllowsGraph(resTo.graphId)) return scopeDeniedError(args.to_engram);
 
         // Consent gate: moving a source is access to (and relocation of) its
         // content. Treat both endpoints as explicitly named so any gated tier
@@ -4779,6 +4851,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               }
             }
             if (!graphId) graphId = deps.defaultGraphId();
+            if (!scopeAllowsGraph(graphId)) {
+              results.push({ index: i, status: 'error', detail: `Engram "${nameHint ?? graphId}" is outside your sharing scope — skipped` });
+              continue;
+            }
             const batchObligation = item.obligation
               ? {
                   obligationType: item.obligation.obligationType,
@@ -4826,6 +4902,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = EngramSummaryInput.parse(rawInput);
         const res = requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
+        if (!scopeAllowsGraph(res.graphId)) return scopeDeniedError(args.engram);
         // engram_summary reads node text directly via listNodes (not host.recall),
         // so the centralized quarantine boundary is bypassed. Guard the named
         // engram here — otherwise a caller could read a content preview sample of
@@ -4882,10 +4959,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           }
         }
         const args = GnnNeighborsInput.parse(rawInput);
-        let graphIds = deps.host.listGraphs();
+        let graphIds = deps.host.listGraphs().filter((id) => scopeAllowsGraph(id));
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
           if ('error' in res) return res.error;
+          if (!scopeAllowsGraph(res.graphId)) return scopeDeniedError(args.engram);
           graphIds = [res.graphId];
         }
         const limit = args.limit ?? 10;
@@ -5205,11 +5283,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           };
         }
 
-        // Resolve focus engrams (optional — filter where to draw memories from)
+        if (!scopeAllowsGraph(engramRes.graphId)) return scopeDeniedError(engramName);
+
+        // Resolve focus engrams (optional — filter where to draw memories from).
+        // Scope-filter the resolved ids: the memory-augmented training body
+        // recalls from focus engrams, so an out-of-scope focus engram would
+        // leak its content into the trained skill text.
         let focusGraphIds: string[] | null = null;
         if (args.focus_engrams?.length) {
           const resolved = resolveEngramList(deps.host, args.focus_engrams);
-          focusGraphIds = resolved.resolved;
+          focusGraphIds = resolved.resolved.filter((id) => scopeAllowsGraph(id));
         }
 
         if (!deps.skillTrainer) {
@@ -5336,6 +5419,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             `Create one in Graphnosis → New Engram → Skill template.`,
           );
         }
+        if (!scopeAllowsGraph(engramRes.graphId)) return scopeDeniedError(engramName);
 
         if (!deps.skillTrainer) {
           return mcpError(
@@ -6020,8 +6104,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // quarantine engram can't be enumerated. (Review tooling calls
           // skillTrainer.listSkills(gid) on the host directly, not this tool.)
           if (deps.host.isQuarantined(graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+          if (!scopeAllowsGraph(graphId)) return scopeDeniedError(args.engram);
         }
-        const skills = deps.skillTrainer.listSkills(graphId);
+        const skills = deps.skillTrainer.listSkills(graphId).filter((s) => scopeAllowsGraph(s.graphId));
         if (!skills.length) {
           return { content: [{ type: 'text', text: 'No trained skills found. Use train_skill to train your first skill.' }] };
         }
@@ -6044,6 +6129,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resEngramW) return resEngramW.error;
         // QUARANTINE CONTRACT: refuse to walk a quarantined skill (see get_skill).
         if (deps.host.isQuarantined(resEngramW.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+        if (!scopeAllowsGraph(resEngramW.graphId)) return scopeDeniedError(args.graphId);
         const { walkSkillSequence: walkFn, formatSkillForRecall: formatFn } =
           await import('./skill-trainer.js');
         // D1 — pre-load cross-engram call links (the walk is sync) so any
@@ -6066,6 +6152,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resEngramS) return resEngramS.error;
         // QUARANTINE CONTRACT: refuse to walk a quarantined skill (see get_skill).
         if (deps.host.isQuarantined(resEngramS.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+        if (!scopeAllowsGraph(resEngramS.graphId)) return scopeDeniedError(args.graphId);
         const { walkSkillSequence: walkFn2, walkSkillToJson } =
           await import('./skill-trainer.js');
         const crossLinksS = await deps.host.skillCallLinks.getForSource(resEngramS.graphId, args.sourceId);
@@ -6104,6 +6191,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             ts: z.number().optional(),
           }).optional(),
         }).parse(rawInput);
+        if (!scopeAllowsGraph(args.skillGraphId)) return scopeDeniedError(args.skillGraphId);
         const now = Date.now();
         const runId = args.runId ?? randomUUID();
         const existing = args.runId ? await deps.host.skillRuns.read(args.runId) : null;
@@ -6146,6 +6234,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = z.object({ runId: z.string().min(1) }).parse(rawInput);
         const rec = await deps.host.skillRuns.read(args.runId);
         if (!rec) return mcpError(`No saved skill-run with runId "${args.runId}". It may have completed (and been deleted) or never been saved.`);
+        // Out-of-scope runs answer exactly like missing ones — a scoped session
+        // must not get an existence oracle for other sessions' runs.
+        if (!scopeAllowsGraph(rec.skillGraphId)) {
+          return mcpError(`No saved skill-run with runId "${args.runId}". It may have completed (and been deleted) or never been saved.`);
+        }
         const actor = resolveSkillRunActor({
           ...(deps.ssoSession ? { ssoSession: deps.ssoSession } : {}),
           ...(deps.sharingScope ? { sharingScope: deps.sharingScope } : {}),
@@ -6187,6 +6280,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // unpromoted skill text never reaches the AI. The review path reads the
         // host (list_quarantined → skillTrainer.getSkill) directly, not this tool.
         if (deps.host.isQuarantined(resEngram.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+        if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(args.graphId);
         const detail = deps.skillTrainer.getSkill(resEngram.graphId, args.sourceId);
         if (!detail) return mcpError(`Skill "${args.sourceId}" not found in engram "${args.graphId}".`);
         const header =
@@ -6205,6 +6299,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
+        if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(args.graphId);
         const history = await deps.skillTrainer.getSkillHistory(resEngram.graphId, args.sourceId);
         if (!history.length) return mcpError(`No skill history found for "${args.sourceId}".`);
         const lines = history.map((v, i) => [
@@ -6228,6 +6323,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
+        if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(args.graphId);
         const result = await deps.skillTrainer.rollbackSkill(resEngram.graphId, args.sourceId, args.snapshotId);
         return { content: [{ type: 'text', text: `Rolled back to snapshot ${args.snapshotId}. Restored ${result.restoredNodeCount} node(s) into source ${args.sourceId}.` }] };
       }
@@ -6241,6 +6337,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
+        if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(args.graphId);
         const result = await deps.skillTrainer.deleteSkill(resEngram.graphId, args.sourceId, args.all_versions ?? false);
         const scope = args.all_versions ? 'all versions of the skill' : 'this skill version';
         return { content: [{ type: 'text', text: `Deleted ${scope} (${result.forgottenSourceIds.length} source(s) soft-deleted). Recoverable from the Graphnosis app op-log.` }] };

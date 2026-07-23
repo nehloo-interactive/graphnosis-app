@@ -8,6 +8,7 @@ import type { GraphnosisHost } from '../host.js';
 import type { BrainEngine } from '../brain-engine.js';
 import type { LicenseValidator } from '../license-validator.js';
 import { withEmbedding } from '../embedding-queue.js';
+import { scopeCoversEngram, type SharingScope } from '@graphnosis-app/core/settings';
 
 export type McpToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
@@ -79,6 +80,8 @@ export interface AuditMcpDeps {
   host: GraphnosisHost;
   brainEngine?: BrainEngine | null;
   licenseValidator?: LicenseValidator | null;
+  /** Present when the session authenticated with a scoped sharing token. */
+  sharingScope?: SharingScope | null;
 }
 
 export interface AuditMcpHelpers {
@@ -114,6 +117,14 @@ export async function dispatchAuditMcpTool(
 ): Promise<McpToolResult | null> {
   if (!AUDIT_MCP_TOOL_NAMES.has(name)) return null;
 
+  // Sharing-scope predicate — audit tools reach node text across engrams, so
+  // scoped sessions (including cortex-wide shares with carve-outs) must only
+  // ever see engrams their share covers.
+  const scopeAllows = (graphId: string): boolean =>
+    !deps.sharingScope || scopeCoversEngram(deps.sharingScope, graphId);
+  const scopeDenied = (label: string): McpToolResult =>
+    mcpError(`Engram "${label}" is outside your sharing scope.`);
+
   switch (name) {
     case 'recall_as_of': {
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
@@ -122,6 +133,14 @@ export async function dispatchAuditMcpTool(
         return mcpError('recall_as_of requires an Enterprise license (Compliance Mode).');
       }
       const args = RecallAsOfInput.parse(rawInput);
+      if (deps.sharingScope) {
+        if (!args.graphId) {
+          return mcpError('Scoped sessions must name an in-scope engram (graphId) for recall_as_of.');
+        }
+        const res = helpers.requireEngram(deps.host, args.graphId);
+        if ('error' in res) return res.error;
+        if (!scopeAllows(res.graphId)) return scopeDenied(args.graphId);
+      }
       const { recallAsOf } = await import('../compliance.js');
       const result = await recallAsOf(deps.host, args.query, {
         ...(args.graphId ? { graphId: args.graphId } : {}),
@@ -145,7 +164,7 @@ export async function dispatchAuditMcpTool(
       let graphIds = deps.host.listGraphs().filter((id) => {
         const m = deps.host.getGraphMetadata(id);
         return !(m as { archived?: boolean })?.archived && (m as { sensitivityTier?: string })?.sensitivityTier !== 'sensitive';
-      });
+      }).filter((id) => scopeAllows(id));
       if (args.engrams?.length) {
         const { resolved } = helpers.resolveEngramList(deps.host, args.engrams);
         graphIds = graphIds.filter((id) => resolved.includes(id));
@@ -192,10 +211,11 @@ export async function dispatchAuditMcpTool(
     case 'check_duplicate': {
       const args = CheckDuplicateInput.parse(rawInput);
       const threshold = args.threshold ?? 0.85;
-      let graphIds = deps.host.listGraphs();
+      let graphIds = deps.host.listGraphs().filter((id) => scopeAllows(id));
       if (args.engram) {
         const res = helpers.requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
+        if (!scopeAllows(res.graphId)) return scopeDenied(args.engram);
         graphIds = [res.graphId];
       }
       const hits: string[] = [];
@@ -231,23 +251,18 @@ export async function dispatchAuditMcpTool(
         );
       }
       const args = DuplicatePairsInput.parse(rawInput);
-      const pairs = deps.brainEngine.getDuplicatePairs().slice(0, args.limit ?? 20);
+      // Scoped sessions only see pairs from engrams their share covers
+      // (duplicate pairs are always same-engram — DuplicatePair.graphId).
+      const pairs = deps.brainEngine.getDuplicatePairs()
+        .filter((p) => !deps.sharingScope || scopeAllows(p.graphId))
+        .slice(0, args.limit ?? 20);
       if (!pairs.length) {
         return { content: [{ type: 'text', text: 'No duplicate pairs queued for review.' }] };
       }
-      const rows = pairs.map((p: {
-        id?: string;
-        score?: number;
-        nodeA?: unknown;
-        nodeAId?: string;
-        graphIdA?: string;
-        nodeB?: unknown;
-        nodeBId?: string;
-        graphIdB?: string;
-      }) =>
-        `• [${p.id}] score ${p.score?.toFixed(2) ?? '?'}\n` +
-        `  A: "${String(typeof p.nodeA === 'object' && p.nodeA && 'text' in (p.nodeA as object) ? (p.nodeA as { text?: string }).text : p.nodeAId ?? '').slice(0, 80)}" (${p.graphIdA})\n` +
-        `  B: "${String(typeof p.nodeB === 'object' && p.nodeB && 'text' in (p.nodeB as object) ? (p.nodeB as { text?: string }).text : p.nodeBId ?? '').slice(0, 80)}" (${p.graphIdB})`,
+      const rows = pairs.map((p) =>
+        `• [${p.id}] similarity ${p.similarity.toFixed(2)} (${p.graphId})\n` +
+        `  A [${p.nodeA}]: "${p.snippetA.slice(0, 80)}"\n` +
+        `  B [${p.nodeB}]: "${p.snippetB.slice(0, 80)}"`,
       ).join('\n\n');
       return {
         content: [{
@@ -272,7 +287,7 @@ export async function dispatchAuditMcpTool(
       }
       const args = ContradictionPairsInput.parse(rawInput);
       const getter = (deps.brainEngine as { getContradictionPairs?: () => unknown[] }).getContradictionPairs?.bind(deps.brainEngine);
-      const pairs = (getter ? getter() : []).slice(0, args.limit ?? 20) as Array<{
+      const pairs = ((getter ? getter() : []) as Array<{
         id?: string;
         description?: string;
         graphId?: string;
@@ -281,7 +296,9 @@ export async function dispatchAuditMcpTool(
         snippetA?: string;
         snippetB?: string;
         sharedEntities?: string[];
-      }>;
+      }>)
+        .filter((p) => !deps.sharingScope || (!!p.graphId && scopeAllows(p.graphId)))
+        .slice(0, args.limit ?? 20);
       if (!pairs.length) {
         return { content: [{ type: 'text', text: 'No contradictions queued for review. (The reflection scan runs every 6h and on a built cortex; if you just ingested, give it a pass.)' }] };
       }
@@ -317,6 +334,7 @@ export async function dispatchAuditMcpTool(
       const args = CompareSourcesInput.parse(rawInput);
       const req = helpers.requireEngram(deps.host, args.engram);
       if ('error' in req) return req.error;
+      if (!scopeAllows(req.graphId)) return scopeDenied(args.engram);
       const pairs = await deps.brainEngine.compareSources({
         graphId: req.graphId,
         sourceA: args.sourceA,
@@ -343,7 +361,9 @@ export async function dispatchAuditMcpTool(
         return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
       }
       const args = HealingJournalInput.parse(rawInput);
-      const journal = deps.brainEngine.getHealingJournal().slice(0, args.limit ?? 20);
+      const journal = deps.brainEngine.getHealingJournal()
+        .filter((r: { graphId?: string }) => !deps.sharingScope || (!!r.graphId && scopeAllows(r.graphId)))
+        .slice(0, args.limit ?? 20);
       if (!journal.length) {
         return { content: [{ type: 'text', text: 'No autonomous heals recorded yet.' }] };
       }
