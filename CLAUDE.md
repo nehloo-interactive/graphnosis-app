@@ -45,7 +45,15 @@ Don't fire off `git commit && git push` mechanically. Do this instead:
 5. **Don't tag or trigger publish workflows without explicit confirmation.**
    Even on a ship signal, ask if a tag is wanted unless Nelu named the
    version.
-6. **Before EVERY tag, regenerate and commit the bundled docs.** Run
+6. **Before EVERY tag, write the changelog entry, THEN regenerate the
+   bundled docs.** Update `apps/docs/src/content/docs/changelog.md` with a
+   user-facing entry for the release (newest first, matching the existing
+   Added/Changed/Fixed/Security/Migrations format). The changelog is one of
+   the bundled docs pages, so skipping it freezes a stale changelog into the
+   app binaries AND leaves graphnosis.com/changelog outdated — this was
+   silently missed for v1.24.0 through v1.26.0 and backfilled after the
+   fact. If a trained ship skill exists in the cortex, retrain it to include
+   this step. Then regenerate and commit the bundled docs: run
    `node apps/desktop-sidecar/scripts/generate-docs-content.mjs` and commit
    `apps/desktop-sidecar/src/docs-content.generated.ts` if it changed, then
    push. That file is a build-time snapshot of `apps/docs/src/content/docs/`

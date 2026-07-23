@@ -15,6 +15,94 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.26.0 — Cortex-share carve-outs, and browser access that actually ships
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-23</p>
+
+Sharing grows carve-outs — share your entire cortex *except* the engrams you exclude — and scope enforcement now covers every MCP surface, including writes. The browser UI ships inside the packaged app for the first time, and using Graphnosis from a phone becomes a first-class experience: a Ghampus tab in the mobile nav, sessions that survive home-screen app restarts, live model-pull progress, and Face ID enrollment per device.
+
+### Added
+
+- **“Entire cortex except…” shares** — cortex-wide shares can carve out specific engrams; excluded engrams are invisible to the share (not listed, not recallable, not writable), while everything else — including engrams created later — stays covered. The share form now defaults to specific engrams, making cortex-wide a deliberate choice.
+- **Browser UI in packaged builds** — Settings → Mobile & Remote → Browser access serves the full app (previously a placeholder page in every released build).
+- **Ghampus on phones** — a dedicated tab in the mobile bottom nav, full-width chat bubbles, and questions typed on one device now appear on your other devices in real time.
+- **Per-device Face ID / passkey enrollment** — each device can register its own passkey even when another machine already has one (setup used to lock out every additional device).
+- **Live remote-access status** — Mobile & Remote settings apply immediately (no unlock cycle) and the panel shows the *actual* bound address, warning when the live server doesn’t match the saved config.
+
+### Changed
+
+- Confirmation and alert dialogs use in-app modals everywhere. Under the OS dialog shim, destructive confirmations (snapshot restore/delete, retention purge, legal-hold release, lock takeover) could silently auto-approve; connector-form validation messages never displayed at all.
+- Tapping a text field on a phone no longer zooms the page; the rotate-to-portrait prompt only appears on touch devices, never in a small desktop window.
+- Pack downloads on graphnosis.com are served through counting routes, keeping download stats accurate.
+
+### Fixed
+
+- Ollama model pulls show real progress (the progress bar had never worked) and survive slow connections — a pull that outlives the request still completes and reports “Model ready.”
+- Foresight’s **Set up** tile for the Local LLM opens the setup card (it previously did nothing), and the card shows live Ollama status from any device.
+- The Memory Studio loopback self-test distinguishes Ollama’s own registry/CDN connections (expected during model pulls and update checks) from genuinely unknown endpoints, instead of flagging every post-pull run as a privacy failure.
+- Browser sessions persist across home-screen app restarts on iOS, and the live event stream reconnects itself after expired sessions or network blips (chat previously froze at “0 steps”).
+
+### Security
+
+- Closed scope-enforcement gaps affecting shared (scoped) MCP sessions: recall could fall open to the whole cortex on an empty scope intersection; discovery tools (`stats`, `list_engrams`, sources, obligations, audit views) returned data from engrams outside the share; skills tools ignored scope entirely; and write tools (`remember`, `ingest_batch`, `edit`, `forget`, `transfer_source`) were only role-gated, allowing writes into engrams a share didn’t cover. All surfaces now route through a single scope predicate; out-of-scope requests return an explicit error.
+
+### Migrations
+
+- None. Existing shares keep working; carve-outs are opt-in on new shares.
+
+---
+
+## v1.25.1 — Ghampus to-do answers: faster and better scoped
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-21</p>
+
+A focused patch on Ghampus answer quality: to-do questions answer faster, stay inside the project you asked about, and follow-ups that cross engrams are recognized instead of re-answered from the wrong context.
+
+### Fixed
+
+- To-do queries answer with noticeably lower latency, and the project scope you asked in stays live through recall escalation and the full answer-formatting cascade.
+- Internal grounding vocabulary no longer leaks into visible answers.
+- “Review the comments” flows ground in real recalled fragments, and selecting text in a fragment comment no longer collapses the selection.
+
+---
+
+## v1.25.0 — Ghampus answer quality and source-index self-repair
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-17</p>
+
+Ghampus answers get several correctness fixes, and cortexes with a damaged source index heal themselves from the op-log.
+
+### Fixed
+
+- Engrams with live memories but an empty source bundle recover their source index automatically from the op-log.
+- Personal recalls scope to your user engrams, and Ghampus degrades gracefully when the local LLM is unavailable instead of failing the answer.
+- To-do answers group by engram and stop “roster-formatting” task lists; the implicit skill router no longer hijacks plain memory questions; Ghampus no longer offers to save your own question back to memory.
+
+### Security
+
+- Dependency overrides are documented, and SBOM + license-audit scripts ship with the repo.
+
+---
+
+## v1.24.0 — Skills autonomy, the X connector, and per-step model routing
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-05</p>
+
+Skills learn to run unattended — strictly opt-in, with review and undo — an X (Twitter) connector lands, and the model registry routes each pipeline step to the cheapest model that qualifies.
+
+### Added
+
+- **L3 autonomy (opt-in)** — an unattended executor for trained skills with a selectable autonomy dial at unlock and a review/undo surface for everything it does.
+- **X (Twitter) connector** — your own bookmarks and posts, via OAuth 2.0 + PKCE with a bring-your-own-app key (paid X API tier typically required).
+- **Per-step model registry** — routing picks the cheapest qualifying model per step instead of one model for the whole pipeline.
+- **Scheduled contradiction health-sweep** — the periodic scan surfaces newly conflicting memory pairs for review.
+
+### Changed
+
+- The op-log reader is memory-bounded, keeping large-cortex operations flat on RAM.
+
+---
+
 ## v1.23.3 — Home growth, obligation deadlines, and Memory Integrity attention
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-26</p>
