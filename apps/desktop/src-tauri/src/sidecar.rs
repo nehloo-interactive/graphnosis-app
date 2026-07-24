@@ -51,7 +51,11 @@ struct BootStatus<'a> {
 const STDERR_BUFFER_LINES: usize = 200;
 
 pub struct SidecarHandle {
-    child: Child,
+    /// The supervised local sidecar process. `None` in remote ("thin-client")
+    /// mode, where there is no local process — the handle is a placeholder that
+    /// makes the frontend/IPC state machine treat the session as connected
+    /// while `ipc_client` routes every call to the remote bridge over HTTP.
+    child: Option<Child>,
     pub socket_path: PathBuf,
     pub events_socket_path: PathBuf,
     /// Cortex directory this sidecar is locked to. Stored so shutdown() can
@@ -127,12 +131,18 @@ impl SidecarHandle {
     }
 
     pub async fn shutdown(mut self) -> Result<()> {
+        // Remote placeholder: no local process to signal. Nothing to flush or
+        // kill; the remote sidecar owns its own lifecycle. Return early so the
+        // lockfile/socket cleanup below (keyed on a sentinel path) is skipped.
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
         // Ask the sidecar to flush dirty graphs and exit cleanly. On Unix we
         // send SIGTERM and wait up to 3 s; if it doesn't respond we fall back
         // to SIGKILL. On Windows there is no SIGTERM — go straight to kill().
         #[cfg(unix)]
         {
-            if let Some(pid) = self.child.id() {
+            if let Some(pid) = child.id() {
                 // SAFETY: kill(2) is always safe to call with a valid pid and
                 // a known signal number. SIGTERM = 15.
                 extern "C" { fn kill(pid: i32, sig: i32) -> i32; }
@@ -144,12 +154,12 @@ impl SidecarHandle {
             // on a large cortex that can take 30+ seconds. Killing too soon
             // leaves a zombie holding port 3457 and the events socket, causing
             // EADDRINUSE when the next unlock spawns a fresh sidecar.
-            let _ = tokio::time::timeout(Duration::from_secs(45), self.child.wait()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(45), child.wait()).await;
         }
         // SIGKILL fallback: always on Windows, after timeout on Unix. kill()
         // on an already-exited child is a no-op (returns an ignorable error).
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
         #[cfg(unix)]
         kill_orphan_embed_workers();
         // When the sidecar exits via SIGKILL (or didn't handle SIGTERM in
@@ -493,13 +503,31 @@ async fn start_inner(
 
     let raw_pid = child.id();
     Ok(SidecarHandle {
-        child,
+        child: Some(child),
         socket_path,
         events_socket_path,
         cortex_dir: cortex_dir.to_path_buf(),
         raw_pid,
         _stderr_buffer: stderr_buffer,
     })
+}
+
+impl SidecarHandle {
+    /// Construct a placeholder handle for remote ("thin-client") mode. No local
+    /// process, no PID, sentinel socket paths that are never dialed — `ipc_client`
+    /// short-circuits to the remote HTTP bridge whenever a remote session is set,
+    /// so the socket paths here exist only to satisfy the "is a sidecar present?"
+    /// guards in lib.rs. Drop/shutdown are no-ops (raw_pid is None, child is None).
+    pub fn remote_placeholder() -> Self {
+        SidecarHandle {
+            child: None,
+            socket_path: PathBuf::from("<remote>"),
+            events_socket_path: PathBuf::from("<remote>"),
+            cortex_dir: PathBuf::from("<remote>"),
+            raw_pid: None,
+            _stderr_buffer: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
 }
 
 /// Snapshot the ring buffer into a single joined string for pattern matching.

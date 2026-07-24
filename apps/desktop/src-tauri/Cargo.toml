@@ -39,6 +39,12 @@ tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-deep-link = "2"
+# HTTP client for remote-cortex ("thin-client") mode — the shell talks to a
+# remote sidecar's httpUi bridge (/api/unlock, /api/rpc, /api/events) instead
+# of a local Unix socket. Already built transitively via tauri-plugin-updater
+# (same rustls stack), so making it a direct dep adds negligible compile cost.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures-util = "0.3"
 # Persists window size, position, maximize, and fullscreen state across
 # launches. State lives in <app-data>/.window-state.json — written on
 # move/resize/close, restored automatically on window creation.
@@ -53,3 +59,15 @@ anyhow = "1"
 dirs = "5"
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
+
+# macOS-only: hardened Secure-Enclave storage for the remote access token
+# (Touch ID unlock of a remote cortex). Exercised only on `--features keychain`
+# signed builds. All three are already present transitively (via keyring/tauri),
+# so promoting them to direct deps adds ~zero build cost.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+# OSX_10_15 exposes kSecUseDataProtectionKeychain — required so the biometric
+# access control is enforced by the Secure Enclave (data-protection keychain),
+# not the legacy file keychain.
+security-framework-sys = { version = "2", features = ["OSX_10_15"] }
+core-foundation = "0.10"

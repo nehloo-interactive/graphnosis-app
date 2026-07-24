@@ -114,7 +114,13 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: C76ZLJ5UQW
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: pnpm --filter @graphnosis-app/desktop tauri:build
+        # --features keychain: compile the hardened path — passphrase + remote
+        # token move from the 0600 file cache to the macOS Keychain, the remote
+        # token sealed under a Secure-Enclave biometry access control. Requires
+        # the keychain-access-groups entitlement (entitlements.plist). Only the
+        # signed Developer-ID (this) build enables it; Windows already uses
+        # keyring, and Linux deliberately keeps the file cache.
+        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --features keychain
 
       - name: Derive version and DMG filename
         id: meta

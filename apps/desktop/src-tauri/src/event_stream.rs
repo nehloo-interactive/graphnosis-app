@@ -156,6 +156,20 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
                 continue;
             }
         };
+        handle_frame(app, &frame, &line);
+    }
+    // EOF on the socket — sidecar closed its side. The outer loop will
+    // wait briefly and try to reconnect.
+    Ok(())
+}
+
+/// Dispatch one decoded event frame to the frontend as a Tauri event. Shared by
+/// the local Unix-socket reader ([`open_and_read`]) and the remote SSE reader
+/// ([`open_and_read_remote`]) — both channels carry byte-identical `RawFrame`
+/// objects (same `kind`/`name`/`payload`), so a single mapping serves both and
+/// there is no separate remote frame table to keep in sync.
+fn handle_frame(app: &AppHandle, frame: &Frame, raw_line: &str) {
+    {
         match frame.kind.as_str() {
             "event" => {
                 // payload shape: { graphId: string, ts: number }
@@ -166,7 +180,7 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
                     let payload = GraphMutationPayload { graph_id, ts };
                     let _ = app.emit("graphnosis://graph-mutation", &payload);
                 } else {
-                    eprintln!("[event_stream] event frame missing graphId/ts: {}", line);
+                    eprintln!("[event_stream] event frame missing graphId/ts: {}", raw_line);
                 }
             }
             "hello" => {
@@ -240,7 +254,96 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             }
         }
     }
-    // EOF on the socket — sidecar closed its side. The outer loop will
-    // wait briefly and try to reconnect.
+}
+
+/// Spawn the REMOTE ("thin-client") event reader: instead of a local Unix
+/// socket it consumes the remote sidecar's `GET /api/events` SSE stream and
+/// re-emits each frame through the same [`handle_frame`] mapping. Returns the
+/// same [`EventStreamHandle`] as [`spawn`], so cortex-lock teardown is identical.
+pub fn spawn_remote(app: AppHandle, base: String, session: String) -> EventStreamHandle {
+    let cancel = Arc::new(Notify::new());
+    let cancel_inner = cancel.clone();
+
+    let join = tokio::spawn(async move {
+        let mut backoff_ms: u64 = 100;
+        let mut consecutive_failures: u64 = 0;
+        loop {
+            let connect_or_cancel = tokio::select! {
+                biased;
+                _ = cancel_inner.notified() => None,
+                result = open_and_read_remote(&app, &base, &session) => Some(result),
+            };
+            match connect_or_cancel {
+                None => return, // cancelled
+                Some(Ok(())) => {
+                    backoff_ms = 100;
+                    consecutive_failures = 0;
+                }
+                Some(Err(e)) => {
+                    // Session rejected (token revoked/expired, or the server
+                    // restarted with a fresh token). Retrying can't recover —
+                    // drop the session and bounce the UI to the lock screen so
+                    // the user reconnects with a current token.
+                    if e.to_string().contains(crate::remote::SESSION_EXPIRED_MARKER) {
+                        crate::remote::clear_session();
+                        let _ = app.emit("graphnosis://status", &serde_json::json!({
+                            "unlocked": false,
+                            "cortex_dir": null,
+                            "sidecar_running": false,
+                            "sso_session": null,
+                        }));
+                        eprintln!(
+                            "[event_stream] remote session expired — locking; reconnect from the lock screen.",
+                        );
+                        return;
+                    }
+                    consecutive_failures += 1;
+                    if consecutive_failures == 1 {
+                        eprintln!(
+                            "[event_stream] remote stream lost: {} — retrying quietly until reconnect.",
+                            e,
+                        );
+                    }
+                }
+            }
+            tokio::select! {
+                biased;
+                _ = cancel_inner.notified() => return,
+                _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+            }
+            backoff_ms = (backoff_ms * 2).min(5_000);
+        }
+    });
+
+    EventStreamHandle { cancel, join }
+}
+
+/// Read the remote SSE stream to EOF, decoding `data: {json}` frames. Byte-
+/// buffered so multi-byte UTF-8 payloads that straddle chunk boundaries decode
+/// correctly (each complete line ends on a `\n`, which is always a char
+/// boundary). `:`-prefixed heartbeat comments and blank lines are ignored.
+async fn open_and_read_remote(app: &AppHandle, base: &str, session: &str) -> Result<()> {
+    use futures_util::StreamExt;
+    let res = crate::remote::open_events(base, session).await?;
+    let mut stream = res.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.context("read remote event stream chunk")?;
+        buf.extend_from_slice(&bytes);
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
+            let line = line.trim_end();
+            if let Some(data) = line.strip_prefix("data: ") {
+                match serde_json::from_str::<Frame>(data) {
+                    Ok(frame) => handle_frame(app, &frame, data),
+                    Err(e) => eprintln!(
+                        "[event_stream] bad remote frame (ignored): {} (raw: {})",
+                        e, data
+                    ),
+                }
+            }
+        }
+    }
     Ok(())
 }

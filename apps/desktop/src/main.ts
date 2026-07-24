@@ -1901,6 +1901,9 @@ function render(status: StatusSnapshot): void {
     // Signal the finally-blocks in the unlock handlers not to hide unlockStatus yet.
     unlockPending = true;
     els.cortexLabel.textContent = shortCortexLabel(status.cortex_dir ?? 'cortex');
+    // Remote cortex: the label is a server address, not a local folder path.
+    els.cortexLabel.title = document.body.classList.contains('remote-cortex')
+      ? 'Connected remote cortex' : 'Current cortex folder';
     els.bootStatusText.textContent = 'Loading your engram…';
     els.unlockStatus.classList.remove('hidden');
     void syncForgetMode();
@@ -4401,6 +4404,11 @@ function sourceRowContext(row: HTMLElement): {
 async function runSourceShowInFinder(row: HTMLElement): Promise<void> {
   const { ref } = sourceRowContext(row);
   if (!ref) return;
+  // Remote cortex: the source file lives on the server, not this Mac.
+  if (document.body.classList.contains('remote-cortex')) {
+    showError('This file lives on the remote server — open it there.');
+    return;
+  }
   try {
     await invoke('reveal_file_in_finder', { path: ref });
   } catch (e) {
@@ -20231,6 +20239,15 @@ async function refreshBiometricButton(cortexDir: string): Promise<void> {
   try {
     const status = await invoke<{ available: boolean; hint?: string | null }>('biometric_available', { cortexDir: normalized });
     if (probeSeq !== biometricProbeSeq) return;
+    // The cortex-folder probe is heavier than the remote mode switch — if the
+    // user is now in remote mode, this late result must NOT re-show the LOCAL
+    // Touch ID affordance (which remote mode deliberately hides).
+    if (document.getElementById('mode-remote')?.getAttribute('aria-selected') === 'true') {
+      inlineBtn?.classList.add('hidden');
+      hint?.classList.add('hidden');
+      setupHint?.classList.add('hidden');
+      return;
+    }
     inlineBtn?.classList.toggle('hidden', !status.available);
     hint?.classList.toggle('hidden', !status.available);
     if (setupHint) {
@@ -20250,6 +20267,38 @@ async function refreshBiometricButton(cortexDir: string): Promise<void> {
     inlineBtn?.classList.add('hidden');
     hint?.classList.add('hidden');
     setupHint?.classList.add('hidden');
+  }
+}
+
+let remoteBiometricProbeSeq = 0;
+
+/** Remote-mode sibling of refreshBiometricButton: shows the Touch ID affordance
+ *  for a REMOTE server only when a token is stored for that server URL AND
+ *  biometric hardware is enrolled. Keyed on the entered server URL; the
+ *  existence probe never triggers the biometric (see biometric_remote_available). */
+async function refreshRemoteBiometricButton(serverUrl: string): Promise<void> {
+  const probeSeq = ++remoteBiometricProbeSeq;
+  const normalized = serverUrl.trim();
+  const inlineBtn = document.getElementById('btn-touchid-remote-inline') as HTMLButtonElement | null;
+  const hint = document.getElementById('touchid-remote-hint') as HTMLElement | null;
+  const forgetBtn = document.getElementById('touchid-remote-forget') as HTMLButtonElement | null;
+  if (!normalized) {
+    inlineBtn?.classList.add('hidden');
+    hint?.classList.add('hidden');
+    forgetBtn?.classList.add('hidden');
+    return;
+  }
+  try {
+    const status = await invoke<{ available: boolean }>('biometric_remote_available', { serverUrl: normalized });
+    if (probeSeq !== remoteBiometricProbeSeq) return;
+    inlineBtn?.classList.toggle('hidden', !status.available);
+    hint?.classList.toggle('hidden', !status.available);
+    forgetBtn?.classList.toggle('hidden', !status.available);
+  } catch {
+    if (probeSeq !== remoteBiometricProbeSeq) return;
+    inlineBtn?.classList.add('hidden');
+    hint?.classList.add('hidden');
+    forgetBtn?.classList.add('hidden');
   }
 }
 
@@ -22866,7 +22915,7 @@ bindAppContext({
   getNnConfirmPending: () => nnConfirmPending, setNnConfirmPending: (v) => { nnConfirmPending = v; },
   getNnEnablingInProgress: () => nnEnablingInProgress, setNnEnablingInProgress: (v) => { nnEnablingInProgress = v; },
   getLlmConfirmPending: () => llmConfirmPending, setLlmConfirmPending: (v) => { llmConfirmPending = v; },
-  LAST_ENGRAM_KEY, refreshBiometricButton, syncEngramPicker,
+  LAST_ENGRAM_KEY, refreshBiometricButton, refreshRemoteBiometricButton, syncEngramPicker,
   reloadGraphsMetadata: async () => {
     loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
     syncEngramPicker();

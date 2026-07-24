@@ -65,6 +65,106 @@ let els!: Record<string, HTMLElement>;
 
 const UI_ERROR_PREFIX = 'GRAPHNOSIS_UI_ERROR:';
 
+/** True when the lock screen is in remote ("thin-client") mode: no local cortex
+ *  folder, no local sidecar — unlock with an access token against a remote
+ *  server, exactly like browser mode but inside the desktop window. Driven by
+ *  the on-screen toggle (or forced by the GRAPHNOSIS_REMOTE_URL env override). */
+let isRemoteMode = false;
+
+const CORTEX_MODE_KEY = 'graphnosis:cortex-mode';
+const REMOTE_URL_KEY = 'graphnosis:remote-url';
+
+/** Current server URL typed on the lock screen (remote mode only). */
+function getRemoteUrl(): string {
+  return (document.getElementById('remote-url') as HTMLInputElement | null)?.value.trim() ?? '';
+}
+
+/** Switch the lock screen between local (folder + passphrase) and remote
+ *  (server URL + access token), persisting the choice for the next launch. */
+function setCortexMode(remote: boolean): void {
+  isRemoteMode = remote;
+  const title = document.getElementById('unlock-card-title');
+  const cortexRow = document.querySelector('#unlock-form-card .row:has(#cortex-dir)') as HTMLElement | null;
+  const remoteRow = document.getElementById('remote-server-row');
+  const warning = document.querySelector('.passphrase-warning') as HTMLElement | null;
+  const pass = els.passphrase as HTMLInputElement;
+  const btnLocal = document.getElementById('mode-local');
+  const btnRemote = document.getElementById('mode-remote');
+  cortexRow?.classList.toggle('hidden', remote);
+  remoteRow?.classList.toggle('hidden', !remote);
+  // The passphrase warning is about the LOCAL cortex key — irrelevant remotely.
+  warning?.classList.toggle('hidden', remote);
+  // Touch ID unlocks a LOCAL cortex (it reads a cached passphrase for a cortex
+  // folder). In remote mode there's no folder — hide every biometric affordance
+  // so it can't fire the local unlock path against a stale folder value. When
+  // returning to local, re-evaluate against the current folder.
+  if (remote) {
+    document.getElementById('btn-touchid-inline')?.classList.add('hidden');
+    document.getElementById('touchid-hint')?.classList.add('hidden');
+    document.getElementById('touchid-setup-hint')?.classList.add('hidden');
+    // Show the REMOTE Touch ID button if a token is stored for this server.
+    app().refreshRemoteBiometricButton(getRemoteUrl());
+  } else {
+    app().refreshRemoteBiometricButton(''); // hide remote affordance in local mode
+    const cx = getCortexDir();
+    if (cx) app().refreshBiometricButton(cx);
+  }
+  pass.placeholder = remote ? 'Access token' : 'Your Graphnosis cortex passphrase';
+  pass.setAttribute('aria-label', remote ? 'Access token' : 'Passphrase');
+  if (title) title.textContent = remote ? 'Connect to a remote cortex' : 'Unlock your local encrypted cortex';
+  btnLocal?.classList.toggle('active', !remote);
+  btnLocal?.setAttribute('aria-selected', String(!remote));
+  btnRemote?.classList.toggle('active', remote);
+  btnRemote?.setAttribute('aria-selected', String(remote));
+  try { localStorage.setItem(CORTEX_MODE_KEY, remote ? 'remote' : 'local'); } catch { /* private mode */ }
+}
+
+/** Configure the local/remote selector. Browser mode is already server-backed,
+ *  so the toggle is Tauri-only. When the shell is env-forced into remote mode
+ *  (GRAPHNOSIS_REMOTE_URL), lock to remote and prefill the read-only address;
+ *  otherwise reveal the toggle and restore the last-used server + mode. */
+async function detectRuntimeMode(): Promise<void> {
+  if (!IS_TAURI) return; // browser: token flow already applies; no toggle
+  const toggle = document.getElementById('cortex-mode-toggle');
+  const urlInput = document.getElementById('remote-url') as HTMLInputElement | null;
+  let forced = false;
+  let forcedBase: string | null = null;
+  try {
+    const mode = await invoke<{ forcedRemote: boolean; base: string | null }>('runtime_mode');
+    forced = mode.forcedRemote;
+    forcedBase = mode.base;
+  } catch { /* non-fatal — treat as not forced */ }
+
+  if (forced) {
+    if (urlInput && forcedBase) { urlInput.value = forcedBase; urlInput.readOnly = true; }
+    setCortexMode(true); // toggle stays hidden — remote is mandatory here
+    return;
+  }
+
+  toggle?.classList.remove('hidden');
+  if (urlInput) {
+    try { urlInput.value = localStorage.getItem(REMOTE_URL_KEY) ?? ''; } catch { /* private mode */ }
+    // Re-probe the remote Touch ID button as the user edits the server URL
+    // (a token stored for one server shouldn't show for another).
+    let probeTimer: ReturnType<typeof setTimeout> | undefined;
+    urlInput.addEventListener('input', () => {
+      if (!isRemoteMode) return;
+      clearTimeout(probeTimer);
+      // Re-check mode at fire time too: the user may switch to Local within the
+      // debounce window, which would otherwise re-show the remote button.
+      probeTimer = setTimeout(() => {
+        if (!isRemoteMode) return;
+        app().refreshRemoteBiometricButton(getRemoteUrl());
+      }, 250);
+    });
+  }
+  document.getElementById('mode-local')?.addEventListener('click', () => setCortexMode(false));
+  document.getElementById('mode-remote')?.addEventListener('click', () => setCortexMode(true));
+  let last: string | null = null;
+  try { last = localStorage.getItem(CORTEX_MODE_KEY); } catch { /* private mode */ }
+  setCortexMode(last === 'remote');
+}
+
 export function initUnlock(unlockEls: Record<string, HTMLElement>): void {
   els = unlockEls;
   wireUnlockHandlers();
@@ -72,6 +172,7 @@ export function initUnlock(unlockEls: Record<string, HTMLElement>): void {
   wireLockHandler();
   void configureBiometricButton();
   void configureSsoUnlockButton();
+  void detectRuntimeMode();
 }
 
 interface CortexLockUiError {
@@ -237,6 +338,7 @@ async function lockCortex(): Promise<void> {
   // Belt-and-suspenders: Rust also emits graphnosis://status before shutdown,
   // but paint now so Lock never feels dead on a slow graceful shutdown.
   app().render(locked);
+  document.body.classList.remove('remote-cortex');
   try {
     const status = await invoke<StatusSnapshot>('lock_cortex');
     app().render(status);
@@ -261,6 +363,7 @@ function wireLockHandler(): void {
 
 /** Probe Touch ID availability and show/hide lock-screen affordances. */
 export async function configureBiometricButton(): Promise<void> {
+  if (isRemoteMode) return; // Touch ID is local-only; never offer it remotely
   const cortexDir = getCortexDir();
   if (cortexDir) app().refreshBiometricButton(cortexDir);
 }
@@ -416,6 +519,13 @@ function wireCortexLockHandlers(): void {
 // same flow: spawn the Swift sidecar for biometric auth, read the cached
 // passphrase, run the normal unlock.
 export async function runBiometricUnlock(): Promise<void> {
+  // Touch ID reads a cached passphrase for a LOCAL cortex folder — meaningless
+  // for a remote server, and it would fire the local unlock path against a
+  // stale folder value ("cortex folder does not exist"). Belt to the UI hiding.
+  if (isRemoteMode) {
+    app().showError('Touch ID unlocks a local cortex. For the remote server, enter your access token.');
+    return;
+  }
   const cortexDir = getCortexDir();
   if (!cortexDir) {
     app().showError('Choose a Graphnosis cortex folder first.');
@@ -451,34 +561,169 @@ export async function runBiometricUnlock(): Promise<void> {
   }
 }
 
+// ── Remote-server Touch ID (token behind biometric) ──────────────────────────
+// A parallel path to the LOCAL biometric_unlock: the LOCAL guard stays intact
+// (runBiometricUnlock bails in remote mode); only this token path is allowed
+// when the cortex is remote.
+
+const REMOTE_BIOMETRIC_ENROLL_PREFIX = 'graphnosis:remote-biometric-enrolled:';
+
+function clearRemoteEnrollFlag(serverUrl: string): void {
+  try { localStorage.removeItem(REMOTE_BIOMETRIC_ENROLL_PREFIX + serverUrl); } catch { /* private mode */ }
+}
+
+/** Remove a server's saved Touch ID token (local convenience copy) and reset
+ *  the enroll flag so it can be re-offered. Wired to the lock-screen "Forget"
+ *  control, honoring the enrollment prompt's promise. */
+export async function forgetRemoteToken(serverUrl: string): Promise<void> {
+  const url = (serverUrl || getRemoteUrl()).trim();
+  if (!url) return;
+  try { await invoke('clear_remote_token', { serverUrl: url }); } catch { /* best-effort */ }
+  clearRemoteEnrollFlag(url);
+  app().refreshRemoteBiometricButton(url); // no token now → hides the affordance
+}
+
+/** True when the REMOTE Touch ID affordances are on screen. */
+function isRemoteTouchIdUiVisible(): boolean {
+  const btn = document.getElementById('btn-touchid-remote-inline');
+  const hint = document.getElementById('touchid-remote-hint');
+  return Boolean(
+    (btn && !btn.classList.contains('hidden')) || (hint && !hint.classList.contains('hidden')),
+  );
+}
+
+/** Whether remote Touch ID is offerable: a token is stored for this server AND
+ *  biometric hardware is enrolled. The probe never triggers the biometric. */
+async function shouldOfferRemoteBiometricUnlock(serverUrl: string): Promise<boolean> {
+  if (!IS_TAURI || !serverUrl) return false;
+  if (isRemoteTouchIdUiVisible()) return true;
+  try {
+    const s = await invoke<{ available: boolean }>('biometric_remote_available', { serverUrl });
+    return s.available;
+  } catch { return false; }
+}
+
+/** Touch ID unlock of a REMOTE cortex — biometric-gated retrieval of the stored
+ *  token, then the normal remote unlock. Guarded to remote mode. */
+export async function runRemoteBiometricUnlock(): Promise<void> {
+  if (!isRemoteMode) return;
+  const serverUrl = getRemoteUrl();
+  if (!serverUrl) { app().showError('Enter your Graphnosis server address.'); return; }
+  app().showError(null);
+  hideCortexLockCard();
+  const inlineBtn = document.getElementById('btn-touchid-remote-inline') as HTMLButtonElement | null;
+  if (inlineBtn) inlineBtn.disabled = true;
+  els.btnUnlock.disabled = true;
+  const progressBar = document.getElementById('unlock-progress');
+  progressBar?.classList.remove('hidden');
+  els.bootStatusText.textContent = 'Touch the sensor…';
+  els.unlockStatus.classList.remove('hidden');
+  try {
+    const status = await invoke<StatusSnapshot>('biometric_remote_unlock', {
+      serverUrl,
+      preferredDefaultGraph: localStorage.getItem(app().LAST_ENGRAM_KEY) ?? null,
+    });
+    try { localStorage.setItem(REMOTE_URL_KEY, serverUrl); } catch { /* private mode */ }
+    (els.passphrase as HTMLInputElement).value = '';
+    els.bootStatusText.textContent = '';
+    document.body.classList.add('remote-cortex');
+    app().render(status);
+  } catch (e) {
+    handleUnlockFailure(String(e));
+    els.bootStatusText.textContent = '';
+    // A stale token is cleared server-side by the Rust command → drop the enroll
+    // flag too so a fresh token re-offers Touch ID, and re-probe to hide the
+    // now-defunct button.
+    clearRemoteEnrollFlag(getRemoteUrl());
+    void app().refreshRemoteBiometricButton(getRemoteUrl());
+  } finally {
+    if (inlineBtn) inlineBtn.disabled = false;
+    if (!app().getUnlockPending()) els.btnUnlock.disabled = false;
+    progressBar?.classList.add('hidden');
+    if (!app().getUnlockPending()) els.unlockStatus.classList.add('hidden');
+  }
+}
+
+/** After a successful remote token unlock, offer ONCE per server to save the
+ *  token behind Touch ID. Must run while the token field is still populated. */
+async function maybeOfferSaveRemoteToken(serverUrl: string, token: string): Promise<void> {
+  if (!IS_TAURI || !isRemoteMode || !serverUrl || !token) return;
+  const flagKey = REMOTE_BIOMETRIC_ENROLL_PREFIX + serverUrl;
+  try { if (localStorage.getItem(flagKey)) return; } catch { /* private mode */ }
+  let hardware = false;
+  try {
+    const s = await invoke<{ hardware_available: boolean; has_saved_passphrase: boolean }>(
+      'biometric_remote_available', { serverUrl });
+    if (s.has_saved_passphrase) { // already enrolled for this server
+      try { localStorage.setItem(flagKey, '1'); } catch { /* private mode */ }
+      return;
+    }
+    hardware = s.hardware_available;
+  } catch { return; }
+  if (!hardware) return;
+  // Ask only once per server, whatever the answer.
+  try { localStorage.setItem(flagKey, '1'); } catch { /* private mode */ }
+  const ok = await gConfirm(
+    'Unlock this server with Touch ID?',
+    'Store this server’s access token securely on this Mac and unlock it with Touch ID next '
+    + 'time, instead of pasting the token. You can remove it anytime with the Forget button on the lock screen.',
+  );
+  if (!ok) return;
+  try {
+    await invoke('store_remote_token', { serverUrl, token });
+    void app().refreshRemoteBiometricButton(serverUrl);
+  } catch (e) {
+    app().showError(`Could not enable Touch ID for this server: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function wireUnlockHandlers(): void {
   const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
   const hint = document.getElementById('touchid-hint') as HTMLElement | null;
   const ssoBtn = document.getElementById('btn-sso-unlock') as HTMLButtonElement | null;
+  const remoteInlineBtn = document.getElementById('btn-touchid-remote-inline') as HTMLButtonElement | null;
+  const remoteHint = document.getElementById('touchid-remote-hint') as HTMLElement | null;
+  const remoteForgetBtn = document.getElementById('touchid-remote-forget') as HTMLButtonElement | null;
   inlineBtn?.addEventListener('click', () => void runBiometricUnlock());
   hint?.addEventListener('click', () => void runBiometricUnlock());
   ssoBtn?.addEventListener('click', () => void runSsoUnlock());
+  remoteInlineBtn?.addEventListener('click', () => void runRemoteBiometricUnlock());
+  remoteHint?.addEventListener('click', () => void runRemoteBiometricUnlock());
+  remoteForgetBtn?.addEventListener('click', () => void forgetRemoteToken(getRemoteUrl()));
 
   (els.btnUnlock as HTMLButtonElement).addEventListener('click', async () => {
     app().showError(null);
     hideCortexLockCard();
     const cortexDir = getCortexDir();
-    if (IS_TAURI && !cortexDir) {
+    // Remote mode has no local folder — treat it like browser mode (token only),
+    // but it does need a server address.
+    if (IS_TAURI && !isRemoteMode && !cortexDir) {
       app().showError('Choose a Graphnosis cortex folder first.');
       return;
     }
+    if (IS_TAURI && isRemoteMode && !getRemoteUrl()) {
+      app().showError('Enter your Graphnosis server address.');
+      return;
+    }
     if (!(els.passphrase as HTMLInputElement).value) {
-      if (IS_TAURI && await shouldOfferBiometricUnlock(cortexDir)) {
+      if (IS_TAURI && !isRemoteMode && await shouldOfferBiometricUnlock(cortexDir)) {
         await runBiometricUnlock();
+        return;
+      }
+      // Remote mode: empty token but a Touch ID token stored → use it.
+      if (IS_TAURI && isRemoteMode && await shouldOfferRemoteBiometricUnlock(getRemoteUrl())) {
+        await runRemoteBiometricUnlock();
         return;
       }
       const status = await probeBiometricStatus(cortexDir);
       app().showError(
-        IS_TAURI
+        IS_TAURI && !isRemoteMode
           ? (isTouchIdUiVisible()
             ? 'Use Touch ID or enter your cortex passphrase.'
             : biometricUnavailableMessage(status, false))
-          : 'Enter your access token.',
+          : (isRemoteMode && isRemoteTouchIdUiVisible()
+            ? 'Use Touch ID or enter your access token.'
+            : 'Enter your access token.'),
       );
       return;
     }
@@ -598,7 +843,7 @@ function handleUnlockFailure(msg: string): void {
 
 export async function attemptUnlock(): Promise<void> {
   if (IS_TAURI && !(els.passphrase as HTMLInputElement).value) {
-    app().showError('Enter your cortex passphrase.');
+    app().showError(isRemoteMode ? 'Enter your access token.' : 'Enter your cortex passphrase.');
     return;
   }
 
@@ -625,15 +870,28 @@ export async function attemptUnlock(): Promise<void> {
   els.bootStatusText.textContent = '';
   els.unlockStatus.classList.remove('hidden');
   try {
+    const remoteUrl = isRemoteMode ? getRemoteUrl() : '';
+    // Capture the token before the field is wiped — needed for the Touch ID
+    // save offer below.
+    const remoteToken = (els.passphrase as HTMLInputElement).value;
     const status = (await invoke('unlock_cortex', {
       args: {
         cortex_dir: getCortexDir(),
         passphrase: (els.passphrase as HTMLInputElement).value,
         preferred_default_graph: localStorage.getItem(app().LAST_ENGRAM_KEY) ?? null,
+        remote_url: remoteUrl || null,
       },
     })) as StatusSnapshot;
-    // Persist for the next launch — see app().rememberCortexDir().
-    app().rememberCortexDir(getCortexDir());
+    // Persist for the next launch. In remote mode there's no local folder to
+    // remember, but do remember the server URL so it's pre-filled next time.
+    if (isRemoteMode) {
+      if (remoteUrl) { try { localStorage.setItem(REMOTE_URL_KEY, remoteUrl); } catch { /* private mode */ } }
+    } else {
+      app().rememberCortexDir(getCortexDir());
+    }
+    // Tag the document so local-only affordances (Finder actions, Touch ID)
+    // hide themselves when the cortex lives on a remote server.
+    document.body.classList.toggle('remote-cortex', isRemoteMode);
     // A different cortex just opened — its non-deterministic preferences
     // (GNN, Local LLM) live in its own settings.json and are reloaded by the
     // fresh sidecar. Clear any half-finished two-step enable-confirm so it
@@ -647,6 +905,8 @@ export async function attemptUnlock(): Promise<void> {
     app().render(status);
     // Offer biometric setup once, after a successful browser token-unlock.
     void maybeOfferBiometricSetup();
+    // Remote mode: offer to save the token behind Touch ID (once per server).
+    if (isRemoteMode && remoteUrl) void maybeOfferSaveRemoteToken(remoteUrl, remoteToken);
   } catch (e) {
     const msg = String(e);
     // Auto-unlock (QR / ?token=) failed — reveal the lock form again so the

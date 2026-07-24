@@ -43,6 +43,8 @@ export interface AppContext {
   LAST_ENGRAM_KEY: string;
   /** Re-probe Touch ID availability for the lock screen (Tauri only). */
   refreshBiometricButton: (cortexDir: string) => void;
+  /** Re-probe remote-server Touch ID availability (token stored + hardware). */
+  refreshRemoteBiometricButton: (serverUrl: string) => void;
   syncEngramPicker: () => void;
   reloadGraphsMetadata: () => Promise<void>;
   pushDataIntoAtlas: () => void;

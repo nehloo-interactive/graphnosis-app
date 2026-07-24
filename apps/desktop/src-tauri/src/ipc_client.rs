@@ -51,6 +51,14 @@ pub async fn request_with_timeout(
     params: Value,
     timeout_dur: Duration,
 ) -> Result<Value> {
+    // Remote ("thin-client") mode: when a remote session is active, route to
+    // the remote sidecar's HTTP bridge and ignore `socket_path` entirely. This
+    // single check is what lets every existing call site — which still derives
+    // and passes a local socket path — work unchanged against a remote cortex.
+    if let Some((base, session)) = crate::remote::current() {
+        return crate::remote::rpc(&base, &session, method, params, timeout_dur).await;
+    }
+
     #[cfg(unix)]
     // NB: do NOT embed the socket path in this error — it propagates to the UI
     // and would leak the full cortex path on screen (bad in demos/recordings).

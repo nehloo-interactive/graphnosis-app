@@ -10160,6 +10160,32 @@
       }
       .skill-demos-lang-btn:hover { color: var(--fg); }
       .skill-demos-lang-btn.active { background: var(--accent); color: #fff; }
+
+      /* Lock-screen local/remote cortex selector — same two-option segmented
+         control as the skill-demos language picker. */
+      .cortex-mode { display: inline-flex; gap: 4px; margin: 0 0 14px; padding: 3px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; }
+      .cortex-mode.hidden { display: none; }
+      .cortex-mode-btn {
+        appearance: none; border: 0; background: transparent; color: var(--fg-dim);
+        font-family: inherit; font-size: 13px; font-weight: 600; padding: 5px 14px;
+        border-radius: 6px; cursor: pointer; transition: background 0.12s, color 0.12s;
+      }
+      .cortex-mode-btn:hover { color: var(--fg); }
+      .cortex-mode-btn.active { background: var(--accent); color: #fff; }
+      /* Local-only affordances hidden when the cortex lives on a remote server
+         (the `remote-cortex` body class is set on remote unlock). */
+      body.remote-cortex #btn-open-folder { display: none; }
+      /* The loopback-verify badge probes THIS machine's LLM; meaningless when
+         the LLM runs on the remote server. */
+      body.remote-cortex .studio-llm-loopback { display: none; }
+      /* "Forget" link next to the remote Touch ID affordance. */
+      .touchid-forget-link {
+        appearance: none; border: 0; background: transparent; color: var(--fg-dim);
+        font-family: inherit; font-size: 12px; text-decoration: underline;
+        cursor: pointer; padding: 0 4px;
+      }
+      .touchid-forget-link:hover { color: var(--fg); }
+      .touchid-forget-link.hidden { display: none; }
       .engram-suggest-candidates { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
       .engram-suggest-candidates.hidden { display: none; }
       .engram-suggest-cand {

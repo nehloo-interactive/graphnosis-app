@@ -10,6 +10,8 @@
 mod biometric;
 mod event_stream;
 mod ipc_client;
+#[allow(dead_code)] // wired incrementally; foundation lands before its call sites
+mod remote;
 mod keychain;
 mod sidecar;
 mod tray;
@@ -67,6 +69,13 @@ pub struct UnlockArgs {
     /// loading "personal" first and then swapping mid-session.
     #[serde(default)]
     pub preferred_default_graph: Option<String>,
+    /// Remote ("thin-client") server origin chosen on the lock screen, e.g.
+    /// `https://host.tailnet.ts.net`. When present (and non-empty) the shell
+    /// connects to that server instead of a local cortex; `passphrase` carries
+    /// the access token. Takes precedence over the `GRAPHNOSIS_REMOTE_URL` env
+    /// override. Absent for a normal local unlock.
+    #[serde(default)]
+    pub remote_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -142,6 +151,10 @@ pub struct BiometricStatus {
 /// generation so any in-flight exit watchdog exits quietly.
 async fn stop_sidecar_session(inner: &mut AppInner) {
     inner.sidecar_watch_generation = inner.sidecar_watch_generation.wrapping_add(1);
+    // Drop any remote session bearer so `ipc_client` stops routing to the
+    // remote bridge (no-op in local-sidecar mode). Must happen on both lock
+    // and re-unlock, which both funnel through here.
+    remote::clear_session();
     if let Some(stream) = inner.event_stream.take() {
         stream.shutdown().await;
     }
@@ -236,7 +249,13 @@ async fn adopt_sidecar_session(
         inner.sidecar = Some(handle);
         inner.unlocked_via_recovery = via_recovery;
         inner.sso_session = sso_session;
-        inner.event_stream = Some(event_stream::spawn(app.clone(), events_path));
+        // Remote mode drives the push channel from the remote sidecar's SSE
+        // endpoint; local mode reads the Unix events socket. Both yield the
+        // same EventStreamHandle so teardown is identical.
+        inner.event_stream = Some(match remote::current() {
+            Some((base, session)) => event_stream::spawn_remote(app.clone(), base, session),
+            None => event_stream::spawn(app.clone(), events_path),
+        });
         inner.sidecar_watch_generation = inner.sidecar_watch_generation.wrapping_add(1);
         inner.sidecar_watch_generation
     };
@@ -486,6 +505,45 @@ async fn unlock_cortex(
     state: State<'_, AppState>,
     args: UnlockArgs,
 ) -> Result<StatusSnapshot, String> {
+    // ── Remote ("thin-client") mode ─────────────────────────────────────────
+    // Chosen on the lock screen (args.remote_url) or forced via the
+    // GRAPHNOSIS_REMOTE_URL env override, the UI winning. There is no local
+    // cortex folder and no local sidecar: `args.passphrase` carries the remote
+    // "Browser access" token, which we exchange for a session bearer. We then
+    // adopt a placeholder handle so the rest of the app treats the cortex as
+    // unlocked, while every IPC call routes to the remote bridge (see
+    // ipc_client + remote).
+    let remote_base = args
+        .remote_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_end_matches('/').to_string())
+        .or_else(remote::configured_base);
+    if let Some(base) = remote_base {
+        {
+            let mut inner = state.inner.lock().await;
+            stop_sidecar_session(&mut inner).await;
+        }
+        let session = remote::unlock(&base, &args.passphrase)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Friendly server label (host[:port]) shown as the cortex name in the
+        // header/tray — computed before `base` is moved into the session.
+        let label = remote::display_label(&base);
+        remote::set_session(base, session);
+        let snapshot = adopt_sidecar_session(
+            &app,
+            &state,
+            PathBuf::from(label),
+            sidecar::SidecarHandle::remote_placeholder(),
+            false,
+            None,
+        )
+        .await;
+        return Ok(snapshot);
+    }
+
     let cortex_dir = PathBuf::from(&args.cortex_dir);
     if !cortex_dir.is_dir() {
         return Err(format!("cortex folder does not exist: {}", args.cortex_dir));
@@ -733,6 +791,7 @@ async fn biometric_unlock(
         cortex_dir: cortex_dir.clone(),
         passphrase,
         preferred_default_graph,
+        remote_url: None, // biometric unlock is local-only (Touch ID)
     };
     match unlock_cortex(app, state, args).await {
         Err(e) if e.contains("Wrong passphrase") => {
@@ -745,6 +804,97 @@ async fn biometric_unlock(
             )
         }
         other => other,
+    }
+}
+
+/// Save a remote server's access token so Touch ID can re-submit it. Opt-in —
+/// the frontend calls this only after the user accepts the enrollment prompt.
+#[tauri::command]
+async fn store_remote_token(server_url: String, token: String) -> Result<(), String> {
+    keychain::store_remote_token(&server_url, &token).map_err(|e| e.to_string())
+}
+
+/// Forget a server's stored Touch ID token (revoke the local convenience copy).
+#[tauri::command]
+async fn clear_remote_token(server_url: String) -> Result<(), String> {
+    keychain::clear_remote_token(&server_url).map_err(|e| e.to_string())
+}
+
+/// Whether Touch ID unlock is offerable for a remote server: a token is stored
+/// AND biometric hardware is enrolled. Existence is probed WITHOUT triggering
+/// the biometric, so this is safe to call on every lock-screen render / URL edit.
+#[tauri::command]
+async fn biometric_remote_available(
+    app: AppHandle,
+    server_url: String,
+) -> Result<BiometricStatus, String> {
+    let has_token = keychain::has_remote_token(&server_url).map_err(|e| e.to_string())?;
+    let hardware_available = biometric::is_available(&app).await;
+    let available = has_token && hardware_available;
+    let hint = if available {
+        None
+    } else if !has_token {
+        Some("Unlock this server with your access token once to enable Touch ID for it.".to_string())
+    } else if !hardware_available {
+        Some("Touch ID isn't available on this Mac.".to_string())
+    } else {
+        None
+    };
+    Ok(BiometricStatus {
+        available,
+        has_saved_passphrase: has_token,
+        hardware_available,
+        hint,
+    })
+}
+
+/// Touch ID unlock of a REMOTE cortex: biometric-gated retrieval of the stored
+/// access token, then the normal remote unlock. On signed macOS builds the
+/// keychain READ itself is Secure-Enclave-gated (no separate prompt); on soft
+/// backends (dev file cache / Windows keyring) the Swift sidecar gates it here.
+#[tauri::command]
+async fn biometric_remote_unlock(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server_url: String,
+    preferred_default_graph: Option<String>,
+) -> Result<StatusSnapshot, String> {
+    // Soft backends aren't OS-gated on read → gate explicitly. The hardened
+    // macOS path skips this: the keychain read below triggers the OS Touch ID
+    // prompt itself, so calling the sidecar too would double-prompt.
+    #[cfg(not(all(target_os = "macos", feature = "keychain")))]
+    {
+        let ok = biometric::prompt(&app, "Unlock your Graphnosis cortex")
+            .await
+            .map_err(|e| e.to_string())?;
+        if !ok {
+            return Err("biometric authentication cancelled".to_string());
+        }
+    }
+    let token = keychain::load_remote_token(&server_url)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no saved token for this server".to_string())?;
+    let args = UnlockArgs {
+        cortex_dir: String::new(),
+        passphrase: token,
+        preferred_default_graph,
+        remote_url: Some(server_url.clone()),
+    };
+    match unlock_cortex(app, state, args).await {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            // Drop the saved token ONLY on a genuine auth rejection — the
+            // specific phrase remote::unlock emits for HTTP 401 (see remote.rs).
+            // A transient 5xx yields "remote unlock failed (...)", which must NOT
+            // discard a still-valid token.
+            let low = e.to_lowercase();
+            if low.contains("invalid or expired access token") {
+                let _ = keychain::clear_remote_token(&server_url);
+                Err("Your saved access token is no longer valid. Enter a new access token.".to_string())
+            } else {
+                Err(e)
+            }
+        }
     }
 }
 
@@ -1020,6 +1170,27 @@ async fn lock_cortex(app: AppHandle, state: State<'_, AppState>) -> Result<Statu
 #[tauri::command]
 async fn status(state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
     Ok(current_status(&state).await)
+}
+
+/// Runtime-mode probe for the frontend. Reports whether the shell is FORCED
+/// into remote ("thin-client") mode by the `GRAPHNOSIS_REMOTE_URL` env override
+/// (the dev/headless path). When forced, the lock screen locks to the remote
+/// form and prefills the server address; otherwise the user picks local vs
+/// remote with the on-screen toggle.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeMode {
+    forced_remote: bool,
+    /// The env-forced bridge origin, when forced — prefilled on the lock screen.
+    base: Option<String>,
+}
+
+#[tauri::command]
+fn runtime_mode() -> RuntimeMode {
+    match remote::configured_base() {
+        Some(base) => RuntimeMode { forced_remote: true, base: Some(base) },
+        None => RuntimeMode { forced_remote: false, base: None },
+    }
 }
 
 /// Reconciliation cursor — {graphId: lastMutationTs} for all loaded graphs.
@@ -3994,6 +4165,10 @@ pub fn run() {
             sso_unlock_cortex,
             biometric_available,
             biometric_unlock,
+            store_remote_token,
+            clear_remote_token,
+            biometric_remote_available,
+            biometric_remote_unlock,
             change_passphrase,
             regenerate_recovery_phrase,
             list_quarantine,
@@ -4001,6 +4176,7 @@ pub fn run() {
             restore_quarantine,
             lock_cortex,
             status,
+            runtime_mode,
             inspector_stats,
             node_cursor,
             ingest_file,
