@@ -2105,14 +2105,25 @@ const BRANCH_EU: RegExp[] = [
 ];
 const BRANCH_PATTERNS: RegExp[] = [...BRANCH_EXPLICIT, ...BRANCH_EN, ...BRANCH_RO, ...BRANCH_EU];
 
+// The first EXPLICIT_CALL_PATTERN_COUNT entries are deliberate call syntax.
+// Everything after them is a natural-language phrasing: still useful for
+// resolving a real sub-skill, but never grounds for reporting a missing one.
+//
+// The `@skill:` fallback is charset-bounded rather than `(.+)`. The greedy form
+// matched the token anywhere — including prose that merely quotes the syntax,
+// e.g. a note reading "cross-skill `@skill:` links are bound at train time" —
+// and captured the remainder of the sentence as a skill name.
 const SKILL_CALL_PATTERNS: RegExp[] = [
-  /@skill:\s*(.+)/i,
+  /@skill:\s*([A-Za-z0-9][A-Za-z0-9 _-]*)/i,
   /\[\[skill:\s*([^\]]+)\]\]/i,
   /\b(?:run|use|apply|follow|execute|invoke)\s+the\s+"?([^"]+?)"?\s+skill\b/i,
   /\b(?:run|use|apply|follow|execute|invoke)\s+"?([^"]+?)"?\s+skill\b/i,
   /\b(?:aplică|folosește|urmează)\s+skill-ul\s+"?([^"]+?)"?\b/i,
   /\b(?:aplica|usa|seguir)\s+(?:el\s+)?skill\s+"?([^"]+?)"?\b/i,
 ];
+
+/** How many leading SKILL_CALL_PATTERNS entries are deliberate call syntax. */
+const EXPLICIT_CALL_PATTERN_COUNT = 2;
 
 // ── SOP shared utilities ──────────────────────────────────────────────────────
 
@@ -2515,6 +2526,17 @@ export interface ParsedSkillCall {
   args: string[];
   /** Capture variable name (without the leading `$`). undefined if `-> $X` is absent. */
   captureAs?: string;
+  /**
+   * True when the author used deliberate call syntax (`@skill:`, `@parallel:`,
+   * `[[skill: …]]`); false when the match came from a natural-language pattern
+   * like "use the X skill".
+   *
+   * Callers that REPORT a missing sub-skill must only do so for explicit calls.
+   * Prose mentioning a skill in passing — including documentation that merely
+   * describes the syntax — is not a call, and flagging it produced phantom
+   * "unresolved call" entries on ordinary sentences.
+   */
+  explicit: boolean;
 }
 
 /**
@@ -2566,16 +2588,21 @@ export function parseSkillCall(text: string): ParsedSkillCall | null {
       target,
       args,
       ...(captureAs ? { captureAs } : {}),
+      explicit: true,
     };
   }
 
-  // Fallback patterns from the existing detector (no args / no capture)
-  for (const pat of SKILL_CALL_PATTERNS) {
+  // Fallback patterns from the existing detector (no args / no capture).
+  // EXPLICIT_CALL_PATTERN_COUNT of them are deliberate call syntax; the rest are
+  // natural-language phrasings, which resolve to a real skill when one matches
+  // but must never be reported as an unresolved call.
+  for (let i = 0; i < SKILL_CALL_PATTERNS.length; i++) {
+    const pat = SKILL_CALL_PATTERNS[i]!;
     const m = text.match(pat);
     if (!m) continue;
     const target = (m[1] ?? '').trim().toLowerCase();
     if (!target) continue;
-    return { target, args: [] };
+    return { target, args: [], explicit: i < EXPLICIT_CALL_PATTERN_COUNT };
   }
   return null;
 }
@@ -2745,7 +2772,7 @@ export async function linkSkillCalls(
           type: 'contains',
           weight: 0.95,
           evidence: encodeCallEvidence(
-            { target: member.target, args: member.args, ...(member.captureAs ? { captureAs: member.captureAs } : {}) },
+            { target: member.target, args: member.args, ...(member.captureAs ? { captureAs: member.captureAs } : {}), explicit: true },
             { parallel: true },
           ),
         });
@@ -3217,8 +3244,12 @@ export function walkSkillSequence(
     // @parallel:) but neither an edge nor a cross-engram link resolved.
     const parsedFromText = parseSkillCall(text);
     const parsedParallel = parseParallelCall(text);
+    // Only DELIBERATE call syntax can be "unresolved". A step that merely
+    // mentions a skill in prose ("run the retrain queue skill later") is not a
+    // call, and reporting it made ordinary sentences look like broken links.
     const unresolvedName = calls.length === 0
-      ? (parsedParallel?.members[0]?.target ?? parsedFromText?.target)
+      ? (parsedParallel?.members[0]?.target
+        ?? (parsedFromText?.explicit ? parsedFromText.target : undefined))
       : undefined;
     return {
       nodeId: id,
@@ -3267,7 +3298,7 @@ export function walkSkillSequence(
       });
     } else {
       const parsedFromText = parseSkillCall(text);
-      if (parsedFromText && parsedFromText.target) {
+      if (parsedFromText && parsedFromText.target && parsedFromText.explicit) {
         failureHandlers.push({
           description,
           args: parsedFromText.args,

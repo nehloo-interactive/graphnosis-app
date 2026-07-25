@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/desktop-sidecar",
-  "version": "1.27.5",
+  "version": "1.27.6",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
@@ -24,6 +24,7 @@
     "test:sharing-scope": "node --test tests/sharing-scope.test.mjs",
     "test:memory-hygiene": "node --test tests/memory-hygiene.test.mjs",
     "test:http-oauth": "node --test tests/mcp-http-oauth.test.mjs",
+    "test:skill-call-parse": "node --test tests/skill-call-parse.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
