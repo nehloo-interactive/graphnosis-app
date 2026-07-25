@@ -377,7 +377,11 @@ jobs:
         # so it must be rebuilt from the stapled bundle and re-signed, or the
         # updater would hand existing installs the unlaunchable version.
         run: |
-          BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle/macos"
+          # ABSOLUTE path: `pnpm --filter <pkg> exec` runs with the working
+          # directory set to that package (apps/desktop), so a repo-root-relative
+          # path handed to the signer resolves to apps/desktop/apps/desktop/… and
+          # the file is reported missing even though it was just created.
+          BUNDLE_DIR="$PWD/apps/desktop/src-tauri/target/release/bundle/macos"
           TAR="$BUNDLE_DIR/Graphnosis.app.tar.gz"
 
           rm -f "$TAR" "$TAR.sig"
