@@ -385,8 +385,8 @@ const LlmDistillInput = z.object({
  *   3. Threshold 0.6; keep up to 3 candidates ranked by score.
  *
  * Token splitting handles camelCase, snake_case, kebab-case, and spaces —
- * so "Romania Unpublished" and "UnpublishedRomania" both tokenize to
- * {romania, unpublished} and match via Jaccard = 1.0.
+ * so "Planning Trip" and "TripPlanning" both tokenize to
+ * {planning, trip} and match via Jaccard = 1.0.
  */
 type EngramCandidate = {
   graphId: string;
@@ -407,7 +407,7 @@ function normalizeName(s: string): string {
 }
 
 function tokenize(s: string): string[] {
-  // Split camelCase ("UnpublishedRomania" → ["Unpublished","Romania"]),
+  // Split camelCase ("TripPlanning" → ["Trip","Planning"]),
   // then on non-alphanumerics, then lowercase, drop empties.
   return s
     .normalize('NFC')
@@ -1983,7 +1983,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
           properties: {
             target_engram: {
               type: 'string',
-              description: 'PREFERRED: a human-friendly engram name to save into (e.g. "Book Notes", "Work decisions", "Trip 2027"). Graphnosis resolves this name against existing engrams via fuzzy matching: exact match → writes immediately; ambiguous (close matches like "unpublished" ↔ "UnpublishedRomania") → user picks in a banner; no match → user confirms creating a new engram in the banner. The AI NEVER auto-creates engrams. Use this in preference to `graphId` whenever you have a topic-based name — it\'s name-tolerant ("Book Notes" / "book-notes" / "booknotes" all resolve to the same engram) and surfaces a user-friendly confirmation UI when the name is new. If neither this nor `graphId` is given, the note goes to the user\'s default engram.',
+              description: 'PREFERRED: a human-friendly engram name to save into (e.g. "Book Notes", "Work decisions", "Trip 2027"). Graphnosis resolves this name against existing engrams via fuzzy matching: exact match → writes immediately; ambiguous (close matches like "trip" ↔ "TripPlanning") → user picks in a banner; no match → user confirms creating a new engram in the banner. The AI NEVER auto-creates engrams. Use this in preference to `graphId` whenever you have a topic-based name — it\'s name-tolerant ("Book Notes" / "book-notes" / "booknotes" all resolve to the same engram) and surfaces a user-friendly confirmation UI when the name is new. If neither this nor `graphId` is given, the note goes to the user\'s default engram.',
             },
             graphId: {
               type: 'string',

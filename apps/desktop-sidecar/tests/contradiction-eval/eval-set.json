@@ -51,9 +51,9 @@
       "note": "Multi-anchor tech-stack conflict (Orion Database, PostgreSQL/MongoDB)." },
 
     { "id": "S01", "source": "curated", "category": "temporal-supersession", "expectedLane": "supersession",
-      "snippetA": "Back in 2019, Nelu Lazar was based in Berlin.",
-      "snippetB": "Since 2023, Nelu Lazar has been based in Munich.",
-      "note": "Dated change + anchor Nelu Lazar → supersession lane, not live conflict." },
+      "snippetA": "Back in 2019, Jane Halloran was based in Berlin.",
+      "snippetB": "Since 2023, Jane Halloran has been based in Munich.",
+      "note": "Dated change + anchor Jane Halloran → supersession lane, not live conflict." },
     { "id": "S02", "source": "curated", "category": "temporal-supersession", "expectedLane": "supersession",
       "snippetA": "As of 2020, Acme Corporation employed 50 people.",
       "snippetB": "As of 2024, Acme Corporation employed 200 people.",

@@ -1876,7 +1876,7 @@ export async function runGhampusSend(
       });
       if (formatterAnswer && !isRawRecallDump(formatterAnswer)) {
         // Mirror the SAME project-scope narrowing tryFormatterFallback applied
-        // internally (e.g. "todos for world's carols" → only World's Carols
+        // internally (e.g. "todos for client's onboarding" → only Client's Onboarding
         // nodes). If polish/verification still ends up running on this answer
         // for any reason, it must not see the full unscoped node set — that's
         // exactly how a correctly-scoped 1-item answer got "helpfully"

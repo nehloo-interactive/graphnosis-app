@@ -49,7 +49,7 @@ import {
  * it finds nothing bullet-shaped and returns null, the narrowing is thrown
  * away and its caller's fallback (formatTeamTasksByPerson, which itself falls
  * back to formatGroupedRecallList) sees the full, unscoped node set. That's
- * how "what are my todos for world's carols?" answered with unrelated todos
+ * how "what are my todos for client's onboarding?" answered with unrelated todos
  * from other projects in the same engram — hoisting the filter here makes it
  * apply to every formatter in the todo/task cascade, not just the first one.
  */

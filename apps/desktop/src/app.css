@@ -2677,7 +2677,7 @@
         cursor: pointer;
         /* Wrap long engram names onto multiple lines instead of cutting
            them off with ellipsis — the dropdown is capped at max-width
-           320px and some names (UnpublishedRomania, Graphnosis-app-nf9p)
+           320px and some names (TripPlanningArchive, Graphnosis-app-nf9p)
            overflow that. word-break keeps even a single un-spaced name
            breakable at any character so nothing escapes the panel. */
         white-space: normal;

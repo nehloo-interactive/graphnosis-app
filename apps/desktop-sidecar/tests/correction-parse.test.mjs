@@ -99,11 +99,11 @@ test('transposed nodeId recovers the correct target (does NOT drop the edit)', (
 });
 
 test('honours a non-top in-pool candidate — no forced candidates[0]', () => {
-  // Recall ranks the "lives in Madrid" node #1 (shared entity "Diana Gini"),
+  // Recall ranks the "lives in Madrid" node #1 (shared entity "Jane Halloran"),
   // but the model correctly targets the TODO node at #2. The guardrail must keep
   // the model's choice, not force the top match.
   const candidates = [
-    { graphId: 'g1', nodeId: 'KC5nq3w3XSEMGX0rl76kp', text: 'Diana Gini lives in Madrid', viaGnn: false },
+    { graphId: 'g1', nodeId: 'KC5nq3w3XSEMGX0rl76kp', text: 'Jane Halloran lives in Madrid', viaGnn: false },
     { graphId: 'g1', nodeId: 'qqpR_gIDLNHrB-rkJ1j3J', text: 'TODO: press release for Game On launch', viaGnn: false },
   ];
   const { diff, scopeWarnings } = scopeLlmCorrectionDiff(
@@ -120,7 +120,7 @@ test('proposeCorrection NEVER substitutes an unrelated top-match on an unmatched
   const fakeHost = {
     recall: async () => ({
       byGraph: new Map([['g1', [
-        { nodeId: 'KC5nq3w3XSEMGX0rl76kp', text: 'Diana Gini lives in Madrid' },
+        { nodeId: 'KC5nq3w3XSEMGX0rl76kp', text: 'Jane Halloran lives in Madrid' },
         { nodeId: 'qqpR_gIDLNHrB-rkJ1j3J', text: 'TODO press release' },
       ]]]),
     }),

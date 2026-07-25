@@ -203,7 +203,7 @@
       "id": "language-en-query-ro-recall",
       "category": "recall",
       "lang": "en",
-      "text": "who can help with social media posts for unpublishedromania?",
+      "text": "who can help with social media posts for tripplanning?",
       "tags": ["regression", "language-match"],
       "overlayProfiles": ["deterministic"]
     },
@@ -211,7 +211,7 @@
       "id": "language-ro-query-ro-recall",
       "category": "recall",
       "lang": "ro",
-      "text": "cine poate sa ma ajute cu postarile de social media pentru unpublishedromania?",
+      "text": "cine poate sa ma ajute cu postarile de social media pentru tripplanning?",
       "tags": ["regression", "language-match"],
       "overlayProfiles": ["deterministic"]
     }

@@ -115,7 +115,7 @@ export interface GhampusQueryHints {
   asksForRoles: boolean;
   /** Single-person role query (e.g. "ce rol are andrea lewis?") — not a team roster list. */
   wantsPersonRole: boolean;
-  /** Person scoped to org/engram (e.g. "what about robert from unpublishedromania?"). */
+  /** Person scoped to org/engram (e.g. "what about robert from tripplanning?"). */
   wantsPersonInContext: boolean;
   /** "what about X" / "tell me about X" without org scope — topic/person lookup, not save. */
   wantsTopicAbout: boolean;

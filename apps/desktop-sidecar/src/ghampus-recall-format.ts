@@ -814,11 +814,12 @@ export function extractPersonSectionsFromNodes(nodes) {
   return merged;
 }
 export function extractProjectScopeFromQuery(query: string) {
-  // Up to 4 words so multi-word project/event names survive ("world's
-  // carols", "black sea vallachs") — apostrophes (straight + curly) included
-  // so "world's carols" isn't truncated to just "world" at the apostrophe,
-  // which previously caused scope-matching to accidentally match ANY node
-  // containing the bare word "world" rather than the actual named project.
+  // Up to 4 words so multi-word project/event names survive ("client's
+  // onboarding", "spring product launch") — apostrophes (straight + curly)
+  // included so "client's onboarding" isn't truncated to just "client" at
+  // the apostrophe, which previously caused scope-matching to accidentally
+  // match ANY node containing the bare word "client" rather than the actual
+  // named project.
   const m = query.match(
     /\b(?:for|pentru|from|in|at|on|about|despre|din|de la)\s+([a-z0-9][\w'’-]*(?:\s+[a-z0-9][\w'’-]*){0,3})/i
   );

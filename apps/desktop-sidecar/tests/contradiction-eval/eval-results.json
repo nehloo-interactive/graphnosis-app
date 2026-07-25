@@ -289,13 +289,13 @@
       "temporalVerdict": "temporal_supersession",
       "sharedN": 3,
       "shared": [
-        "Nelu Lazar",
+        "Jane Halloran",
         "Nelu",
         "Lazar"
       ],
-      "snippetA": "Back in 2019, Nelu Lazar was based in Berlin.",
-      "snippetB": "Since 2023, Nelu Lazar has been based in Munich.",
-      "note": "Dated change + anchor Nelu Lazar → supersession lane, not live conflict."
+      "snippetA": "Back in 2019, Jane Halloran was based in Berlin.",
+      "snippetB": "Since 2023, Jane Halloran has been based in Munich.",
+      "note": "Dated change + anchor Jane Halloran → supersession lane, not live conflict."
     },
     {
       "id": "S02",
