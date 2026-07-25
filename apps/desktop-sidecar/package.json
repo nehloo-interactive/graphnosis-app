@@ -25,6 +25,7 @@
     "test:memory-hygiene": "node --test tests/memory-hygiene.test.mjs",
     "test:http-oauth": "node --test tests/mcp-http-oauth.test.mjs",
     "test:skill-call-parse": "node --test tests/skill-call-parse.test.mjs",
+    "test:skill-call-linking": "node --test tests/skill-call-linking.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

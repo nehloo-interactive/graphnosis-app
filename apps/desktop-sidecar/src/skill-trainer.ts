@@ -2740,8 +2740,23 @@ export async function linkSkillCalls(
   const stale = directed
     // Match any edge whose evidence starts with the SKILL_CALLS_EVIDENCE base tag,
     // since structured-call edges have `;capture=...` etc. appended.
-    .filter((e) => e.evidence?.startsWith(SKILL_CALLS_EVIDENCE) &&
-      (nodeSet.has(e.from) || nodeSet.has(e.to)))
+    //
+    // Scope this to edges ORIGINATING here. This pass rebuilds exactly the calls
+    // made BY this skill, so those are the only ones it may retire. It used to
+    // also match `nodeSet.has(e.to)`, which deleted INCOMING calls — edges owned
+    // by some other skill that references this one — and then never recreated
+    // them, because only outgoing edges get rebuilt below.
+    //
+    // That silently destroyed working links: training skill A wrote A→B, and the
+    // refreshIncomingCallsToSkill sweep immediately afterwards ran this function
+    // for B, whose pass deleted A→B as "stale". A was excluded from that sweep,
+    // so nothing restored it and A's call showed as unresolved from then on.
+    //
+    // Incoming edges are still repaired after a retrain: refreshIncomingCallsToSkill
+    // re-runs this function for each CALLER, and the caller's own pass retires its
+    // outgoing edges (including any pointing at a superseded title node) and
+    // rewrites them against the new one.
+    .filter((e) => e.evidence?.startsWith(SKILL_CALLS_EVIDENCE) && nodeSet.has(e.from))
     .map((e) => e.id);
   if (stale.length > 0) await host.unlinkEdgesBatch(graphId, stale);
 
