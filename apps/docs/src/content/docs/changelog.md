@@ -15,7 +15,16 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
-## v1.27.6 — Hardware-backed remote unlock, and the version number tells the truth
+## v1.27.7 — Browser access actually works now
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
+
+Opening your cortex from a phone or another computer has been documented since 1.26.0, but the page it served was a placeholder saying the browser UI "is not yet built for this deployment". The interface was never included in the installed app. It is now.
+
+### Fixed
+
+- **Browser access served a placeholder instead of the app.** Enabling *Settings → Mobile & Remote → Browser access* and opening the address from another device showed a status page rather than Graphnosis. The web interface was missing from every released build — including 1.26.0, which announced this as fixed. Reaching your cortex from a phone or a second computer now loads the real app.
+- **Trained skills no longer lose their links to other skills.** A skill that calls another skill had that connection dropped moments after it was saved, so walking it reported the sub-skill as missing even though it was right there in the same engram.
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
 
