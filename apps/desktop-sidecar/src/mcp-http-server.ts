@@ -80,6 +80,31 @@ async function readTextBody(req: http.IncomingMessage): Promise<string> {
 }
 
 /**
+ * True when `addr` is a loopback address. Handles IPv4, IPv6, and the
+ * IPv4-mapped-IPv6 form Node reports on dual-stack sockets (::ffff:127.0.0.1).
+ */
+function isLoopbackAddress(addr: string | undefined): boolean {
+  if (!addr) return false;
+  const a = addr.startsWith('::ffff:') ? addr.slice('::ffff:'.length) : addr;
+  return a === '::1' || a.startsWith('127.');
+}
+
+/**
+ * True when the request came from a local process talking straight to this
+ * listener: loopback TCP peer AND no reverse-proxy forwarding headers. A
+ * TLS-terminating proxy on this machine (tailscale serve, nginx) also
+ * connects from loopback, but it stamps X-Forwarded-* — those requests
+ * originate remotely and must not inherit loopback trust.
+ */
+function isLocalDirectRequest(req: http.IncomingMessage): boolean {
+  if (!isLoopbackAddress(req.socket.remoteAddress ?? undefined)) return false;
+  if (req.headers['x-forwarded-for'] !== undefined
+    || req.headers['x-forwarded-proto'] !== undefined
+    || req.headers['x-forwarded-host'] !== undefined) return false;
+  return true;
+}
+
+/**
  * Poll a newly-connected MCP server for the client's identity (name +
  * version from the `initialize` handshake). The SDK populates this
  * asynchronously; we probe every 200ms for up to 10s and update the
@@ -125,9 +150,19 @@ function pollForClientInfo(connId: string, mcpServer: McpServer): void {
  * bearer token as the access_token. After the one-time OAuth handshake,
  * every request carries the correct bearer token.
  *
+ * The auto-approving OAuth endpoints are LOCAL-DIRECT ONLY: they respond
+ * exclusively to loopback connections that carry no X-Forwarded-* headers.
+ * Requests arriving over the network — or through a TLS-terminating proxy
+ * such as tailscale serve, which connects from loopback but stamps
+ * X-Forwarded-* — get 403 and must authenticate with the pre-shared bearer
+ * token in the Authorization header instead. Otherwise any host that could
+ * reach an exposed bridge could mint the master token via the
+ * no-interaction flow.
+ *
  * Binds to 127.0.0.1 by default — only reachable locally or over an
  * authenticated VPN (e.g. Tailscale). The user explicitly sets host to
- * '0.0.0.0' in Settings to expose it on the LAN.
+ * '0.0.0.0' in Settings to expose it on the LAN. Behind a TLS-terminating
+ * proxy the advertised endpoint URLs honor X-Forwarded-Proto/-Host.
  */
 export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.Server> {
   const sessions = new Map<string, Session>();
@@ -138,17 +173,32 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
 
   // Short-lived device codes for the OAuth Device Authorization Grant (RFC 8628).
   // Used by CLI clients (gh copilot, etc.) that cannot complete a browser redirect.
-  // Auto-approved on creation since this is a loopback server.
+  // Auto-approved on creation for local-direct callers only.
   const pendingDeviceCodes = new Map<string, PendingDeviceCode>();
 
   // Ring buffer of the last 50 OAuth/auth events for the /oauth/debug endpoint.
-  // Accessible without authentication so issues can be diagnosed from a terminal
-  // even on a production build where stderr isn't visible.
+  // Accessible without authentication — but only from local direct connections —
+  // so issues can be diagnosed from a terminal even on a production build where
+  // stderr isn't visible.
   const debugLog: Array<{ ts: string; msg: string }> = [];
   function oauthLog(msg: string): void {
     console.error(`[graphnosis-http-bridge] ${msg}`);
     if (debugLog.length >= 50) debugLog.shift();
     debugLog.push({ ts: new Date().toISOString(), msg });
+  }
+
+  // OAuth auto-approval hands out the master token with zero interaction —
+  // safe only when the caller is a local process (the VS Code flow this shim
+  // exists for). Remote and proxied callers never get the interactive flow;
+  // they must send the pre-shared bearer token in the Authorization header.
+  function rejectRemoteOauth(res: http.ServerResponse, urlPath: string, ua: string): void {
+    oauthLog(`oauth denied — ${urlPath} is local-only; remote clients must send the pre-shared bearer token (ua: ${ua})`);
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'access_denied',
+      error_description: 'OAuth auto-approval is only available to local clients. '
+        + 'Configure your client with the pre-shared bearer token as an Authorization header.',
+    }));
   }
 
   // Prune stale sessions and codes periodically.
@@ -173,7 +223,16 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
 
   const server = http.createServer(async (req, res) => {
     const urlPath = req.url?.split('?')[0] ?? '';
-    const base = `http://${req.headers['host'] ?? `127.0.0.1:${opts.port}`}`;
+    // Advertised URLs must reflect what the CLIENT dialed, not what this
+    // listener speaks. Behind a TLS-terminating proxy (tailscale serve,
+    // nginx) that is https + the proxy's public host, carried in
+    // X-Forwarded-Proto / X-Forwarded-Host. Only the literal "https" value
+    // may upgrade the scheme — the headers are otherwise untrusted input.
+    const fwdProto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim();
+    const scheme = fwdProto === 'https' ? 'https' : 'http';
+    const fwdHost = String(req.headers['x-forwarded-host'] ?? '').split(',')[0]?.trim();
+    const base = `${scheme}://${fwdHost || (req.headers['host'] ?? `127.0.0.1:${opts.port}`)}`;
+    const localDirect = isLocalDirectRequest(req);
 
     // ── OPTIONS preflight — must bypass auth ─────────────────────────────────
     if (req.method === 'OPTIONS') {
@@ -186,11 +245,12 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
 
     const ua = (req.headers['user-agent'] as string | undefined) ?? '';
 
-    // ── OAuth: debug log endpoint — no auth required, loopback-only ───────────
+    // ── OAuth: debug log endpoint — no auth required, local-direct only ───────
     // Returns the last 50 OAuth/auth events as JSON. Useful for diagnosing
     // client auth failures in production builds where stderr is not visible.
     // Usage: curl http://127.0.0.1:3457/oauth/debug
     if (urlPath === '/oauth/debug' && req.method === 'GET') {
+      if (!localDirect) { rejectRemoteOauth(res, urlPath, ua); return; }
       const liveToken = typeof opts.token === 'function' ? opts.token() : opts.token;
       const peek = (s: string) => s.length > 8
         ? `${s.slice(0, 4)}…${s.slice(-4)} (len=${s.length})`
@@ -233,6 +293,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     // ── OAuth: dynamic client registration (RFC 7591) ────────────────────────
     // VS Code registers a client before starting the authorization flow.
     if (urlPath === '/oauth/register' && req.method === 'POST') {
+      if (!localDirect) { rejectRemoteOauth(res, urlPath, ua); return; }
       const clientId = randomUUID();
       oauthLog(`oauth register: issued client_id ${clientId.slice(0, 8)}… (ua: ${ua})`);
       res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -248,9 +309,10 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
 
     // ── OAuth: device authorization endpoint (RFC 8628) ──────────────────────
     // For CLI clients (gh copilot, etc.) that cannot open a browser redirect.
-    // Auto-approves immediately since this is a loopback server — the CLI gets
-    // its token on the first poll without any user interaction.
+    // Auto-approves immediately for local-direct callers — the CLI gets its
+    // token on the first poll without any user interaction.
     if (urlPath === '/oauth/device/code' && req.method === 'POST') {
+      if (!localDirect) { rejectRemoteOauth(res, urlPath, ua); return; }
       const deviceCode = randomUUID();
       const userCode = 'GRAPHNOSIS';
       const verifyUri = `${base}/oauth/activate`;
@@ -270,19 +332,22 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     }
 
     // ── OAuth: device activation page (RFC 8628 §3.3) ────────────────────────
-    // Stub page shown when the user visits the verification_uri. Since this is
-    // a loopback server that auto-approves, no real user action is needed — but
-    // some CLI clients open this URL in a browser as confirmation.
+    // Stub page shown when the user visits the verification_uri. Local-direct
+    // callers auto-approve, so no real user action is needed — but some CLI
+    // clients open this URL in a browser as confirmation.
     if (urlPath === '/oauth/activate') {
+      if (!localDirect) { rejectRemoteOauth(res, urlPath, ua); return; }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2em"><h2>Graphnosis MCP</h2><p>Authorization approved. You may close this tab and return to your terminal.</p></body></html>');
       return;
     }
 
     // ── OAuth: authorization endpoint ─────────────────────────────────────────
-    // Auto-approves for localhost: generates an auth code and immediately
-    // redirects back to VS Code's loopback callback server. No user click needed.
+    // Auto-approves for local-direct callers: generates an auth code and
+    // immediately redirects back to VS Code's loopback callback server. No
+    // user click needed.
     if (urlPath === '/oauth/authorize' && req.method === 'GET') {
+      if (!localDirect) { rejectRemoteOauth(res, urlPath, ua); return; }
       const params = new URLSearchParams(req.url?.split('?')[1] ?? '');
       const redirectUri = params.get('redirect_uri');
       const state = params.get('state');
@@ -305,7 +370,11 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
 
     // ── OAuth: token endpoint ─────────────────────────────────────────────────
     // Exchanges an authorization code or device code for the bearer token.
+    // Local-direct only: codes are only ever minted for local callers, and the
+    // exchange returns the master token — never expose it to remote/proxied
+    // callers, who authenticate with the pre-shared token instead.
     if (urlPath === '/oauth/token' && req.method === 'POST') {
+      if (!localDirect) { rejectRemoteOauth(res, urlPath, ua); return; }
       let body: URLSearchParams;
       try {
         body = new URLSearchParams(await readTextBody(req));
