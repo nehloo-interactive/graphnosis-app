@@ -139,3 +139,6 @@ apps/desktop-sidecar/dist/smoketest.js
 apps/desktop-sidecar/dist/smoketest-brain.js
 apps/desktop-sidecar/dist/smoketest-license.js
 sbom.cdx.json
+
+# Apple provisioning profile for Secure Enclave (account-bound, do not commit)
+apps/desktop/src-tauri/embedded.provisionprofile

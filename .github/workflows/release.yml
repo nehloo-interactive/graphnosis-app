@@ -108,6 +108,26 @@ jobs:
             --options runtime --timestamp \
             apps/desktop/src-tauri/resources/libonnxruntime.1.21.0.dylib
 
+      - name: Install provisioning profile
+        env:
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        # The keychain-access-groups entitlement (Secure-Enclave biometry gate)
+        # is a RESTRICTED entitlement: on Developer-ID (non-App-Store) macOS it
+        # requires an embedded provisioning profile, or AMFI SIGKILLs the app at
+        # launch (error 163). tauri.conf.json's bundle.macOS.files copies this
+        # file into Contents/embedded.provisionprofile BEFORE Tauri signs, so the
+        # signature + notarization + DMG + updater artifacts all seal it.
+        run: |
+          if [ -z "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "ERROR: APPLE_PROVISIONING_PROFILE_BASE64 secret is not set."
+            echo "Generate a Developer ID provisioning profile for App ID"
+            echo "app.graphnosis, base64 it, and add it as a repo Actions secret."
+            exit 1
+          fi
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode \
+            -o apps/desktop/src-tauri/embedded.provisionprofile
+          echo "Wrote $(wc -c < apps/desktop/src-tauri/embedded.provisionprofile) bytes"
+
       - name: Build and notarize
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
