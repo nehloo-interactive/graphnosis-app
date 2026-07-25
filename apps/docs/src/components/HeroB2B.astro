@@ -40,16 +40,56 @@ try {
          Download CTA links to the /download chooser where the visitor
          picks their OS. -->
     <div class="max-w-4xl mx-auto text-center w-full">
-      <h1 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white leading-[1.2] tracking-tight mb-8 overflow-visible">
+      <h1 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white leading-[1.2] tracking-tight mb-3 overflow-visible">
         <span class="block pb-1">Local, encrypted, deterministic</span>
-        <span class="block pb-1 bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">job memory layer</span>
-        <span class="block pb-2">for humans, AI and local intelligence.</span>
+        <span class="block pb-2 bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">job memory layer</span>
       </h1>
+      <!-- Second deck, a step down in size so the full phrase sits on one line
+           at desktop widths. As part of the H1 it wrapped to two lines and made
+           a four-line headline that pushed the personas below the fold. -->
+      <h2 class="text-2xl sm:text-3xl lg:text-4xl font-normal text-white leading-[1.25] tracking-tight mb-8">
+        where agents live and lend each other skills.
+      </h2>
     </div>
 
-    <p class="text-xl sm:text-2xl font-bold text-center mb-8 max-w-3xl mx-auto bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
+    <p class="text-xl sm:text-2xl font-bold text-center mb-6 max-w-3xl mx-auto bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
       Graphnosis is the job memory multi-layer that just remembers —<br />
       on-premise, private, encrypted, deterministic, indexed with $0.
+    </p>
+
+    <!-- Plants the vocabulary where a reader is already leaning in. "Agempus"
+         is deliberately kept out of the H1: a coined compound spends the
+         headline's two seconds on decoding instead of comprehending, so the
+         headline carries the idea and the term is introduced here, defined. -->
+    <p class="text-center text-base sm:text-lg text-[#c4c6d6] mb-6 max-w-3xl mx-auto leading-relaxed">
+      Your agents live <em class="not-italic text-[#f0f0f5] font-semibold">inside</em> that memory multi-graph, as subgraphs &mdash;
+      an <span class="font-semibold text-[#a78bfa]">Agempus</span>, where the agent and its memory are one
+      structure rather than a service it calls out to.
+      When one needs a capability a sibling already has, it borrows that
+      <em class="not-italic text-[#f0f0f5] font-semibold">single skill</em> instead of spawning the whole agent &mdash;
+      privately, locally, and without paying to re-derive it every session.
+    </p>
+
+    <!-- Published research. Deliberately understated: the hero's job is the
+         download, so these sit below the value proposition and are styled as a
+         credibility line rather than competing calls to action. -->
+    <p class="text-center text-sm text-[#71717a] mb-8 max-w-3xl mx-auto">
+      The method is published and citable —
+      <a
+        href="https://doi.org/10.5281/zenodo.20843387"
+        target="_blank"
+        rel="noopener"
+        class="text-[#9a9db8] hover:text-[#c4c6d6] underline decoration-[#555570]/50 transition-colors"
+      >The Un-Brain</a>
+      <span class="text-[#52525b]">(Zenodo)</span>
+      &middot;
+      <a
+        href="https://doi.org/10.5281/zenodo.21205599"
+        target="_blank"
+        rel="noopener"
+        class="text-[#9a9db8] hover:text-[#c4c6d6] underline decoration-[#555570]/50 transition-colors"
+      >Borrowable Skills</a>
+      <span class="text-[#52525b]">(Zenodo)</span>
     </p>
 
     <PersonaBar />
@@ -62,57 +102,6 @@ try {
       All other product names, trademarks, and registered trademarks are the property of their respective owners.
       Graphnosis is not affiliated with, endorsed by, or sponsored by any third party.
     </p>
-
-    <!-- Local AI cards -->
-    <div class="w-full max-w-7xl mx-auto px-4 sm:px-6 mb-12">
-      <div class="grid grid-cols-5 gap-3">
-
-        <a href="/local-ai#amd" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#f97316]/40 hover:-translate-y-0.5 transition-all no-underline">
-          <div class="w-8 h-8 rounded-lg bg-[#f97316]/10 flex items-center justify-center" aria-hidden="true">
-            <svg class="w-4 h-4 text-[#f97316]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M5 12h2M10 12h4M17 12h2"/></svg>
-          </div>
-          <span class="text-xs font-bold text-[#f0f0f5]">AMD GPU</span>
-          <span class="text-[10px] text-[#71717a] leading-snug">ROCm · Linux</span>
-        </a>
-
-        <a href="/local-ai#apple-silicon" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-white/20 hover:-translate-y-0.5 transition-all no-underline">
-          <div class="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
-            <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M14.94 5.19A4.38 4.38 0 0 0 16 2a4.44 4.44 0 0 0-3 1.52 4.17 4.17 0 0 0-1 3.09 3.69 3.69 0 0 0 2.94-1.42zm2.52 7.44a4.51 4.51 0 0 1 2.16-3.81 4.66 4.66 0 0 0-3.66-2c-1.56-.16-3 .91-3.83.91s-2-.89-3.3-.87a4.92 4.92 0 0 0-4.14 2.53C2.91 12.87 4.24 17.88 6 20.47c.8 1.21 1.8 2.58 3.12 2.53s1.75-.82 3.28-.82 2 .82 3.3.79 2.22-1.24 3.06-2.45a11 11 0 0 0 1.38-2.85 4.41 4.41 0 0 1-2.68-4.04z"/></svg>
-          </div>
-          <span class="text-xs font-bold text-[#f0f0f5]">Apple Silicon</span>
-          <span class="text-[10px] text-[#71717a] leading-snug">Metal · M1–M4</span>
-        </a>
-
-        <a href="/local-ai#intel-arc" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#60a5fa]/40 hover:-translate-y-0.5 transition-all no-underline">
-          <div class="w-8 h-8 rounded-lg bg-[#60a5fa]/10 flex items-center justify-center" aria-hidden="true">
-            <svg class="w-4 h-4 text-[#60a5fa]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M8 12h8"/></svg>
-          </div>
-          <span class="text-xs font-bold text-[#f0f0f5]">Intel Arc</span>
-          <span class="text-[10px] text-[#71717a] leading-snug">oneAPI · Arc A/B</span>
-        </a>
-
-        <a href="/local-ai#nvidia" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#67e8f9]/40 hover:-translate-y-0.5 transition-all no-underline">
-          <div class="w-8 h-8 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center" aria-hidden="true">
-            <svg class="w-4 h-4 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M5 12h2M10 12h4M17 12h2"/></svg>
-          </div>
-          <span class="text-xs font-bold text-[#f0f0f5]">NVIDIA GPU</span>
-          <span class="text-[10px] text-[#71717a] leading-snug">CUDA · RTX/GTX</span>
-        </a>
-
-        <a href="/local-ai#jetson" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#a78bfa]/40 hover:-translate-y-0.5 transition-all no-underline">
-          <div class="w-8 h-8 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center" aria-hidden="true">
-            <svg class="w-4 h-4 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>
-          </div>
-          <span class="text-xs font-bold text-[#f0f0f5]">Jetson Orin</span>
-          <span class="text-[10px] text-[#71717a] leading-snug">CUDA · Edge</span>
-        </a>
-
-      </div>
-      <p class="text-center text-xs text-[#555570] mt-3">
-        Pair with Ollama to unlock Foresight — local AI insights, predictions &amp; skill training.
-        <a href="/local-ai" class="text-[#9a9db8] hover:text-[#c4c6d6] underline decoration-[#555570]/50 transition-colors ml-1">All local AI setups →</a>
-      </p>
-    </div>
 
     <!-- Professional cross-client stories -->
     <div class="w-full max-w-7xl mx-auto px-4 sm:px-6">

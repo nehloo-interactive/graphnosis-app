@@ -147,6 +147,67 @@ const offlineSources = [
       </p>
     </div>
 
+    <!-- Optional local-AI path. Framed as an invitation rather than a
+         requirement: Graphnosis works without any of this, and a hardware grid
+         with no framing reads like a system requirement. -->
+    <div class="text-center mt-16 mb-6">
+      <h3 class="text-xl sm:text-2xl font-bold text-white mb-2">Prefer local intelligence?</h3>
+      <p class="text-[#c4c6d6] max-w-2xl mx-auto text-sm leading-relaxed">
+        Entirely optional &mdash; Graphnosis runs deterministically without a model.
+        Bring your own hardware and a local LLM, and Foresight comes with it.
+      </p>
+    </div>
+    <!-- Local AI cards -->
+    <div class="w-full max-w-7xl mx-auto px-4 sm:px-6 mb-12">
+      <div class="grid grid-cols-5 gap-3">
+
+        <a href="/local-ai#amd" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#f97316]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <div class="w-8 h-8 rounded-lg bg-[#f97316]/10 flex items-center justify-center" aria-hidden="true">
+            <svg class="w-4 h-4 text-[#f97316]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M5 12h2M10 12h4M17 12h2"/></svg>
+          </div>
+          <span class="text-xs font-bold text-[#f0f0f5]">AMD GPU</span>
+          <span class="text-[10px] text-[#71717a] leading-snug">ROCm · Linux</span>
+        </a>
+
+        <a href="/local-ai#apple-silicon" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-white/20 hover:-translate-y-0.5 transition-all no-underline">
+          <div class="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
+            <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M14.94 5.19A4.38 4.38 0 0 0 16 2a4.44 4.44 0 0 0-3 1.52 4.17 4.17 0 0 0-1 3.09 3.69 3.69 0 0 0 2.94-1.42zm2.52 7.44a4.51 4.51 0 0 1 2.16-3.81 4.66 4.66 0 0 0-3.66-2c-1.56-.16-3 .91-3.83.91s-2-.89-3.3-.87a4.92 4.92 0 0 0-4.14 2.53C2.91 12.87 4.24 17.88 6 20.47c.8 1.21 1.8 2.58 3.12 2.53s1.75-.82 3.28-.82 2 .82 3.3.79 2.22-1.24 3.06-2.45a11 11 0 0 0 1.38-2.85 4.41 4.41 0 0 1-2.68-4.04z"/></svg>
+          </div>
+          <span class="text-xs font-bold text-[#f0f0f5]">Apple Silicon</span>
+          <span class="text-[10px] text-[#71717a] leading-snug">Metal · M1–M4</span>
+        </a>
+
+        <a href="/local-ai#intel-arc" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#60a5fa]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <div class="w-8 h-8 rounded-lg bg-[#60a5fa]/10 flex items-center justify-center" aria-hidden="true">
+            <svg class="w-4 h-4 text-[#60a5fa]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M8 12h8"/></svg>
+          </div>
+          <span class="text-xs font-bold text-[#f0f0f5]">Intel Arc</span>
+          <span class="text-[10px] text-[#71717a] leading-snug">oneAPI · Arc A/B</span>
+        </a>
+
+        <a href="/local-ai#nvidia" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#67e8f9]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <div class="w-8 h-8 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center" aria-hidden="true">
+            <svg class="w-4 h-4 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M5 12h2M10 12h4M17 12h2"/></svg>
+          </div>
+          <span class="text-xs font-bold text-[#f0f0f5]">NVIDIA GPU</span>
+          <span class="text-[10px] text-[#71717a] leading-snug">CUDA · RTX/GTX</span>
+        </a>
+
+        <a href="/local-ai#jetson" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center text-center gap-2 hover:border-[#a78bfa]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <div class="w-8 h-8 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center" aria-hidden="true">
+            <svg class="w-4 h-4 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>
+          </div>
+          <span class="text-xs font-bold text-[#f0f0f5]">Jetson Orin</span>
+          <span class="text-[10px] text-[#71717a] leading-snug">CUDA · Edge</span>
+        </a>
+
+      </div>
+      <p class="text-center text-xs text-[#555570] mt-3">
+        Pair with Ollama to unlock Foresight — local AI insights, predictions &amp; skill training.
+        <a href="/local-ai" class="text-[#9a9db8] hover:text-[#c4c6d6] underline decoration-[#555570]/50 transition-colors ml-1">All local AI setups →</a>
+      </p>
+    </div>
+
     <!-- CTA -->
     <div class="text-center mt-12">
       <a
@@ -158,6 +219,47 @@ const offlineSources = [
           <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
         </svg>
       </a>
+    </div>
+
+
+    <!-- Open source — the closing credibility argument, deliberately last:
+         these are outbound links, so they belong after the promise and the
+         proof rather than at the top of the section. -->
+    <div class="w-full max-w-7xl mx-auto px-4 sm:px-6 mt-16">
+      <h3 class="text-center text-sm font-semibold tracking-widest uppercase text-[#71717a] mb-6">
+        Open source &mdash; read it, audit it, run it
+      </h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+
+        <a href="https://github.com/nehloo-interactive/graphnosis-app" target="_blank" rel="noopener"
+           class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col gap-2 hover:border-[#67e8f9]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <span class="text-sm font-bold text-[#f0f0f5]">graphnosis-app</span>
+          <span class="text-xs text-[#9a9db8] leading-snug">The desktop app itself &mdash; read the code your cortex runs on.</span>
+          <span class="text-[10px] font-mono text-[#67e8f9] mt-1">FSL-1.1-Apache-2.0</span>
+        </a>
+
+        <a href="https://github.com/nehloo/Graphnosis" target="_blank" rel="noopener"
+           class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col gap-2 hover:border-[#67e8f9]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <span class="text-sm font-bold text-[#f0f0f5]">@nehloo/graphnosis</span>
+          <span class="text-xs text-[#9a9db8] leading-snug">The memory engine &mdash; indexing, recall and the deterministic multi-graph.</span>
+          <span class="text-[10px] font-mono text-[#67e8f9] mt-1">Apache-2.0</span>
+        </a>
+
+        <a href="https://github.com/nehloo/graphnosis-obsidian-plugin" target="_blank" rel="noopener"
+           class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col gap-2 hover:border-[#a78bfa]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <span class="text-sm font-bold text-[#f0f0f5]">Obsidian plugin</span>
+          <span class="text-xs text-[#9a9db8] leading-snug">Your vault becomes memory your AI can actually retrieve from.</span>
+          <span class="text-[10px] font-mono text-[#a78bfa] mt-1">GitHub</span>
+        </a>
+
+        <a href="https://github.com/nehloo-interactive/hermes-graphnosis" target="_blank" rel="noopener"
+           class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col gap-2 hover:border-[#10b981]/40 hover:-translate-y-0.5 transition-all no-underline">
+          <span class="text-sm font-bold text-[#f0f0f5]">Hermes</span>
+          <span class="text-xs text-[#9a9db8] leading-snug">Agent and desktop companion built on the same memory layer.</span>
+          <span class="text-[10px] font-mono text-[#10b981] mt-1">GitHub</span>
+        </a>
+
+      </div>
     </div>
   </div>
 </section>
