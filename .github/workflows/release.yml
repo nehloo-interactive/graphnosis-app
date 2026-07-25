@@ -108,39 +108,61 @@ jobs:
             --options runtime --timestamp \
             apps/desktop/src-tauri/resources/libonnxruntime.1.21.0.dylib
 
-      - name: Install provisioning profile
-        env:
-          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
-        # The keychain-access-groups entitlement (Secure-Enclave biometry gate)
-        # is a RESTRICTED entitlement: on Developer-ID (non-App-Store) macOS it
-        # requires an embedded provisioning profile, or AMFI SIGKILLs the app at
-        # launch (error 163). tauri.conf.json's bundle.macOS.files copies this
-        # file into Contents/embedded.provisionprofile BEFORE Tauri signs, so the
-        # signature + notarization + DMG + updater artifacts all seal it.
-        run: |
-          if [ -z "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
-            echo "ERROR: APPLE_PROVISIONING_PROFILE_BASE64 secret is not set."
-            echo "Generate a Developer ID provisioning profile for App ID"
-            echo "app.graphnosis, base64 it, and add it as a repo Actions secret."
-            exit 1
-          fi
-          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode \
-            -o apps/desktop/src-tauri/embedded.provisionprofile
-          echo "Wrote $(wc -c < apps/desktop/src-tauri/embedded.provisionprofile) bytes"
-
       - name: Build and notarize
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: C76ZLJ5UQW
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        # --features keychain: compile the hardened path — passphrase + remote
-        # token move from the 0600 file cache to the macOS Keychain, the remote
-        # token sealed under a Secure-Enclave biometry access control. Requires
-        # the keychain-access-groups entitlement (entitlements.plist). Only the
-        # signed Developer-ID (this) build enables it; Windows already uses
-        # keyring, and Linux deliberately keeps the file cache.
-        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --features keychain
+        # NOTE: the Secure-Enclave keychain path (--features keychain) is
+        # deliberately NOT built here yet. Its keychain-access-groups entitlement
+        # is restricted and, applied bundle-wide by Tauri, kills the sidecar/relay
+        # child binaries (no per-binary profile). True SE returns once per-binary
+        # entitlements + a custom notarize pass are wired and tested.
+        run: pnpm --filter @graphnosis-app/desktop tauri:build
+
+      - name: Verify bundled binaries actually launch
+        # Release gate. v1.27.0 shipped a bundle whose helper binaries carried a
+        # restricted entitlement they had no provisioning profile for; AMFI
+        # SIGKILLed them (exit 137) the moment the app spawned the sidecar, so
+        # every install failed at startup with "Synapse exited unexpectedly".
+        # codesign --verify and notarization BOTH pass on such a bundle — the
+        # only thing that catches it is executing the binaries. Do that here.
+        run: |
+          APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
+          FAILED=0
+
+          for BIN in graphnosis-sidecar graphnosis-mcp-relay; do
+            # Copy out of the bundle so a crash can't disturb the artifact.
+            cp "$APP/Contents/MacOS/$BIN" "$RUNNER_TEMP/$BIN-probe"
+            set +e
+            "$RUNNER_TEMP/$BIN-probe" --version >"$RUNNER_TEMP/$BIN.log" 2>&1
+            RC=$?
+            set -e
+            # 137 = 128+9 = SIGKILL, i.e. the OS refused to run it.
+            if [ "$RC" -eq 137 ]; then
+              echo "::error::$BIN was SIGKILLed on launch (exit 137) — the bundle is unlaunchable."
+              echo "--- entitlements on $BIN ---"
+              codesign -d --entitlements :- "$APP/Contents/MacOS/$BIN" 2>&1 || true
+              FAILED=1
+            else
+              echo "$BIN: launched (exit $RC) — OK"
+            fi
+          done
+
+          # Restricted entitlements on helper binaries are the known root cause;
+          # fail loudly even if the probe above somehow passed.
+          for BIN in graphnosis-sidecar graphnosis-mcp-relay graphnosis-biometric; do
+            if codesign -d --entitlements :- "$APP/Contents/MacOS/$BIN" 2>/dev/null \
+                 | grep -q "keychain-access-groups"; then
+              echo "::error::$BIN carries the restricted keychain-access-groups entitlement."
+              echo "Helper binaries have no provisioning profile — this will be SIGKILLed at runtime."
+              FAILED=1
+            fi
+          done
+
+          [ "$FAILED" -eq 0 ] || { echo "Bundle verification FAILED — refusing to publish."; exit 1; }
+          echo "All bundled binaries launch correctly."
 
       - name: Derive version and DMG filename
         id: meta
