@@ -39,6 +39,46 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Check version consistency
+        # v1.27.0 and v1.27.1 shipped with apps/desktop/package.json left at
+        # 1.26.0 while tauri.conf.json said 1.27.x. Vite injects __APP_VERSION__
+        # from that package.json, so both releases *displayed* the old version in
+        # the UI — after an incident fix, users could not tell whether they had
+        # actually received it. Nothing else catches this: the binary, installer
+        # filename, and updater manifest all come from tauri.conf.json and were
+        # perfectly correct.
+        run: |
+          CANON=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          echo "canonical version (tauri.conf.json): $CANON"
+          FAILED=0
+
+          # Every file that must track the release version. The repo-root
+          # package.json is intentionally excluded: it is the workspace manifest
+          # and has deliberately stayed at its own version across releases.
+          for f in apps/desktop/package.json apps/desktop-sidecar/package.json; do
+            V=$(node -p "require('./$f').version")
+            if [ "$V" != "$CANON" ]; then
+              echo "::error::$f is $V but tauri.conf.json is $CANON"
+              FAILED=1
+            else
+              echo "$f: $V — OK"
+            fi
+          done
+
+          # The tag being built must match too, so a mis-tagged release cannot
+          # publish under the wrong number.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG_VER="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VER" != "$CANON" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $CANON"
+              FAILED=1
+            else
+              echo "tag $GITHUB_REF_NAME matches $CANON — OK"
+            fi
+          fi
+
+          [ "$FAILED" -eq 0 ] || { echo "Version consistency check FAILED — refusing to build."; exit 1; }
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -108,18 +148,61 @@ jobs:
             --options runtime --timestamp \
             apps/desktop/src-tauri/resources/libonnxruntime.1.21.0.dylib
 
-      - name: Build and notarize
+      - name: Install provisioning profile
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: C76ZLJ5UQW
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        # keychain-access-groups (the Secure-Enclave biometry gate) is a
+        # RESTRICTED entitlement: on Developer-ID macOS the binary carrying it
+        # needs an embedded provisioning profile, or AMFI SIGKILLs it at launch.
+        run: |
+          if [ -z "$APPLE_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "::error::APPLE_PROVISIONING_PROFILE_BASE64 secret is not set."
+            exit 1
+          fi
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode \
+            -o apps/desktop/src-tauri/embedded.provisionprofile
+          echo "Wrote $(wc -c < apps/desktop/src-tauri/embedded.provisionprofile) bytes"
+
+      # ── Secure-Enclave signing, in four parts ────────────────────────────────
+      #
+      # Tauri applies ONE entitlements file to EVERY binary it bundles. The SE
+      # entitlement is restricted and only the outer .app has a profile
+      # authorizing it, so granting it bundle-wide gets the helper binaries
+      # SIGKILLed (this is exactly what broke v1.27.0).
+      #
+      # So: let Tauri sign everything with the clean entitlements file, then
+      # re-sign ONLY the outer app with the restricted one. Re-signing the outer
+      # bundle does not touch the helper binaries' own signatures, but it DOES
+      # invalidate the notarization ticket, the DMG, and the updater tarball —
+      # all of which Tauri derives from the signed app. Hence we build the .app
+      # alone here and produce the DMG + updater artifacts ourselves afterwards.
+      - name: Build app bundle (unnotarized)
+        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        # NOTE: the Secure-Enclave keychain path (--features keychain) is
-        # deliberately NOT built here yet. Its keychain-access-groups entitlement
-        # is restricted and, applied bundle-wide by Tauri, kills the sidecar/relay
-        # child binaries (no per-binary profile). True SE returns once per-binary
-        # entitlements + a custom notarize pass are wired and tested.
-        run: pnpm --filter @graphnosis-app/desktop tauri:build
+        # APPLE_ID / APPLE_PASSWORD are deliberately NOT passed: notarizing here
+        # would be wasted work, since the re-sign below invalidates the ticket.
+        #
+        # "dmg" is included even though the DMG produced here is discarded and
+        # rebuilt after the re-sign: Tauri only emits its bundle_dmg.sh helper as
+        # part of the dmg target, and the rebuild step depends on that script to
+        # keep the installer window identical to previous releases.
+        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --features keychain --bundles app,dmg
+
+      - name: Re-sign app with Secure-Enclave entitlement
+        run: |
+          APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
+          IDENTITY="Developer ID Application: Nehloo Interactive LLC (C76ZLJ5UQW)"
+
+          # Tauri's bundle.macOS.files already places the profile in Contents/;
+          # copy defensively in case that mapping is ever dropped.
+          cp -f apps/desktop/src-tauri/embedded.provisionprofile \
+                "$APP/Contents/embedded.provisionprofile"
+
+          codesign --force --sign "$IDENTITY" \
+            --entitlements apps/desktop/src-tauri/entitlements.app.plist \
+            --options runtime --timestamp "$APP"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Verify bundled binaries actually launch
         # Release gate. v1.27.0 shipped a bundle whose helper binaries carried a
@@ -161,8 +244,137 @@ jobs:
             fi
           done
 
+          # Positive check: the outer app MUST carry the SE entitlement and the
+          # profile authorizing it. Without this, a silent regression to the
+          # soft token path would ship looking perfectly healthy.
+          if ! codesign -d --entitlements :- "$APP/Contents/MacOS/graphnosis-app" 2>/dev/null \
+               | grep -q "keychain-access-groups"; then
+            echo "::error::graphnosis-app is MISSING keychain-access-groups — Secure Enclave would silently fall back."
+            FAILED=1
+          fi
+          if [ ! -f "$APP/Contents/embedded.provisionprofile" ]; then
+            echo "::error::embedded.provisionprofile missing from the bundle — the app will be SIGKILLed at launch."
+            FAILED=1
+          fi
+
+          # The app carries a restricted entitlement, so it is the binary most
+          # likely to be refused by AMFI. It is a GUI app with no --version flag
+          # and never exits on its own, so launch it detached and check only
+          # whether the OS killed it: AMFI SIGKILLs happen instantly at exec.
+          # A non-137 exit (e.g. no window server on a headless runner) is fine —
+          # we are testing "was it allowed to run", not "did it open a window".
+          "$APP/Contents/MacOS/graphnosis-app" >"$RUNNER_TEMP/app.log" 2>&1 &
+          APP_PID=$!
+          sleep 5
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            echo "graphnosis-app: running after 5s — AMFI accepted the entitlement"
+            kill "$APP_PID" 2>/dev/null || true
+          else
+            set +e; wait "$APP_PID"; APP_RC=$?; set -e
+            if [ "$APP_RC" -eq 137 ]; then
+              echo "::error::graphnosis-app was SIGKILLed (exit 137) — profile/entitlement mismatch."
+              cat "$RUNNER_TEMP/app.log" || true
+              FAILED=1
+            else
+              echo "graphnosis-app: exited $APP_RC (not SIGKILL) — entitlement accepted"
+            fi
+          fi
+
           [ "$FAILED" -eq 0 ] || { echo "Bundle verification FAILED — refusing to publish."; exit 1; }
-          echo "All bundled binaries launch correctly."
+          echo "All bundled binaries launch correctly; Secure-Enclave entitlement present."
+
+      - name: Notarize and staple app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: C76ZLJ5UQW
+        run: |
+          APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
+          ZIP="$RUNNER_TEMP/Graphnosis-notarize.zip"
+
+          # ditto preserves the signature; `zip` does not.
+          /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
+
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+      - name: Build DMG
+        run: |
+          BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle"
+          APP="$BUNDLE_DIR/macos/Graphnosis.app"
+          SEMVER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          DMG_DIR="$BUNDLE_DIR/dmg"
+          DMG="$DMG_DIR/Graphnosis_${SEMVER}_aarch64.dmg"
+
+          # Tauri emits its own bundle_dmg.sh; reusing it keeps the DMG window
+          # layout identical to every previous release instead of hand-rolling
+          # hdiutil and silently changing the install experience.
+          if [ ! -f "$DMG_DIR/bundle_dmg.sh" ]; then
+            echo "::error::bundle_dmg.sh not found — cannot build a DMG matching prior releases."
+            exit 1
+          fi
+
+          # --skip-jenkins skips the Finder-prettifying AppleScript, which cannot
+          # run without a GUI session (osascript fails with -1743). Tauri passes
+          # this flag itself whenever CI is set, so every previous release DMG
+          # was built this way too — matching it keeps the output identical.
+          rm -f "$DMG"
+          ( cd "$DMG_DIR" && ./bundle_dmg.sh \
+              --volname "Graphnosis" \
+              --icon "Graphnosis.app" 180 170 \
+              --app-drop-link 480 170 \
+              --window-size 660 400 \
+              --hide-extension "Graphnosis.app" \
+              --skip-jenkins \
+              "$(basename "$DMG")" \
+              "../macos/Graphnosis.app" )
+
+          codesign --force --sign "Developer ID Application: Nehloo Interactive LLC (C76ZLJ5UQW)" \
+            --timestamp "$DMG"
+          echo "Built $DMG"
+
+      - name: Notarize and staple DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: C76ZLJ5UQW
+        run: |
+          SEMVER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          DMG="apps/desktop/src-tauri/target/release/bundle/dmg/Graphnosis_${SEMVER}_aarch64.dmg"
+
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      - name: Build updater artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        # The tarball Tauri produced during the build wraps the pre-re-sign app,
+        # so it must be rebuilt from the stapled bundle and re-signed, or the
+        # updater would hand existing installs the unlaunchable version.
+        run: |
+          BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle/macos"
+          TAR="$BUNDLE_DIR/Graphnosis.app.tar.gz"
+
+          rm -f "$TAR" "$TAR.sig"
+          ( cd "$BUNDLE_DIR" && /usr/bin/tar czf "Graphnosis.app.tar.gz" "Graphnosis.app" )
+
+          pnpm --filter @graphnosis-app/desktop exec tauri signer sign \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" "$TAR"
+
+          [ -f "$TAR.sig" ] || { echo "::error::updater signature was not produced."; exit 1; }
+          echo "Updater artifacts ready: $TAR (+ .sig)"
 
       - name: Derive version and DMG filename
         id: meta
@@ -517,11 +729,16 @@ jobs:
             "Graphnosis_${SEMVER}_amd64.deb#Graphnosis ${VERSION} (Linux .deb)" \
             --clobber
 
-  # Runs as soon as build-mac succeeds — unblocks mac + linux + linux-deb
-  # downloads immediately. Does not wait for build-windows.
+  # Waits for EVERY platform build before flipping the pointer.
+  #
+  # CURRENT_VERSION is global — it drives /download/mac, /download/win,
+  # /download/linux and /download/linux-deb alike. Flipping it as soon as
+  # build-mac finished meant the Linux and Windows links pointed at assets whose
+  # builds were still running, so those downloads 404'd until they uploaded.
+  # A few minutes of extra wait is worth never serving a broken download link.
   update-cloudflare-mac:
     runs-on: ubuntu-latest
-    needs: [build-mac]
+    needs: [build-mac, build-windows, build-linux]
     steps:
       - name: Update Cloudflare env vars (version + mac DMG)
         env:
