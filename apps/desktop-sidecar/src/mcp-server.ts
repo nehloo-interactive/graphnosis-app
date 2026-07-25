@@ -1918,6 +1918,16 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
               maximum: 50,
               description: 'Maximum number of memory nodes to attach. Default 20. Each node is roughly one chunked memory.',
             },
+            only_engrams: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Scope the search to specific engrams by name or id. Example: the user says "check my todos" → only_engrams=["todos"]. Get names from list_engrams. Strongly recommended whenever the user names where the memory lives.',
+            },
+            except_engrams: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Exclude specific engrams from a federated search.',
+            },
           },
           required: ['query'],
         },
@@ -1947,6 +1957,16 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
               minimum: 1,
               maximum: 50,
               description: 'Maximum number of memory nodes to attach. Default 20.',
+            },
+            only_engrams: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Scope the search to specific engrams by name or id. Example: only_engrams=["todos"] when the user names where the memory lives.',
+            },
+            except_engrams: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Exclude specific engrams from a federated search.',
             },
           },
           required: ['query'],

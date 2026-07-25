@@ -224,6 +224,24 @@ export function buildOverlaySection(
 
 export const ANCHOR_SCORE = 99;
 
+// Fragment anchors — nodes matched only via a SINGLE-TOKEN query entity
+// (one bare word out of a multi-word proper noun) — are still forced into
+// the candidate pool, but at a score that loses federation ties to
+// full-phrase entity matches. With a flat ANCHOR_SCORE, a 4-word query
+// naming a 3-word event anchored ~50 nodes across every engram that merely
+// mentioned one of those words, all tied at 99, and the 20-node federation
+// budget filled with big-engram noise while the exact-phrase 0.89 match in
+// a 5-source engram lost the tie-break lottery and its engram was reported
+// as "no matches".
+export const ANCHOR_SCORE_FRAGMENT = 97;
+
+/** Anchor score by matched-entity specificity: multi-word (or quoted)
+ *  entities get full priority; single-token fragments a notch below. */
+export function anchorScoreForEntity(matchedEntity: string | undefined): number {
+  if (!matchedEntity) return ANCHOR_SCORE_FRAGMENT;
+  return matchedEntity.trim().split(/\s+/).length >= 2 ? ANCHOR_SCORE : ANCHOR_SCORE_FRAGMENT;
+}
+
 // ── GNN-driven recall (Batch 11) ────────────────────────────────────────────
 //
 // The GNN overlay (.gnn) is read at recall-time to actually IMPROVE recall,
@@ -432,32 +450,52 @@ export function selectAnchorNodes(
   active: Set<string>,
   entities: string[],
   max: number,
-): Array<{ nodeId: string; text: string }> {
+): Array<{ nodeId: string; text: string; matchedEntity?: string }> {
   if (entities.length === 0 || max <= 0) return [];
   // Fold diacritics on BOTH sides so an ASCII-typed query ("Romania",
   // "Bistrita") matches Unicode content ("România", "Bistrița"), and vice
   // versa. Without this, recall on any non-English content with diacritics
   // (Romanian, French, German, Polish, Vietnamese, etc.) silently misses
   // even the most obvious literal-entity hits.
-  const foldedEntities = entities.map((e) => foldDiacritics(e).toLowerCase());
-  const entityHits: Array<{ nodeId: string; text: string }> = [];
-  const contentHits: Array<{ nodeId: string; text: string }> = [];
+  const foldedEntities = entities.map((e) => ({ raw: e, folded: foldDiacritics(e).toLowerCase() }));
+  // Specificity: multi-word entities dominate single tokens; length breaks
+  // ties. This ranks WHICH anchors survive the per-graph cap AND records the
+  // matched entity so the caller can score fragment anchors below full-phrase
+  // anchors (see anchorScoreForEntity) — without it, a node matching one bare
+  // word of a multi-word event name tied a node matching the full phrase, and
+  // big engrams flooded the federation budget with fragment noise.
+  const specificityOf = (raw: string): number => raw.trim().split(/\s+/).length * 1000 + raw.length;
+  type AnchorHit = { nodeId: string; text: string; matchedEntity: string; specificity: number; viaEntity: boolean };
+  const hits: AnchorHit[] = [];
   for (const node of inspected) {
     if (!active.has(node.id)) continue;
     const nodeEntitiesFolded = (node.entities ?? []).map((e) => foldDiacritics(e).toLowerCase());
-    const entityMatch = foldedEntities.some((q) =>
-      nodeEntitiesFolded.some((ne) => ne === q || ne.includes(q) || q.includes(ne)),
-    );
-    if (entityMatch) {
-      entityHits.push({ nodeId: node.id, text: node.contentPreview });
-      continue;
-    }
     const contentFolded = foldDiacritics(node.contentPreview).toLowerCase();
-    if (foldedEntities.some((q) => contentFolded.includes(q))) {
-      contentHits.push({ nodeId: node.id, text: node.contentPreview });
+    let best: { raw: string; viaEntity: boolean } | null = null;
+    for (const q of foldedEntities) {
+      const viaEntity = nodeEntitiesFolded.some((ne) => ne === q.folded || ne.includes(q.folded) || q.folded.includes(ne));
+      const viaContent = !viaEntity && contentFolded.includes(q.folded);
+      if (!viaEntity && !viaContent) continue;
+      if (
+        !best
+        || specificityOf(q.raw) > specificityOf(best.raw)
+        || (specificityOf(q.raw) === specificityOf(best.raw) && viaEntity && !best.viaEntity)
+      ) {
+        best = { raw: q.raw, viaEntity };
+      }
+    }
+    if (best) {
+      hits.push({
+        nodeId: node.id,
+        text: node.contentPreview,
+        matchedEntity: best.raw,
+        specificity: specificityOf(best.raw),
+        viaEntity: best.viaEntity,
+      });
     }
   }
-  return [...entityHits, ...contentHits].slice(0, max);
+  hits.sort((a, b) => b.specificity - a.specificity || Number(b.viaEntity) - Number(a.viaEntity));
+  return hits.slice(0, max).map(({ nodeId, text, matchedEntity }) => ({ nodeId, text, matchedEntity }));
 }
 
 // ── Source-filename match detection ─────────────────────────────────────────

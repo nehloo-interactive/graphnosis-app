@@ -17,6 +17,8 @@ import {
 } from '../work-priority.js';
 import {
   ANCHOR_SCORE,
+  ANCHOR_SCORE_FRAGMENT,
+  anchorScoreForEntity,
   DIG_DEEPER_CROSS_ENGRAM_CAP,
   DIG_DEEPER_PER_SOURCE_CAP,
   GNN_ANCHOR_EXPANSION_PER_SEED,
@@ -238,6 +240,12 @@ export async function hostRecall(
     // can build a === KNOWLEDGE SUBGRAPH === prompt after federation narrows
     // the node set to the budget-selected subset.
     const perGraphRich = new Map<GraphId, import('../graphnosis-adapter.js').RichSubgraph>();
+    // Per-graph best candidate, captured DURING the federation's own runner
+    // pass (zero extra work). Fuels the post-merge rescue: an engram whose
+    // top node outscored the included cut but whose graph lost the budget
+    // race gets that one node merged back instead of being reported as
+    // "no matches".
+    const perGraphTopCandidate = new Map<GraphId, { nodeId: string; score: number; text: string }>();
     // Entity extraction: run once on the ORIGINAL query (not the enriched
     // version). Anchor matching is about literal-identifier preservation;
     // the LLM rewrite may strip or duplicate proper nouns, so we anchor on
@@ -305,18 +313,23 @@ export async function hostRecall(
           if (queryEntities.length > 0 && perGraphAnchorMax > 0) {
             const anchors = selectAnchorNodes(inspected, active, queryEntities, perGraphAnchorMax);
             const anchorIdSet = new Set(anchors.map((a) => a.nodeId));
-            // 1b. Boost matching ranked nodes to ANCHOR_SCORE in-place.
+            // Specificity-aware anchor scores: full-phrase entity matches keep
+            // ANCHOR_SCORE; single-token fragment matches score a notch lower
+            // so they lose federation ties to the real thing instead of
+            // flooding the budget (see ANCHOR_SCORE_FRAGMENT in recall.ts).
+            const anchorScoreById = new Map(anchors.map((a) => [a.nodeId, anchorScoreForEntity(a.matchedEntity)]));
+            // 1b. Boost matching ranked nodes to their anchor score in-place.
             let boostedInPlace = 0;
             for (const r of ranked) {
               if (anchorIdSet.has(r.nodeId)) {
-                r.score = ANCHOR_SCORE;
+                r.score = anchorScoreById.get(r.nodeId) ?? ANCHOR_SCORE_FRAGMENT;
                 boostedInPlace++;
               }
             }
             // 1a. Prepend anchored nodes the top-k missed.
             fresh = anchors
               .filter((a) => !existingIds.has(a.nodeId))
-              .map((a) => ({ graphId, nodeId: a.nodeId, score: ANCHOR_SCORE, text: a.text }));
+              .map((a) => ({ graphId, nodeId: a.nodeId, score: anchorScoreById.get(a.nodeId) ?? ANCHOR_SCORE_FRAGMENT, text: a.text }));
             for (const a of fresh) existingIds.add(a.nodeId);
             anchorCountTotal += fresh.length + boostedInPlace;
           }
@@ -337,7 +350,9 @@ export async function hostRecall(
             );
             for (const n of anchorNeighbors) {
               existingIds.add(n.nodeId);
-              fresh.push({ graphId, nodeId: n.nodeId, score: ANCHOR_SCORE, text: n.text });
+              // Fragment-tier score: GNN neighbors of anchors are speculative
+              // and must lose federation ties to direct full-phrase matches.
+              fresh.push({ graphId, nodeId: n.nodeId, score: ANCHOR_SCORE_FRAGMENT, text: n.text });
               gnnExpansionCountTotal += 1;
             }
           }
@@ -372,9 +387,16 @@ export async function hostRecall(
           // entries from `ranked`. When expansion is huge it might also
           // displace some ranked items, which is intentional: the GNN
           // expansion is the user-requested precision boost.
-          if (fresh.length === 0 && expansion.length === 0) return ranked;
-          const tailBudget = Math.max(0, k - fresh.length - expansion.length);
-          return [...fresh, ...ranked.slice(0, tailBudget), ...expansion];
+          const composed = (fresh.length === 0 && expansion.length === 0)
+            ? ranked
+            : [...fresh, ...ranked.slice(0, Math.max(0, k - fresh.length - expansion.length)), ...expansion];
+          // Record this graph's single best candidate for the rescue pass.
+          let topCandidate: { nodeId: string; score: number; text: string } | null = null;
+          for (const n of composed) {
+            if (!topCandidate || n.score > topCandidate.score) topCandidate = { nodeId: n.nodeId, score: n.score, text: n.text };
+          }
+          if (topCandidate) perGraphTopCandidate.set(graphId, topCandidate);
+          return composed;
         });
         queryChain = result.then(() => undefined, () => undefined);
         return result;
@@ -399,6 +421,46 @@ export async function hostRecall(
       host.plasticityObserver?.(sub);
     } catch (err) {
       console.error(`[host] plasticity observer failed: ${(err as Error).message}`);
+    }
+
+    // ── Best-node rescue pass ───────────────────────────────────────────────
+    // The federation's budget competition can starve a small engram whose
+    // single best node outscores everything that made the cut (observed
+    // live: a 0.89 exact-phrase todo lost all 20 slots to anchor-tied noise
+    // from large engrams, and the audit then claimed its engram had "no
+    // matches"). Any scoped engram that ended with zero included nodes but
+    // whose captured top candidate beats the weakest included score (and a
+    // sane floor) gets that one node merged back into the subgraph.
+    let rescuedCount = 0;
+    try {
+      const byGraph = sub.byGraph as Map<string, Array<{ graphId: string; nodeId: string; score: number; text: string }>>;
+      const includedScores: number[] = [];
+      for (const nodes of byGraph.values()) {
+        for (const n of nodes) {
+          if (typeof n.score === 'number') includedScores.push(n.score);
+        }
+      }
+      const weakestIncluded = includedScores.length > 0 ? Math.min(...includedScores) : 0;
+      const RESCUE_FLOOR = 0.6;
+      const rescueThreshold = Math.max(Math.min(weakestIncluded, ANCHOR_SCORE_FRAGMENT - 1), RESCUE_FLOOR);
+      for (const graphId of scopedGraphIds) {
+        if (byGraph.get(graphId)?.length) continue;
+        const top = perGraphTopCandidate.get(graphId);
+        if (!top || top.score < rescueThreshold) continue;
+        byGraph.set(graphId, [{ graphId, nodeId: top.nodeId, score: top.score, text: top.text }]);
+        const tokensEst = Math.ceil(top.text.length / 4);
+        (sub.audit as Array<{ graphId?: string; tier: string; nodesIncluded: number; tokensIncluded: number }>).push({
+          graphId,
+          tier: (host.getGraphMetadata(graphId) as { sensitivityTier?: string } | undefined)?.sensitivityTier ?? 'personal',
+          nodesIncluded: 1,
+          tokensIncluded: tokensEst,
+        });
+        (sub as { nodesIncluded: number }).nodesIncluded += 1;
+        (sub as { tokensUsed: number }).tokensUsed += tokensEst;
+        rescuedCount += 1;
+      }
+    } catch (err) {
+      console.error(`[host] recall rescue pass failed (non-fatal): ${(err as Error).message}`);
     }
 
     // Replace the federation module's flat bullet-point renderPrompt with the
@@ -457,6 +519,12 @@ export async function hostRecall(
     if (anchorCountTotal > 0) {
       richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + `_anchored ${anchorCountTotal} node(s) on entities: ${queryEntities.join(', ')}_`;
     }
+    // Rescue audit trail: name it when the budget starved an engram whose top
+    // node beat the cut — the user (and the AI) should know these came from
+    // the safety net, not the primary ranking.
+    if (rescuedCount > 0) {
+      richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + `_rescued ${rescuedCount} top-scoring node(s) from engram(s) the federation budget had dropped_`;
+    }
     // Source-filename hint: when a query entity matches a SOURCE FILENAME
     // (not the chunk content), the AI may be asking about a document by
     // its name. recall() can only see the chunks where the entity appears
@@ -480,7 +548,8 @@ export async function hostRecall(
         richPrompt = (richPrompt ? richPrompt + '\n\n' : '') +
           `💡 _The query entities also match source-file names: ${list}${more}. ` +
           `recall() only surfaces chunks where the entity is in the chunk's text content. ` +
-          `For the full document(s), use \`find_source(content:"…")\` or \`recall_source(sourceId)\`._`;
+          `ACTION: call \`recall_source(sourceId)\` on the strongest match above BEFORE composing your answer — ` +
+          `the full document usually holds what content-recall missed. \`find_source(content:"…")\` locates more._`;
       }
     }
     // GNN-recall audit trail (Batch 11): surfaces when the neural network's
