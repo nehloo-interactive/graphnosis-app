@@ -160,6 +160,10 @@ export interface TrainSkillResult {
   skillId?: string;
   /** Explanation when mode='memory-augmented' (no LLM available). */
   degradedNote?: string;
+  /** Set when the just-saved skill ended up with ZERO structural edges
+   *  (sequence/branches/calls) — the linkers' writes failed and would
+   *  otherwise be invisible (per-edge errors only reach the sidecar log). */
+  structuralEdgeWarning?: string;
   /**
    * Set when an `autonomyLevel` was requested and a skill was saved: reports the
    * applied per-skill autonomy level, including a clamp note when the request
@@ -1144,6 +1148,28 @@ export class SkillTrainer {
       }
     }
 
+    // Post-link sanity: a multi-step skill whose structural edges ALL failed
+    // to persist still walks (source-order fallback) but loses branches,
+    // loops, and @skill: call resolution — and until now that failure was
+    // invisible (each edge error is only console.error'd inside
+    // linkNodesDirectedBatch). Surface it in the train result.
+    let structuralEdgeWarning: string | undefined;
+    if (skillId !== undefined) {
+      try {
+        const savedRecord = this.host.getSourceRecord(graphId, skillId);
+        const savedNodeIds = new Set(savedRecord?.nodeIds ?? []);
+        const structuralEdges = this.host.listEdges(graphId).directed.filter(
+          (e) => e.evidence?.startsWith('skill:') && (savedNodeIds.has(e.from) || savedNodeIds.has(e.to)),
+        ).length;
+        if (savedNodeIds.size > 2 && structuralEdges === 0) {
+          structuralEdgeWarning =
+            'No structural edges (sequence/branches/calls) were persisted for this skill — '
+            + 'walks fall back to source order and @skill: calls will show as unresolved. '
+            + 'Check the sidecar log for linkNodesDirectedBatch errors.';
+        }
+      } catch { /* diagnostic only — never fail a train on it */ }
+    }
+
     return {
       original: skill,
       trained,
@@ -1153,6 +1179,7 @@ export class SkillTrainer {
       ...(skillId !== undefined ? { skillId } : {}),
       ...(degradedNote !== undefined ? { degradedNote } : {}),
       ...(autonomyNote !== undefined ? { autonomyNote } : {}),
+      ...(structuralEdgeWarning !== undefined ? { structuralEdgeWarning } : {}),
     };
     } finally {
       this.host.setSkipOverlayRecompute(false);
@@ -2813,8 +2840,15 @@ export async function linkSkillCalls(
     });
   }
 
-  if (batch.length > 0) await host.linkNodesDirectedBatch(graphId, batch);
-  return { callEdges: batch.length };
+  let createdCount = 0;
+  if (batch.length > 0) createdCount = await host.linkNodesDirectedBatch(graphId, batch);
+  if (createdCount < batch.length) {
+    // Each failed edge only console.error's inside linkNodesDirectedBatch —
+    // aggregate here so one loud line marks the walk-visible symptom
+    // (unresolved @skill: calls) with its cause.
+    console.error(`[skill-trainer] linkSkillCalls: only ${createdCount}/${batch.length} call edge(s) persisted for ${sourceId} in ${graphId} — see preceding [host] linkNodesDirectedBatch errors`);
+  }
+  return { callEdges: createdCount };
 }
 
 // ── Cross-engram skill calls (D1) ─────────────────────────────────────────────

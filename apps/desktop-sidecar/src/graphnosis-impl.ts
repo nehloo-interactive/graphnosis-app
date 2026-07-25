@@ -704,7 +704,13 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   ): Promise<{ edgeId: string; created: boolean }> {
     const h = handle as Internal;
     if (!h.built) {
-      throw new Error('Cannot link nodes on an unbuilt graph');
+      // Auto-build instead of throwing — mirrors the self-heal in the append
+      // and search paths. A throw here is swallowed PER-EDGE by the host's
+      // linkNodesDirectedBatch catch, so every skill-structure linker
+      // (sequence/goals/loops/branches/calls) could silently persist zero
+      // edges while train_skill reported success.
+      h.instance.build(h.graphId);
+      h.built = true;
     }
     if (fromNodeId === toNodeId) {
       throw new Error('Cannot link a node to itself');
@@ -760,7 +766,13 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   ): Promise<{ edgeId: string; created: boolean }> {
     const h = handle as Internal;
     if (!h.built) {
-      throw new Error('Cannot link nodes on an unbuilt graph');
+      // Auto-build instead of throwing — mirrors the self-heal in the append
+      // and search paths. A throw here is swallowed PER-EDGE by the host's
+      // linkNodesDirectedBatch catch, so every skill-structure linker
+      // (sequence/goals/loops/branches/calls) could silently persist zero
+      // edges while train_skill reported success.
+      h.instance.build(h.graphId);
+      h.built = true;
     }
     if (fromNodeId === toNodeId) {
       throw new Error('Cannot link a node to itself');

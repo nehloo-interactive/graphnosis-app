@@ -5374,6 +5374,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (result.degradedNote) {
           lines.push(`**Note:** ${result.degradedNote}`);
         }
+        if (result.structuralEdgeWarning) {
+          lines.push(`**⚠ Structure warning:** ${result.structuralEdgeWarning}`);
+        }
         lines.push(`**Influential memories:** ${result.influentialNodes.length} node(s) surfaced`);
         if (result.skillId) {
           lines.push(`**Saved as:** \`${result.skillId}\` in ${engramName} engram`);
