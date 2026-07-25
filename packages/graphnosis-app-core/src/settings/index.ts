@@ -731,6 +731,22 @@ export interface HttpBridgeSettings {
   /** Interface to bind on. '127.0.0.1' (loopback only) or '0.0.0.0' (LAN / Tailscale). */
   host: string;
   /**
+   * The address MCP clients on OTHER machines should dial, when it differs
+   * from `host:port`. Set by whoever runs the server; empty means "not
+   * published".
+   *
+   * This cannot be derived. The bridge binds loopback and is typically fronted
+   * by something outside Graphnosis — `tailscale serve`, a reverse proxy — that
+   * maps a public port onto it. The sidecar sees only its own bind address, so
+   * a thin client asking "where do I point my AI client?" cannot answer from
+   * settings alone. Recording it here lets a remote client fetch it over RPC
+   * instead of the user copying it between machines by hand.
+   *
+   * Origin only, no path: `https://host.tailnet.ts.net:8443`. The `/mcp`
+   * suffix is appended by whatever consumes this.
+   */
+  publicUrl?: string;
+  /**
    * Bearer token mobile clients must present in Authorization headers.
    * Auto-generated (UUID v4) on first enable via the App's Settings UI.
    * Shown once in the UI; user copies it into their mobile MCP client config.
@@ -2074,6 +2090,11 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           ? Math.floor(hb.port) : 3457,
         host: typeof hb.host === 'string' && hb.host.length > 0 ? hb.host : '127.0.0.1',
         token: typeof hb.token === 'string' ? hb.token : '',
+        // Origin only — trailing slashes and an accidentally-pasted /mcp are
+        // stripped so consumers can append the path unconditionally.
+        ...(typeof hb.publicUrl === 'string' && hb.publicUrl.trim().length > 0
+          ? { publicUrl: hb.publicUrl.trim().replace(/\/+$/, '').replace(/\/mcp$/i, '') }
+          : {}),
         // Preserve the encrypted-at-rest token so the host can decrypt it on
         // load; dropping it here would lose the token on every load.
         ...(typeof hb.tokenEnc === 'string' ? { tokenEnc: hb.tokenEnc } : {}),

@@ -5117,6 +5117,26 @@ ollama list</code></pre>
                 Use Tailscale to expose it remotely without opening a port.
                 <strong>All interfaces</strong> lets devices on the same WiFi connect directly.
               </p>
+              <!-- Published address. Graphnosis cannot work this out: the bridge
+                   binds loopback and whatever fronts it (tailscale serve, a
+                   reverse proxy) lives outside the app. Recording it here is what
+                   lets another machine's Graphnosis configure its AI clients
+                   automatically instead of the user copying URLs between
+                   machines. -->
+              <div style="margin-top: 14px;">
+                <label for="mobile-bridge-public-url" style="display: block; font-size: 14px; margin-bottom: 4px;">
+                  Address for other devices <span style="color: var(--fg-dim);">(optional)</span>
+                </label>
+                <input id="mobile-bridge-public-url" type="text" spellcheck="false"
+                  placeholder="https://this-machine.your-tailnet.ts.net:8443"
+                  style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 14px;" />
+                <p class="subtitle" style="font-size: 15px; margin-top: 6px;">
+                  If you front this bridge with Tailscale or a proxy, put the URL other
+                  machines dial here. Graphnosis running elsewhere reads it to set up
+                  Claude and other AI clients for you. Leave empty if only this machine
+                  connects.
+                </p>
+              </div>
             </div>
             <p id="mobile-step0-note" class="subtitle" style="font-size: 15px; margin-top: 12px; color: var(--fg-dim);"></p>
           </div>

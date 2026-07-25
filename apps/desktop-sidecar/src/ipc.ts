@@ -2932,6 +2932,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // use a real-cert https URL that satisfies iOS ATS.
         mcpTailscaleHttps: ts?.mcpHttps ?? false,
         mcpTailscaleHttpsUrl: ts?.mcpHttpsUrl ?? null, // https://host[:port] (append /mcp)
+        // Operator-declared address for clients on OTHER machines. Takes
+        // precedence over the detected Serve URL above, and is the only answer
+        // when something other than Tailscale fronts the bridge (a reverse
+        // proxy, a tunnel) — those we cannot detect. Empty when unset.
+        publicUrl: bridge?.publicUrl ?? '',
         // Browser UI (personal-server mode) connection details.
         httpUi: {
           enabled: ui?.enabled ?? false,
