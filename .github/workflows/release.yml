@@ -365,6 +365,10 @@ jobs:
       - name: Build updater artifacts
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # The signing key has no passphrase. Without this, `signer sign` tries
+          # to prompt for one and dies on the runner's absent TTY with
+          # "Device not configured (os error 6)".
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         # The tarball Tauri produced during the build wraps the pre-re-sign app,
         # so it must be rebuilt from the stapled bundle and re-signed, or the
         # updater would hand existing installs the unlaunchable version.
@@ -376,7 +380,8 @@ jobs:
           ( cd "$BUNDLE_DIR" && /usr/bin/tar czf "Graphnosis.app.tar.gz" "Graphnosis.app" )
 
           pnpm --filter @graphnosis-app/desktop exec tauri signer sign \
-            --private-key "$TAURI_SIGNING_PRIVATE_KEY" "$TAR"
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "" "$TAR"
 
           [ -f "$TAR.sig" ] || { echo "::error::updater signature was not produced."; exit 1; }
           echo "Updater artifacts ready: $TAR (+ .sig)"
