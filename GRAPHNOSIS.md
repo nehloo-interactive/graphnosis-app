@@ -1,11 +1,11 @@
 # Graphnosis memory — instructions for AI assistants
 
-v1.13.0
+v1.26.0
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 store the user owns, reached through MCP. Treat it as the source of truth for
 anything that should outlive this conversation. The MCP tools are organized
-into **10 groups** — pick by intent; the tool name shapes the audit footer.
+into **12 groups** — pick by intent; the tool name shapes the audit footer.
 
 ## The two non-negotiable habits
 
@@ -107,14 +107,17 @@ retry. If they type SKIP, do not retry and do not invent the phrase.
   `target_engram` or debugging "where did my notes go?".
 - `vitality` — 0–100 cortex health score.
 
-### Engram discovery (5)
+### Engram discovery (6)
 - `list_engrams` — names + tiers + source counts.
 - `suggest_engram` — best engram to save a note into (lexical match).
 - `browse_engram` — sources inside one engram, newest first.
 - `recent` — most recently ingested sources, all engrams.
 - `get_engram_schema` — metadata (tier, template, display name).
+- `list_attachments` — file attachments linked to engrams: path + light
+  metadata only, never content. Paths live on the owner's machine — surface
+  as references, don't try to open them from a collaborator session.
 
-### Structured recall (5)
+### Structured recall (6)
 - `recall_structured` — `recall` as JSON node array.
 - `recall_with_citations` — inline per-fact source citations.
 - `compare_engrams` — same query, two engrams, side-by-side.
@@ -124,6 +127,9 @@ retry. If they type SKIP, do not retry and do not invent the phrase.
   auto-extracted dates). Filter with `due_within_days`, `obligation_type`,
   `target_engram`. Sorted by `expiresAt`. Use for "what's due this week?",
   overdue renewals, etc. — not semantic `recall`.
+- `recall_as_of` — point-in-time audit recall at an op-log seq/timestamp
+  boundary (Enterprise, Compliance Mode): "what did we know on the audit
+  date?" Returns reduced op-log previews, not full semantic recall.
 
 ### Source operations (3)
 - `find_source` — keyword search across source IDs / refs / kinds.
@@ -131,13 +137,29 @@ retry. If they type SKIP, do not retry and do not invent the phrase.
   `recall` fragments a structured document, or when a 💡 hint named it.
 - `transfer_source` — move a source between engrams.
 
-### Engram operations (2)
+### Engram operations (9)
 - `ingest_batch` — up to 20 notes per call, each with its own `target_engram`.
 - `engram_summary` — counts + node previews snapshot.
+- `create_engram` — create a new, empty engram (owner-only; free plan caps
+  at 3 user engrams). `template: "skill"` for a trainable-skills library.
+- `export_engram` — pack a whole engram as a signed, encrypted `.gez` for
+  air-gapped sharing (Pro; owner sessions only). `encrypt_for` seals to a
+  passphrase or recipient key; without it, treat pack contents as public.
+- `import_engram` — import a `.gez` pack (no license gate; owner sessions
+  only). Lands in a QUARANTINE engram by default — invisible to recall and
+  dispatch until the owner adjudicates it.
+- `list_quarantined` — review queue: quarantined import batches with
+  provenance, signature state, and a `skill_lint` pass (owner-only).
+- `promote_import` — owner-adjudicated: move reviewed items out of
+  quarantine into a real engram. Promoted skills stay `[dispatch-safe: no]`.
+- `reject_import` — discard quarantined items (op-log recorded,
+  recoverable; owner-only).
+- `get_recipient_public_key` — this cortex's X25519 key; peers use it to
+  seal `.gez`/`.gsk` packs to the user via `encrypt_for`.
 
 (Merging engrams is a user-only action in the app — no MCP tool.)
 
-### Skills / SOPs (12)
+### Skills / SOPs (13)
 The procedural-memory layer — Standard Operating Procedures stored in the
 **Skills engram** that ships with every cortex. A skill is a graph of body
 steps with 5 evidence-tagged edge types (`skill:seq`, `skill:loop`,
@@ -174,23 +196,46 @@ Requires, Produces).
   snapshot; lineage preserved).
 - `skill_vitality` — per-skill 0–100 health (staleness, anchor coverage,
   goal completeness, structure resolution).
+- `skill_lint` — data-quality scan of trained skills: retrieval dumps baked
+  into the body, duplicate metadata, incomplete goal sets, missing `@needs`
+  tags. Corruption findings → retrain from clean source.
 
 Cross-skill orchestration syntax inside a step:
 `@skill: target-name(arg=value, arg=$priorVar) -> $captureName`. Bare form
 `@skill: target-name` also works (no args, no capture).
 
-### Brain maintenance (5) — read-only windows into the background brain
+### Autonomy (4)
+How far Ghampus may auto-run a matched skill. Effective level =
+min(authored `[dispatch-safe: …]` cap, per-skill override ?? engram
+default). Levels: L0 manual · L1 suggest · L2 preview · L3 auto. Caps:
+`yes`→L3, `partial`→L2, `no`→L1, meta/router→L1. Setters are owner-only
+and refuse levels above the cap.
+- `get_engram_autonomy` — one engram's configured level + cap + effective
+  level + per-skill breakdown.
+- `set_engram_autonomy` — set the engram default (≤ cap).
+- `get_skill_autonomy` — one skill's authored cap, override, and effective
+  level.
+- `set_skill_autonomy` — per-skill override; `level: "inherit"` clears it.
+  Stored in metadata, survives retraining.
+
+### Brain maintenance (8) — windows into the background brain
 - `duplicate_pairs` — near-IDENTICAL node pairs the background scan queued for
   review. Resolve via `edit` (merge) or `forget`.
 - `contradiction_pairs` — near-OPPOSITE pairs: memories sharing entities but
   asserting conflicting content, flagged by the periodic reflection scan.
-  Resolve them directly with **`resolve_contradiction`** (Pro; the user
+- `resolve_contradiction` — resolve a flagged pair (Pro; the user
   adjudicates — pass the two conflicting snippets as `preview` so they approve
   from a clear prompt): `mark_debate` keeps both (false positives or genuinely
   both-true), `keep_a` / `keep_b` supersede the losing side (soft-deleted,
   recoverable). NEVER resolve by adding a third note, and never supersede a
   memory the user has not explicitly chosen to retire — Graphnosis never
   resolves a conflict on the user's behalf.
+- `compare_sources` — side-by-side conflict check of two whole sources (Pro).
+- `suppressed_contradictions` — audit lane: pairs the triage detected but
+  held back from the review queue, tagged with the reason
+  (`insufficient-entities` / `low-severity` / `negation-artifact` /
+  `temporal-supersession` / `ingest-gate`). Not resolvable via
+  `resolve_contradiction` — only queued pairs are (Pro).
 - `healing_journal` — audit log of autonomous merges the brain applied.
 - `gnn_status` — Neural Network status (enabled, edge count, last run).
 - `confirm_data_access` — headless consent fallback (see the consent section).
@@ -206,7 +251,7 @@ Cross-skill orchestration syntax inside a step:
   modify** — creates a conflicting duplicate. The `mode` field reports
   which path ran (`deterministic` / `gnn-expanded` / `llm-assisted`).
 
-### Non-deterministic (6) — require local LLM (Ollama) on the user's machine
+### Foresight (6) — non-deterministic; require local LLM (Ollama) on the user's machine
 - `develop` — strategic plan grounded in the user's memory.
 - `predict` — risks + opportunities before the user acts.
 - `insights` — background-loop patterns / gaps / opportunities.
@@ -218,10 +263,16 @@ Cross-skill orchestration syntax inside a step:
 - `llm_distill` — extract discrete facts from arbitrary text, ready for
   `ingest_batch`.
 
+### Savings (1)
+- `savings_summary` — deterministic read of the on-device savings ledger:
+  recall-only substitutions + per-step model routing vs the configured
+  baseline model, over `window_days` (default 30). "How much has my memory
+  saved me?"
+
 ## The local LLM — what it does, what it does not
 
-Capabilities are toggled independently in **Graphnosis → Non-Deterministic
-Aid → Local LLM**:
+Capabilities are toggled independently in **Graphnosis → Foresight →
+Local LLM**:
 
 | Capability | Effect | Writes to graph? |
 |---|---|---|
@@ -329,9 +380,13 @@ When the user asks you to **run** a procedure:
 When the user asks you to **explain** a procedure: use `walk_skill` for
 narrative text instead. Two paired tools, two distinct purposes.
 
-`unresolvedCall` on a step means the named sub-skill wasn't found in the
-same engram — surface to the user; **do not** auto-create. Cross-engram
-calls are not supported in v1.
+`unresolvedCall` on a step means the named sub-skill couldn't be resolved —
+neither in the same engram nor through the cross-engram side-table — surface
+to the user; **do not** auto-create. Cross-engram calls are supported: a
+`@skill:` / `@parallel:` target may live in another Skills engram, resolved
+at training time via an encrypted side-table kept next to the cortex and
+flagged with `targetGraphId` on the call in the walk (see
+`walk_skill_structured`). Same-engram targets are unchanged.
 
 ## When Graphnosis is not connected
 

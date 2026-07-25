@@ -14,17 +14,21 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 | Category | Tools |
 |---|---|
 | **Core memory** | [`recall`](#recall) · [`remind`](#remind) · [`dig_deeper`](#dig_deeper) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
-| **Engram discovery** | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
-| **Structured recall** | [`recall_structured`](#recall_structured) · [`recall_obligations`](#recall_obligations) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
+| **Engram discovery** | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) · [`list_attachments`](#list_attachments) |
+| **Structured recall** | [`recall_structured`](#recall_structured) · [`recall_obligations`](#recall_obligations) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) · [`recall_as_of`](#recall_as_of) ▲ |
 | **Source operations** | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
-| **Engram operations** | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
-| **Brain maintenance** | [`duplicate_pairs`](#duplicate_pairs) ★ · [`contradiction_pairs`](#contradiction_pairs) ★ · [`compare_sources`](#compare_sources) ★ · [`resolve_contradiction`](#resolve_contradiction) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
-| **Skills (SOPs)** | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`delete_skill`](#delete_skill) · [`train_skill`](#train_skill) ★ · [`export_skill`](#export_skill) ★ · [`rollback_skill`](#rollback_skill) ★ · [`skill_history`](#skill_history) ★ · [`skill_vitality`](#skill_vitality) ★ · [`save_skill_run`](#save_skill_run) ★ · [`resume_skill_run`](#resume_skill_run) ★ |
+| **Engram operations** | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) · [`create_engram`](#create_engram) · [`export_engram`](#export_engram) ★ · [`import_engram`](#import_engram) · [`list_quarantined`](#list_quarantined) · [`promote_import`](#promote_import) · [`reject_import`](#reject_import) · [`get_recipient_public_key`](#get_recipient_public_key) |
+| **Brain maintenance** | [`duplicate_pairs`](#duplicate_pairs) ★ · [`contradiction_pairs`](#contradiction_pairs) ★ · [`compare_sources`](#compare_sources) ★ · [`resolve_contradiction`](#resolve_contradiction) ★ · [`suppressed_contradictions`](#suppressed_contradictions) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
+| **Skills (SOPs)** | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`delete_skill`](#delete_skill) · [`skill_lint`](#skill_lint) · [`train_skill`](#train_skill) ★ · [`export_skill`](#export_skill) ★ · [`rollback_skill`](#rollback_skill) ★ · [`skill_history`](#skill_history) ★ · [`skill_vitality`](#skill_vitality) ★ · [`save_skill_run`](#save_skill_run) ★ · [`resume_skill_run`](#resume_skill_run) ★ |
+| **Autonomy** | [`get_engram_autonomy`](#get_engram_autonomy) · [`set_engram_autonomy`](#set_engram_autonomy) · [`get_skill_autonomy`](#get_skill_autonomy) · [`set_skill_autonomy`](#set_skill_autonomy) |
 | **Approximate** | [`audit_memory`](#audit_memory) ★ · [`check_duplicate`](#check_duplicate) |
 | **Conditional** | [`edit`](#edit) |
 | **Foresight** | [`develop`](#develop) ★ · [`predict`](#predict) ★ · [`insights`](#insights) ★ · [`gnn_neighbors`](#gnn_neighbors) ★ · [`llm_query`](#llm_query) ★ · [`llm_distill`](#llm_distill) ★ |
+| **Savings** | [`savings_summary`](#savings_summary) |
 
 ★ = requires a [Graphnosis Pro subscription](https://graphnosis.com/upgrade). Returns a license error on the free plan.
+
+▲ = requires a Graphnosis Enterprise license (Compliance Mode).
 
 ## How results are returned
 
@@ -712,11 +716,19 @@ Returns the metadata for one engram — display name, sensitivity tier, template
 - **Parameters:** `engram` (required, slug or display name).
 - **Try saying:** *"What sensitivity tier is my Personal engram on?"*
 
+### `list_attachments`
+
+Lists file attachments the user has linked to engrams — path, kind, label, size, and the engram each belongs to. **Metadata only — file content is never returned.** Surface results as "the original file lives alongside these memories" references. In a sharing-tokened session, results are filtered to in-scope engrams, and paths reference the *owner's* machine — they will not resolve on a collaborator's system (each row carries `ownerSideOnly: true` and the response footer repeats the warning).
+
+- **Parameters:** `graphId` (optional engram filter; omit for every in-scope engram).
+- **Returns:** JSON array of attachment records.
+- **Try saying:** *"What files do I have linked to my research engram?"*
+
 ---
 
 ## Structured recall
 
-Five variants on `recall` for when the AI needs more than the standard prose context block.
+Six variants on `recall` for when the AI needs more than the standard prose context block.
 
 ### `recall_structured`
 
@@ -784,6 +796,16 @@ Federated recall over a hand-picked subset of engrams (not all), with results gr
 - **Parameters:** `query` · `engrams` (array, at least one) · `maxNodes` (default 20 total).
 - **Try saying:** *"Search my Book Notes and Work engrams for distributed systems."*
 
+### `recall_as_of` *(Enterprise)*
+
+**Requires a Graphnosis Enterprise license (Compliance Mode).**
+
+Point-in-time audit recall — answers *"what did we know on the audit date?"* by reconstructing memory as it existed at an op-log boundary. Pass a sequence ceiling (`as_of_seq`) or a timestamp ceiling (`as_of_ts`); keyword matching then runs over node content as of that boundary. Returns **reduced op-log node previews**, not full semantic recall — this is a compliance reconstruction for the `admin-audit` sharing role (see [Enterprise RBAC](/guides/enterprise-rbac/)), and it writes nothing.
+
+- **Parameters:** `query` (required, keywords) · `as_of_seq` **or** `as_of_ts` (one required) · `graphId` (optional scope) · `maxNodes` (default 20).
+- **Returns:** JSON — the echoed boundary plus an array of matching node previews.
+- **Try saying:** *"What did we know about the Acme contract as of March 31?"*
+
 ---
 
 ## Source operations
@@ -840,6 +862,63 @@ A readable snapshot of an engram — node count, source count, and a sample of n
 - **Parameters:** `engram` (required).
 - **Try saying:** *"What's in my Reading List engram?"*
 
+### `create_engram`
+
+Creates a new, **empty** engram so memories or skills can be saved into it. Owner-only. Creation is a base ownership operation, not a Pro feature gate — the free plan allows up to **3 user engrams** (system engrams don't count); any paid plan lifts the cap. Pass `template: "skill"` for a trainable-skills library. The slug is derived from the name (made unique on collision) unless you set `graph_id` explicitly.
+
+- **Parameters:** `name` (required, display name) · `template` (optional, default `personal`; one of `personal` / `journal` / `reading` / `learning` / `project` / `research` / `codebase` / `health` / `team` / `compliance` / `onboarding` / `skill`) · `graph_id` (optional explicit slug).
+- **Returns:** confirmation with the new engram's id and template.
+- **Try saying:** *"Create a Code Skills engram."*
+
+### `export_engram` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade) Owner-only — sessions connected via a sharing token cannot export.
+
+Exports an entire engram as a signed, encrypted **Graphnosis Engram Zero (`.gez`) pack** for air-gapped sharing — the full text of every source, AES-256-GCM encrypted and Ed25519-signed by default so recipients can verify authorship offline. Pass `encrypt_for` for recipient-controlled confidentiality (a v2 pack): `{ "passphrase": "…" }` (Argon2id, shared out-of-band) or `{ "recipient_pubkey": "<base64>" }` (X25519; a single key or an array — recipients obtain theirs via `get_recipient_public_key`). Without `encrypt_for`, the default signed pack is v1 obfuscation — treat its contents as public.
+
+- **Parameters:** `engram` (required) · `sign` (default `true`) · `encrypt_for` (optional).
+- **Returns:** Markdown summary (engram, source count, signed/encrypted state) with the base64 pack in a code block — decode and save as `.gez`.
+- **Try saying:** *"Export my project engram to share with a colleague."*
+
+### `import_engram`
+
+No license gate — import works on every plan. Owner-only — sessions connected via a sharing token cannot import.
+
+Imports a `.gez` pack into this cortex. **By default the import lands in a fresh QUARANTINE engram** — invisible to recall, dispatch, the proactive watcher, and cross-skill resolution until the owner reviews it (`list_quarantined`, then `promote_import` / `reject_import`). Set `quarantine: false` only for a trusted in-app merge into `target_engram` — in that mode, sources whose sourceId already exists are skipped unless `skip_existing: false`. The pack's signature state (verified / invalid / unsigned) is always reported.
+
+- **Parameters:** `pack_base64` (required) · `quarantine` (default `true`) · `target_engram` (used when quarantine is off; created if missing) · `skip_existing` (default `true`) · `passphrase` (for passphrase-encrypted v2 packs).
+- **Returns:** Markdown report — pack provenance, signature state, quarantine location, and an imported/skipped/failed outcome table.
+- **Try saying:** *"Import this engram pack a colleague sent me."*
+
+### `list_quarantined`
+
+Owner-only. Lists every **quarantined import batch** — sources received via `import_engram` or a received `.gsk` that are held out of recall, dispatch, the proactive watcher, and cross-skill resolution until reviewed. Each batch reports its quarantine engram id, provenance (origin pack), signature state (verified / unsigned / who signed), per-item state, and a `skill_lint` pass over any imported skills.
+
+- **Parameters:** none.
+- **Try saying:** *"What imports are waiting for review?"*
+
+### `promote_import`
+
+Owner-only and **owner-adjudicated**: moves specific reviewed items out of a quarantine engram into a real target engram (created if missing), making them visible to recall and dispatch. This is the trusted promotion path — it deliberately routes around the agent-facing `transfer_source` tier-lowering refusal, because the owner is explicitly promoting. Promoted skills remain `[dispatch-safe: no]`, so enabling auto-dispatch is still a separate owner action.
+
+- **Parameters:** `items` (sourceIds within the quarantine engram) · `target_engram` (created if it doesn't exist).
+- **Returns:** promotion report; the quarantine lifts once every item in the batch is adjudicated.
+- **Try saying:** *"Promote the reviewed skill into my Code Skills engram."*
+
+### `reject_import`
+
+Owner-only. Discards specific quarantined items (soft-delete recorded in the op-log, so every ingress decision stays auditable and recoverable). Already-promoted items are left untouched.
+
+- **Parameters:** `items` (sourceIds to discard).
+- **Try saying:** *"Reject this imported skill — I don't trust it."*
+
+### `get_recipient_public_key`
+
+Returns this cortex's base64 **X25519 recipient public key** — hand it to a peer so they can seal a `.gez` / `.gsk` pack *to you* via `encrypt_for: { recipient_pubkey }` on `export_engram` / `export_skill`. The key is derived from the cortex's Ed25519 pack-signing key, so "verified signer" and "sealed-to recipient" are the same published identity.
+
+- **Parameters:** none.
+- **Try saying:** *"What's my recipient key so a colleague can send me an encrypted pack?"*
+
 ---
 
 ## Brain maintenance
@@ -886,6 +965,16 @@ Carry out the user's chosen resolution for a pair from `contradiction_pairs`. **
 
 **In-app (Free):** Keep A / Keep B / Mark debate in the **Memory Integrity Workbench** — no Pro needed. This MCP tool is the programmatic equivalent for external AI clients.
 
+### `suppressed_contradictions` *(Pro)*
+
+**Requires Graphnosis Pro** (Memory Integrity — the same tier as `contradiction_pairs`). [Upgrade →](https://graphnosis.com/upgrade)
+
+The audit lane of contradiction triage — pairs the deterministic scan **detected but held back** from the review queue, so nothing is ever silently dropped. Each row carries its suppression reason: `insufficient-entities` (too few meaningful shared anchors), `low-severity`, `negation-artifact`, `temporal-supersession` (the "superseded over time" lane), or `ingest-gate`. Use it to audit what the false-positive filter caught, or to surface temporal supersessions the user may want to confirm. These pairs are *not* in the active queue and are **not resolvable via `resolve_contradiction`** (only queued pairs are). Requires the brain engine to be running.
+
+- **Parameters:** `engram` (optional scope) · `reason` (optional filter to one suppression reason) · `limit` (optional cap, newest first).
+- **Returns:** Text summary — counts by reason, then per-pair rows with severity, temporal verdict, both snippets, and shared entities.
+- **Try saying:** *"What contradictions did the triage filter hold back, and why?"*
+
 ### `healing_journal`
 
 Audit log of autonomous corrections the brain engine applied in the background — merges, confidence adjustments, edge repairs. *"What has my brain fixed on its own?"*
@@ -912,11 +1001,11 @@ This tool exists for environments without a GUI (sidecar running over SSH, in a 
 
 ## Skills (SOPs)
 
-Skills are the procedural memory layer of Graphnosis — Standard Operating Procedures wired into the cortex as graphs of steps, with goals, loops, branches, supporting context, and cross-skill orchestration. All twelve tools below operate on the **Skills engram** that ships with every cortex.
+Skills are the procedural memory layer of Graphnosis — Standard Operating Procedures wired into the cortex as graphs of steps, with goals, loops, branches, supporting context, and cross-skill orchestration. All thirteen tools below operate on the **Skills engram** that ships with every cortex.
 
 The procedural model in one paragraph: each skill is a sequence of body steps stored in source order; five evidence-tagged edge types connect them — `skill:seq` for the linear chain, `skill:loop` for "go back to step N", `skill:branch` for conditional forks, `skill:ctx` for recalled memories anchored to a specific step, and `skill:calls` for `@skill: target(args) -> $capture` cross-skill invocations. Eight goal categories live inside each skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). See [Skills as SOPs](/reference/skills/) for the full model.
 
-All twelve Skills tools are deterministic reads/writes against the same engram. **Five tools are free** — `walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill` — so imported `.gsk` packs are fully usable without a Pro license. **Seven tools require Pro** (`train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`) — they return a license error on the free plan. `train_skill` compiles from authored source with **empty train-time recall**; with Pro + Local LLM and `use_llm_rewrite=true`, the body can be LLM-restructured from source only (still no cortex pull at compile time).
+All thirteen Skills tools are deterministic reads/writes against the same engram. **Six tools are free** — `walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill`, `skill_lint` — so imported `.gsk` packs are fully usable without a Pro license. **Seven tools require Pro** (`train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`) — they return a license error on the free plan. `train_skill` compiles from authored source with **empty train-time recall**; with Pro + Local LLM and `use_llm_rewrite=true`, the body can be LLM-restructured from source only (still no cortex pull at compile time).
 
 ### `walk_skill`
 
@@ -1034,6 +1123,52 @@ Reloads a saved run by `runId`: its captured variables, last completed step, and
 - **Returns:** JSON `{ capturedVars, completedStepIndex, nextStepIndex, skillRef, createdAt, updatedAt }`.
 - **Try saying:** *"Resume the Safe Deploy run I started yesterday."*
 
+### `skill_lint`
+
+Health-checks trained skills for data-quality issues: retrieval/knowledge-subgraph dumps accidentally baked into the body, duplicate metadata blocks, incomplete goal sets (fewer than 8 categories), and missing `@needs` routing tags. Retrieval-dump and duplicate-metadata findings indicate body corruption — retrain from clean source to fix; goal-completeness and `@needs` findings are quality hints, not errors. Also runs automatically over imported skills in [`list_quarantined`](#list_quarantined) batches.
+
+- **Parameters:** `engram` (optional Skills engram to scan; defaults to `Skills`).
+- **Returns:** per-skill report — clean/flagged counts, then each flagged skill with its issues.
+- **Try saying:** *"Lint my skills for corruption after that bulk import."*
+
+---
+
+## Autonomy
+
+How far Ghampus may take a **matched skill** automatically. Three layers decide it: each skill's authored `[dispatch-safe: yes|partial|no]` tag sets a hard **cap** (`yes` → L3, `partial` → L2, `no` → L1, meta/router skills → L1); the engram sets a default level; a per-skill override wins over the engram default. The **effective level is always min(cap, override ?? engram default)** — the setters refuse any level above the cap. Levels: **L0** manual · **L1** suggest · **L2** preview · **L3** auto. Reads are available to any session; the two setters are owner-only.
+
+### `get_engram_autonomy`
+
+Reads an engram's execution-autonomy dial: the configured level, the dispatch-safe cap derived from its skills' authored tags, the effective level, and a per-skill breakdown. An engram with no skills is uncapped (L3).
+
+- **Parameters:** `engram` (required, slug or display name).
+- **Returns:** JSON `{ graphId, engramName, configuredLevel, dispatchSafeCap, effectiveLevel, perSkill[] }`.
+- **Try saying:** *"What autonomy level is my Code Skills engram set to?"*
+
+### `set_engram_autonomy`
+
+Owner-only. Sets an engram's execution-autonomy level — the ceiling for how far Ghampus may take skills matched from this engram. Refuses a level above the computed dispatch-safe cap; L3 is selectable only when the cap allows it. Each skill is still individually capped at dispatch time.
+
+- **Parameters:** `engram` (required) · `level` (`L0` | `L1` | `L2` | `L3`).
+- **Returns:** JSON with the post-write configured/cap/effective readout.
+- **Try saying:** *"Set my Code Skills engram to preview-then-run."*
+
+### `get_skill_autonomy`
+
+Reads ONE skill's execution-autonomy state — its authored dispatch-safe value and cap, the configured per-skill override (`null` = inheriting), the engram default, and the effective (capped) level.
+
+- **Parameters:** `engram` (required) · `sourceId` (the skill's stable sourceId, from `list_skills`).
+- **Returns:** JSON `{ sourceId, label, dispatchSafe, authoredCap, configuredSkillLevel, engramDefault, effectiveLevel, engramName }`.
+- **Try saying:** *"What autonomy is my code-review skill set to?"*
+
+### `set_skill_autonomy`
+
+Owner-only. Sets (or clears) a single skill's execution-autonomy override, keyed by its sourceId — pass `level: "inherit"` to clear the override so the skill falls back to the engram default. Refuses a level above the skill's authored dispatch-safe cap. The override lives in engram metadata, not the skill body, so it survives retraining.
+
+- **Parameters:** `engram` (required) · `sourceId` (required) · `level` (`L0` | `L1` | `L2` | `L3` | `inherit`).
+- **Returns:** JSON with the post-write per-skill readout.
+- **Try saying:** *"Let my deploy skill run autonomously."* · *"Reset this skill back to inheriting the engram's level."*
+
 ---
 
 ## Approximate
@@ -1092,11 +1227,23 @@ Pass arbitrary text to the local LLM and ask it to extract discrete, self-contai
 
 ---
 
+## Savings
+
+### `savings_summary`
+
+How much has Graphnosis saved the user? Aggregates the on-device savings ledger — **recall-only substitutions** (a memory recall answered instead of a paid model call) and **per-step model routing** — against the counterfactual baseline model configured in Settings, over a look-back window. Deterministic read of the local ledger; no LLM.
+
+- **Parameters:** `window_days` (optional, default 30).
+- **Returns:** Markdown totals — saved vs. baseline vs. actual USD, event counts split by kind (recall-only / routing), and the baseline model used.
+- **Try saying:** *"How much has my memory saved me this month?"*
+
+---
+
 ## Skills (SOPs)
 
 Skills are Standard Operating Procedures the user has authored or imported. Each skill is a sequence of paragraph nodes wired together by directed edges (sequence, loops, branches, sub-skill calls, goals, context). Skill packs distribute as `.gsk` files (signed by Graphnosis for official packs, unsigned for community packs).
 
-**7 tools require Pro** — `train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`. Read-only tools (`walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill`) are free so imported `.gsk` packs work without a subscription.
+**7 tools require Pro** — `train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`. The remaining tools (`walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill`, `skill_lint`) are free so imported `.gsk` packs work without a subscription.
 
 ### `list_skills`
 
