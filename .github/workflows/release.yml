@@ -24,17 +24,15 @@ jobs:
       dmg: ${{ steps.release.outputs.dmg_filename }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -490,17 +488,15 @@ jobs:
       msi: ${{ steps.find.outputs.name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -630,7 +626,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -648,12 +644,10 @@ jobs:
             librsvg2-dev patchelf libfuse2
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
