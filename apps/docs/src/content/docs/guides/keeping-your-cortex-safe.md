@@ -35,6 +35,14 @@ How it works: a small Swift sidecar binary (`graphnosis-biometric`) talks to App
 
 If your Mac has no Touch ID sensor, no enrolled fingerprint, or biometric is disabled in System Settings, the button stays hidden — fall back to typing the passphrase.
 
+### Touch ID for a remote cortex
+
+The same applies when the app is pointed at a cortex running on another machine (lock screen → **Remote server**). There you authenticate with the server's access token rather than a passphrase, and after the first successful unlock Graphnosis offers to remember it.
+
+Accept, and the token goes into the same local secure storage on the machine you are sitting at — released only after a biometric check, so later unlocks are one touch. Decline, and nothing is stored; you paste the token each time. **Forget this server** on the lock screen removes it whenever you want.
+
+Two things worth knowing: the token is stored per server, so connecting to a different cortex asks again; and it unlocks the *connection*, not the cortex itself — the remote cortex must be unlocked on the machine hosting it.
+
 ### Changing your passphrase
 
 Today there are two ways:

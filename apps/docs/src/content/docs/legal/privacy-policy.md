@@ -47,6 +47,8 @@ Nehloo Interactive does not hold a copy of your passphrase, your recovery phrase
 
 On macOS, after you first unlock your cortex, the passphrase is stored in the **macOS Keychain** (the system secure enclave). This is local OS-level storage; Nehloo Interactive does not have access to it. On Windows, the Windows Credential Manager is used equivalently.
 
+If you connect to a cortex running on another machine and choose to save the access token for Touch ID unlock, that token is stored the same way — in local OS-level secure storage on the device you are connecting *from*, released only after a successful biometric check. It is never transmitted anywhere except to the cortex you pointed it at, and Nehloo Interactive has no access to it.
+
 ---
 
 ## 4. The only network activity Graphnosis initiates

@@ -15,6 +15,27 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.27.2 — Hardware-backed remote unlock, and the version number tells the truth
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
+
+Touch ID for a remote cortex is now backed by your Mac's Secure Enclave, and the app finally reports its own version correctly — 1.27.0 and 1.27.1 both displayed the previous number, which made it needlessly hard to tell whether an update had landed.
+
+### Added
+
+- **Secure-Enclave-backed Touch ID for remote cortexes** — the saved access token for a remote cortex is now sealed in the Mac's Secure Enclave, released only on a successful fingerprint check and invalidated automatically if your enrolled fingerprints change. Previously it used the standard protected-token path.
+
+### Fixed
+
+- **The app displayed the wrong version number.** v1.27.0 and v1.27.1 showed `v1.26.0` on the lock screen and status bar. Only the on-screen label was affected — the installed build, installer, and updater were always the correct version — but it meant you could not confirm from the app which release you were on.
+- **Download links no longer 404 during a release.** Immediately after a release was tagged, the download page could point at installers whose builds had not finished uploading yet. Download targets now only ever advance to a release that is fully published.
+
+### Changed
+
+- **Remote Touch ID is now documented** in *Keeping your cortex safe*, and the privacy policy states explicitly how a saved remote access token is stored.
+
+---
+
 ## v1.27.1 — Startup fix for the 1.27.0 features
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
