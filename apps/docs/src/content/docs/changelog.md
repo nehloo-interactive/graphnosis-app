@@ -11,6 +11,25 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.29.0 — Connect an AI client to a cortex on another machine
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
+
+If you keep your cortex on one always-on machine and work from a laptop, pointing Claude at it used to mean editing a JSON config by hand and copying a token between computers — assuming you worked out which of the two tokens was the right one. Now the laptop's Graphnosis sets it up for you.
+
+### Added
+
+- **AI clients configure themselves against a remote cortex.** With Graphnosis pointed at a cortex on another machine, *Settings → AI clients* writes the client's config for that server rather than for this machine. It asks the server where its bridge answers and which token to present, so nothing is copied by hand. Tailscale addresses are detected automatically.
+- **"Address for other devices"** — a new field under *Settings → Mobile & Remote → MCP access*, for servers reached through something Graphnosis cannot see, such as a reverse proxy or a tunnel. Other machines read it when configuring their AI clients. Optional; leave it empty if only this machine connects.
+
+### Fixed
+
+- **Configuring an AI client while attached to a remote cortex produced a setup that could never work.** It wrote the local connection every time, and reported success, while the client failed a few minutes later with a message telling you to unlock an app that was already unlocked.
+- **Idle AI clients now look idle.** A client that had stopped talking to your cortex hours earlier appeared exactly as live as one mid-request. Idle connections are now amber and tagged with how long they have been quiet. They are still never closed for you — an idle connection is yours to dismiss.
+- **A clearer message when a client cannot reach the cortex**, distinguishing "Graphnosis is not running here" from "this cortex lives on another machine, so point the client there instead".
+
+---
+
 ## v1.28.0 — Recall stops hiding the answer
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
