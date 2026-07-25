@@ -239,6 +239,12 @@ tailscale serve --bg --https=8443 http://127.0.0.1:3457
 
 On the **client** (the second computer, on the same tailnet):
 
+**If that computer also runs Graphnosis, pointed at the remote cortex, let it do this for you.** Open **Settings → AI clients**, pick your client, and Graphnosis writes the config itself — it asks the server where its bridge answers and which token to use, so there is nothing to copy between machines. Use this in preference to the manual steps below; the token in particular is easy to mistype and easy to confuse with the browser-access token, which is a different credential for a different port.
+
+If the client machine reports that the server *"has not published an address for its MCP bridge"*, the server is behind something Graphnosis cannot detect (a reverse proxy, a tunnel). Set **Settings → Mobile & Remote → MCP access → "Address for other devices"** on the server to the URL clients should dial, and try again. Tailscale Serve mappings are detected automatically and need no entry.
+
+To configure a client by hand — because Graphnosis is not installed on that machine, or you would rather see the wiring:
+
 - **Claude Code** — one command:
 
   ```bash
