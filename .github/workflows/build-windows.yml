@@ -89,9 +89,8 @@ jobs:
 
       # Stage onnxruntime.dll so the sidecar can load ONNX embeddings at
       # runtime. Falls back to a TF-IDF-only warning if not found — the build
-      # still succeeds. The dll is NOT listed in tauri-windows.conf.json
-      # resources because build.rs also copies it; explicit staging here
-      # is belt-and-suspenders for CI.
+      # still succeeds. build.rs also copies it; explicit staging here is
+      # belt-and-suspenders for CI.
       - name: Stage onnxruntime.dll (optional)
         shell: pwsh
         run: |
