@@ -15,7 +15,7 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
-## v1.27.2 — Hardware-backed remote unlock, and the version number tells the truth
+## v1.27.3 — Hardware-backed remote unlock, and the version number tells the truth
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
 
