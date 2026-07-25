@@ -49,6 +49,17 @@ jobs:
           fi
           echo 'ok (no smoketest paths tracked)'
 
+      - name: Guard — licence claims match the licences described
+        # The README summarises licensing in prose, and prose drifts. It once
+        # described a sibling library as Apache 2.0 when it had been FSL-1.1
+        # since extraction — a public repo advertising more permission than the
+        # licence grants. The LICENSE file, package manifest and Terms of Use
+        # were all correct, so nothing contradicted the summary.
+        #
+        # Verifies sibling claims over the network and degrades to a warning
+        # when that is unavailable; this repo's own claim is always enforced.
+        run: node scripts/check-license-claims.mjs
+
       - name: HTTP UI server end-to-end
         # Boot the sidecar with the browser UI enabled against a throwaway
         # cortex, then assert /api/unlock + an authed RPC + static UI all work.
