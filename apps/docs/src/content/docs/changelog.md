@@ -15,6 +15,29 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.27.0 — Your cortex on one machine, reachable from all of them
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-24</p>
+
+Keep a single always-on cortex — on a Mac Mini, a home server, whatever stays put — and reach it from every other device you own. The desktop app can now run as a thin client against a remote cortex instead of spawning its own, unlock it with Touch ID, and a second computer's AI client (Claude Code, Claude Desktop) can connect to it over Tailscale. The tool catalog also catches up with everything the memory engine already exposes.
+
+### Added
+
+- **Remote-cortex thin-client mode** — point the desktop app at a cortex running on another machine and it routes to that cortex instead of starting a local one. Run one canonical cortex on an always-on box and use it from your laptop with the same app you already have.
+- **Touch ID unlock for a remote cortex** — unlock the remote cortex from the desktop app with Touch ID; the access token is held in the Mac's Secure Enclave, gated on your fingerprint, never written to disk in the clear.
+- **Reach your cortex from another computer's AI client** — a documented HTTP MCP bridge over Tailscale lets Claude Code or Claude Desktop on a *second* machine talk to your cortex, with a real `*.ts.net` certificate and no port exposed to the public internet. (The machine-local stdio relay only ever worked on the same box.)
+- **Fuller MCP tool surface** — the tools your AI can see now include creating an engram, health-checking trained skills, the encrypted-import review queue (list / promote / reject quarantined imports), the per-engram and per-skill autonomy dials, a model-cost savings summary, point-in-time audit recall, and attachment listing.
+
+### Security
+
+- **Hardened the remote MCP bridge.** The one-tap in-app approval path is now restricted to direct loopback connections; any request arriving through a proxy must authenticate with the pre-shared access token. Advertised endpoint URLs also honor the forwarding scheme so token exchange stays on HTTPS end to end.
+
+### Fixed
+
+- **Remote unlock no longer clears a still-valid session on a transient error** — an expired or invalid token is now distinguished from a network hiccup, so a brief blip doesn't sign you out of a remote cortex.
+
+---
+
 ## v1.26.0 — Cortex-share carve-outs, and browser access that actually ships
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-23</p>
