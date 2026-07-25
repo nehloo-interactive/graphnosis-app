@@ -286,7 +286,7 @@ See the full [MCP Tools reference](/reference/mcp-tools/) for every tool with pa
 When the AI calls `remember` with `target_engram: "Book Notes"`, Graphnosis tries to resolve the name against your existing engrams:
 
 - **Exact name match** → the note is saved immediately.
-- **Close matches** (typos, partial words, reordered tokens — `unpublished` ↔ `UnpublishedRomania`, `Romania Unpublished` ↔ `UnpublishedRomania`) → a banner appears top-center in the app listing the candidates with a match-reason label. Pick the right engram or create a new one with the AI's suggested name.
+- **Close matches** (typos, partial words, reordered tokens — `trip` ↔ `TripPlanning`, `Planning Trip` ↔ `TripPlanning`) → a banner appears top-center in the app listing the candidates with a match-reason label. Pick the right engram or create a new one with the AI's suggested name.
 - **No match** → banner offers to create a new engram with that name in one click.
 
 **The AI never auto-creates engrams or silently disambiguates.** Every new engram is your decision. If the app is in the background when this happens, you get a macOS notification too.
