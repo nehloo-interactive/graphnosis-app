@@ -15,6 +15,22 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.27.1 — Startup fix for the 1.27.0 features
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
+
+A packaging fix so the v1.27.0 feature set actually launches on macOS. If you briefly saw *"Synapse exited unexpectedly during startup"* after updating, this release resolves it — install 1.27.1 and you're set. Everything listed under v1.27.0 (remote-cortex thin-client mode, reaching your cortex from a second computer's AI client, the hardened MCP bridge, and the fuller tool surface) ships here intact.
+
+### Fixed
+
+- **App failed to start on macOS after the 1.27.0 update** — a code-signing entitlement was applied too broadly across the app's bundled helper processes, which the OS then refused to launch. The entitlement is now scoped correctly and the app starts normally.
+
+### Changed
+
+- **Touch ID for a remote cortex** temporarily falls back to the standard protected-token path rather than the Secure-Enclave-sealed path. The hardware-backed version returns in a later release; unlocking a remote cortex with Touch ID continues to work in the meantime.
+
+---
+
 ## v1.27.0 — Your cortex on one machine, reachable from all of them
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-24</p>
