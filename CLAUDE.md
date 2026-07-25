@@ -115,6 +115,31 @@ The SDK itself lives in a separate repo: `/Users/nelulazar/Developer/Graphnosis`
 (npm: `@nehloo/graphnosis`, Apache-2.0). The App consumes it as a pinned
 dependency in `apps/desktop-sidecar/package.json`.
 
+Note: the **skills layer is NOT in the SDK** — `train_skill`, `walk_skill*`,
+call linking and the golden walks all live in
+`apps/desktop-sidecar/src/skill-trainer.ts`. The SDK's MCP tools are only
+export / ingest / load / query / update.
+
+### Tauri config merging — arrays REPLACE, they do not append
+
+Tauri auto-merges `tauri.<platform>.conf.json` (macos / linux / windows) over
+`tauri.conf.json`, and any `--config` file on top of that. Objects deep-merge,
+but **arrays are replaced wholesale**.
+
+That means a `bundle.resources` entry added to `tauri.conf.json` is silently
+discarded on every platform, because all three platform configs declare their
+own `resources` array. This shipped the browser UI missing from every release
+up to 1.27.6: the bundle was valid, signed and notarized, and nothing warned.
+
+So: **add a bundled resource to every `tauri.<platform>.conf.json`, not to the
+base config.** The base array is effectively dead — it is kept only as a
+statement of intent, and JSON has no comments to say so in place. The release
+workflow now asserts required resources exist in the built bundle, so a
+dropped one fails the build instead of shipping.
+
+`tauri-mas.conf.json` (used by release-mas.yml) declares no `resources` of its
+own and therefore inherits the macOS list — verified, no separate entry needed.
+
 ## Test path that always works for the sidecar
 
 ```bash
