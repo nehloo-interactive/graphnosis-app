@@ -11,7 +11,25 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
----
+## v1.28.0 — Recall stops hiding the answer
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
+
+Asking about something by name could get you "no matches" from the very engram holding the note. That is fixed, and skill training no longer reports success when it has quietly saved nothing.
+
+### Fixed
+
+- **Recall could report "no matches" for an engram that had the answer.** Asking about a multi-word project or event by name — where one of those words is common — let the common word pull in dozens of unrelated memories from your largest engrams. Those crowded out the limited space for results, and the exact match, sitting in a smaller engram, was pushed out entirely. Graphnosis then told you that engram had nothing. Full-name matches now outrank stray single-word matches, and an engram whose best memory is stronger than everything that made the cut is no longer dropped — when that rescue happens, the audit footer says so.
+- **Trained skills could silently lose all their structure.** Training a multi-step skill could save the steps while saving none of the connections between them — branches, loops, and calls to other skills all vanished, and training still reported success. The skill would then walk in a flat line with no explanation. The underlying cause is fixed, and if it ever recurs, training now tells you instead of staying quiet.
+- **A stale example name in the AI tool descriptions.** One of the tool descriptions your AI client reads contained a leftover sample engram name from development. Replaced with a neutral placeholder.
+
+### Added
+
+- **`recall` and `remind` accept engram scope filters.** Your AI can now limit a search to named engrams, or exclude them — so "check my todos" searches your todos rather than everything. The other recall tools already supported this; these two were the exception.
+
+### Changed
+
+- **Recall points your AI at whole documents more decisively.** When your query matches the *name* of a stored file rather than text inside it, the hint asking the AI to open that document is now explicit, so it stops summarising fragments when the full file is what you wanted.
 
 ---
 
@@ -25,6 +43,10 @@ Opening your cortex from a phone or another computer has been documented since 1
 
 - **Browser access served a placeholder instead of the app.** Enabling *Settings → Mobile & Remote → Browser access* and opening the address from another device showed a status page rather than Graphnosis. The web interface was missing from every released build — including 1.26.0, which announced this as fixed. Reaching your cortex from a phone or a second computer now loads the real app.
 - **Trained skills no longer lose their links to other skills.** A skill that calls another skill had that connection dropped moments after it was saved, so walking it reported the sub-skill as missing even though it was right there in the same engram.
+
+---
+
+## v1.27.6 — Secure-Enclave Touch ID and the right version number
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
 

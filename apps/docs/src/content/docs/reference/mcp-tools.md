@@ -67,6 +67,8 @@ Primary memory retrieval. Searches the user's encrypted knowledge graph and retu
 | `query` | string | Yes | Natural-language query or topic. Pass it in the user's language — the search is multilingual (BGE embeddings + multilingual entity extraction). |
 | `maxTokens` | integer | No | Token budget for the attached context. Default `2000`. Range `100`–`8000`. |
 | `maxNodes` | integer | No | Maximum number of memory nodes to attach. Default `20`. Range `1`–`50`. |
+| `only_engrams` | string[] | No | Restrict the search to these engram slugs or display names. Recommended whenever the user says where the memory lives ("check my todos" → `["todos"]`). Get names from [`list_engrams`](#list_engrams). |
+| `except_engrams` | string[] | No | Exclude these engrams from an otherwise federated search. |
 
 ### Return
 
@@ -164,7 +166,7 @@ Treat `[gll·*]` and `[gnn·*]` rows as predictions, not facts. Never cite them 
 
 ### Parameters
 
-Identical to `recall`: `query` (required), `maxTokens` (optional, default `2000`), `maxNodes` (optional, default `20`).
+Identical to `recall`: `query` (required), `maxTokens` (optional, default `2000`), `maxNodes` (optional, default `20`), `only_engrams` / `except_engrams` (optional scope filters).
 
 `recall` and `remind` call the same underlying search and return the same shape — choosing one over the other is just a soft signal of intent to the user.
 
