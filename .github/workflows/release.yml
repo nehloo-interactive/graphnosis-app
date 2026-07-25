@@ -283,8 +283,28 @@ jobs:
             fi
           fi
 
+          # Resources the app cannot function without. A dropped resource is
+          # invisible at build time: the bundle is valid, signed and notarized,
+          # and the failure only shows up as a degraded feature at runtime.
+          #
+          # The browser UI shipped missing from every release up to 1.27.6 —
+          # tauri.<platform>.conf.json declares its own `resources` array, and
+          # Tauri REPLACES arrays when merging platform config, so the entry in
+          # the base config was silently discarded. Remote browser access served
+          # a "not yet built for this deployment" placeholder the whole time.
+          for RES in \
+            "Contents/Resources/dist/index.html" \
+            "Contents/Resources/resources/libonnxruntime.1.21.0.dylib"; do
+            if [ ! -f "$APP/$RES" ]; then
+              echo "::error::missing bundled resource: $RES"
+              FAILED=1
+            else
+              echo "resource present: $RES"
+            fi
+          done
+
           [ "$FAILED" -eq 0 ] || { echo "Bundle verification FAILED — refusing to publish."; exit 1; }
-          echo "All bundled binaries launch correctly; Secure-Enclave entitlement present."
+          echo "All bundled binaries launch correctly; entitlement and resources present."
 
       - name: Notarize and staple app
         env:
