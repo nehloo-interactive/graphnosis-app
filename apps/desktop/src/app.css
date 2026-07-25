@@ -4729,6 +4729,19 @@
       .home-gc-dot-client { background: var(--ok); }
       .home-gc-dot-source { background: var(--accent); }
       .home-gc-dot-blocked { background: var(--danger, #e5484d); }
+      /* Idle: the transport is still open but nothing has come through it for
+         a while — often a relay subprocess outliving the AI client that spawned
+         it. Deliberately amber rather than green: the app does not force-close
+         these, so the only thing stopping a dead connection from reading as
+         healthy is this colour. Matches .mcp-dot-idle on the AI-tools card. */
+      .home-gc-dot-idle { background: var(--color-status-warn-amber); }
+      .home-gc-row-idle .home-gc-row-name,
+      .home-gc-row-idle .home-gc-row-meta { opacity: 0.72; }
+      .home-gc-idle-tag {
+        color: var(--color-status-warn-amber);
+        font-weight: 500;
+        font-size: 0.85em;
+      }
       .home-gc-row-blocked .home-gc-row-name { color: var(--fg-dim); }
       .home-gc-blocked-tag { display: inline-block; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--danger, #e5484d); background: color-mix(in oklab, var(--danger, #e5484d) 14%, transparent); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
       .home-gc-row-body { min-width: 0; flex: 1; }

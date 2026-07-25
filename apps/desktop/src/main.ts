@@ -236,6 +236,12 @@ interface ClaudeConfigResult {
   relay_path: string;
   node_path: string;
   socket_path: string;
+  /**
+   * Set when the app is attached to a REMOTE cortex, in which case the client
+   * was pointed at that bridge via a local stdio proxy rather than at the local
+   * socket — nothing serves that socket in remote mode. `null` in local mode.
+   */
+  remote_base: string | null;
   already_configured: boolean;
   created_file: boolean;
   preserved_servers: string[];
@@ -2305,6 +2311,19 @@ function syncSourcesEngramDropdown(): void {
  *  refreshes; each one re-renders the sidebar status list. */
 let liveMcpClients = new Set<string>();
 let liveIdleClients = new Set<string>();
+
+/**
+ * How long a connection may sit silent before the UI stops presenting it as
+ * live. Shared by the status bar, the AI-tools card and the Home Connections
+ * card so they cannot disagree about what "connected" means.
+ *
+ * There is deliberately no timer that force-closes idle connections (see the
+ * note in the sidecar's main.ts): stale entries stay listed so the user can see
+ * and dismiss them. That trade only works if they are visibly distinct — the
+ * Home card previously painted every client the same green, which produced the
+ * worst of both worlds: zombie entries that looked healthy.
+ */
+const MCP_IDLE_MS = 15 * 60_000;
 /** Lowercased friendly names of AI clients blocked via Access Control. Cached
  *  from policy.get (refreshed on Home load + when the policy is edited) so the
  *  connected-client displays can mark a blocked client as blocked, not just
@@ -2452,16 +2471,40 @@ function refreshGetConnectedStatus(): void {
       // ── ONLINE: which AI client is reading the cortex right now. Always
       //    shown — connected users see who's tapped in; offline users see that
       //    nothing is, and that their cortex stays private. ──
+      const nowRows = Date.now();
       const clientRows = lastMcpConnections.map((c) => {
         const name = mcpConnectionLabel(c);
         const version = c.clientVersion ? ` · v${escape(c.clientVersion)}` : '';
         const since = c.connectedAt ? new Date(c.connectedAt).toLocaleTimeString() : '';
         const blocked = isClientBlocked(name);
-        return `<div class="home-gc-row${blocked ? ' home-gc-row-blocked' : ''}">
-          <span class="home-gc-dot ${blocked ? 'home-gc-dot-blocked' : 'home-gc-dot-client'}"></span>
+        // Idle is judged per ROW, from this connection's own last activity —
+        // the card lists one row per connection, and a client can hold several
+        // (a client that reconnects without closing the old transport leaves
+        // the previous one behind). Judging by connectedAt would be wrong: a
+        // long-lived busy connection is not stale.
+        const idleMs = nowRows - c.lastActivityAt;
+        const idle = !blocked && idleMs >= MCP_IDLE_MS;
+        const idleFor = idle ? formatIdleDuration(idleMs) : '';
+        const dotClass = blocked
+          ? 'home-gc-dot-blocked'
+          : idle ? 'home-gc-dot-idle' : 'home-gc-dot-client';
+        // An active connection can be hours old — a long-lived session that is
+        // busy right now. Showing only its connect time made it read as stale
+        // next to the idle rows, so healthy rows lead with recency and keep the
+        // connect time as context.
+        const activeMeta = idleMs < 60_000
+          ? 'active just now'
+          : `active ${escape(formatIdleDuration(idleMs))} ago`;
+        const meta = blocked
+          ? '<div class="home-gc-row-meta">connection rejected by Access Control</div>'
+          : idle
+            ? (since ? `<div class="home-gc-row-meta">Connected ${escape(since)}</div>` : '')
+            : `<div class="home-gc-row-meta">${activeMeta}${since ? ` &middot; since ${escape(since)}` : ''}</div>`;
+        return `<div class="home-gc-row${blocked ? ' home-gc-row-blocked' : ''}${idle ? ' home-gc-row-idle' : ''}">
+          <span class="home-gc-dot ${dotClass}"></span>
           <div class="home-gc-row-body">
-            <div class="home-gc-row-name">${escape(name)}${version}${blocked ? ' <span class="home-gc-blocked-tag">blocked</span>' : ''}</div>
-            ${blocked ? '<div class="home-gc-row-meta">connection rejected by Access Control</div>' : (since ? `<div class="home-gc-row-meta">Connected ${escape(since)}</div>` : '')}
+            <div class="home-gc-row-name">${escape(name)}${version}${blocked ? ' <span class="home-gc-blocked-tag">blocked</span>' : ''}${idle ? ` <span class="home-gc-idle-tag">idle ${escape(idleFor)}</span>` : ''}</div>
+            ${meta}
           </div>
         </div>`;
       }).join('');
@@ -3785,7 +3828,7 @@ function formatIdleDuration(ms: number): string {
 function renderMcpStatus(connections: McpConnection[]): void {
   // Compute per-client idle state before updating any UI so both the status
   // bar and the rail chips get the same picture in this render pass.
-  const MCP_IDLE_MS_SHARED = 15 * 60_000;
+  const MCP_IDLE_MS_SHARED = MCP_IDLE_MS;
   const nowShared = Date.now();
   // A client is idle when ALL its connections have been inactive long enough.
   const clientConns = new Map<string, McpConnection[]>();
@@ -3846,7 +3889,6 @@ function renderMcpStatus(connections: McpConnection[]): void {
   // amber tells you "this row isn't going anywhere on its own; manually
   // × it if you want it gone." Re-greens automatically on the next
   // request the relay forwards.
-  const MCP_IDLE_MS = 15 * 60_000;
   const now = Date.now();
   target.innerHTML = connections
     .map((c) => {
@@ -6092,9 +6134,20 @@ els.btnClaudeApply.addEventListener('click', async () => {
       ${routingLine}
       <p style="margin-top: 10px; font-size: 15px; color: var(--fg-dim);">
         <strong>Config file:</strong> <code>${escape(r.config_path)}</code><br/>
-        <strong>Relay binary:</strong> <code>${escape(r.relay_path)}</code><br/>
-        <strong>Socket:</strong> <code>${escape(r.socket_path)}</code>
+        ${r.remote_base
+          ? `<strong>Remote cortex:</strong> <code>${escape(r.remote_base)}</code><br/>
+             <strong>Connects via:</strong> <code>mcp-remote</code> (local proxy)`
+          : `<strong>Relay binary:</strong> <code>${escape(r.relay_path)}</code><br/>
+             <strong>Socket:</strong> <code>${escape(r.socket_path)}</code>`}
       </p>
+      ${r.remote_base
+        ? `<p style="margin-top: 8px; font-size: 14px; color: var(--fg-dim);">
+             This app is attached to a remote cortex, so it serves no local socket.
+             ${escape(r.client_name)} was pointed at the remote bridge through a local
+             proxy instead — it runs on this machine, so it can reach a server that a
+             cloud-registered connector cannot. Requires <code>npx</code> (bundled with Node).
+           </p>`
+        : ''}
     `;
     els.claudePreview.style.display = '';
     els.claudeFooterNote.textContent = r.restart_hint;
@@ -20317,6 +20370,12 @@ interface MobileConnectionInfo {
   tailscaleHost?: string | null;
   /** True when `tailscale serve` fronts the browser-UI port over HTTPS. */
   tailscaleHttps?: boolean;
+  /**
+   * Operator-declared address other machines dial for the MCP bridge. Wins
+   * over the auto-detected Serve URL, and is the only answer when something
+   * we can't detect (a reverse proxy, a tunnel) fronts the bridge.
+   */
+  publicUrl?: string;
   /** True when a SECOND `tailscale serve` mapping fronts the MCP port (:3457)
    *  over HTTPS — lets the MCP QR/clients use a real-cert URL (iOS ATS). */
   mcpTailscaleHttps?: boolean;
@@ -20594,6 +20653,8 @@ async function openMobileWizard(): Promise<void> {
   }
   if (portInput) portInput.value = String(mobileConnInfo.port);
   if (hostSelect) hostSelect.value = mobileConnInfo.host;
+  const publicUrlInput = $m<HTMLInputElement>('mobile-bridge-public-url');
+  if (publicUrlInput) publicUrlInput.value = mobileConnInfo.publicUrl ?? '';
   if (portRow) portRow.style.display = mobileConnInfo.enabled ? '' : 'none';
   if (note0) note0.textContent = mobileConnInfo.enabled && mobileConnInfo.token
     ? 'Bridge is active. You can skip to Step 3 to copy connection details.'
@@ -20624,6 +20685,7 @@ async function openMobileWizard(): Promise<void> {
       const enabledCb = $m<HTMLInputElement>('mobile-bridge-enabled');
       const portInput = $m<HTMLInputElement>('mobile-bridge-port');
       const hostSelect = $m<HTMLSelectElement>('mobile-bridge-host');
+      const publicUrlInput = $m<HTMLInputElement>('mobile-bridge-public-url');
       const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
       const btn = $m<HTMLButtonElement>('btn-mobile-next');
       if (btn) btn.disabled = true;
@@ -20634,6 +20696,9 @@ async function openMobileWizard(): Promise<void> {
               enabled: enabledCb?.checked ?? false,
               port: parseInt(portInput?.value ?? '3457', 10),
               host: hostSelect?.value ?? '127.0.0.1',
+              // Normalised in the settings layer (trailing slash and a
+              // pasted /mcp are stripped) so consumers append the path.
+              publicUrl: publicUrlInput?.value.trim() ?? '',
             },
           },
         };
