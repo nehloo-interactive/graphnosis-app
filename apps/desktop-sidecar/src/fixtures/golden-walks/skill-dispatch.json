@@ -6,7 +6,9 @@
     {
       "index": 2,
       "text": "1. Call @skill: verify-target.",
-      "unresolvedCall": "verify-target"
+      "calls": {
+        "targetTitle": "verify-target"
+      }
     },
     {
       "index": 3,

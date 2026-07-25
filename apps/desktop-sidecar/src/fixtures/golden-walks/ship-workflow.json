@@ -22,7 +22,7 @@
   "failureHandlers": [
     {
       "description": "@skill: rollback-ship",
-      "unresolvedCall": "rollback-ship"
+      "targetTitle": "rollback-ship"
     }
   ]
 }
