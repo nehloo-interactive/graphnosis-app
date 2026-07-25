@@ -21,6 +21,8 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 Touch ID for a remote cortex is now backed by your Mac's Secure Enclave, and the app finally reports its own version correctly — 1.27.0 and 1.27.1 both displayed the previous number, which made it needlessly hard to tell whether an update had landed.
 
+*Why the jump from 1.27.1: versions 1.27.2 through 1.27.5 were tagged while reworking how macOS builds are signed and packaged, but each failed in the build pipeline before publishing. None was ever released or downloadable — 1.27.6 is the first build of this batch to ship, and it contains everything those versions were meant to carry.*
+
 ### Added
 
 - **Secure-Enclave-backed Touch ID for remote cortexes** — the saved access token for a remote cortex is now sealed in the Mac's Secure Enclave, released only on a successful fingerprint check and invalidated automatically if your enrolled fingerprints change. Previously it used the standard protected-token path.
