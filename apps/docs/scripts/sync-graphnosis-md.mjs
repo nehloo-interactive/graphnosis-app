@@ -36,14 +36,45 @@ copyFileSync(source, dest);
 console.log(`[prebuild] synced GRAPHNOSIS.md → public/`);
 
 // ── 2. Write /download/* redirect fallbacks ─────────────────────────────────
+//
+// IMPORTANT: these fallbacks track the latest PUBLISHED release, NOT the
+// version in tauri.conf.json.
+//
+// tauri.conf.json is bumped in the release commit, before the tag is pushed and
+// long before CI has built anything. Deriving the fallbacks from it published a
+// docs deploy pointing at release assets that did not exist yet — every
+// /download/* link 404'd for the ~25 minutes the build took, on every release.
+// A last-resort fallback must never lead the artifacts it points at; pointing at
+// the previous release is always safe, since CURRENT_VERSION (set by release.yml
+// only after the builds succeed) takes precedence the moment the new one is live.
 
-const tauriConf = new URL('../../../apps/desktop/src-tauri/tauri.conf.json', import.meta.url);
+const currentFallback = (() => {
+  // Whatever the handler currently ships with is our offline-safe default.
+  try {
+    const handler = readFileSync(new URL('../functions/download/[platform].ts', import.meta.url), 'utf8');
+    return handler.match(/const FALLBACK_VERSION = '(v[^']+)'/)?.[1] ?? '';
+  } catch {
+    return '';
+  }
+})();
+
 let version = '';
 try {
-  const conf = JSON.parse(readFileSync(tauriConf, 'utf8'));
-  version = conf.version ?? '';
-} catch {
-  console.warn('[prebuild] could not read tauri.conf.json — skipping download redirects');
+  // GitHub's "latest" excludes drafts and pre-releases, so a release that was
+  // pulled (marked pre-release) is automatically skipped here too.
+  const res = await fetch(
+    'https://api.github.com/repos/nehloo-interactive/graphnosis-app/releases/latest',
+    { headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'graphnosis-docs-prebuild' } },
+  );
+  if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+  const tag = (await res.json()).tag_name ?? '';
+  version = tag.replace(/^v/, '');
+  if (version) console.log(`[prebuild] latest published release → v${version}`);
+} catch (err) {
+  // Offline dev, rate limit, API blip — keep whatever is committed rather than
+  // rewriting the fallbacks to something unverified.
+  version = currentFallback.replace(/^v/, '');
+  console.warn(`[prebuild] could not resolve latest published release (${err.message}) — keeping ${currentFallback || 'existing values'}`);
 }
 
 const redirectsFile = new URL('../public/_redirects', import.meta.url);
