@@ -167,8 +167,21 @@ jobs:
       - name: Package as .pkg
         run: |
           APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
-          SEMVER=${GITHUB_REF_NAME#v}
-          PKG="Graphnosis_${SEMVER:-0.7.0}_aarch64.pkg"
+
+          # This workflow is workflow_dispatch-only, so GITHUB_REF_NAME is the
+          # BRANCH being built, not a tag — deriving the version from it named
+          # the package after the branch (Graphnosis_main_aarch64.pkg). The
+          # `version` input existed for this but was never read, and the literal
+          # fallback had gone stale.
+          #
+          # Prefer the explicit input; otherwise use the canonical version, which
+          # is what the build actually produced.
+          SEMVER="${{ github.event.inputs.version }}"
+          SEMVER="${SEMVER#v}"
+          if [ -z "$SEMVER" ]; then
+            SEMVER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          fi
+          PKG="Graphnosis_${SEMVER}_aarch64.pkg"
           productbuild \
             --component "$APP" /Applications \
             --sign "3rd Party Mac Developer Installer: Nehloo Interactive LLC (C76ZLJ5UQW)" \
