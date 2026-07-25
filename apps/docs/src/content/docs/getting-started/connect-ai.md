@@ -225,6 +225,44 @@ Both are opt-in and use the same Tailscale-vs-LAN security model. The full walkt
 
 **Why Tailscale is the recommended path:** the alternative — `all-interfaces` on your LAN — works at home but breaks the moment you leave the house. Tailscale gives you an encrypted overlay network that follows you everywhere without exposing a port to the public internet. Install it once on both devices; the panel auto-detects the Tailscale IP.
 
+### From another computer's AI client (Claude Code, Claude Desktop)
+
+The stdio setups above — the `graphnosis-mcp-relay` in your Claude Desktop / Claude Code / Cursor config — are **machine-local**. The relay pipes to a Unix socket at `~/.graphnosis/mcp.sock`, which only exists on the machine running Graphnosis. Tailscale routes IP traffic, not Unix sockets, so pointing a second computer's stdio config at a remote cortex just times out with *"socket never appeared."* To reach a cortex on another machine, use the **HTTP MCP bridge** instead.
+
+On the **server** (the machine running Graphnosis): enable **Settings → Mobile & Remote → MCP access** (port `3457`), then front it with a real HTTPS certificate over Tailscale:
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:3457
+```
+
+`tailscale serve status` prints the URL — `https://<your-server>.<tailnet>.ts.net:8443/mcp`. This keeps the bridge on loopback (no exposed LAN port) while giving it a valid `*.ts.net` certificate, which Claude Desktop's connectors require.
+
+On the **client** (the second computer, on the same tailnet):
+
+- **Claude Code** — one command:
+
+  ```bash
+  claude mcp add --transport http graphnosis "https://<your-server>.<tailnet>.ts.net:8443/mcp" --header "Authorization: Bearer <your-token>"
+  ```
+
+- **Claude Desktop** — its custom-connector flow registers from Anthropic's cloud, which can't reach your tailnet, so use a local [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) proxy in `claude_desktop_config.json`:
+
+  ```json
+  {
+    "mcpServers": {
+      "graphnosis": {
+        "command": "npx",
+        "args": ["-y", "mcp-remote", "https://<your-server>.<tailnet>.ts.net:8443/mcp",
+                 "--header", "Authorization: Bearer <your-token>"]
+      }
+    }
+  }
+  ```
+
+Copy `<your-token>` from **Settings → Mobile & Remote → MCP access**. Remote clients **must** send it as an `Authorization: Bearer` header — the bridge's one-tap OAuth approval is loopback-only, so over the network the pre-shared token is the gate.
+
+Two operational notes: the cortex must be **unlocked on the server**, and a `sensitive`-engram recall raises its consent modal on the **server's** screen (use the headless consent-phrase flow if you can't see it).
+
 ## The MCP tools
 
 Once connected, the full Graphnosis toolset is available to your AI, organized into ten categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Skills (SOPs), Approximate, Conditional, and Non-deterministic). The most commonly used ones:
