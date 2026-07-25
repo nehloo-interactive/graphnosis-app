@@ -15,7 +15,7 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
-## v1.27.5 — Hardware-backed remote unlock, and the version number tells the truth
+## v1.27.6 — Hardware-backed remote unlock, and the version number tells the truth
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>
 
@@ -29,6 +29,7 @@ Touch ID for a remote cortex is now backed by your Mac's Secure Enclave, and the
 
 - **The app displayed the wrong version number.** v1.27.0 and v1.27.1 showed `v1.26.0` on the lock screen and status bar. Only the on-screen label was affected — the installed build, installer, and updater were always the correct version — but it meant you could not confirm from the app which release you were on.
 - **Download links no longer 404 during a release.** Immediately after a release was tagged, the download page could point at installers whose builds had not finished uploading yet. Download targets now only ever advance to a release that is fully published.
+- **Trained skills no longer report sub-skills as missing when they aren't.** A skill step that merely *mentioned* another skill in passing — or a note describing the call syntax itself — was read as a call to a skill that didn't exist, so walking the skill showed broken links that were never real. Only deliberate call syntax is treated as a call now.
 
 ### Changed
 
