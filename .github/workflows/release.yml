@@ -186,7 +186,12 @@ jobs:
         # rebuilt after the re-sign: Tauri only emits its bundle_dmg.sh helper as
         # part of the dmg target, and the rebuild step depends on that script to
         # keep the installer window identical to previous releases.
-        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --features keychain --bundles app,dmg
+        #
+        # `exec tauri build …` rather than `tauri:build -- …`: the latter expands
+        # to `tauri build -- <flags>`, and that `--` makes Tauri forward
+        # everything after it to cargo. `--features` survives that (cargo has one
+        # too) but `--bundles` is Tauri-only, so cargo rejects it outright.
+        run: pnpm --filter @graphnosis-app/desktop exec tauri build --features keychain --bundles app,dmg
 
       - name: Re-sign app with Secure-Enclave entitlement
         run: |
