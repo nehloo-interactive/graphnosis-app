@@ -6,6 +6,7 @@
       "binaries/graphnosis-mcp-relay"
     ],
     "resources": [
+      "dist",
       "resources/libonnxruntime.so.1.21.0"
     ]
   }

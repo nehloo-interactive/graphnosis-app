@@ -2,6 +2,7 @@
   "bundle": {
     "targets": ["dmg", "app"],
     "resources": [
+      "dist",
       "resources/libonnxruntime.1.21.0.dylib"
     ],
     "macOS": {
