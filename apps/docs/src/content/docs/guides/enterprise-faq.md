@@ -409,6 +409,30 @@ Graphnosis is actively working on the items below. Updates are announced in the 
 
 ---
 
+## 9. Licensing for internal deployment
+
+**Your organization may deploy Graphnosis internally, at any scale, without a separate licence.** The application is released under the [Functional Source License 1.1](https://github.com/nehloo-interactive/graphnosis-app/blob/main/LICENSE) (`FSL-1.1-Apache-2.0`), whose Additional Use Grant permits *"use in your organization for any purpose, including internal use, evaluation, and development of internal tools and integrations."*
+
+There is no seat count, revenue threshold, or commercial-use fee attached to running it yourself. Paid tiers buy features, not the right to deploy.
+
+| Scenario | Permitted under FSL-1.1? |
+|---|---|
+| Deploying to staff across the company, commercial entity | **Yes** — internal use |
+| Self-hosting on your own servers, air-gapped or otherwise | **Yes** — internal use |
+| Forking and modifying for internal needs | **Yes** — internal use |
+| Building internal tools and integrations against it | **Yes** — expressly named in the grant |
+| A consultancy deploying or customising it for a client's internal use | **Yes** — professional services are expressly permitted |
+| Offering it to third parties as a hosted or managed service | **No** — requires a separate licence during the window |
+| Embedding it in a product you sell, where its functionality is substantially the value | **No** — requires a separate licence during the window |
+
+The restriction is about **who you serve**, not whether money is involved: re-offering Graphnosis to third parties is a Competing Use; running it for your own people is not. Each release converts to Apache 2.0 two years after publication, at which point even that restriction lapses for that release.
+
+For security review, the same grant is what lets your team read and audit the full source without an NDA.
+
+> This summary is provided for convenience. The [LICENSE](https://github.com/nehloo-interactive/graphnosis-app/blob/main/LICENSE) file and the [Terms of Use](/legal/terms-of-use/) are the governing documents; where this table and those texts differ, they control.
+
+---
+
 ## Related
 
 [What Leaves Your Device](/guides/network-activity/) — complete inventory of every outbound request, with source links.

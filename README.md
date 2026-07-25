@@ -85,8 +85,10 @@ Tauri shell (Rust) ── Unix socket JSON-RPC ── Node sidecar (TypeScript)
 
 ## License
 
-[Functional Source License 1.1, Apache 2.0 Future License](LICENSE) (`FSL-1.1-Apache-2.0`) — read, audit, fork, and self-host; commercial hosted use requires a separate license during the 2-year window. Each release converts to Apache 2.0 after two years.
+[Functional Source License 1.1, Apache 2.0 Future License](LICENSE) (`FSL-1.1-Apache-2.0`) — read, audit, fork, modify, and self-host, **including inside your organization for any internal purpose**, commercial ones included. No separate license, seat count, or revenue threshold applies to running it yourself.
 
-Engine: [`@nehloo/graphnosis`](https://github.com/nehloo/Graphnosis) · Sync: [`graphnosis-secure-sync`](https://github.com/nehloo-interactive/graphnosis-secure-sync) — both Apache 2.0.
+The single restriction during the two-year window: you may not offer Graphnosis, or a modified version of it, to third parties as a hosted or embedded service whose value derives substantially from it. Consulting, training, and custom integrations for organizations using it internally are expressly permitted. Each release converts to Apache 2.0 two years after publication.
+
+Engine: [`@nehloo/graphnosis`](https://github.com/nehloo/Graphnosis) (Apache-2.0) · Sync: [`graphnosis-secure-sync`](https://github.com/nehloo-interactive/graphnosis-secure-sync) (FSL-1.1-Apache-2.0).
 
 Made by Nehloo Interactive LLC.
