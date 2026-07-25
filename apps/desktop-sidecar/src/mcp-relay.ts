@@ -30,7 +30,7 @@
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Hard-coded fallbacks. Used only when settings.json is missing or invalid
@@ -128,9 +128,29 @@ class Relay {
   async run(): Promise<void> {
     const ok = await waitForSocket(initialWaitMs);
     if (!ok) {
+      // Distinguish the two failures that look identical from here. A socket
+      // FILE that exists while nothing accepts on it means a sidecar served
+      // this path at some point and no longer does — overwhelmingly because
+      // the app is attached to a REMOTE cortex, where it deliberately spawns
+      // no local sidecar. Telling that user to "unlock the app" sends them to
+      // look at an app that is already unlocked and working.
+      let staleSocketFile = false;
+      try {
+        staleSocketFile = existsSync(socketPath);
+      } catch { /* treat as absent */ }
+
       process.stderr.write(
         `[graphnosis-relay] timed out after ${Math.round(initialWaitMs / 1000)}s — ` +
-        `socket ${socketPath} never appeared. Unlock the Graphnosis App, then restart this MCP client.\n`,
+        `nothing is serving ${socketPath}.\n`,
+      );
+      process.stderr.write(
+        staleSocketFile
+          ? '[graphnosis-relay] the socket file exists but no sidecar is accepting on it. ' +
+            'If Graphnosis is connected to a REMOTE cortex it serves no local socket, and this ' +
+            'client cannot use the relay — point it at the remote bridge instead ' +
+            '(Settings → AI clients will write that config for you).\n'
+          : '[graphnosis-relay] no socket file. Open and unlock Graphnosis on this machine, ' +
+            'then restart this MCP client.\n',
       );
       process.exit(3);
     }

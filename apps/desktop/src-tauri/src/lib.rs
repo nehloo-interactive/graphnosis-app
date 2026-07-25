@@ -531,6 +531,31 @@ async fn unlock_cortex(
         // Friendly server label (host[:port]) shown as the cortex name in the
         // header/tray — computed before `base` is moved into the session.
         let label = remote::display_label(&base);
+
+        // Remove any leftover local MCP socket before going remote. In remote
+        // mode no sidecar runs here, so a socket file from an earlier local
+        // session is guaranteed stale — but a client configured against the
+        // relay will sit waiting on it and report a timeout that reads like a
+        // hang rather than a misconfiguration. Deleting it makes the relay's
+        // diagnosis unambiguous ("no socket file") instead of ambiguous.
+        if let Ok(sock) = sidecar::mcp_socket_path() {
+            if sock.exists() {
+                match std::fs::remove_file(&sock) {
+                    Ok(()) => eprintln!(
+                        "[graphnosis] removed stale local MCP socket {} — going remote",
+                        sock.display()
+                    ),
+                    // Non-fatal: worst case the relay reports the ambiguous
+                    // "exists but nothing accepting" branch, which still names
+                    // remote mode as the likely cause.
+                    Err(e) => eprintln!(
+                        "[graphnosis] could not remove stale MCP socket {}: {e}",
+                        sock.display()
+                    ),
+                }
+            }
+        }
+
         remote::set_session(base, session);
         let snapshot = adopt_sidecar_session(
             &app,
@@ -1442,6 +1467,12 @@ struct ClaudeConfigResult {
     /// self-contained binary and clients don't need a separate Node path.
     node_path: String,
     socket_path: String,
+    /// Set when this app is attached to a REMOTE cortex, in which case the
+    /// client was pointed at that bridge through a local stdio proxy rather
+    /// than at the local socket (which nothing serves in remote mode). `None`
+    /// in ordinary local-sidecar mode. The UI keys its wording off this so it
+    /// stops citing a relay binary and socket that are not in play.
+    remote_base: Option<String>,
     /// True if the existing config already had a matching Graphnosis entry
     /// pointing at the same socket — nothing meaningful changed.
     already_configured: bool,
@@ -1581,14 +1612,100 @@ async fn configure_mcp_client(
     }
     let servers = mcp_entry.as_object_mut().expect("checked above");
 
-    // Detect "already configured": same command, same args, same socket.
-    // The relay binary is the command; the socket path is argv[1].
-    let desired_entry = serde_json::json!({
-        "command": relay.to_string_lossy(),
-        "args": [
-            socket_path.to_string_lossy(),
-        ],
-    });
+    // The entry depends on WHICH KIND of cortex this app is attached to.
+    //
+    // Local mode: the sidecar runs here and serves a Unix socket, so the relay
+    // binary can attach to it directly.
+    //
+    // Remote mode: this app spawns no sidecar at all — it proxies to another
+    // machine — so nothing ever listens on that socket. Writing the relay entry
+    // anyway produced a config that could never work while the modal cheerfully
+    // reported success; the client then failed with "socket never appeared" and
+    // advised unlocking an app that was already unlocked. The client has to dial
+    // the remote bridge instead, which it can only do from this machine (the
+    // bridge is typically on a private overlay network that a vendor's cloud
+    // cannot reach), so a local stdio proxy is the shape that works.
+    let remote_base = remote::current()
+        .map(|(base, _session)| base)
+        .or_else(remote::configured_base);
+
+    let desired_entry = match remote_base.as_deref() {
+        None => serde_json::json!({
+            "command": relay.to_string_lossy(),
+            "args": [ socket_path.to_string_lossy() ],
+        }),
+        Some(base) => {
+            // The MCP bridge is NOT the endpoint this thin client talks to.
+            // The app connects to the browser/RPC server (mobile.httpUi); MCP
+            // clients need mobile.httpBridge — a different port with a
+            // different token. Deriving the MCP URL from this app's own base,
+            // and reusing its access token, produced a config that reached the
+            // browser server instead: 405 on the POST, then HTML where the
+            // client expected an event stream.
+            //
+            // So ask the server. `mobile.getConnectionInfo` routes over the
+            // remote RPC in this mode, and carries everything needed: the
+            // bridge's own token, an operator-declared address, and the
+            // Tailscale Serve mapping the server detects for itself.
+            let info = {
+                let socket_path = {
+                    let inner = state.inner.lock().await;
+                    inner.sidecar.as_ref().map(|h| h.socket_path.clone())
+                        .ok_or_else(|| "cortex is locked".to_string())?
+                };
+                ipc_client::request_with_timeout(
+                    &socket_path,
+                    "mobile.getConnectionInfo",
+                    serde_json::Value::Null,
+                    std::time::Duration::from_secs(8),
+                )
+                .await
+                .map_err(|e| format!("Could not reach the remote cortex to read its MCP settings: {e}"))?
+            };
+            let server = remote::display_label(base);
+            let field = |k: &str| info.get(k).and_then(|v| v.as_str())
+                .map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+
+            if info.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
+                return Err(format!(
+                    "{server} is not serving an MCP bridge. On that machine, enable \
+                     Settings → Mobile & Remote → MCP access, then configure {} again.",
+                    client.display_name(),
+                ));
+            }
+
+            // Prefer what the operator declared; fall back to the Serve mapping
+            // the server detected. Neither is derivable from this machine —
+            // the bridge binds loopback and whatever fronts it lives outside
+            // Graphnosis — so if both are absent we say so rather than guess a
+            // URL that would fail later inside an AI client's logs.
+            let public_url = field("publicUrl")
+                .or_else(|| field("mcpTailscaleHttpsUrl"))
+                .ok_or_else(|| format!(
+                    "{server} has not published an address for its MCP bridge, and no \
+                     Tailscale mapping was detected for it. On that machine, set \
+                     Settings → Mobile & Remote → MCP access → \"Address for other \
+                     devices\" to the URL remote clients should dial, then configure {} \
+                     again.",
+                    client.display_name(),
+                ))?;
+
+            let token = field("token").ok_or_else(|| format!(
+                "{server} has an MCP bridge but no access token. Re-enable MCP access \
+                 on that machine to generate one, then configure {} again.",
+                client.display_name(),
+            ))?;
+
+            serde_json::json!({
+                "command": "npx",
+                "args": [
+                    "-y", "mcp-remote",
+                    format!("{}/mcp", public_url.trim_end_matches('/')),
+                    "--header", format!("Authorization: Bearer {token}"),
+                ],
+            })
+        }
+    };
     let already_configured = servers.get("Graphnosis") == Some(&desired_entry);
 
     let preserved_servers: Vec<String> = servers
@@ -1619,6 +1736,7 @@ async fn configure_mcp_client(
         relay_path: relay.to_string_lossy().into_owned(),
         node_path: String::new(),
         socket_path: socket_path.to_string_lossy().into_owned(),
+        remote_base,
         already_configured,
         created_file,
         preserved_servers,
