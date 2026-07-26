@@ -36,6 +36,7 @@ import {
   nextGskExportVersion,
 } from './gsk-format.js';
 import { ingestClip } from './ingest.js';
+import { createHash } from 'node:crypto';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { SkillCallLinkStore, SkillCallLink } from './skill-call-links.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
@@ -2241,6 +2242,84 @@ export async function restoreSkillNodes(
  * Non-skill sources take the primitive unchanged — the repair re-derives node
  * roles from SOP section prefixes, which is meaningless for a PDF or a clip.
  */
+/**
+ * Snapshot a skill's current body before an operation that can destroy it.
+ *
+ * Why snapshots rather than recording pre-edit content in the op-log:
+ *   - uncapped. The op-log's `deleteNode.before.preview` is capped at 500
+ *     chars by the adapter, so a long step comes back truncated.
+ *   - restorable by the USER from the Skills History panel, not only by a CLI
+ *     run against a multi-GB log.
+ *   - outside the graph. `skill-snapshots/` is a separate encrypted store, so
+ *     this adds no sources or nodes and cannot pollute recall, atlas, vitality
+ *     or stats.
+ *
+ * Deduped by content hash against the newest existing snapshot: two choke
+ * points can fire within one logical operation, and an unchanged skill that is
+ * moved repeatedly should not accumulate identical copies.
+ *
+ * Best-effort by design — a snapshot failure must never block the operation it
+ * is protecting. It is a safety net, not a precondition.
+ */
+export async function snapshotSkillBeforeDestructiveOp(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+  reason: string,
+): Promise<'written' | 'unchanged' | 'skipped'> {
+  try {
+    const record = host.getSourceRecord(graphId, sourceId);
+    if (record?.kind !== 'skill') return 'skipped';
+
+    const nodes: Array<{ content: string }> = [];
+    for (const nid of record.nodeIds) {
+      const content = host.getFullNodeContent(graphId, nid) ?? '';
+      if (content) nodes.push({ content });
+    }
+    // Nothing to protect. Notably true of an ALREADY-damaged skill (metadata
+    // comment only) — snapshotting that would bury the last good version under
+    // a worthless newest entry.
+    if (nodes.length === 0) return 'skipped';
+
+    const hash = createHash('sha256')
+      .update(nodes.map((n) => n.content).join('\u0000'))
+      .digest('hex');
+
+    const existing = await host.skillSnapshots.list(graphId, sourceId);
+    const newest = existing[0];
+    if (newest) {
+      const prev = await host.skillSnapshots.read(graphId, sourceId, newest.snapshotId);
+      if (prev) {
+        const prevHash = createHash('sha256')
+          .update(prev.nodes.map((n) => n.content).join('\u0000'))
+          .digest('hex');
+        if (prevHash === hash) return 'unchanged';
+      }
+    }
+
+    const ts = Date.now();
+    // `ref` should always be present on a skill source, but falling back keeps
+    // a malformed record from losing its snapshot to a thrown TypeError that
+    // the catch below would report as a mere "skipped".
+    const ref = record.ref ?? sourceId;
+    await host.skillSnapshots.append(graphId, {
+      snapshotId: SkillSnapshotStore.idFromTs(ts),
+      ts,
+      sourceId,
+      ref,
+      label: ref.replace(/^skill:\d+:/, ''),
+      nodes,
+    });
+    return 'written';
+  } catch (e) {
+    console.error(
+      `[skill-trainer] pre-${reason} snapshot failed for ${sourceId}: ${(e as Error).message}` +
+      ' — continuing (snapshot is a safety net, not a precondition)',
+    );
+    return 'skipped';
+  }
+}
+
 export async function moveSourcePreservingSkillNodes(
   host: GraphnosisHost,
   fromGraphId: string,
@@ -2256,6 +2335,12 @@ export async function moveSourcePreservingSkillNodes(
     const res = await host.moveSource(fromGraphId, sourceId, targetGraphId);
     return { newRecord: res.newRecord, forgottenNodeIds: res.forgottenNodeIds, repaired: 0 };
   }
+  // Snapshot BEFORE touching anything. This is the path that produced an
+  // unrecoverable skill in the field: moveSource drops nodes without a
+  // forgetSource cascade, so — unlike forget — it leaves NO deleteNode trail
+  // and therefore no op-log previews to recover from. The transfer itself is
+  // fixed below, but this keeps a full copy regardless of what the move does.
+  await snapshotSkillBeforeDestructiveOp(host, fromGraphId, sourceId, 'move');
   // The wrapper swallows the primitive's return, so derive the drop set here.
   const before = new Set(record?.nodeIds ?? []);
   const { repaired } = await promoteSkillSourcePreservingNodes(

@@ -159,3 +159,101 @@ test('a lossless move reports zero repairs', async () => {
   assert.equal(res.repaired, 0);
   assert.equal(res.newRecord.nodeIds.length, SKILL_NODES.length);
 });
+
+// ── Pre-move snapshot ────────────────────────────────────────────────────────
+//
+// A transferred skill was unrecoverable in the field because moveSource drops
+// nodes WITHOUT a forgetSource cascade — so unlike forget, it leaves no
+// deleteNode trail and no op-log previews to recover from. A snapshot taken
+// before the move is the only copy that survives a bad transfer.
+//
+// The snapshot store lives outside the graph (skill-snapshots/), so these also
+// pin the property that made it the right mechanism: it adds no sources and no
+// nodes, and therefore cannot pollute recall, atlas, vitality or stats.
+
+import { snapshotSkillBeforeDestructiveOp } from '../dist/skill-trainer.js';
+
+function withSnapshots(host) {
+  const store = new Map();
+  host.skillSnapshots = {
+    ...host.skillSnapshots,
+    _store: store,
+    list: async (g, sid) => (store.get(`${g}/${sid}`) ?? [])
+      .map((s) => ({ snapshotId: s.snapshotId, ts: s.ts }))
+      .sort((a, b) => b.ts - a.ts),
+    read: async (g, sid, id) =>
+      (store.get(`${g}/${sid}`) ?? []).find((s) => s.snapshotId === id) ?? null,
+    append: async (g, snap) => {
+      const k = `${g}/${snap.sourceId}`;
+      store.set(k, [...(store.get(k) ?? []), snap]);
+    },
+  };
+  return host;
+}
+
+test('a skill is snapshotted before it is moved', async () => {
+  const host = withSnapshots(makeHost());
+  await moveSourcePreservingSkillNodes(host, FROM, 'src-1', TO);
+  const snaps = host.skillSnapshots._store.get(`${FROM}/src-1`) ?? [];
+  assert.equal(snaps.length, 1, 'exactly one snapshot for one move');
+  const texts = snaps[0].nodes.map((n) => n.content);
+  for (const original of SKILL_NODES) {
+    assert.ok(texts.includes(original), `snapshot lost: ${original.slice(0, 40)}`);
+  }
+});
+
+test('the snapshot is uncapped — long steps survive whole', async () => {
+  // The op-log preview path caps at 500 chars, which is exactly what makes it
+  // an inadequate substitute. A snapshot must not truncate.
+  const host = withSnapshots(makeHost());
+  const long = `1. ${'x'.repeat(2000)}`;
+  await host.insertNodeAt(FROM, 'src-1', 99, long);
+  await snapshotSkillBeforeDestructiveOp(host, FROM, 'src-1', 'test');
+  const snaps = host.skillSnapshots._store.get(`${FROM}/src-1`);
+  assert.ok(snaps.at(-1).nodes.some((n) => n.content === long), 'stored in full');
+});
+
+test('an unchanged skill does not accumulate identical snapshots', async () => {
+  // Two choke points can fire inside one logical operation, and a skill moved
+  // back and forth should not grow a pile of identical copies.
+  const host = withSnapshots(makeHost());
+  const first = await snapshotSkillBeforeDestructiveOp(host, FROM, 'src-1', 'test');
+  const second = await snapshotSkillBeforeDestructiveOp(host, FROM, 'src-1', 'test');
+  assert.equal(first, 'written');
+  assert.equal(second, 'unchanged', 'deduped by content hash');
+  assert.equal(host.skillSnapshots._store.get(`${FROM}/src-1`).length, 1);
+});
+
+test('an already-damaged skill is not snapshotted over its last good version', async () => {
+  // Snapshotting a metadata-only husk would bury the last usable version under
+  // a worthless newest entry — the opposite of the point.
+  const host = withSnapshots(makeHost());
+  const rec = host.getSourceRecord(FROM, 'src-1');
+  rec.nodeIds = [];
+  assert.equal(await snapshotSkillBeforeDestructiveOp(host, FROM, 'src-1', 'test'), 'skipped');
+  assert.equal((host.skillSnapshots._store.get(`${FROM}/src-1`) ?? []).length, 0);
+});
+
+test('snapshotting adds no source and no node to the graph', async () => {
+  // The property that made snapshots the right mechanism rather than writing
+  // pre-edit content into the op-log or re-ingesting a copy.
+  const host = withSnapshots(makeHost());
+  const sourcesBefore = host.listSources(FROM).length;
+  const nodesBefore = host.getSourceRecord(FROM, 'src-1').nodeIds.length;
+  await snapshotSkillBeforeDestructiveOp(host, FROM, 'src-1', 'test');
+  assert.equal(host.listSources(FROM).length, sourcesBefore, 'no new source');
+  assert.equal(host.getSourceRecord(FROM, 'src-1').nodeIds.length, nodesBefore, 'no new node');
+});
+
+test('a snapshot failure never blocks the move', async () => {
+  // It is a safety net, not a precondition.
+  const host = withSnapshots(makeHost());
+  host.skillSnapshots.append = async () => { throw new Error('disk full'); };
+  const res = await moveSourcePreservingSkillNodes(host, FROM, 'src-1', TO);
+  assert.equal(res.newRecord.nodeIds.length, SKILL_NODES.length, 'move still completed');
+});
+
+test('a non-skill source is never snapshotted', async () => {
+  const host = withSnapshots(makeHost({ kind: 'file' }));
+  assert.equal(await snapshotSkillBeforeDestructiveOp(host, FROM, 'src-1', 'test'), 'skipped');
+});
