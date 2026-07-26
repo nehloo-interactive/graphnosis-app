@@ -5785,6 +5785,41 @@ export class GraphnosisHost {
     events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
   ): Promise<OplogCompactionResult> {
     const noop: OplogCompactionResult = { compacted: false };
+
+    // ── DISABLED ────────────────────────────────────────────────────────────
+    // This compactor ships to every user and runs automatically from the
+    // corrections sweep, but it can never reclaim anything, because it only
+    // rewrites ONE file:
+    //
+    //     path.join(oplogDir, `${this.deviceIdentity.deviceId}.oplog`)
+    //
+    // A cortex accumulates one .oplog per device identity, and identities
+    // predating the stable-deviceId change were per-launch. One field cortex
+    // holds 630 files / 6.78 GB, of which the CURRENT device's file is ~101k
+    // events out of 7.7M. The other 629 are unreachable here by construction,
+    // so the 77% of that log which is prunable stays put no matter how often
+    // this runs.
+    //
+    // What it does do is rewrite signed history: it re-signs retained events
+    // with THIS device's key. On the current device's own file that is
+    // defensible; as a general mechanism it forges authorship and breaks the
+    // TOFU attribution in devices.json.
+    //
+    // So it is all cost and no benefit, and it operates on the only surviving
+    // copy of forgotten content — as a skill recovery in this cortex showed,
+    // where the op-log preview was the last trace of a skill's body.
+    //
+    // Kept rather than deleted so a correct implementation has a starting
+    // point. That implementation should: walk EVERY .oplog in the directory;
+    // prune at CHUNK granularity, copying retained chunks byte-for-byte so
+    // their original signatures stay valid; and be an explicit user action
+    // with a backup, never a background sweep.
+    //
+    // Annotated `: boolean` on purpose — as a `false` literal TypeScript would
+    // treat everything below as unreachable and stop checking it, so the
+    // retained implementation would rot silently.
+    const COMPACTOR_ENABLED: boolean = false;
+    if (!COMPACTOR_ENABLED) return noop;
     /** Minimum event count before we bother compacting. */
     const COMPACTION_THRESHOLD = 500_000;
     /** Keep all events newer than this many days regardless of type. */
