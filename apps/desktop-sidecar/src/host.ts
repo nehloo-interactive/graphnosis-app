@@ -65,7 +65,7 @@ import {
   isOplogResourceError,
   logActivityOplogResourceError,
 } from './log-rate-limit.js';
-import { safeReadAllEvents, safeReadEventsSince, safeCollectEvents } from './oplog-safe-read.js';
+import { safeReadAllEvents, safeReadEventsSince, safeCollectEvents, safeScanEvents } from './oplog-safe-read.js';
 import { isOplogRecoveryAnchor, splitBlobByNodeOffsets } from './oplog-retention.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
@@ -6332,6 +6332,22 @@ export class GraphnosisHost {
         console.error(`[graphnosis-host] op-log integrity (${i.kind})${i.deviceId ? ` device=${redactId(i.deviceId)}` : ''} in ${i.file}: ${i.detail}`);
       },
     };
+  }
+
+  /**
+   * Streaming op-log scan that retains NOTHING — the visitor sees each event
+   * once and it is then garbage. For analysis over a log too large to hold in
+   * memory (composition reports, size audits, retention modelling).
+   */
+  async scanOplogEvents(
+    visit: (ev: OpLogEvent) => void,
+  ): Promise<{ files: number; chunks: number; events: number; fileBytes: number }> {
+    return safeScanEvents(
+      path.join(this.opts.cortexDir, 'oplog'),
+      this.key,
+      visit,
+      this.oplogReadOptions(),
+    );
   }
 
   /**

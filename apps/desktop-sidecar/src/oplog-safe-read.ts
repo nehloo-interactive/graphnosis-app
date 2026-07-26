@@ -387,31 +387,36 @@ async function collectOplogDirSafe(
  * specific set of sourceIds, an audit for one engram, etc. For "give me
  * everything", `safeReadAllEvents` is still the right call.
  */
-export async function safeCollectEvents(
+export async function safeScanEvents(
   dir: string,
   key: Uint8Array,
-  filter: (ev: OpLogEvent) => boolean,
+  visit: (ev: OpLogEvent, file: string) => void,
   opts: oplog.ReadOpLogOptions = {},
-): Promise<OpLogEvent[]> {
+): Promise<OplogScanStats> {
+  const stats: OplogScanStats = { files: 0, chunks: 0, events: 0, fileBytes: 0 };
   let names: string[] = [];
   try {
     names = await fsp.readdir(dir);
   } catch {
-    return [];
+    return stats;
   }
 
   const now = opts.now ?? Date.now();
   const maxSkew = opts.maxClockSkewMs ?? DEFAULT_MAX_CLOCK_SKEW_MS;
-  const out: OpLogEvent[] = [];
 
   for (const name of names) {
     if (!name.endsWith('.oplog')) continue;
     const filePath = path.join(dir, name);
     const index = await indexOplogFile(filePath);
     if (index.format === 'empty' || index.entries.length === 0) continue;
+    stats.files++;
+    stats.chunks += index.entries.length;
+    try {
+      stats.fileBytes += (await fsp.stat(filePath)).size;
+    } catch { /* size is diagnostic only */ }
 
     // Streaming continuity check: remember only the last seq per device rather
-    // than retaining every event to sort afterwards.
+    // than retaining every event to compare afterwards.
     const lastSeq = new Map<DeviceId, number>();
     const fh = await fsp.open(filePath, 'r');
     try {
@@ -436,13 +441,49 @@ export async function safeCollectEvents(
               detail: `event ts ${ev.ts} exceeds now+${maxSkew}ms; dropped` });
             continue;
           }
-          if (filter(ev)) out.push(ev);
+          stats.events++;
+          visit(ev, name);
         }
       }
     } finally {
       await fh.close();
     }
   }
+  return stats;
+}
+
+/** File-level totals from a streaming scan. Counters only — never events. */
+export interface OplogScanStats {
+  files: number;
+  chunks: number;
+  /** Events visited (after the future-timestamp drop). */
+  events: number;
+  /** Total on-disk bytes of the .oplog files scanned. */
+  fileBytes: number;
+}
+
+/**
+ * Streaming, filter-first collector — for callers that want a FEW events out of
+ * a very large log.
+ *
+ * `safeReadAllEvents` bounds the ciphertext held in memory, but it still
+ * materialises every decrypted event as a JS object and returns them all. On a
+ * multi-GB op-log that is millions of objects: a 4.6 GB log OOM'd a 4 GB heap
+ * inside JSON.parse.
+ *
+ * Use it whenever the result set is small and known up front: recovery for a
+ * specific set of sourceIds, an audit for one engram, etc. For "give me
+ * everything", `safeReadAllEvents` is still the right call — and for pure
+ * analysis that keeps nothing at all, use `safeScanEvents` directly.
+ */
+export async function safeCollectEvents(
+  dir: string,
+  key: Uint8Array,
+  filter: (ev: OpLogEvent) => boolean,
+  opts: oplog.ReadOpLogOptions = {},
+): Promise<OpLogEvent[]> {
+  const out: OpLogEvent[] = [];
+  await safeScanEvents(dir, key, (ev) => { if (filter(ev)) out.push(ev); }, opts);
   return sortEvents(out);
 }
 
