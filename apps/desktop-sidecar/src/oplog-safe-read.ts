@@ -533,10 +533,26 @@ export async function safeScanEvents(
 
 /**
  * Per-chunk read ceiling. A chunk is one writer flush batch; normal ones are
- * kilobytes. 256 MB is far above anything legitimate while still leaving room
- * to decrypt inside a default heap.
+ * kilobytes (a real cortex measured p50 ≈ 6 KB).
+ *
+ * The ceiling is a LAST RESORT against a chunk so large that AES-GCM cannot
+ * verify its tag without the whole ciphertext resident. Skipping one is
+ * lossy — a skipped chunk means recovery tools silently cannot see the events
+ * inside it — so the ceiling must sit well above anything a real writer
+ * produces, not merely above the common case.
+ *
+ * 256 MB was too tight: a field cortex had a legitimate 347 MB chunk, which
+ * this then skipped during a skill recovery that was searching for exactly
+ * that kind of history. 1 GB still decrypts inside the 8 GB heap these tools
+ * request, and is far past any plausible flush batch.
+ *
+ * Override with GRAPHNOSIS_OPLOG_MAX_CHUNK_BYTES when a log needs it.
  */
-const DEFAULT_MAX_CHUNK_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MAX_CHUNK_BYTES = (() => {
+  const raw = process.env.GRAPHNOSIS_OPLOG_MAX_CHUNK_BYTES;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1024 * 1024 * 1024;
+})();
 
 /** File-level totals from a streaming scan. Counters only — never events. */
 export interface OplogScanStats {

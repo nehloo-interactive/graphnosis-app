@@ -76,7 +76,7 @@ import { embeddings } from '@graphnosis-app/core';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { restoreSkillNodes } from './skill-trainer.js';
-import { recoverFromForgetTrail, type OplogRecovery } from './skill-recover-oplog.js';
+import { recoverFromForgetTrail, type OplogRecovery, type ForgetTrailEvent } from './skill-recover-oplog.js';
 
 /** A skill source that looks like it lost its body to a transfer. */
 interface DamagedSkill {
@@ -178,14 +178,23 @@ function looksDamaged(host: GraphnosisHost, graphId: string, sourceId: string): 
 async function collectForgetTrails(
   host: GraphnosisHost,
   sourceIds: ReadonlySet<string>,
-): Promise<Parameters<typeof recoverFromForgetTrail>[0]> {
-  return host.collectOplogEvents((ev) => {
-    if (ev.op !== 'deleteNode') return false;
+): Promise<{ events: ForgetTrailEvent[]; skippedChunks: number; skippedBytes: number }> {
+  const events: ForgetTrailEvent[] = [];
+  // scanOplogEvents rather than collectOplogEvents: identical filtering, but it
+  // also returns the scan's integrity counters. A skipped chunk makes "no trail
+  // found" a FALSE NEGATIVE rather than a fact, and the report has to be able
+  // to say so — silently reporting a skill as unrecoverable when part of the
+  // log was never read is the worst outcome this tool can produce.
+  const stats = await host.scanOplogEvents((ev) => {
+    if (ev.op !== 'deleteNode') return;
     const before = ev.before as { sourceId?: unknown; preview?: unknown } | undefined;
-    return typeof before?.sourceId === 'string' &&
-      sourceIds.has(before.sourceId) &&
-      typeof before.preview === 'string';
+    if (typeof before?.sourceId === 'string' &&
+        sourceIds.has(before.sourceId) &&
+        typeof before.preview === 'string') {
+      events.push(ev);
+    }
   });
+  return { events, skippedChunks: stats.skippedChunks, skippedBytes: stats.skippedBytes };
 }
 
 /** A damaged skill found by the graph scan, before any op-log work. */
@@ -390,12 +399,12 @@ async function runFindDamagedIsolated(
 async function scan(
   host: GraphnosisHost,
   candidates: readonly DamagedCandidate[],
-): Promise<DamagedSkill[]> {
-  if (candidates.length === 0) return [];
+): Promise<{ items: DamagedSkill[]; skippedChunks: number; skippedBytes: number }> {
+  if (candidates.length === 0) return { items: [], skippedChunks: 0, skippedBytes: 0 };
   const ids = new Set(candidates.map((c) => c.sourceId));
-  const events = await collectForgetTrails(host, ids);
+  const { events, skippedChunks, skippedBytes } = await collectForgetTrails(host, ids);
 
-  return candidates.map((c) => {
+  const items = candidates.map((c) => {
     const log = recoverFromForgetTrail(events, c.sourceId, c.present);
     return {
       graphId: c.graphId,
@@ -408,6 +417,7 @@ async function scan(
       truncated: log.truncated,
     } satisfies DamagedSkill;
   });
+  return { items, skippedChunks, skippedBytes };
 }
 
 function report(items: DamagedSkill[]): void {
@@ -492,8 +502,17 @@ async function main(): Promise<void> {
   // Only now do we take the cortex lock: the scan child has exited, so this
   // process starts clean and loads no engram until `apply` needs one.
   const host = await bootHost(cortexDir, passphrase);
-  const items = await scan(host, candidates);
+  const { items, skippedChunks, skippedBytes } = await scan(host, candidates);
   report(items);
+  // An unrecoverable verdict is only trustworthy if the WHOLE log was read.
+  if (skippedChunks > 0) {
+    console.log(
+      `⚠ ${skippedChunks} op-log chunk(s) holding ${(skippedBytes / 1024 ** 2).toFixed(1)} MB were\n` +
+      '  SKIPPED (above the per-chunk read ceiling), so any "unrecoverable" result\n' +
+      '  above is inconclusive — the trail may be inside a chunk that was not read.\n' +
+      '  Re-run with a higher ceiling, e.g. GRAPHNOSIS_OPLOG_MAX_CHUNK_BYTES=2147483648.\n',
+    );
+  }
 
   if (mode === 'plan') {
     console.log('This was a dry run. Re-run with `apply` to restore.\n');
@@ -503,6 +522,12 @@ async function main(): Promise<void> {
   let restored = 0;
   for (const it of items) {
     if (it.recovered.length === 0) continue;
+    // Load the destination engram first. Pass 1 runs in a CHILD process now, so
+    // its loadGraph calls died with it — this process has booted a host but
+    // holds no resident graph, and restoreSkillNodes went straight to
+    // "Graph not loaded: <engram>". Only the engrams we actually repair get
+    // loaded, which keeps the point of the split intact.
+    if (!host.listGraphs().includes(it.graphId)) await host.loadGraph(it.graphId);
     const { repaired } = await restoreSkillNodes(
       host, it.graphId, it.sourceId, it.recovered, { triggeredBy: 'skill:recover-cli' },
     );
