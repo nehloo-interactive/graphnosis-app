@@ -54,7 +54,7 @@ pub fn current() -> Option<(String, String)> {
 /// Environment override that puts the shell into remote mode. When set, the
 /// shell skips spawning a local sidecar and routes all IPC to this base URL.
 /// The value is the bridge ORIGIN with no trailing slash or path, e.g.
-/// `https://lahzr-ai-1.tail766d3d.ts.net:8443`. Settings-driven configuration
+/// `https://my-server.tailnet-name.ts.net:8443`. Settings-driven configuration
 /// (a "Connect to remote cortex" picker) can supply the same value later.
 pub const REMOTE_URL_ENV: &str = "GRAPHNOSIS_REMOTE_URL";
 /// Optional: pre-supply the access token so a dev thin-client can unlock
@@ -104,7 +104,7 @@ pub fn configured_token() -> Option<String> {
 
 /// Human-readable label for the remote server, used as the cortex name in the
 /// header/tray in place of a local folder path. Strips the URL scheme and any
-/// trailing slash, leaving `host[:port]` (e.g. `lahzr-ai-1.tail766d3d.ts.net`).
+/// trailing slash, leaving `host[:port]` (e.g. `my-server.tailnet-name.ts.net`).
 pub fn display_label(base: &str) -> String {
     let s = base.trim();
     let s = s
@@ -157,10 +157,54 @@ pub async fn unlock(base: &str, access_token: &str) -> Result<String> {
     if status.as_u16() == 401 {
         return Err(anyhow!("Invalid or expired access token."));
     }
-    let body: Value = res
-        .json()
-        .await
-        .context("remote /api/unlock returned a non-JSON response (is this a Graphnosis bridge?)")?;
+    // A DEAD UPSTREAM is the common failure here, and it is not a protocol
+    // mismatch. `tailscale serve` (or any reverse proxy) terminates TLS itself
+    // and answers 502/503/504 with an empty body when Graphnosis is not
+    // listening behind it — because the app is closed, or because its cortex is
+    // still locked and so the browser-access server never started.
+    //
+    // This used to surface as "is this a Graphnosis bridge?", which sends the
+    // user to audit a URL that was correct all along. Name the actual state.
+    if matches!(status.as_u16(), 502 | 503 | 504) {
+        return Err(anyhow!(
+            "The address is reachable, but Graphnosis isn't answering behind it (HTTP {}). \
+             Check that Graphnosis is running AND unlocked on the server, and that \
+             Settings → Mobile & Remote → Browser access is enabled.",
+            status.as_u16()
+        ));
+    }
+    // Read the content-type before consuming the body — on a parse failure the
+    // status and type are what identify the responder, so a login page or an
+    // error page is distinguishable from a genuine non-Graphnosis host.
+    let content_type = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let text = res.text().await.unwrap_or_default();
+    let body: Value = serde_json::from_str(&text).map_err(|_| {
+        let trimmed = text.trim();
+        let shape = if trimmed.is_empty() {
+            "an empty body".to_string()
+        } else {
+            let snippet: String = trimmed.chars().take(120).collect();
+            format!("a non-JSON body: {}", snippet.replace('\n', " "))
+        };
+        let ct = if content_type.is_empty() {
+            String::new()
+        } else {
+            format!(" (content-type: {})", content_type)
+        };
+        anyhow!(
+            "remote /api/unlock returned HTTP {}{} with {}. \
+             If this is a Graphnosis server, check it is running and unlocked; \
+             otherwise check the address.",
+            status.as_u16(),
+            ct,
+            shape
+        )
+    })?;
     if let Some(token) = body.get("token").and_then(|v| v.as_str()) {
         return Ok(token.to_string());
     }
