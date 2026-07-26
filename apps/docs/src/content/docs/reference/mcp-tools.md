@@ -1317,10 +1317,18 @@ Same as `walk_skill` but returns a **machine-readable `SkillExecutionPlan` JSON*
 
 ### `train_skill`  *(Pro)*
 
-Personalizes a skill instruction against the user's memory. Phase 1: deterministic recall. Phase 2: surgical placement of recalled memories at the right sequential position in the skill (Jaccard + triplet-coherence scoring; LLM-rewrite path opt-in via `useLlmRewrite`). Phase 3: save as a new versioned node set, wire all SOP edges (sequence / goals / loops / branches / context / sub-skill calls). Re-train any time to refresh against newly-added memories.
+Compiles authored prose into the **Agempus format** — a title, a `[dispatch-safe:]` cap, the 8-field contract in canonical order, and a numbered sequence — then trains it into the Skills engram and wires every SOP edge (sequence / goals / loops / branches / context / sub-skill calls).
 
-- **Parameters:** `skill` (the skill text) · `graphId` (target Skills engram) · `skillName` (optional) · `focusGraphIds` (optional — restrict recall to specific engrams) · `modelTarget` (optional, e.g. `'claude'` / `'cursor'`) · `save` (default true) · `recallBreadth` (0–100, default auto) · `goals` (structured 8-field SkillGoals) · `useLlmRewrite` (optional, default false).
-- **Try saying:** *"Train this CLAUDE.md skill against my Coding engram: …"*
+Compilation is **deterministic and scaffolding-only**: it structures what you wrote and never invents semantics. Train-time recall is empty, so nothing from your cortex is pulled into a skill body.
+
+**The compile loop.** If the result scores below 6/8 on the contract, or is missing `Trigger:`, `Success:`, or a numbered sequence, `train_skill` **does not save**. It returns the scaffolded draft plus the exact gaps; you fill them in and call again. That round-trip is the expected flow, not an error. It ends after 3 rounds — which saves whatever it has — or immediately if you pass `accept_incomplete`.
+
+Derive each contract field from the procedure itself, and ask the user when one is genuinely underdetermined: a wrong `Trigger:` fires the skill on the wrong context.
+
+- **Parameters:** `skill` (the skill text) · `graphId` (target Skills engram) · `skillName` (optional) · `modelTarget` (optional, e.g. `'claude'` / `'cursor'`) · `save` (default true) · `goals` (structured 8-field SkillGoals) · `scaffold` (default true — set false only to store text byte-for-byte as authored) · `accept_incomplete` (default false — save despite an incomplete contract) · `useLlmRewrite` (Pro + Local LLM, default false).
+- **Note:** `focus_engrams` is accepted but has no effect and the response says so — train-time recall is empty by design, so there is nothing to restrict.
+- **Returns:** adds `conformance` (score + missing fields), `coverage` (how much of your source text survived into the compiled body), and `scaffoldNotes`.
+- **Try saying:** *"Train this deployment runbook as a skill in my Skills engram: …"*
 
 ### `skill_vitality`
 

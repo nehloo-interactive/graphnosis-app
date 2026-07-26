@@ -11,6 +11,42 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.30.0 — Skills that survive being moved
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-26</p>
+
+Moving a trained skill to another Skills engram could replace it with nothing but its own training header — silently, while the Skills page still showed full health. This release fixes that at the root, adds a way to recover skills already damaged by it, and gives `train_skill` a real compile step so a trained skill has a complete contract instead of whatever prose it was handed.
+
+### Added
+
+- **`train_skill` compiles prose into the Agempus format.** A title, a `[dispatch-safe:]` cap, the 8-field contract in canonical order, and a numbered sequence — derived deterministically from what you wrote, never invented. If the result is missing `Trigger:`, `Success:`, or a numbered sequence, training **declines to save** and hands back the draft plus the exact gaps to fill. Filling them in and calling again is the intended flow. See [Skills — the compile loop](/reference/skills/).
+- **Skills are snapshotted before they are moved.** Transferring a skill between engrams now writes a full version to its history first, so the previous body is always recoverable from the Skills page — uncapped, unlike a recovery reconstructed from logs.
+- **Read a version before restoring it.** The Skills history panel can now show a saved version inline, read-only, instead of making you restore it to find out what it contains.
+- **A skill's history follows it between engrams.** Previously the history stayed behind and the moved skill looked brand new.
+- **First training records a baseline version**, so there is something to roll back to after the very first retrain.
+
+### Changed
+
+- **The Skills panel keeps up with the AI.** Retraining a skill through an AI client refreshes the open skill instead of showing the previous version until you click away and back. Selecting a skill also collapses the other skills' history.
+- **`focus_engrams` now says it was ignored** rather than accepting it silently. Training reads no memory at compile time, so there is nothing to restrict.
+- **Skill training reports `source-only`** where it previously reported "memory-augmented · 0 nodes", which described a path that no longer runs.
+- **Op-log integrity warnings are summarised per file** — one line with the count, rather than one line per gap. Large cortexes were producing thousands.
+- **Automatic op-log compaction is switched off.** It could only ever rewrite the current device's file, so on a long-lived cortex it reclaimed nothing while still rewriting signed history. Nothing is deleted; the log simply stops being rewritten.
+
+### Fixed
+
+- **Transferring a skill between engrams no longer replaces it with its training header.** The underlying cause: a source moved between engrams was rebuilt from a cached copy that was never updated after the skill's body was written. Both the AI tool and the in-app Sources page were affected.
+- **Skills damaged by that bug can be recovered** where the history survived, using the op-log trail left when the skill was moved. Recovery reports exactly what it can restore and flags anything that would come back shortened, so nothing lossy is written without saying so.
+- **Very large cortexes no longer exhaust memory** during engram loading. Loading a set of engrams could hold a large portion of the op-log in memory at once; the log is now read in a streaming pass with a bounded footprint. This also fixes engram loading failing outright on cortexes whose op-log had grown past a size limit.
+- **A skill's origin is recorded when it is trained**, which is what makes the recovery above possible.
+- **Connecting to a remote cortex reports what is actually wrong.** A server that is switched off or still locked now says so, instead of suggesting the address might not be a Graphnosis server.
+
+### Migrations
+
+None. Existing cortexes are read as-is.
+
+---
+
 ## v1.29.0 — Connect an AI client to a cortex on another machine
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-25</p>

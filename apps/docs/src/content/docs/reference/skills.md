@@ -115,6 +115,20 @@ Requires: $branch:string, $policy:{phased|atomic}, $count:number
 
 A `@skill:` (or `@parallel:`) target can now live in **another Skills engram**. Because the SDK's edge model is strictly intra-graph, cross-engram resolutions are persisted in an encrypted side-table next to the cortex and merged into the walk — surfaced with a `targetGraphId` on the call. Same-engram targets are unchanged; you don't have to do anything to opt in.
 
+## The compile loop
+
+`train_skill` compiles authored prose into the Agempus format before it trains anything: a title, a `[dispatch-safe:]` cap, the 8-field contract in canonical order, and a numbered sequence.
+
+The compiler is deterministic and **scaffolds only** — it structures what you wrote and never invents semantics. If your text does not carry a `Trigger:`, the compiler will not guess one.
+
+That is why training can decline to save. If the compiled skill scores **below 6/8** on the contract, or is missing `Trigger:`, `Success:`, or a numbered sequence, `train_skill` returns the scaffolded draft plus the exact list of gaps instead of saving. Fill them in, call again. This round-trip is the designed flow, not an error.
+
+It terminates two ways: after **3 rounds** it saves whatever it has, or you pass `accept_incomplete` to save immediately.
+
+Two fields are worth deriving carefully rather than filling in to satisfy the check — a wrong `Trigger:` fires the skill on the wrong context, and a vague `Success:` gives it no completion oracle. Ask the user when either is genuinely underdetermined.
+
+The response carries `conformance` (score and what is missing), `coverage` (how much of your source text survived into the compiled body), and `scaffoldNotes`. A low coverage number with a passing score usually means the source was mostly prose the compiler could not place in the sequence.
+
 ## Training paths — Free vs Pro
 
 `train_skill` has two paths. Which one runs is decided by the user's license and Local LLM availability — the AI client does not pick.
