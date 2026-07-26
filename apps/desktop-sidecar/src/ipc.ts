@@ -1238,7 +1238,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     // Bidirectional binding between the Trained Output box and the
     // graph. The editor calls these on every edit / reorder / remove /
     // insert / rename so the graph always matches what the user sees.
-    // See plan: /Users/nelulazar/.claude/plans/let-s-plan-the-skills-piped-beacon.md
+    // See the "skills piped beacon" plan notes.
 
     case 'source.insertNode': {
       const args = z.object({

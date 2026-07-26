@@ -2,7 +2,7 @@
  * Live train ghampus-operator on user cortex.
  *
  * Usage:
- *   GRAPHNOSIS_CORTEX=/Users/nelulazar/Graphnosis-test node apps/desktop-sidecar/scripts/train-ghampus-operator.mjs
+ *   GRAPHNOSIS_CORTEX=~/Graphnosis-test node apps/desktop-sidecar/scripts/train-ghampus-operator.mjs
  */
 import net from 'node:net';
 import os from 'node:os';

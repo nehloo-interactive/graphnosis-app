@@ -1,7 +1,7 @@
 /**
  * One-shot retrain for 4 hollow business skills on live cortex.
  * Usage:
- *   GRAPHNOSIS_CORTEX=/Users/nelulazar/Graphnosis-test node apps/desktop-sidecar/scripts/train-four-hollow-skills.mjs
+ *   GRAPHNOSIS_CORTEX=~/Graphnosis-test node apps/desktop-sidecar/scripts/train-four-hollow-skills.mjs
  */
 import net from 'node:net';
 import os from 'node:os';

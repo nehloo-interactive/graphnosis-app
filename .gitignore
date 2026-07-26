@@ -87,10 +87,10 @@ apps/marketing-web/
 # end-to-end) can sit alongside the sidecar-focused ones. The pnpm test:*
 # scripts in /package.json reference these files; clones won't have them
 # until they're recreated. See
-# /Users/nelulazar/.claude/plans/polished-questing-beacon.md for the rationale.
+# the polished-questing-beacon plan notes for the rationale.
 # Also covers /tests/rag-comparison-study/ — a local research study comparing
 # Graphnosis to Airweave (paper) and a Milvus-Groq RAG stack. See
-# /Users/nelulazar/.claude/plans/peaceful-booping-gosling.md. Never ships.
+# the peaceful-booping-gosling plan notes. Never ships.
 /tests/
 RELEASE-NOTES.md
 SDK-OBSERVATIONS.md

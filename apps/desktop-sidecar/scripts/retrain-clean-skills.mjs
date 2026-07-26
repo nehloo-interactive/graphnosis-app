@@ -3,10 +3,12 @@
  * Usage: node apps/desktop-sidecar/scripts/retrain-clean-skills.mjs
  */
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 
 const SOCKET =
   process.env.GRAPHNOSIS_IPC_SOCKET ??
-  '/Users/nelulazar/Graphnosis-test/sidecar.sock';
+  path.join(os.homedir(), 'Graphnosis-test', 'sidecar.sock');
 const GRAPH_ID = 'graphnosis-skills';
 
 const PRIORITY = new Set([

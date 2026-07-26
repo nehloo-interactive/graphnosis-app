@@ -20363,7 +20363,7 @@ interface MobileConnectionInfo {
   port: number;
   token: string;
   localIps: string[];
-  /** Bonjour/mDNS hostname (e.g. Nelus-MacBook-Pro.local) when detectable. */
+  /** Bonjour/mDNS hostname (e.g. studio-mac.local) when detectable. */
   localHostname?: string | null;
   tailscaleIp?: string;
   /** Tailscale MagicDNS name (host.tailnet.ts.net) when detectable. */

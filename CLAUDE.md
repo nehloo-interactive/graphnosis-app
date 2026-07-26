@@ -111,7 +111,7 @@ Monorepo. Three packages:
 - `packages/graphnosis-app-core` — shared types, crypto, op-log, source
   index, federation, policy, embedding cache
 
-The SDK itself lives in a separate repo: `/Users/nelulazar/Developer/Graphnosis`
+The SDK itself lives in a separate repo: `~/Developer/Graphnosis`
 (npm: `@nehloo/graphnosis`, Apache-2.0). The App consumes it as a pinned
 dependency in `apps/desktop-sidecar/package.json`.
 

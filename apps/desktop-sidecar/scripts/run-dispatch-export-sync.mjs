@@ -14,12 +14,13 @@
  */
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SOCKET =
   process.env.GRAPHNOSIS_IPC_SOCKET ??
-  '/Users/nelulazar/Graphnosis-test/sidecar.sock';
+  path.join(os.homedir(), 'Graphnosis-test', 'sidecar.sock');
 const GRAPH_ID = process.env.GRAPHNOSIS_SKILLS_GRAPH ?? 'graphnosis-skills';
 const CORTEX_DIR = process.env.GRAPHNOSIS_CORTEX ?? path.dirname(SOCKET);
 

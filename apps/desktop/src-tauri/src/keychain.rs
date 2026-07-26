@@ -33,7 +33,7 @@ use anyhow::Result;
 // Used as the Keychain account name and as the file stem — both modes
 // address the same cortex via the same identifier.
 //
-//   "/Users/nelulazar/Graphnosis-test" → "Users_nelulazar_Graphnosis-test"
+//   "/Users/alex/Graphnosis-test" → "Users_alex_Graphnosis-test"
 //
 // Paths are normalized before hashing so minor UI differences (trailing
 // slash, surrounding whitespace, symlink vs real path) don't miss the
