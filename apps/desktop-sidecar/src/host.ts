@@ -298,6 +298,36 @@ export type OplogHousekeepingResult = {
   compaction: OplogCompactionResult;
 };
 
+/**
+ * How far through the op-log a reconcile consumed — the only thing the
+ * checkpoint ever needed from the full event set.
+ *
+ * Reconcile used to hold every event just to derive these three scalars and a
+ * per-graph subset. On a 7.7M-event log that is gigabytes of live objects per
+ * engram, ~46/47 of which get filtered away immediately.
+ */
+interface OplogWatermark {
+  maxTs: number;
+  // Explicitly `| undefined`: a later event with a higher ts but no seq must
+  // CLEAR the seq, not leave a stale one behind (exactOptionalPropertyTypes
+  // otherwise rejects the assignment).
+  maxSeq?: number | undefined;
+  count: number;
+}
+
+/** Fold one event into a watermark. Mirrors mergeOplogReconcileCheckpoint's ordering. */
+export function accumulateWatermark(
+  wm: OplogWatermark,
+  ev: { ts: number; seq?: number },
+): void {
+  if (ev.ts > wm.maxTs) {
+    wm.maxTs = ev.ts;
+    wm.maxSeq = typeof ev.seq === 'number' ? ev.seq : undefined;
+  } else if (ev.ts === wm.maxTs && typeof ev.seq === 'number') {
+    wm.maxSeq = Math.max(wm.maxSeq ?? -1, ev.seq);
+  }
+}
+
 export class GraphnosisHost {
   // ── Mutation events ────────────────────────────────────────────────
   //
@@ -2604,6 +2634,9 @@ export class GraphnosisHost {
     this.bootDeferredFlushPromise = null;
   }
 
+  /** Tail of the serialised reconcile chain — see scheduleReconcile. */
+  private reconcileChain: Promise<void> = Promise.resolve();
+
   private scheduleReconcile(graphId: GraphId, entry: LoadedGraph): void {
     if (this.bootPhaseActive || this.bootSweepActive) {
       if (!this.bootReconcileQueue.includes(graphId)) {
@@ -2611,7 +2644,18 @@ export class GraphnosisHost {
       }
       return;
     }
-    entry.reconcileBuilding = this.reconcileGraphFromOplog(graphId, entry)
+    // Serialise reconciles across engrams.
+    //
+    // Each one is now streaming and cheap, but this is unbounded fan-out by
+    // construction: scheduleReconcile is fire-and-forget, so anything that
+    // loads engrams in a loop starts N concurrent op-log passes. Peak cost
+    // then scales with how many engrams happen to load together, which is not
+    // a property anything here controls. Chaining makes it one at a time —
+    // each still yields to the loop, so nothing blocks.
+    entry.reconcileBuilding = this.reconcileChain = this.reconcileChain
+      .then(() => (this.graphs.get(graphId) === entry
+        ? this.reconcileGraphFromOplog(graphId, entry)
+        : undefined))
       .then(() => {})
       .catch((e: unknown) => {
         console.error(
@@ -4910,7 +4954,7 @@ export class GraphnosisHost {
   // Source-mutating methods used by the Skills w/ Goals editor — let the
   // App treat the chunks visible in the Trained Output box as a true
   // 2-way binding with the source's nodeIds. See plan:
-  //   /Users/nelulazar/.claude/plans/let-s-plan-the-skills-piped-beacon.md
+  //   the "skills piped beacon" plan notes
   // ──────────────────────────────────────────────────────────────────────
 
   /**
@@ -6693,33 +6737,52 @@ export class GraphnosisHost {
     const checkpoint = this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint;
     const tailReplay = checkpoint !== undefined;
     type OplogEventBatch = Awaited<ReturnType<typeof oplog.readAllEvents>>;
-    let events: OplogEventBatch;
+    let graphEvents: OplogEventBatch;
+    let watermark: OplogWatermark;
 
-    if (tailReplay && checkpoint) {
-      if (prefetch?.tailEvents != null) {
-        events = this.filterOplogEventsSince(prefetch.tailEvents, checkpoint);
-      } else if (prefetch?.fullEvents != null) {
-        events = this.filterOplogEventsSince(prefetch.fullEvents, checkpoint);
-      } else {
-        const oplogDir = path.join(this.opts.cortexDir, 'oplog');
-        // Memory-bounded reader, NOT the SDK's oplog.readEventsSince(): that
-        // one fs.readFile()s the WHOLE device file, so a long-lived cortex
-        // whose .oplog has grown past Node's 2 GiB limit fails every reconcile
-        // with "File size (…) is greater than 2 GiB". Observed in the field at
-        // 4.6 GB, silently skipping reconcile for 20+ engrams on every boot —
-        // each one falling back to the on-disk .gai. safeReadEventsSince is the
-        // documented drop-in (same signature); listOplogEvents already used it.
-        events = await safeReadEventsSince(oplogDir, this.key, {
-          ...this.oplogReadOptions(),
-          sinceTs: checkpoint.maxTs,
-          ...(checkpoint.maxSeq !== undefined ? { sinceSeq: checkpoint.maxSeq } : {}),
-        });
-      }
+    const prefetched = tailReplay && checkpoint
+      ? (prefetch?.tailEvents ?? prefetch?.fullEvents)
+      : prefetch?.fullEvents;
+
+    if (prefetched != null) {
+      // Boot path: ONE read is shared across every engram, so the array already
+      // exists and re-reading per engram would be strictly worse.
+      const events = tailReplay && checkpoint
+        ? this.filterOplogEventsSince(prefetched, checkpoint)
+        : prefetched;
+      graphEvents = events.filter((e) => e.graphId === graphId);
+      watermark = this.watermarkFromEvents(events);
     } else {
-      events = prefetch?.fullEvents ?? await this.listOplogEvents();
+      // Streaming path. Previously this read the whole log (or the whole tail)
+      // into an array and then kept ~1/47th of it — and because loadGraph
+      // schedules reconciles fire-and-forget, 47 of those arrays could be live
+      // at once. Peak was gigabytes for a cortex of ~60k nodes.
+      //
+      // safeScanEvents visits one chunk at a time and retains only this
+      // engram's events plus three scalars, so peak is independent of both log
+      // size and engram count.
+      //
+      // Still NOT the SDK's oplog.readEventsSince(): that fs.readFile()s the
+      // whole device file, so a cortex past Node's 2 GiB limit fails every
+      // reconcile with "File size (…) is greater than 2 GiB" — observed in the
+      // field at 4.6 GB, silently skipping reconcile for 20+ engrams per boot.
+      const oplogDir = path.join(this.opts.cortexDir, 'oplog');
+      const kept: OplogEventBatch = [];
+      const wm: OplogWatermark = { maxTs: 0, count: 0 };
+      const sinceTs = tailReplay && checkpoint ? checkpoint.maxTs : undefined;
+      const sinceSeq = tailReplay && checkpoint ? checkpoint.maxSeq : undefined;
+      await safeScanEvents(oplogDir, this.key, (ev) => {
+        // The checkpoint advances over every event we CONSUMED, not just the
+        // ones for this engram — otherwise an engram with no traffic would
+        // rewind its checkpoint and re-scan the same tail forever.
+        if (sinceTs !== undefined && !this.isAfterOplogCheckpoint(ev, sinceTs, sinceSeq)) return;
+        wm.count++;
+        accumulateWatermark(wm, ev);
+        if (ev.graphId === graphId) kept.push(ev);
+      }, this.oplogReadOptions());
+      graphEvents = kept;
+      watermark = wm;
     }
-
-    const graphEvents = events.filter((e) => e.graphId === graphId);
 
     await this.opts.adapter.build(entry.handle);
 
@@ -6731,7 +6794,7 @@ export class GraphnosisHost {
         await this.save(graphId);
         this.invalidateOplogCache();
       }
-      if (events.length > 0) await this.persistOplogReconcileCheckpoint(graphId, events);
+      if (watermark.count > 0) await this.persistOplogReconcileCheckpoint(graphId, watermark);
       return dirty ? 'ran' : 'skipped';
     }
 
@@ -6785,7 +6848,7 @@ export class GraphnosisHost {
       this.invalidateOplogCache();
     }
 
-    await this.persistOplogReconcileCheckpoint(graphId, events);
+    await this.persistOplogReconcileCheckpoint(graphId, watermark);
     return 'ran';
   }
 
@@ -6846,11 +6909,11 @@ export class GraphnosisHost {
   /** Advance per-engram reconcile checkpoint to the high-water of `events`. */
   private async persistOplogReconcileCheckpoint(
     graphId: GraphId,
-    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+    watermark: OplogWatermark,
   ): Promise<void> {
     const next = this.mergeOplogReconcileCheckpoint(
       this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint,
-      events,
+      watermark,
     );
     if (!next) return;
     const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
@@ -6863,20 +6926,33 @@ export class GraphnosisHost {
 
   private mergeOplogReconcileCheckpoint(
     prev: settingsMod.GraphMetadata['oplogReconcileCheckpoint'],
-    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+    watermark: OplogWatermark,
   ): { maxTs: number; maxSeq?: number } | undefined {
-    if (events.length === 0) return prev;
+    if (watermark.count === 0) return prev;
     let maxTs = prev?.maxTs ?? 0;
     let maxSeq = prev?.maxSeq;
-    for (const ev of events) {
-      if (ev.ts > maxTs) {
-        maxTs = ev.ts;
-        maxSeq = typeof ev.seq === 'number' ? ev.seq : undefined;
-      } else if (ev.ts === maxTs && typeof ev.seq === 'number') {
-        maxSeq = Math.max(maxSeq ?? -1, ev.seq);
-      }
+    if (watermark.maxTs > maxTs) {
+      maxTs = watermark.maxTs;
+      maxSeq = watermark.maxSeq;
+    } else if (watermark.maxTs === maxTs && watermark.maxSeq !== undefined) {
+      maxSeq = Math.max(maxSeq ?? -1, watermark.maxSeq);
     }
     return { maxTs, ...(maxSeq !== undefined ? { maxSeq } : {}) };
+  }
+
+  /**
+   * Fold an in-memory event array down to a watermark.
+   *
+   * Only the prefetch paths still hold an array — they share ONE read across
+   * every engram at boot, so materialising there is deliberate. The streaming
+   * path never builds an array at all and accumulates the watermark directly.
+   */
+  private watermarkFromEvents(
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): OplogWatermark {
+    const wm: OplogWatermark = { maxTs: 0, count: events.length };
+    for (const ev of events) accumulateWatermark(wm, ev);
+    return wm;
   }
 
   /** Clear tail-replay checkpoint after full op-log recovery rebuilds the engram. */
