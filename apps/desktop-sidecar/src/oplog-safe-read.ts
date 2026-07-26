@@ -369,6 +369,84 @@ async function collectOplogDirSafe(
 }
 
 /**
+ * Streaming, filter-first collector — for callers that want a FEW events out of
+ * a very large log.
+ *
+ * `safeReadAllEvents` bounds the ciphertext held in memory, but it still
+ * materialises every decrypted event as a JS object and returns them all. On a
+ * multi-GB op-log that is millions of objects: a 4.6 GB log OOM'd a 4 GB heap
+ * inside JSON.parse. Even `collectFileEvents`' existing `filter` does not help,
+ * because it accumulates the file's full event list first to run the
+ * sequence-continuity check.
+ *
+ * This keeps ONLY events matching `filter`, and does the continuity check
+ * streaming (per-device last-seq) instead of over a retained array — so peak
+ * memory is one chunk plus the matches, not the whole log.
+ *
+ * Use it whenever the result set is small and known up front: recovery for a
+ * specific set of sourceIds, an audit for one engram, etc. For "give me
+ * everything", `safeReadAllEvents` is still the right call.
+ */
+export async function safeCollectEvents(
+  dir: string,
+  key: Uint8Array,
+  filter: (ev: OpLogEvent) => boolean,
+  opts: oplog.ReadOpLogOptions = {},
+): Promise<OpLogEvent[]> {
+  let names: string[] = [];
+  try {
+    names = await fsp.readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const now = opts.now ?? Date.now();
+  const maxSkew = opts.maxClockSkewMs ?? DEFAULT_MAX_CLOCK_SKEW_MS;
+  const out: OpLogEvent[] = [];
+
+  for (const name of names) {
+    if (!name.endsWith('.oplog')) continue;
+    const filePath = path.join(dir, name);
+    const index = await indexOplogFile(filePath);
+    if (index.format === 'empty' || index.entries.length === 0) continue;
+
+    // Streaming continuity check: remember only the last seq per device rather
+    // than retaining every event to sort afterwards.
+    const lastSeq = new Map<DeviceId, number>();
+    const fh = await fsp.open(filePath, 'r');
+    try {
+      for (const entry of index.entries) {
+        const chunkEvents = await decryptIndexEntry(fh, entry, key, name, opts);
+        for (const ev of chunkEvents) {
+          if (typeof ev.seq === 'number') {
+            const prev = lastSeq.get(ev.deviceId);
+            if (prev !== undefined) {
+              if (ev.seq === prev) {
+                opts.onIntegrityIssue?.({ kind: 'seq-rewind', deviceId: ev.deviceId, file: name,
+                  detail: `duplicate seq ${ev.seq} — possible replay` });
+              } else if (ev.seq > prev + 1) {
+                opts.onIntegrityIssue?.({ kind: 'seq-gap', deviceId: ev.deviceId, file: name,
+                  detail: `gap between seq ${prev} and ${ev.seq} — possible dropped events` });
+              }
+            }
+            if (prev === undefined || ev.seq > prev) lastSeq.set(ev.deviceId, ev.seq);
+          }
+          if (typeof ev.ts === 'number' && ev.ts > now + maxSkew) {
+            opts.onIntegrityIssue?.({ kind: 'future-timestamp', deviceId: ev.deviceId, file: name,
+              detail: `event ts ${ev.ts} exceeds now+${maxSkew}ms; dropped` });
+            continue;
+          }
+          if (filter(ev)) out.push(ev);
+        }
+      }
+    } finally {
+      await fh.close();
+    }
+  }
+  return sortEvents(out);
+}
+
+/**
  * Drop-in, memory-bounded replacement for `oplog.readAllEvents()`. Same
  * result shape and integrity-reporting semantics; internally bounded to
  * roughly one chunk's ciphertext in memory at a time rather than the whole

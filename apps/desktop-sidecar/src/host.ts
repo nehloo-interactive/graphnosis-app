@@ -16,7 +16,7 @@ import {
   sanitizeClassificationSchema,
   type SourceRecord,
 } from '@graphnosis-app/core';
-import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
+import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type OpLogEvent, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisAdapter, GraphHandle, AppendDocumentInput, CorrectionEdit } from './graphnosis-adapter.js';
 import * as healingJournalMod from './healing-journal.js';
 import * as connectionStoreMod from './connection-store.js';
@@ -65,7 +65,7 @@ import {
   isOplogResourceError,
   logActivityOplogResourceError,
 } from './log-rate-limit.js';
-import { safeReadAllEvents, safeReadEventsSince } from './oplog-safe-read.js';
+import { safeReadAllEvents, safeReadEventsSince, safeCollectEvents } from './oplog-safe-read.js';
 import { isOplogRecoveryAnchor, splitBlobByNodeOffsets } from './oplog-retention.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
@@ -6334,6 +6334,29 @@ export class GraphnosisHost {
     };
   }
 
+  /**
+   * Streaming, filter-first op-log read — for callers that need a FEW events
+   * out of a potentially huge log.
+   *
+   * `listOplogEvents()` materialises EVERY event as a JS object and caches the
+   * lot. That is right for consumers that genuinely walk the whole history
+   * (vitality, corrections sweep, Audit), but fatal for a targeted lookup: a
+   * 4.6 GB op-log OOM'd a 4 GB heap inside JSON.parse.
+   *
+   * This keeps only what `filter` accepts, so peak memory is one chunk plus the
+   * matches. Deliberately NOT cached — the result is caller-specific.
+   */
+  async collectOplogEvents(
+    filter: (ev: OpLogEvent) => boolean,
+  ): Promise<OpLogEvent[]> {
+    return safeCollectEvents(
+      path.join(this.opts.cortexDir, 'oplog'),
+      this.key,
+      filter,
+      this.oplogReadOptions(),
+    );
+  }
+
   async listOplogEvents(): Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> {
     // ── Cache hit ──────────────────────────────────────────────────────────
     // Serve the cache INDEFINITELY as long as no op has been written since it
@@ -6663,7 +6686,14 @@ export class GraphnosisHost {
         events = this.filterOplogEventsSince(prefetch.fullEvents, checkpoint);
       } else {
         const oplogDir = path.join(this.opts.cortexDir, 'oplog');
-        events = await oplog.readEventsSince(oplogDir, this.key, {
+        // Memory-bounded reader, NOT the SDK's oplog.readEventsSince(): that
+        // one fs.readFile()s the WHOLE device file, so a long-lived cortex
+        // whose .oplog has grown past Node's 2 GiB limit fails every reconcile
+        // with "File size (…) is greater than 2 GiB". Observed in the field at
+        // 4.6 GB, silently skipping reconcile for 20+ engrams on every boot —
+        // each one falling back to the on-disk .gai. safeReadEventsSince is the
+        // documented drop-in (same signature); listOplogEvents already used it.
+        events = await safeReadEventsSince(oplogDir, this.key, {
           ...this.oplogReadOptions(),
           sinceTs: checkpoint.maxTs,
           ...(checkpoint.maxSeq !== undefined ? { sinceSeq: checkpoint.maxSeq } : {}),

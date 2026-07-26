@@ -134,27 +134,42 @@ function looksDamaged(host: GraphnosisHost, graphId: string, sourceId: string): 
   return texts.every((t) => t.startsWith('<!--'));
 }
 
-/** Read the op-log once, then reconstruct. Logic lives in skill-recover-oplog. */
-async function recoverFromOplog(
-  host: Pick<GraphnosisHost, 'listOplogEvents'>,
-  sourceId: string,
-  alreadyPresent: ReadonlySet<string>,
-): Promise<OplogRecovery> {
-  return recoverFromForgetTrail(await host.listOplogEvents(), sourceId, alreadyPresent);
+/**
+ * Read the forget trail for a KNOWN set of sourceIds in one streaming pass.
+ *
+ * Deliberately not `host.listOplogEvents()`. That materialises every event in
+ * the log as a JS object: on a 4.6 GB op-log it OOM'd a 4 GB heap inside
+ * JSON.parse — and it was being called once PER damaged skill, so the cost
+ * multiplied by the number of skills we were trying to save.
+ *
+ * safeCollectEvents keeps only what matches, so peak memory is one chunk plus
+ * the handful of deleteNode events we actually want, and the log is read once
+ * regardless of how many skills need repairing.
+ */
+async function collectForgetTrails(
+  host: GraphnosisHost,
+  sourceIds: ReadonlySet<string>,
+): Promise<Parameters<typeof recoverFromForgetTrail>[0]> {
+  return host.collectOplogEvents((ev) => {
+    if (ev.op !== 'deleteNode') return false;
+    const before = ev.before as { sourceId?: unknown; preview?: unknown } | undefined;
+    return typeof before?.sourceId === 'string' &&
+      sourceIds.has(before.sourceId) &&
+      typeof before.preview === 'string';
+  });
 }
 
 /**
  * Load every engram in the cortex.
  *
  * `listGraphs()` returns only RESIDENT graphs, and `GraphnosisHost.open()`
- * loads none — the sidecar loads them in a boot sweep, which a CLI does not
- * run. Scanning without this enumerated an empty set and cheerfully reported
- * "no damaged skills found", which is exactly the wrong answer to give someone
- * whose skill was destroyed.
+ * loads none — engrams are lazy, and the sidecar loads them in a boot sweep a
+ * CLI never runs. Scanning without this enumerated an empty set and cheerfully
+ * reported "no damaged skills found", which is exactly the wrong answer to give
+ * someone whose skill was destroyed.
  *
- * Returns the ids that are resident afterwards, plus any that failed to load
- * (surfaced to the user — an engram we could not read is NOT evidence of no
- * damage).
+ * Load failures are returned, not swallowed: an engram we could not read is NOT
+ * evidence of no damage.
  */
 async function loadAllEngrams(host: GraphnosisHost): Promise<{
   loaded: string[];
@@ -171,39 +186,71 @@ async function loadAllEngrams(host: GraphnosisHost): Promise<{
   return { loaded: host.listGraphs(), failed };
 }
 
-async function scan(
+/** A damaged skill found by the graph scan, before any op-log work. */
+interface DamagedCandidate {
+  graphId: string;
+  sourceId: string;
+  label: string;
+  /** Text of the nodes still attached — used to avoid re-adding them. */
+  present: Set<string>;
+}
+
+/** Pass 1: find damaged skills. Touches only loaded graphs, never the op-log. */
+function findDamaged(
   host: GraphnosisHost,
   graphIds: readonly string[],
   nameFilter?: string,
-): Promise<DamagedSkill[]> {
-  const out: DamagedSkill[] = [];
+): DamagedCandidate[] {
+  const out: DamagedCandidate[] = [];
   for (const graphId of graphIds) {
     for (const src of host.listSources(graphId)) {
       if (src.kind !== 'skill') continue;
       const label = src.ref.replace(/^skill:\d+:/, '');
       if (nameFilter && !label.toLowerCase().includes(nameFilter.toLowerCase())) continue;
       if (!looksDamaged(host, graphId, src.sourceId)) continue;
-
-      const present = new Set(
-        (host.getSourceRecord(graphId, src.sourceId)?.nodeIds ?? [])
-          .map((nid) => (host.getFullNodeContent(graphId, nid) ?? '').trim())
-          .filter(Boolean),
-      );
-
-      const log = await recoverFromOplog(host, src.sourceId, present);
       out.push({
         graphId,
         sourceId: src.sourceId,
         label,
-        liveNodes: present.size,
-        recovered: log.texts,
-        origin: log.texts.length > 0 ? 'oplog-preview' : 'none',
-        ...(log.fromGraphId !== undefined ? { recoveredFrom: log.fromGraphId } : {}),
-        truncated: log.truncated,
+        present: new Set(
+          (host.getSourceRecord(graphId, src.sourceId)?.nodeIds ?? [])
+            .map((nid) => (host.getFullNodeContent(graphId, nid) ?? '').trim())
+            .filter(Boolean),
+        ),
       });
     }
   }
   return out;
+}
+
+/**
+ * Pass 2: one streaming read of the op-log for ALL damaged skills at once.
+ *
+ * Splitting the two passes is what keeps this survivable on a large cortex —
+ * the log is read once, filtered to the sourceIds we care about, rather than
+ * read in full once per skill.
+ */
+async function scan(
+  host: GraphnosisHost,
+  candidates: readonly DamagedCandidate[],
+): Promise<DamagedSkill[]> {
+  if (candidates.length === 0) return [];
+  const ids = new Set(candidates.map((c) => c.sourceId));
+  const events = await collectForgetTrails(host, ids);
+
+  return candidates.map((c) => {
+    const log = recoverFromForgetTrail(events, c.sourceId, c.present);
+    return {
+      graphId: c.graphId,
+      sourceId: c.sourceId,
+      label: c.label,
+      liveNodes: c.present.size,
+      recovered: log.texts,
+      origin: log.texts.length > 0 ? 'oplog-preview' : 'none',
+      ...(log.fromGraphId !== undefined ? { recoveredFrom: log.fromGraphId } : {}),
+      truncated: log.truncated,
+    } satisfies DamagedSkill;
+  });
 }
 
 function report(items: DamagedSkill[]): void {
@@ -279,7 +326,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const items = await scan(host, loaded, nameFilter);
+  const candidates = findDamaged(host, loaded, nameFilter);
+  if (candidates.length === 0) {
+    console.log('\nNo damaged skills found — every skill source has a body.\n');
+    return;
+  }
+  console.log(
+    `Found ${candidates.length} damaged skill(s); reading the op-log forget trail…\n` +
+    '(one streaming pass, filtered to these sourceIds)',
+  );
+  const items = await scan(host, candidates);
   report(items);
 
   if (mode === 'plan') {
