@@ -60,6 +60,36 @@ if (bootPpid > 1) {
   }, 2_000).unref?.();
 }
 
+/**
+ * Send to the parent, tolerating a parent that has already gone away.
+ *
+ * The parent exits as soon as its work is done; a worker mid-batch then writes
+ * to a closed IPC channel. Node surfaces that as EPIPE on an 'error' event with
+ * no listener, which terminates the worker with a stack trace — and because the
+ * native embedder is torn down at the same moment, it follows with
+ * "mutex lock failed: Invalid argument". The result was a page of crash output
+ * printed AFTER a run that had completely succeeded, which is both alarming and
+ * a good way to hide a real error next to it.
+ *
+ * There is nothing to recover here: no parent means no one is waiting for this
+ * vector, so drop it and go quietly.
+ */
+function sendToParent(msg: unknown): void {
+  try {
+    process.send?.(msg as never);
+  } catch {
+    process.exit(0);
+  }
+}
+
+// Same reason, for the async path: an EPIPE raised after we return lands here
+// rather than at the send call site.
+process.on('error', (e: NodeJS.ErrnoException) => {
+  if (e?.code === 'EPIPE' || e?.code === 'ERR_IPC_CHANNEL_CLOSED') process.exit(0);
+  console.error(`[embed-worker] ${e?.stack ?? String(e)}`);
+  process.exit(1);
+});
+
 const modelReady: Promise<FlagEmbedding> = (async () => {
   await fs.mkdir(cacheDir, { recursive: true });
   const model = await FlagEmbedding.init({
@@ -68,7 +98,7 @@ const modelReady: Promise<FlagEmbedding> = (async () => {
     showDownloadProgress: false,  // stdout is the MCP transport; logs go to stderr
     maxLength: 512,
   });
-  process.send?.({ type: 'ready', model: MODEL_CHOICE, dim: DIM });
+  sendToParent({ type: 'ready', model: MODEL_CHOICE, dim: DIM });
   return model;
 })();
 
@@ -79,7 +109,7 @@ process.on('message', async (req: { id: number; text: string }) => {
 
     // Empty text: return a zero vector (consistent with previous behaviour).
     if (!trimmed) {
-      process.send?.({ id: req.id, vec: new Array<number>(DIM).fill(0) });
+      sendToParent({ id: req.id, vec: new Array<number>(DIM).fill(0) });
       return;
     }
 
@@ -89,9 +119,9 @@ process.on('message', async (req: { id: number; text: string }) => {
       if (first) { vec = Array.from(first); break; }
     }
     if (!vec) throw new Error('fastembed returned no vectors');
-    process.send?.({ id: req.id, vec });
+    sendToParent({ id: req.id, vec });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    process.send?.({ id: req.id, error });
+    sendToParent({ id: req.id, error });
   }
 });
