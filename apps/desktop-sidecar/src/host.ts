@@ -66,6 +66,7 @@ import {
   logActivityOplogResourceError,
 } from './log-rate-limit.js';
 import { safeReadAllEvents, safeReadEventsSince } from './oplog-safe-read.js';
+import { isOplogRecoveryAnchor, splitBlobByNodeOffsets } from './oplog-retention.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -159,6 +160,19 @@ interface ContentCacheHeader {
   originalSize: number;
   contentHash?: string;
   cachedAt: number;
+  /**
+   * Byte offset of each node's text within `content`, in source order.
+   *
+   * Written for sources whose blob is REBUILT from their nodes rather than
+   * captured at ingest (skills — see refreshSkillContentBlob). Lets a
+   * recovery path restore the original node boundaries exactly instead of
+   * re-running the chunker, which would re-split steps the trainer had
+   * deliberately kept whole via `singleNode`.
+   *
+   * Absent on blobs written at ingest, where `content` is the original bytes
+   * and the chunker is the right way to re-derive nodes.
+   */
+  nodeOffsets?: number[];
 }
 
 export interface RecoveryPlanItem {
@@ -2363,6 +2377,78 @@ export class GraphnosisHost {
     const header = JSON.parse(headerJson) as ContentCacheHeader;
     const content = pt.subarray(4 + headerLen);
     return { header, content };
+  }
+
+  /**
+   * Rebuild a SKILL source's content blob from its current nodes.
+   *
+   * WHY THIS EXISTS
+   * ---------------
+   * Graphnosis recovers content by re-reading its ORIGIN: a file on disk, or
+   * the encrypted blob captured during `ingest()`. That invariant held for
+   * every source type except one.
+   *
+   * A trained skill is ingested as its metadata seed and then built up
+   * node-by-node with `insertNodeAt` — and `insertNodeAt` never touched the
+   * blob. So a skill's blob held its `<!-- training metadata -->` header and
+   * nothing else, while the body existed ONLY as graph nodes. Two consequences
+   * followed, and both bit:
+   *
+   *   • `moveSource` re-ingests from the blob, so transferring a skill between
+   *     engrams replaced the whole procedure with its own header.
+   *   • `forgetSource` overwrites each node with a dedup-release tombstone
+   *     before soft-deleting, so once the source was gone the body existed
+   *     nowhere at full fidelity — only as 500-char op-log previews.
+   *
+   * Refreshing the blob on every insert closes both at the root: the skill
+   * once again has an origin to recover from.
+   *
+   * Rebuilt from nodes rather than appended to, so the blob always matches
+   * current node ORDER — inserts land at a position, not just at the end.
+   * Cost is trivial next to the full-engram `save()` that already runs on
+   * every insert.
+   *
+   * Scoped to `kind === 'skill'` on purpose. For a file or url source the blob
+   * is the original bytes (a PDF, fetched HTML); rebuilding it from extracted
+   * node text would quietly destroy the very fidelity it exists to preserve.
+   */
+  private async refreshSkillContentBlob(graphId: GraphId, sourceId: string): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (!g) return;
+    const rec = g.sourceIndex.get(sourceId);
+    if (!rec || rec.kind !== 'skill') return;
+
+    const SEP = '\n\n';
+    const encoder = new TextEncoder();
+    const sepLen = encoder.encode(SEP).length;
+    const texts: string[] = [];
+    const nodeOffsets: number[] = [];
+    let cursor = 0;
+    for (const nid of rec.nodeIds) {
+      const text = this.getFullNodeContent(graphId, nid);
+      if (!text) continue;
+      // Offset of node i = sum over j<i of (len(text_j) + len(SEP)).
+      nodeOffsets.push(cursor);
+      cursor += encoder.encode(text).length + sepLen;
+      texts.push(text);
+    }
+    if (texts.length === 0) return;
+
+    const bytes = encoder.encode(texts.join(SEP));
+    // Honour the user's content-cache settings, exactly as ingest() does.
+    if (!settingsMod.shouldCache(this.settings, 'skill', bytes.byteLength)) return;
+    await this.writeContentBlob(
+      sourceId,
+      {
+        kind: 'skill',
+        ref: rec.ref,
+        docKind: 'markdown',
+        originalSize: bytes.byteLength,
+        nodeOffsets,
+        cachedAt: Date.now(),
+      },
+      bytes,
+    );
   }
 
   private async deleteContentBlob(sourceId: string): Promise<void> {
@@ -4588,6 +4674,39 @@ export class GraphnosisHost {
       // text when the blob is absent (e.g. caching was off when the clip was
       // saved, or the blob was pruned). Node text is always in memory.
       const blob = await this.readContentBlob(sourceId);
+
+      // Node-exact path (skills). A blob carrying `nodeOffsets` was rebuilt
+      // FROM its nodes, so we can restore those nodes verbatim instead of
+      // re-running the chunker over the joined text. That matters: the chunker
+      // merges or drops short lines — a one-line title, a bare goal header —
+      // and it undoes the `singleNode` boundaries the trainer set so each step
+      // stays one walkable node.
+      if (blob && blob.header.nodeOffsets && blob.header.nodeOffsets.length > 0) {
+        const segments = splitBlobByNodeOffsets(blob.content, blob.header.nodeOffsets);
+        if (segments.length > 0) {
+          ({ nodeIds: forgottenNodeIds } = await this.forgetSource(
+            fromGraphId, sourceId, { triggeredBy: 'user:ingest' },
+          ));
+          // Seed the source with the first segment, then append the rest in
+          // order — mirroring how the trainer built it in the first place.
+          newRecord = await this.ingest(
+            toGraphId, rec.kind, rec.ref,
+            { kind: 'text', content: segments[0]!, sourceRef: rec.ref },
+            { triggeredBy: 'user:ingest' },
+          );
+          for (let i = 1; i < segments.length; i++) {
+            await this.insertNodeAt(
+              toGraphId, newRecord.sourceId,
+              this.getSourceRecord(toGraphId, newRecord.sourceId)?.nodeIds.length ?? i,
+              segments[i]!,
+              { triggeredBy: 'user:ingest', skipRelink: true, singleNode: true },
+            );
+          }
+          this.kickoffRelink(toGraphId);
+          return { newRecord, forgottenNodeIds };
+        }
+      }
+
       let input: AppendDocumentInput;
       if (blob) {
         input = { kind: blob.header.docKind, content: blob.content, sourceRef: blob.header.ref };
@@ -4873,6 +4992,15 @@ export class GraphnosisHost {
 
     g.dirty = true;
     await this.save(graphId);
+    // Keep the skill's content blob in step with its nodes. Without this a
+    // skill's body lives ONLY in the graph, with no origin to recover from —
+    // the root cause of both the transfer wipe and the unrecoverable forget.
+    // Non-fatal: the insert itself succeeded; the blob is durability on top.
+    try {
+      await this.refreshSkillContentBlob(graphId, sourceId);
+    } catch (e) {
+      console.error(`[graphnosis-host] skill blob refresh failed for ${sourceId}: ${(e as Error).message}`);
+    }
     if (!opts?.skipRelink) this.kickoffRelink(graphId);
     return { nodeId: result.newNodeIds[0]! };
   }
@@ -4903,6 +5031,10 @@ export class GraphnosisHost {
     });
     g.dirty = true;
     await this.save(graphId);
+    // Node ORDER is part of a skill's content — the blob is rebuilt in source
+    // order, so a reorder has to be mirrored or the recovered skill walks its
+    // steps in the old sequence.
+    try { await this.refreshSkillContentBlob(graphId, sourceId); } catch { /* non-fatal */ }
   }
 
   /**
@@ -4951,6 +5083,9 @@ export class GraphnosisHost {
     });
     g.dirty = true;
     await this.save(graphId);
+    // The removed node must leave the blob too, or recovery would resurrect
+    // content the user deleted.
+    try { await this.refreshSkillContentBlob(graphId, sourceId); } catch { /* non-fatal */ }
     // Entity overlap may have changed (the deleted node's entities are
     // gone); kickoffRelink will re-evaluate edges across remaining nodes.
     this.kickoffRelink(graphId);
@@ -5630,8 +5765,10 @@ export class GraphnosisHost {
 
     for (const ev of events) {
       // Recovery anchors are NEVER pruned — they are the source-of-truth for
-      // op-log replay and "what did this user ever ingest?" queries.
-      if (ev.op === 'ingestSource' || ev.op === 'forgetSource') {
+      // op-log replay, for "what did this user ever ingest?", and (for
+      // graph-only content like a trained skill's body) the only surviving
+      // copy of the content itself. See oplog-retention.ts for the contract.
+      if (isOplogRecoveryAnchor(ev)) {
         keepEvents.push(ev);
         continue;
       }
