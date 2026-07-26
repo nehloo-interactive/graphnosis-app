@@ -39,6 +39,7 @@ import {
   baseSkillName,
   classifyChunkRole,
   promoteSkillSourcePreservingNodes,
+  moveSourcePreservingSkillNodes,
 } from './skill-trainer.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { CorrectionDiff } from './correction.js';
@@ -2239,7 +2240,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         sourceId: z.string(),
         toGraphId: z.string(),
       }).parse(params);
-      const { newRecord, forgottenNodeIds } = await deps.host.moveSource(fromGraphId, sourceId, toGraphId);
+      // Skill sources need the preserving move — host.moveSource keeps only the
+      // seed node, which for a trained skill is its metadata comment, so a
+      // transferred skill would land as a one-node stub with the procedure gone.
+      const { newRecord, forgottenNodeIds } = await moveSourcePreservingSkillNodes(
+        deps.host, fromGraphId, sourceId, toGraphId,
+      );
       // Purge the in-memory cross-engram cache of stale entries anchored to
       // the old node IDs (the on-disk store was already cleaned inside
       // host.forgetSource, but ReinforcementEngine holds a live copy).

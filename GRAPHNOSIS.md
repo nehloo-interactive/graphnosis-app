@@ -184,10 +184,19 @@ Requires, Produces).
   completed step, and `nextStepIndex` to continue at.
 - `get_skill` — fetch one trained skill's rendered output.
 - `list_skills` — every skill with metadata.
-- `train_skill` — train or retrain a skill (in-place; one source per skill;
-  writes a snapshot to history). Free path = deterministic memory-augmented
-  body with `_(from source)_` attribution; Pro path = LLM-rewritten body
-  with same attribution. The user's license picks the path, not you.
+- `train_skill` — compile a skill from authored prose into the Agempus format,
+  then train or retrain it (in-place; one source per skill; writes a snapshot
+  to history). It scaffolds deterministically — title, `[dispatch-safe:]` cap,
+  the 8-field contract in canonical order, numbered sequence — and never
+  invents semantics. **If the result scores below 6/8, or is missing
+  `Trigger:` / `Success:` / a numbered sequence, it does NOT save**: it returns
+  the scaffolded draft plus the exact gaps, and you fill them in and call
+  again. That loop is the expected flow, not an error; it ends after 3 rounds
+  or when you pass `accept_incomplete: true`. Derive each field from the
+  procedure itself and ask the user when one is genuinely underdetermined — a
+  wrong `Trigger:` fires the skill on the wrong context. Pro adds an optional
+  local-LLM prose polish that preserves structure; the user's license picks
+  that path, not you.
 - `export_skill` — write a signed `.gsk` pack (AES-256-GCM + Ed25519
   signature). Magic bytes `GSK\x01`. Older `.gts` extension still imports.
 - `delete_skill` — soft delete.

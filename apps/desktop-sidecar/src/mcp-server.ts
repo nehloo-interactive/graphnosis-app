@@ -36,7 +36,16 @@ import {
 import { registerPrompt as registerConsentPrompt, listPendingPrompts, recordGatedRequest, getGatedRequest, type ConsentEngram } from './consent-prompts.js';
 import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
-import { SkillTrainer, type ExportFormat, promoteSkillSourcePreservingNodes } from './skill-trainer.js';
+import { SkillTrainer, type ExportFormat, promoteSkillSourcePreservingNodes, moveSourcePreservingSkillNodes } from './skill-trainer.js';
+import {
+  scaffoldAgempus,
+  assessAgempus,
+  traceCoverage,
+  buildCompileGuidance,
+  CompileLoopTracker,
+  CONFORMANCE_THRESHOLD,
+  MAX_COMPILE_ROUNDS,
+} from './skill-compiler.js';
 import { LicenseValidator } from './license-validator.js';
 import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
 import { dispatchAuditMcpTool } from './mcp/handlers-audit.js';
@@ -1061,6 +1070,13 @@ function checkConsentValid(
       (effectiveIntervalMs === -1 || r.grantedAt + effectiveIntervalMs > now),
   );
 }
+
+/**
+ * Bounds the `train_skill` compile loop — how many times a given skill may be
+ * handed back to the calling agent for another pass before the tool saves
+ * whatever it has. In-memory and best-effort by design; see CompileLoopTracker.
+ */
+const _skillCompileLoop = new CompileLoopTracker();
 
 // In-memory failed-attempt tracker per (clientName:tier). Resets on sidecar restart.
 const _consentFailures = new Map<string, { count: number; windowStart: number }>();
@@ -2799,11 +2815,24 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           'a CLAUDE.md block, a .cursorrules file, a ChatGPT system message — anything that ' +
           'shapes how an AI assistant behaves.\n\n' +
           'HOW IT WORKS:\n' +
-          '1. Structure: parse and chunk the authored skill source (deterministic).\n' +
+          '1. Scaffold: normalise the source into Agempus shape (deterministic) — title, ' +
+          '   [dispatch-safe: …] cap, the 8-field contract in canonical order, and a numbered ' +
+          '   sequence. Reorders and renumbers only; never invents semantics.\n' +
+          '2. Score: check the result against the Agempus contract. ' +
           '   Train-time recall is empty — no pull from personal engrams.\n' +
-          '2. Optional Pro rewrite: if use_llm_rewrite=true and the Local LLM is on, rewrite ' +
-          '   from source only (still no cortex recall at train time).\n' +
-          '3. Save: store the trained version in the Skills engram.\n\n' +
+          '3. **Compile loop:** if the skill scores below ' + CONFORMANCE_THRESHOLD + '/8, or is missing ' +
+          '   `Trigger:` / `Success:` / a numbered sequence, THIS TOOL DOES NOT SAVE. It returns the ' +
+          '   scaffolded draft plus the exact list of gaps. Fill them in and CALL train_skill AGAIN ' +
+          '   with the completed text. That is the expected flow, not an error — a skill below the ' +
+          '   bar cannot dispatch or route, so saving it would store inert prose. After ' +
+          MAX_COMPILE_ROUNDS + ' rounds it saves whatever it has; pass accept_incomplete=true to ' +
+          '   skip the loop deliberately.\n' +
+          '4. Optional Pro rewrite: if use_llm_rewrite=true and the Local LLM is on, polish the prose ' +
+          '   from source only (preserves structure; still no cortex recall at train time).\n' +
+          '5. Save: store the trained version in the Skills engram.\n\n' +
+          'DERIVE the contract from the procedure the user gave you — do not invent requirements the ' +
+          'source does not support, and ask the user when a field is genuinely underdetermined. ' +
+          'A wrong `Trigger:` fires the skill on the wrong context, which is worse than an absent one.\n\n' +
           'WHEN TO CALL:\n' +
           '• User says "train my code review skill", "personalize this prompt", ' +
           '  "use my memory to improve this instruction"\n' +
@@ -2855,6 +2884,14 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             bind_recipes: {
               type: 'boolean',
               description: 'Opt in: bind recall RECIPES at train time. Runs a relevance-gated recall to find which engrams hold context relevant to this skill and emits a `recall(… only_engrams: […])` recipe into the body — a binding (query + engram names), not frozen personal content, resolved live at walk time. Default false keeps the empty-engram train contract.',
+            },
+            scaffold: {
+              type: 'boolean',
+              description: 'Run the deterministic Agempus scaffolder (title, [dispatch-safe] cap, 8-field contract in canonical order, numbered sequence) before saving. Default true. Set false only to store text byte-for-byte as authored.',
+            },
+            accept_incomplete: {
+              type: 'boolean',
+              description: 'Skip the compile loop and save even when the Agempus contract is incomplete. Default false. Use when a field is genuinely underdetermined and the user has confirmed leaving it unset — the skill still walks, but stays capped at L1 autonomy.',
             },
             autonomy_level: {
               type: 'string',
@@ -4839,7 +4876,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           );
         }
 
-        const { newRecord, forgottenNodeIds } = await deps.host.moveSource(resFrom.graphId, args.sourceId, resTo.graphId);
+        // Skill sources go through the preserving move: the raw primitive keeps
+        // only the seed node, which for a trained skill is its metadata comment
+        // — the procedure itself would be dropped on the floor.
+        const { newRecord, forgottenNodeIds, repaired } = await moveSourcePreservingSkillNodes(
+          deps.host, resFrom.graphId, args.sourceId, resTo.graphId,
+        );
         // Sync in-memory cross-engram cache and rebuild links for the moved nodes.
         if (forgottenNodeIds.length > 0) {
           deps.brainEngine?.purgeDeletedNodes(forgottenNodeIds);
@@ -4847,7 +4889,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         deps.brainEngine?.runCrossEngramNow();
         const metaTo = deps.host.getGraphMetadata(resTo.graphId);
         return { content: [{ type: 'text', text:
-          `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. New sourceId: ${newRecord.sourceId}` + xferFooter
+          `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. ` +
+          `New sourceId: ${newRecord?.sourceId ?? args.sourceId}` +
+          (repaired > 0 ? ` (${repaired} skill node(s) carried across and re-linked)` : '') +
+          xferFooter
         }] };
       }
       case 'ingest_batch': {
@@ -5266,8 +5311,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           use_llm_rewrite: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
           bind_recipes: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
           autonomy_level: z.enum(['L0', 'L1', 'L2', 'L3']).optional(),
+          scaffold: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
+          accept_incomplete: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
         });
         const args = TrainSkillInput.parse(rawInput);
+        const asBool = (v: boolean | 'true' | 'false' | undefined): boolean =>
+          v === true || v === 'true';
 
         // Resolve the Skills engram (where trained skills are stored)
         const engramName = args.target_engram ?? 'Skills';
@@ -5310,9 +5359,18 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // recalls from focus engrams, so an out-of-scope focus engram would
         // leak its content into the trained skill text.
         let focusGraphIds: string[] | null = null;
+        let focusIgnoredNote: string | undefined;
         if (args.focus_engrams?.length) {
           const resolved = resolveEngramList(deps.host, args.focus_engrams);
           focusGraphIds = resolved.resolved.filter((id) => scopeAllowsGraph(id));
+          // Accepted for API compatibility, then unused: training runs with an
+          // empty recall scope (ENABLE_CORTEX_RECALL_AT_TRAIN). Silently
+          // no-op'ing led an integrator to believe recall was broken, so say it.
+          focusIgnoredNote =
+            `\`focus_engrams\` was ignored — skill training deliberately runs with an EMPTY recall ` +
+            `scope so skills stay portable SOPs. To bind cortex context, pass \`bind_recipes: true\`, ` +
+            `which emits a live \`recall(… only_engrams: […])\` recipe resolved at walk time instead ` +
+            `of freezing personal content into the body.`;
         }
 
         if (!deps.skillTrainer) {
@@ -5348,6 +5406,57 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           }
         }
 
+        // ── The compile loop (L1) ────────────────────────────────────────────
+        // Compile deterministically first, score the result, and — when it is
+        // below the Agempus bar — hand the scaffold plus a precise gap report
+        // BACK to the calling agent instead of saving inert prose. The caller
+        // wrote this procedure and is the strongest model in the room; it fills
+        // the contract and calls again.
+        //
+        // No model is invoked server-side. MCP sampling is not implemented here
+        // and is unsupported by the major clients, and a small local model is
+        // the wrong thing to infer a Trigger with. The loop driver is the tool's
+        // return value.
+        //
+        // Privacy: everything handed back derives solely from `args.skill`,
+        // which the caller just sent us. Nothing from the cortex enters this
+        // path — that holds while skill-trainer's ENABLE_CORTEX_RECALL_AT_TRAIN
+        // stays false, and is pinned by tests/skill-compiler.test.mjs.
+        const wantsScaffold = args.scaffold === undefined ? true : asBool(args.scaffold);
+        let loopNote: string | undefined;
+        if (wantsScaffold && args.save !== false && !asBool(args.accept_incomplete)) {
+          const scaffold = scaffoldAgempus(args.skill, {
+            ...(args.skill_name !== undefined ? { skillName: args.skill_name } : {}),
+          });
+          const conformance = assessAgempus(scaffold.text);
+          if (!conformance.conforms) {
+            const loop = _skillCompileLoop.record(engramRes.graphId, args.skill_name, args.skill);
+            if (!loop.exhausted) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: buildCompileGuidance({
+                    conformance,
+                    coverage: traceCoverage(args.skill, scaffold.text),
+                    scaffold,
+                    round: loop.round,
+                    ...(args.skill_name !== undefined ? { skillName: args.skill_name } : {}),
+                  }),
+                }],
+              };
+            }
+            // Loop exhausted — save what we have rather than blocking forever,
+            // and say so plainly. Unfilled TODO lines are stripped on the way
+            // in, so the stored body reports an honest score.
+            loopNote =
+              `Saved after ${MAX_COMPILE_ROUNDS} compile round(s) with an incomplete contract ` +
+              `(${conformance.score}/8, needs ${CONFORMANCE_THRESHOLD}/8)` +
+              (loop.repeated ? ' — the last call resent identical text' : '') +
+              `. Missing: ${conformance.missing.join(', ')}. ` +
+              `The skill is stored and walkable, but will stay at L1 autonomy until the contract is filled in.`;
+          }
+        }
+
         const clientName = resolveActingClientName();
         const trainInput: import('./skill-trainer.js').TrainSkillInput = {
           skill: args.skill,
@@ -5363,19 +5472,49 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // Optional per-skill autonomy override applied (clamped to the authored
           // cap) AFTER the skill is saved — omitted = keep inheriting the engram.
           ...(args.autonomy_level !== undefined ? { autonomyLevel: args.autonomy_level } : {}),
+          scaffold: wantsScaffold,
         };
         const result = await deps.skillTrainer.trainSkill(trainInput);
         const autonomyNote = result.autonomyNote;
+        // The skill landed (or was explicitly accepted incomplete) — reset the
+        // round counter so a later edit of the same skill gets a fresh loop.
+        _skillCompileLoop.clear(engramRes.graphId, args.skill_name);
 
+        const MODE_LABEL: Record<string, string> = {
+          'llm': '✨ LLM rewrite',
+          'memory-augmented': '🧠 Memory-augmented',
+          'source-only': '📎 Source-only compile (no LLM)',
+        };
         const lines: string[] = [];
         lines.push(`## Skill Training Complete`);
         lines.push('');
-        lines.push(`**Mode:** ${result.mode === 'llm' ? '✨ LLM rewrite' : '📎 Source-only compile (no LLM)'}`);
+        lines.push(`**Mode:** ${MODE_LABEL[result.mode] ?? result.mode}`);
+        if (result.conformance) {
+          const c = result.conformance;
+          const mark = c.conforms ? '✓' : '⚠';
+          lines.push(
+            `**Agempus contract:** ${mark} ${c.score}/8 · ${c.stepCount} step(s) · ` +
+            `${c.stepsWithNeeds} with \`@needs:\` routing` +
+            (c.dispatchSafe ? ` · dispatch-safe: ${c.dispatchSafe}` : ''),
+          );
+        }
+        if (loopNote) {
+          lines.push(`**⚠ Incomplete:** ${loopNote}`);
+        }
+        if (focusIgnoredNote) {
+          lines.push(`**⚠ Ignored:** ${focusIgnoredNote}`);
+        }
         if (result.degradedNote) {
           lines.push(`**Note:** ${result.degradedNote}`);
         }
         if (result.structuralEdgeWarning) {
           lines.push(`**⚠ Structure warning:** ${result.structuralEdgeWarning}`);
+        }
+        if (result.coverage && result.coverage.dropped.length > 0) {
+          lines.push(
+            `**⚠ Fidelity:** ${result.coverage.dropped.length} line(s) from your source have no ` +
+            `counterpart in the compiled skill (${Math.round(result.coverage.retention * 100)}% retained).`,
+          );
         }
         lines.push(`**Influential memories:** ${result.influentialNodes.length} node(s) surfaced`);
         if (result.skillId) {
@@ -5383,6 +5522,19 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
         if (autonomyNote) {
           lines.push(`**Autonomy:** ${autonomyNote}`);
+        }
+        if (result.scaffoldNotes?.length) {
+          lines.push('');
+          lines.push('### Structure applied');
+          for (const n of result.scaffoldNotes) lines.push(`- ${n}`);
+        }
+        if (result.conformance && result.conformance.missing.length > 0) {
+          lines.push('');
+          lines.push('### Contract fields still unset');
+          lines.push(
+            result.conformance.missing.map((f) => `\`${f}\``).join(', ') +
+            ' — retrain with these filled in to raise the score.',
+          );
         }
         lines.push('');
         lines.push('### Trained Skill');
@@ -5506,7 +5658,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const graphId = res.graphId;
         const skills = deps.skillTrainer.listSkills(graphId);
         if (!skills.length) return { content: [{ type: 'text', text: 'No trained skills to lint.' }] };
-        const GOALS = ['Trigger:', 'Prerequisites:', 'Requires:', 'Produces:', 'Success:', 'Out of scope:', 'On failure:', 'On completion:'];
         const POLLUTION = /=== ?KNOWLEDGE SUBGRAPH|--- ?INFERRED LAYER|_\(from cortex recall\)_|Personal Context/i;
         const flagged: string[] = [];
         let clean = 0;
@@ -5515,11 +5666,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           const issues: string[] = [];
           if (POLLUTION.test(body)) issues.push('retrieval/knowledge-dump baked into body');
           if ((body.match(/<!-- Graphnosis skill training metadata/g) ?? []).length > 1) issues.push('duplicate metadata blocks');
-          const goalCount = GOALS.filter((g) =>
-            body.split('\n').some((l) => l.trimStart().toLowerCase().startsWith(g.toLowerCase())),
-          ).length;
-          if (goalCount < 8) issues.push(`${goalCount}/8 goal categories`);
-          if (!/@needs?:/i.test(body)) issues.push('no @needs routing tags');
+          // Scored by the same assessor train_skill compiles against, so lint
+          // and training can never disagree about the same body. Notably it
+          // treats an unfilled `Trigger: TODO` as MISSING — a prefix-only check
+          // counted placeholder lines as present and reported 8/8 on a skill
+          // that was entirely TODOs.
+          const c = assessAgempus(body);
+          if (c.score < 8) issues.push(`${c.score}/8 goal categories`);
+          if (c.stepCount === 0) issues.push('no numbered sequence');
+          if (c.stepsWithNeeds === 0) issues.push('no @needs routing tags');
           if (issues.length > 0) flagged.push(`- **${s.label}** (${s.sourceId})\n    ${issues.join(' · ')}`);
           else clean++;
         }

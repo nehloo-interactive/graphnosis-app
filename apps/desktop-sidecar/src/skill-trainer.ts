@@ -25,6 +25,12 @@ import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import { isRecallRecipeParagraph, parseRecallRecipeText } from './skill-recall-bindings.js';
 import {
+  scaffoldAgempus,
+  assessAgempus,
+  traceCoverage,
+  stripPlaceholders,
+} from './skill-compiler.js';
+import {
   buildGskPackage,
   generateGraphnosisMd,
   nextGskExportVersion,
@@ -42,7 +48,18 @@ import {
 // ── Public types ─────────────────────────────────────────────────────────────
 
 export type ExportFormat = 'claude-md' | 'cursorrules' | 'system-prompt' | 'openai' | 'raw' | 'gsk';
-export type TrainingMode = 'llm' | 'memory-augmented';
+/**
+ * Which compile path actually ran.
+ *
+ * `source-only` was split out of `memory-augmented` because the two were
+ * conflated: the default path folds in ZERO memories (the empty-engram train
+ * contract, see ENABLE_CORTEX_RECALL_AT_TRAIN) yet reported itself as
+ * memory-augmented, so every response read "memory-augmented · 0 influential
+ * nodes" — a contradiction that sent at least one integrator hunting for a
+ * broken recall. `memory-augmented` now means what it says: memories were
+ * appended.
+ */
+export type TrainingMode = 'llm' | 'memory-augmented' | 'source-only';
 
 export interface TrainSkillInput {
   /** The full text of the skill to personalize. */
@@ -99,6 +116,22 @@ export interface TrainSkillInput {
    * future retraining.
    */
   autonomyLevel?: import('@graphnosis-app/core/settings').ExecutionAutonomyLevel;
+  /**
+   * Run the L0 deterministic Agempus scaffolder over the authored source before
+   * chunking (see skill-compiler.ts). Reorders into canonical shape, promotes a
+   * bullet list into a numbered sequence, and marks unfilled contract fields.
+   * Never invents semantics. Default true — it only ever improves shape, and
+   * the previous behaviour (prose in, prose out, 0/8 contract, no warning) was
+   * the bug this exists to fix.
+   */
+  scaffold?: boolean;
+  /**
+   * Keep unfilled `TODO` placeholder contract lines in the persisted body.
+   * Default false: placeholders are a message to the caller, not content, so
+   * they are stripped before save. An unconverged compile then stores an
+   * honest N/8 rather than one padded with filler that lints as complete.
+   */
+  keepPlaceholders?: boolean;
 }
 
 export interface InfluentialNode {
@@ -171,6 +204,20 @@ export interface TrainSkillResult {
    * for (or the skill wasn't saved).
    */
   autonomyNote?: string;
+  /**
+   * Agempus contract score of the compiled body (see skill-compiler.ts).
+   * Present whenever training ran; the caller loop in mcp-server.ts uses
+   * `conformance.conforms` to decide between saving and handing the scaffold
+   * back for another pass.
+   */
+  conformance?: import('./skill-compiler.js').AgempusConformance;
+  /**
+   * Two-way fidelity trace between the authored source and the compiled body:
+   * what was dropped, what was invented. Deterministic token overlap, no judge.
+   */
+  coverage?: import('./skill-compiler.js').CoverageReport;
+  /** What the L0 scaffolder changed, one bullet per action. Empty when off. */
+  scaffoldNotes?: string[];
 }
 
 export interface SkillVitalityResult {
@@ -638,6 +685,54 @@ export class SkillTrainer {
     return `Personal context: ${title}\n- recall: ${query} only_engrams: [${list}]`;
   }
 
+  /**
+   * Write a snapshot of a skill source's CURRENT on-disk state.
+   *
+   * Used for the baseline snapshot of a newly created skill. The retrain path
+   * has its own inline copy that also computes the in-place rename ref, so this
+   * deliberately does not try to serve both.
+   *
+   * Soft-deleted nodes are excluded so a rollback recreates only user-visible
+   * state.
+   */
+  async snapshotCurrentState(graphId: string, sourceId: string): Promise<void> {
+    const record = this.host.getSourceRecord(graphId, sourceId);
+    if (!record) return;
+    const now = Date.now();
+    const nodeMap = new Map(this.host.listNodes(graphId).map((n) => [n.id, n]));
+    const liveNodes: Array<{ content: string; role?: string }> = [];
+    let snapTrainedAt: string | undefined;
+    let snapMode: TrainingMode | undefined;
+    for (const nid of record.nodeIds) {
+      const meta = nodeMap.get(nid);
+      if (!meta) continue;
+      if (meta.confidence <= 0.2) continue;
+      if (meta.validUntil !== undefined && meta.validUntil <= now) continue;
+      const content = this.host.getFullNodeContent(graphId, nid) ?? '';
+      if (!content) continue;
+      liveNodes.push({ content });
+      if (content.trimStart().startsWith('<!--')) {
+        const parsed = parseSkillMetadata(content);
+        if (parsed.trainedAt !== undefined) snapTrainedAt = parsed.trainedAt;
+        if (parsed.mode === 'llm' || parsed.mode === 'memory-augmented' || parsed.mode === 'source-only') {
+          snapMode = parsed.mode;
+        }
+      }
+    }
+    if (liveNodes.length === 0) return;
+    const ts = Date.now();
+    await this.host.skillSnapshots.append(graphId, {
+      snapshotId: SkillSnapshotStore.idFromTs(ts),
+      ts,
+      sourceId,
+      ref: record.ref,
+      label: record.ref.replace(/^skill:\d+:/, ''),
+      ...(snapTrainedAt !== undefined ? { trainedAt: snapTrainedAt } : {}),
+      ...(snapMode !== undefined ? { mode: snapMode } : {}),
+      nodes: liveNodes,
+    });
+  }
+
   async trainSkill(input: TrainSkillInput & {
     /** Streaming callback for live progressive diff. When provided AND the
      *  underlying LLM supports `completeStream`, the trainer streams the
@@ -678,6 +773,21 @@ export class SkillTrainer {
     // ── Phase 1: Build skill context (empty train-time recall scope) ──────────
     onStatus?.('Structuring skill from source…');
     const effectiveBreadth = inputBreadth ?? 50;
+    // ── L0: deterministic Agempus scaffold ───────────────────────────────────
+    // Runs BEFORE recipe binding so `insertRecipeBeforeFirstStep` has a real
+    // numbered sequence to insert in front of. Shape-only — it reorders,
+    // renumbers and marks gaps, and never guesses a Trigger or a Success
+    // criterion from prose (a wrong Trigger fires the skill on the wrong
+    // context, which is strictly worse than an absent one).
+    const authoredSource = skill;
+    let scaffoldNotes: string[] = [];
+    if (input.scaffold !== false) {
+      const scaffolded = scaffoldAgempus(skill, {
+        ...(skillName !== undefined ? { skillName } : {}),
+      });
+      skill = scaffolded.text;
+      scaffoldNotes = scaffolded.notes;
+    }
     // Opt-in recipe-binding: bind relevant engrams as a recall RECIPE (not frozen
     // content) so the body stays clean, portable, and fresh. Default-off path is
     // the empty-engram contract.
@@ -732,7 +842,7 @@ export class SkillTrainer {
         if (!preservation.ok) {
           trained = skill;
           diffNotes = undefined;
-          mode = 'memory-augmented';
+          mode = 'source-only';
           degradedNote =
             `LLM rewrite dropped SOP markers (${preservation.missing.slice(0, 3).join('; ')}` +
             `${preservation.missing.length > 3 ? '…' : ''}). Kept original text.`;
@@ -743,13 +853,13 @@ export class SkillTrainer {
         }
       } catch (err) {
         trained = skill;
-        mode = 'memory-augmented';
+        mode = 'source-only';
         degradedNote =
           `Local LLM rewrite failed (${(err as Error).message}). Kept original skill text.`;
       }
     } else if (wantsLlmRewrite && !llmReady) {
       trained = skill;
-      mode = 'memory-augmented';
+      mode = 'source-only';
       degradedNote =
         'Local LLM is not enabled or unreachable. Enable distillation in Settings → Local LLM, ' +
         'or leave "Polish with local LLM" unchecked for fast chunk-and-save.';
@@ -772,8 +882,20 @@ export class SkillTrainer {
     } else {
       // Expected default: source-only compile (empty train-time recall scope).
       trained = skill;
-      mode = 'memory-augmented';
+      mode = 'source-only';
       degradedNote = undefined;
+    }
+
+    // ── Conformance + fidelity ────────────────────────────────────────────────
+    // Scored on the body that is actually about to be persisted, then the
+    // unfilled TODO placeholders are dropped: they are a message to the caller,
+    // not content. Keeping them would store filler that the goal-line chunker
+    // reads as a real field, so a 3/8 skill would lint as 8/8.
+    const conformance = assessAgempus(mode === 'llm' ? trained : skill);
+    const coverage = traceCoverage(authoredSource, mode === 'llm' ? trained : skill);
+    if (input.keepPlaceholders !== true) {
+      trained = stripPlaceholders(trained);
+      skill = stripPlaceholders(skill);
     }
 
     // ── Self-tune recallBreadth ────────────────────────────────────────────────
@@ -963,7 +1085,7 @@ export class SkillTrainer {
         const nodeMap = new Map(this.host.listNodes(graphId).map((n) => [n.id, n]));
         const liveNodes: Array<{ content: string; role?: string }> = [];
         let snapTrainedAt: string | undefined;
-        let snapMode: 'llm' | 'memory-augmented' | undefined;
+        let snapMode: 'llm' | 'memory-augmented' | 'source-only' | undefined;
         for (const nid of existingSource.nodeIds) {
           const meta = nodeMap.get(nid);
           if (!meta) continue;
@@ -1129,6 +1251,19 @@ export class SkillTrainer {
         await scheduleDispatchSyncAfterRetrain(this.host, this, graphId, skillId);
       } catch { /* non-fatal */ }
 
+      // ── Baseline snapshot for a FIRST train ──────────────────────────────
+      // Snapshots were only ever written PRE-mutation, i.e. on retrain. A skill
+      // trained once therefore had zero history: the Skills panel said "No
+      // earlier versions yet — this skill hasn't been retrained", and there was
+      // genuinely nothing to roll back to if anything later destroyed it. That
+      // is the case where version control matters most, so a freshly created
+      // skill now records its own initial state.
+      if (!existingSource && skillId) {
+        try {
+          await this.snapshotCurrentState(graphId, skillId);
+        } catch { /* non-fatal — never fail a train over history bookkeeping */ }
+      }
+
       // Optional per-skill autonomy override — only when a level was requested
       // (omitted = no override written, so the skill keeps inheriting the engram
       // default). Clamped to the skill's authored dispatch-safe cap; a request
@@ -1171,7 +1306,7 @@ export class SkillTrainer {
     }
 
     return {
-      original: skill,
+      original: authoredSource,
       trained,
       ...(diffNotes !== undefined ? { diffNotes } : {}),
       influentialNodes: topNodes,
@@ -1180,6 +1315,9 @@ export class SkillTrainer {
       ...(degradedNote !== undefined ? { degradedNote } : {}),
       ...(autonomyNote !== undefined ? { autonomyNote } : {}),
       ...(structuralEdgeWarning !== undefined ? { structuralEdgeWarning } : {}),
+      conformance,
+      coverage,
+      ...(scaffoldNotes.length > 0 ? { scaffoldNotes } : {}),
     };
     } finally {
       this.host.setSkipOverlayRecompute(false);
@@ -2025,31 +2163,115 @@ export async function promoteSkillSourcePreservingNodes(
     (after?.nodeIds ?? []).map((nid) => (host.getFullNodeContent(targetGraphId, nid) ?? '').trim()),
   );
 
+  return restoreSkillNodes(host, targetGraphId, sourceId, snapshot, {
+    skip: survived,
+    triggeredBy: 'skill:promote-preserve',
+  });
+}
+
+/**
+ * Append missing content nodes to a skill source and rebuild its SOP edges.
+ *
+ * Shared by the preserving move and by the standalone recovery tool
+ * (`skill-recover.ts`), so a repaired skill is structurally identical to a
+ * natively-trained one however it got repaired — same role derivation, same
+ * five edge passes.
+ *
+ * Idempotent on content: anything already present (or listed in `skip`) is left
+ * alone, so running a repair twice does not duplicate nodes.
+ */
+export async function restoreSkillNodes(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+  texts: readonly string[],
+  opts: { skip?: ReadonlySet<string>; triggeredBy?: string } = {},
+): Promise<{ repaired: number }> {
+  const { skip, triggeredBy = 'skill:restore' } = opts;
+  const present = new Set(skip ?? []);
+  // Re-read the destination so a caller that did not pass `skip` still gets
+  // idempotency rather than duplicates.
+  if (!skip) {
+    for (const nid of host.getSourceRecord(graphId, sourceId)?.nodeIds ?? []) {
+      present.add((host.getFullNodeContent(graphId, nid) ?? '').trim());
+    }
+  }
+
   let repaired = 0;
-  for (const text of snapshot) {
-    if (survived.has(text)) continue;
-    const len = host.getSourceRecord(targetGraphId, sourceId)?.nodeIds.length ?? 1;
-    await host.insertNodeAt(targetGraphId, sourceId, len, text, {
+  for (const raw of texts) {
+    const text = raw.trim();
+    if (!text || present.has(text)) continue;
+    const len = host.getSourceRecord(graphId, sourceId)?.nodeIds.length ?? 1;
+    await host.insertNodeAt(graphId, sourceId, len, text, {
       skipRelink: true,
       role: deriveSkillNodeRole(text),
       singleNode: true,
-      triggeredBy: 'skill:promote-preserve',
+      triggeredBy,
     });
+    present.add(text);
     repaired++;
   }
 
   if (repaired > 0) {
-    host.triggerRelink(targetGraphId);
+    host.triggerRelink(graphId);
     // Dropped nodes took their edges with them — rebuild the full SOP edge set,
-    // matching the native train path so a promoted skill walks with its loops,
+    // matching the native train path so the skill walks with its loops,
     // branches, context and @skill: calls intact (not just step→step + goals).
-    await linkSkillSequence(host, targetGraphId, sourceId);
-    await linkSkillGoals(host, targetGraphId, sourceId);
-    await linkSkillLoopsAndBranches(host, targetGraphId, sourceId);
-    await linkSkillContextEdges(host, targetGraphId, sourceId);
-    await linkSkillCalls(host, targetGraphId, sourceId, targetGraphId);
+    await linkSkillSequence(host, graphId, sourceId);
+    await linkSkillGoals(host, graphId, sourceId);
+    await linkSkillLoopsAndBranches(host, graphId, sourceId);
+    await linkSkillContextEdges(host, graphId, sourceId);
+    await linkSkillCalls(host, graphId, sourceId, graphId);
   }
   return { repaired };
+}
+
+/**
+ * Move ANY source between engrams, repairing the skill-node loss that
+ * `host.moveSource` inflicts on multi-node skill sources.
+ *
+ * The SDK primitive keeps only the seed node of a multi-node source. For a
+ * trained skill the seed is the `<!-- Graphnosis skill training metadata -->`
+ * comment, so a transferred skill arrived as a one-node stub containing nothing
+ * but its own training header — the entire procedure gone, silently, with the
+ * UI still reporting a healthy vitality of 100. `promote_import` already
+ * carried a workaround; the two *transfer* paths (MCP `transfer_source` and the
+ * app's Sources move) called the raw primitive and did not.
+ *
+ * Non-skill sources take the primitive unchanged — the repair re-derives node
+ * roles from SOP section prefixes, which is meaningless for a PDF or a clip.
+ */
+export async function moveSourcePreservingSkillNodes(
+  host: GraphnosisHost,
+  fromGraphId: string,
+  sourceId: string,
+  targetGraphId: string,
+): Promise<{
+  newRecord: ReturnType<GraphnosisHost['getSourceRecord']>;
+  forgottenNodeIds: string[];
+  repaired: number;
+}> {
+  const record = host.getSourceRecord(fromGraphId, sourceId);
+  if (record?.kind !== 'skill') {
+    const res = await host.moveSource(fromGraphId, sourceId, targetGraphId);
+    return { newRecord: res.newRecord, forgottenNodeIds: res.forgottenNodeIds, repaired: 0 };
+  }
+  // The wrapper swallows the primitive's return, so derive the drop set here.
+  const before = new Set(record?.nodeIds ?? []);
+  const { repaired } = await promoteSkillSourcePreservingNodes(
+    host, fromGraphId, sourceId, targetGraphId,
+  );
+  // Carry the retrain history across too. Snapshots are keyed by graphId, so
+  // without this the skill arrives with an empty History panel even though
+  // every snapshot is still on disk under the old engram.
+  await host.skillSnapshots.move(fromGraphId, targetGraphId, sourceId);
+  const after = host.getSourceRecord(targetGraphId, sourceId);
+  for (const nid of after?.nodeIds ?? []) before.delete(nid);
+  return {
+    newRecord: after,
+    forgottenNodeIds: [...before],
+    repaired,
+  };
 }
 
 // ── SOP edge constants ────────────────────────────────────────────────────────

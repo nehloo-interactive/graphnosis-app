@@ -64,7 +64,7 @@ export interface SkillSnapshot {
    *  node, surfaced in the history UI without forcing a full read of
    *  the snapshot. */
   trainedAt?: string;
-  mode?: 'llm' | 'memory-augmented';
+  mode?: 'llm' | 'memory-augmented' | 'source-only';
   /** Full node sequence at the time of the snapshot, in source-order.
    *  Replaying this array via insertNodeAt restores the source to its
    *  pre-mutation state. */
@@ -188,6 +188,43 @@ export class SkillSnapshotStore {
     } catch {
       // Non-fatal — the .gai delete already happened; orphan snapshots
       // (impossible to reach without the deleted source) are inert.
+    }
+  }
+
+  /**
+   * Follow a source that moved to another engram.
+   *
+   * Snapshots are keyed `<graphId>/<sourceId>`, so transferring a skill between
+   * engrams left its whole history stranded under the OLD graphId — `list()` on
+   * the destination hit ENOENT and the Skills panel reported "No earlier
+   * versions yet", as if the skill had never been retrained. The history was
+   * never deleted, just unreachable.
+   *
+   * Best-effort and non-fatal: losing history is bad, but it must not fail the
+   * move that carries the user's actual content.
+   */
+  async move(fromGraphId: string, toGraphId: string, sourceId: string): Promise<boolean> {
+    const from = this.snapshotDir(fromGraphId, sourceId);
+    const to = this.snapshotDir(toGraphId, sourceId);
+    try {
+      await fs.access(from);
+    } catch {
+      return false; // No history to carry — a never-retrained skill.
+    }
+    try {
+      await fs.mkdir(path.dirname(to), { recursive: true });
+      await fs.rename(from, to);
+      return true;
+    } catch {
+      // Cross-device rename, or a destination that already exists. Fall back to
+      // a copy so the history survives even if the move itself cannot be atomic.
+      try {
+        await fs.cp(from, to, { recursive: true, force: false, errorOnExist: false });
+        await fs.rm(from, { recursive: true, force: true });
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 

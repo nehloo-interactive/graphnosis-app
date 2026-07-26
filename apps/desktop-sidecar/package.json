@@ -26,6 +26,11 @@
     "test:http-oauth": "node --test tests/mcp-http-oauth.test.mjs",
     "test:skill-call-parse": "node --test tests/skill-call-parse.test.mjs",
     "test:skill-call-linking": "node --test tests/skill-call-linking.test.mjs",
+    "skill-recover": "node --enable-source-maps dist/skill-recover.js",
+    "test:oplog-retention": "node --test tests/oplog-retention.test.mjs",
+    "test:skill-compiler": "node --test tests/skill-compiler.test.mjs",
+    "test:skill-recover": "node --test tests/skill-recover.test.mjs",
+    "test:skill-source-move": "node --test tests/skill-source-move.test.mjs",
     "test:recall-anchors": "node --test tests/recall-anchors.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
