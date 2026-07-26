@@ -159,33 +159,6 @@ async function collectForgetTrails(
   });
 }
 
-/**
- * Load every engram in the cortex.
- *
- * `listGraphs()` returns only RESIDENT graphs, and `GraphnosisHost.open()`
- * loads none — engrams are lazy, and the sidecar loads them in a boot sweep a
- * CLI never runs. Scanning without this enumerated an empty set and cheerfully
- * reported "no damaged skills found", which is exactly the wrong answer to give
- * someone whose skill was destroyed.
- *
- * Load failures are returned, not swallowed: an engram we could not read is NOT
- * evidence of no damage.
- */
-async function loadAllEngrams(host: GraphnosisHost): Promise<{
-  loaded: string[];
-  failed: Array<{ graphId: string; error: string }>;
-}> {
-  const failed: Array<{ graphId: string; error: string }> = [];
-  for (const graphId of host.listBootPendingEngramIds(host.listGraphs())) {
-    try {
-      await host.loadGraph(graphId);
-    } catch (e) {
-      failed.push({ graphId, error: (e as Error).message });
-    }
-  }
-  return { loaded: host.listGraphs(), failed };
-}
-
 /** A damaged skill found by the graph scan, before any op-log work. */
 interface DamagedCandidate {
   graphId: string;
@@ -195,32 +168,75 @@ interface DamagedCandidate {
   present: Set<string>;
 }
 
-/** Pass 1: find damaged skills. Touches only loaded graphs, never the op-log. */
-function findDamaged(
+/**
+ * Pass 1: find damaged skills, ONE ENGRAM AT A TIME.
+ *
+ * Loading every engram and keeping them resident consumed ~3.9 GB of a 4 GB
+ * heap on a 47-engram cortex (60k+ nodes with embeddings) — the op-log read
+ * that followed then died of heap exhaustion, and the crash looked like an
+ * op-log problem when the op-log was merely the last allocation.
+ *
+ * So: load, scan, unload. Only the tiny candidate records survive each
+ * iteration, and peak memory is one engram rather than all of them.
+ * `unloadGraph` disposes the SDK graph's internal indexes, so this genuinely
+ * reclaims rather than just dropping a reference.
+ *
+ * Touches no op-log at all — that is pass 2, and it runs with the heap clear.
+ */
+async function findDamaged(
   host: GraphnosisHost,
-  graphIds: readonly string[],
-  nameFilter?: string,
-): DamagedCandidate[] {
-  const out: DamagedCandidate[] = [];
-  for (const graphId of graphIds) {
-    for (const src of host.listSources(graphId)) {
-      if (src.kind !== 'skill') continue;
-      const label = src.ref.replace(/^skill:\d+:/, '');
-      if (nameFilter && !label.toLowerCase().includes(nameFilter.toLowerCase())) continue;
-      if (!looksDamaged(host, graphId, src.sourceId)) continue;
-      out.push({
-        graphId,
-        sourceId: src.sourceId,
-        label,
-        present: new Set(
-          (host.getSourceRecord(graphId, src.sourceId)?.nodeIds ?? [])
-            .map((nid) => (host.getFullNodeContent(graphId, nid) ?? '').trim())
-            .filter(Boolean),
-        ),
-      });
+  nameFilter: string | undefined,
+): Promise<{
+  candidates: DamagedCandidate[];
+  engramsScanned: number;
+  skillSources: number;
+  failed: Array<{ graphId: string; error: string }>;
+}> {
+  const candidates: DamagedCandidate[] = [];
+  const failed: Array<{ graphId: string; error: string }> = [];
+  let engramsScanned = 0;
+  let skillSources = 0;
+
+  // Snapshot the id list up front: listBootPendingEngramIds() reflects what is
+  // resident, and we are about to change that on every iteration.
+  const resident = new Set(host.listGraphs());
+  const allIds = [...resident, ...host.listBootPendingEngramIds(resident)];
+
+  for (const graphId of allIds) {
+    const wasResident = resident.has(graphId);
+    try {
+      if (!wasResident) await host.loadGraph(graphId);
+    } catch (e) {
+      failed.push({ graphId, error: (e as Error).message });
+      continue;
+    }
+    engramsScanned++;
+    try {
+      for (const src of host.listSources(graphId)) {
+        if (src.kind !== 'skill') continue;
+        skillSources++;
+        const label = src.ref.replace(/^skill:\d+:/, '');
+        if (nameFilter && !label.toLowerCase().includes(nameFilter.toLowerCase())) continue;
+        if (!looksDamaged(host, graphId, src.sourceId)) continue;
+        candidates.push({
+          graphId,
+          sourceId: src.sourceId,
+          label,
+          present: new Set(
+            (host.getSourceRecord(graphId, src.sourceId)?.nodeIds ?? [])
+              .map((nid) => (host.getFullNodeContent(graphId, nid) ?? '').trim())
+              .filter(Boolean),
+          ),
+        });
+      }
+    } finally {
+      // Release it again unless it was already resident when we arrived.
+      if (!wasResident) {
+        try { await host.unloadGraph(graphId); } catch { /* best-effort */ }
+      }
     }
   }
-  return out;
+  return { candidates, engramsScanned, skillSources, failed };
 }
 
 /**
@@ -301,15 +317,13 @@ async function main(): Promise<void> {
 
   const host = await bootHost(cortexDir, passphrase);
 
-  // Engrams are lazy — load them all before scanning, or the scan sees nothing
-  // and reports "no damage" for a cortex it never actually read.
-  const { loaded, failed } = await loadAllEngrams(host);
-  let skillSources = 0;
-  for (const g of loaded) {
-    skillSources += host.listSources(g).filter((s) => s.kind === 'skill').length;
-  }
+  // Pass 1 — load / scan / unload each engram in turn, so a large cortex does
+  // not sit resident in the heap while pass 2 reads the op-log.
+  const { candidates, engramsScanned, skillSources, failed } =
+    await findDamaged(host, nameFilter);
+
   console.log(
-    `\nScanned ${loaded.length} engram(s), ${skillSources} skill source(s)` +
+    `\nScanned ${engramsScanned} engram(s), ${skillSources} skill source(s)` +
     (nameFilter ? ` matching "${nameFilter}"` : ''),
   );
   if (failed.length > 0) {
@@ -325,15 +339,15 @@ async function main(): Promise<void> {
     );
     return;
   }
-
-  const candidates = findDamaged(host, loaded, nameFilter);
   if (candidates.length === 0) {
     console.log('\nNo damaged skills found — every skill source has a body.\n');
     return;
   }
   console.log(
-    `Found ${candidates.length} damaged skill(s); reading the op-log forget trail…\n` +
-    '(one streaming pass, filtered to these sourceIds)',
+    `\nFound ${candidates.length} damaged skill(s):` +
+    candidates.map((c) => `\n     ${c.label}  (${c.graphId})`).join('') +
+    '\n\nReading the op-log forget trail — one streaming pass, filtered to these\n' +
+    'sourceIds. On a multi-GB log this takes a while and prints nothing.\n',
   );
   const items = await scan(host, candidates);
   report(items);
