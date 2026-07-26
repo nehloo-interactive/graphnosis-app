@@ -520,8 +520,22 @@ const invokedDirectly = process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
-  main().catch((e) => {
-    console.error(`[skill-recover] failed: ${(e as Error).stack ?? String(e)}`);
-    process.exit(1);
-  });
+  main()
+    .then(async () => {
+      // Exit explicitly. The local-embed worker pool (and the host's watchers
+      // and timers) keep the event loop alive indefinitely, so returning from
+      // main() is NOT enough — the process just sits there having finished all
+      // its work. In the two-process split that hangs the PARENT too, which
+      // waits on the child's 'exit' event: the scan completes, prints 47/47,
+      // and then nothing happens forever.
+      //
+      // Drain stdout first: writes to a pipe (`… | tee log.txt`) are async, and
+      // process.exit() would truncate the report mid-line.
+      await new Promise<void>((resolve) => { process.stdout.write('', () => resolve()); });
+      process.exit(0);
+    })
+    .catch((e) => {
+      console.error(`[skill-recover] failed: ${(e as Error).stack ?? String(e)}`);
+      process.exit(1);
+    });
 }
