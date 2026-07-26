@@ -6062,7 +6062,22 @@
       .skill-history-when { color: var(--fg); min-width: 84px; }
       .skill-history-mode { opacity: 0.8; }
       .skill-history-current { color: var(--ok); font-weight: 600; }
+      /* View sits before Restore and carries the auto margin, so the pair stays
+         right-aligned as one group whether or not both are rendered. */
+      .skill-history-view { margin-left: auto; font-size: 10px; padding: 1px 6px; }
       .skill-history-restore { margin-left: auto; font-size: 10px; padding: 1px 6px; }
+      .skill-history-view + .skill-history-restore { margin-left: 0; }
+      /* The expanded snapshot body. Item is a flex row, so the preview needs a
+         full-width break of its own. */
+      .skill-history-item { flex-wrap: wrap; }
+      .skill-history-preview { flex-basis: 100%; margin: 4px 0 2px; padding: 6px 8px;
+        border-radius: 5px; background: color-mix(in oklab, var(--fg) 5%, transparent);
+        border: 1px solid var(--border); }
+      .skill-history-preview.hidden { display: none; }
+      .skill-history-preview-head { font-size: 10px; color: var(--fg-dim); margin-bottom: 4px; }
+      .skill-history-preview-body { margin: 0; max-height: 320px; overflow: auto;
+        font-size: 11px; line-height: 1.45; color: var(--fg);
+        white-space: pre-wrap; overflow-wrap: anywhere; }
 
       /* Kind chips (imported / trained / manual) */
       .skill-kind-chip {

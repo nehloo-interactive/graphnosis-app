@@ -95,7 +95,7 @@ interface SkillTrainResult {
   trained: string;
   diffNotes?: string;
   influentialNodes: SkillInfluentialNode[];
-  mode: 'llm' | 'memory-augmented';
+  mode: 'llm' | 'memory-augmented' | 'source-only';
   skillId?: string;
   degradedNote?: string;
   // Upgrade gate
@@ -694,6 +694,13 @@ export function scheduleSkillsLibraryRefresh(opts: { syncGraphs?: boolean } = {}
     _skillsRefreshTimer = null;
     void (async () => {
       const prevIds = new Set(skillsLibrary.map((s) => s.sourceId));
+      // Fingerprint the open skill BEFORE the refetch so we can tell whether it
+      // was the thing that changed.
+      const activeId = skillsActiveSourceId;
+      const fingerprint = (s: SkillListEntry | undefined): string =>
+        s ? `${s.trainedAt ?? ''}|${s.ingestedAt}|${s.nodeCount}|${s.mode ?? ''}` : '';
+      const beforePrint = fingerprint(skillsLibrary.find((s) => s.sourceId === activeId));
+
       if (opts.syncGraphs !== false) await app().reloadGraphsMetadata();
       await fetchSkillsLibrary();
       const newOnes = skillsLibrary.filter((s) => !prevIds.has(s.sourceId));
@@ -703,6 +710,19 @@ export function scheduleSkillsLibraryRefresh(opts: { syncGraphs?: boolean } = {}
       purgeOrphanedHiddenSkills();
       renderSkillsLibrary();
       if (newOnes.length > 0) void warmVitalityCache();
+
+      // The library list refreshed, but the TRAINER panel kept rendering the
+      // skill as it was when it was opened. Retraining the selected skill from
+      // an MCP client left the user staring at the old text until they clicked
+      // away to another skill and back. Reload it in place when its content
+      // actually moved — a bare list refresh must not disturb the panel.
+      if (activeId) {
+        const after = skillsLibrary.find((s) => s.sourceId === activeId);
+        if (after && fingerprint(after) !== beforePrint && beforePrint !== '') {
+          skillsVitalityCache.delete(activeId);
+          void openSkillInTrainer(activeId, after.graphId);
+        }
+      }
     })();
   }, 350);
 }
@@ -1549,6 +1569,8 @@ export function renderSkillsLibrary(): void {
         void toggleSkillHistory(actionBtn, sid, gid);
       } else if (action === 'rollback') {
         void rollbackSkillVersion(sid, gid, actionBtn.dataset['snapshotId'] ?? '');
+      } else if (action === 'view-snapshot') {
+        void toggleSnapshotPreview(actionBtn, sid, gid, actionBtn.dataset['snapshotId'] ?? '');
       }
       e.stopPropagation();
       return;
@@ -1913,11 +1935,33 @@ interface SkillVersionEntry {
 // Toggle a skill's "Version history" panel, lazy-loading its snapshot chain.
 // Retrain history lives in the snapshot side-table (since in-place retrain),
 // so it's fetched on demand rather than carried in the library list.
+/**
+ * Collapse every open version-history panel, optionally sparing one row.
+ *
+ * History panels are tall — an expanded one plus an expanded snapshot preview
+ * pushes the next skill off screen. Leaving several open at once made the
+ * library unreadable, so only one skill shows its history at a time.
+ */
+function collapseSkillHistories(exceptRow?: Element | null): void {
+  document.querySelectorAll<HTMLElement>('.skill-history-panel').forEach((panel) => {
+    if (exceptRow && panel.closest('.skill-row') === exceptRow) return;
+    if (panel.classList.contains('hidden')) return;
+    panel.classList.add('hidden');
+    const btn = panel.closest('.skill-row')?.querySelector<HTMLElement>('[data-action="history"]');
+    if (btn) {
+      btn.setAttribute('aria-expanded', 'false');
+      btn.textContent = 'History ▸';
+    }
+  });
+}
+
 async function toggleSkillHistory(btn: HTMLElement, sourceId: string, graphId: string): Promise<void> {
   const row = btn.closest('.skill-row');
   const panel = row?.querySelector<HTMLElement>('.skill-history-panel');
   if (!panel) return;
   const opening = panel.classList.contains('hidden');
+  // One history at a time.
+  if (opening) collapseSkillHistories(row);
   btn.setAttribute('aria-expanded', String(opening));
   btn.textContent = opening ? 'History ▾' : 'History ▸';
   if (!opening) { panel.classList.add('hidden'); return; }
@@ -1939,17 +1983,65 @@ function renderSkillHistory(versions: SkillVersionEntry[], graphId: string, sour
   const items = versions.map((v) => {
     const when = formatRelativeTime(parseTrainedAt(v.trainedAt) ?? v.ingestedAt);
     const tag = v.isCurrent ? '<span class="skill-history-current">current</span>' : '';
+    // View before Restore: a version row showed only a date, a mode and a node
+    // count, so restoring meant overwriting the current skill to find out what
+    // was in the old one. The snapshot text was already reachable over IPC
+    // (`skill:getSnapshot`) — the UI simply never asked for it.
+    const view = v.isCurrent
+      ? ''
+      : `<button class="skill-row-action btn-ghost skill-history-view" data-action="view-snapshot" data-source-id="${escape(sourceId)}" data-graph-id="${escape(graphId)}" data-snapshot-id="${escape(v.snapshotId)}" aria-expanded="false" title="Read this version without changing anything">View</button>`;
     const restore = v.isCurrent
       ? ''
       : `<button class="skill-row-action btn-ghost skill-history-restore" data-action="rollback" data-source-id="${escape(sourceId)}" data-graph-id="${escape(graphId)}" data-snapshot-id="${escape(v.snapshotId)}" title="Restore this version as current">Restore</button>`;
-    return `<li class="skill-history-item">
+    return `<li class="skill-history-item" data-snapshot-id="${escape(v.snapshotId)}">
       <span class="skill-history-when">${escape(when)}</span>
       ${v.mode ? `<span class="skill-history-mode">${escape(v.mode)}</span>` : ''}
       <span class="skill-history-nodes">${v.nodeCount} nodes</span>
-      ${tag}${restore}
+      ${tag}${view}${restore}
+      <div class="skill-history-preview hidden"></div>
     </li>`;
   }).join('');
   return `<ul class="skill-history-list">${items}</ul>`;
+}
+
+/**
+ * Expand a version row to show that snapshot's full text inline.
+ *
+ * Read-only and non-destructive — this is the step that has to come BEFORE
+ * Restore, so the user can compare against the current skill rather than
+ * overwriting it to find out what the old version said.
+ */
+async function toggleSnapshotPreview(
+  btn: HTMLElement,
+  sourceId: string,
+  graphId: string,
+  snapshotId: string,
+): Promise<void> {
+  const item = btn.closest('.skill-history-item');
+  const box = item?.querySelector<HTMLElement>('.skill-history-preview');
+  if (!box) return;
+  const opening = box.classList.contains('hidden');
+  btn.setAttribute('aria-expanded', String(opening));
+  btn.textContent = opening ? 'Hide' : 'View';
+  if (!opening) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  box.innerHTML = '<div class="skill-history-empty">Loading this version…</div>';
+  try {
+    const snap = await ipcCall<{ label: string; ts: number; text: string } | null>(
+      'skill:getSnapshot', { graphId, sourceId, snapshotId },
+    );
+    if (!snap) {
+      box.innerHTML = '<div class="skill-history-empty">This version\'s content is no longer on disk.</div>';
+      return;
+    }
+    const stamp = new Date(snap.ts).toLocaleString();
+    box.innerHTML =
+      `<div class="skill-history-preview-head">${escape(snap.label)} · ${escape(stamp)}</div>` +
+      `<pre class="skill-history-preview-body">${escape(snap.text)}</pre>`;
+  } catch (e) {
+    console.warn('[skills] snapshot preview failed:', e);
+    box.innerHTML = '<div class="skill-history-empty">Couldn\'t load this version.</div>';
+  }
 }
 
 async function rollbackSkillVersion(sourceId: string, graphId: string, snapshotId: string): Promise<void> {
@@ -3117,6 +3209,14 @@ export async function openSkillInTrainer(
   // still loading. The user can still click a DIFFERENT skill.
   if (_openSkillInFlight === sourceId) return;
   _openSkillInFlight = sourceId;
+  // Selecting a different skill collapses every other skill's history panel —
+  // otherwise stale expanded panels stack up down the library as the user
+  // browses, and it stops being obvious which history belongs to which skill.
+  if (skillsActiveSourceId !== sourceId) {
+    collapseSkillHistories(
+      document.querySelector(`.skill-row[data-source-id="${CSS.escape(sourceId)}"]`),
+    );
+  }
   skillsActiveSourceId = sourceId;
   updateSkillsResetButton();
 
@@ -3246,7 +3346,7 @@ export async function openSkillInTrainer(
         original: detail.text,
         trained: detail.text,
         influentialNodes: [], // Stored skills don't carry their influentialNodes; re-train to populate.
-        mode: (detail.mode as 'llm' | 'memory-augmented') ?? 'memory-augmented',
+        mode: (detail.mode as 'llm' | 'memory-augmented' | 'source-only') ?? 'source-only',
         ...(detail.sourceId !== undefined ? { skillId: detail.sourceId } : {}),
       },
       {

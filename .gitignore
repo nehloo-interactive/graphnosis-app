@@ -142,3 +142,8 @@ sbom.cdx.json
 
 # Apple provisioning profile for Secure Enclave (account-bound, do not commit)
 apps/desktop/src-tauri/embedded.provisionprofile
+
+# Local-only Tauri config override (e.g. disabling updater artifacts for a
+# throwaway local build). Machine-specific; must never reach a release build,
+# where `--config` merging would silently change bundle behaviour.
+apps/desktop/src-tauri/tauri.localtest.conf.json
