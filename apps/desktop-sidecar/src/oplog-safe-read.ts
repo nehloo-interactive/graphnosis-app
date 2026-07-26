@@ -292,14 +292,33 @@ function checkSequenceContinuity(
   }
   for (const [deviceId, seqs] of byDevice) {
     seqs.sort((a, b) => a - b);
+    // Summarise per device rather than emitting one line per gap. A real cortex
+    // produced THOUSANDS of these in a single run, which buried the actual
+    // output — and a wall of identical warnings reads as noise, so the one that
+    // matters gets skimmed past too. The counts carry the same information.
+    let gaps = 0;
+    let missing = 0;
+    let rewinds = 0;
+    let firstGap: string | undefined;
     for (let i = 1; i < seqs.length; i++) {
       const cur = seqs[i]!;
       const prev = seqs[i - 1]!;
       if (cur === prev) {
-        onIntegrityIssue({ kind: 'seq-rewind', deviceId, file, detail: `duplicate seq ${cur} — possible replay` });
+        rewinds++;
       } else if (cur > prev + 1) {
-        onIntegrityIssue({ kind: 'seq-gap', deviceId, file, detail: `gap between seq ${prev} and ${cur} — possible dropped events` });
+        gaps++;
+        missing += cur - prev - 1;
+        firstGap ??= `${prev}→${cur}`;
       }
+    }
+    if (rewinds > 0) {
+      onIntegrityIssue({ kind: 'seq-rewind', deviceId, file,
+        detail: `${rewinds} duplicate seq(s) — possible replay` });
+    }
+    if (gaps > 0) {
+      onIntegrityIssue({ kind: 'seq-gap', deviceId, file,
+        detail: `${gaps} gap(s) covering ${missing} missing seq(s), first at ${firstGap}` +
+                ' — possible dropped events' });
     }
   }
 }
@@ -481,6 +500,14 @@ export async function safeScanEvents(
     // Streaming continuity check: remember only the last seq per device rather
     // than retaining every event to compare afterwards.
     const lastSeq = new Map<DeviceId, number>();
+    // Per-file, per-device tallies, flushed as ONE issue each when the file is
+    // done. Reporting every gap individually drowned the caller's own output.
+    const tallies = new Map<DeviceId, { gaps: number; missing: number; rewinds: number; firstGap?: string }>();
+    const seqTally = (deviceId: DeviceId) => {
+      let t = tallies.get(deviceId);
+      if (!t) { t = { gaps: 0, missing: 0, rewinds: 0 }; tallies.set(deviceId, t); }
+      return t;
+    };
     const fh = await fsp.open(filePath, 'r');
     try {
       for (const entry of index.entries) {
@@ -503,12 +530,16 @@ export async function safeScanEvents(
           if (typeof ev.seq === 'number') {
             const prev = lastSeq.get(ev.deviceId);
             if (prev !== undefined) {
+              // Tally, don't report. Emitting per gap produced thousands of
+              // identical lines on a real cortex — see the summary flush below.
               if (ev.seq === prev) {
-                opts.onIntegrityIssue?.({ kind: 'seq-rewind', deviceId: ev.deviceId, file: name,
-                  detail: `duplicate seq ${ev.seq} — possible replay` });
+                const t = seqTally(ev.deviceId);
+                t.rewinds++;
               } else if (ev.seq > prev + 1) {
-                opts.onIntegrityIssue?.({ kind: 'seq-gap', deviceId: ev.deviceId, file: name,
-                  detail: `gap between seq ${prev} and ${ev.seq} — possible dropped events` });
+                const t = seqTally(ev.deviceId);
+                t.gaps++;
+                t.missing += ev.seq - prev - 1;
+                t.firstGap ??= `${prev}→${ev.seq}`;
               }
             }
             if (prev === undefined || ev.seq > prev) lastSeq.set(ev.deviceId, ev.seq);
@@ -524,6 +555,17 @@ export async function safeScanEvents(
       }
     } finally {
       await fh.close();
+    }
+    for (const [deviceId, t] of tallies) {
+      if (t.rewinds > 0) {
+        opts.onIntegrityIssue?.({ kind: 'seq-rewind', deviceId, file: name,
+          detail: `${t.rewinds} duplicate seq(s) — possible replay` });
+      }
+      if (t.gaps > 0) {
+        opts.onIntegrityIssue?.({ kind: 'seq-gap', deviceId, file: name,
+          detail: `${t.gaps} gap(s) covering ${t.missing} missing seq(s), ` +
+                  `first at ${t.firstGap} — possible dropped events` });
+      }
     }
   }
   stats.skippedChunks = skippedChunks;
