@@ -67,7 +67,11 @@
  * any MCP relay pointing at this cortex first.
  */
 
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { embeddings } from '@graphnosis-app/core';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
@@ -90,6 +94,12 @@ interface DamagedSkill {
   /** Recovered entries that hit the 500-char op-log preview cap. */
   truncated: number;
 }
+
+/**
+ * Heap for the engram-scan child. Generous because pass 1 genuinely needs it —
+ * 47 engrams with embeddings peaked near 4 GB even loading one at a time.
+ */
+const CHILD_HEAP_MB = 8192;
 
 async function bootHost(cortexDir: string, passphrase: string): Promise<GraphnosisHost> {
   const adapter = new GraphnosisImpl();
@@ -246,6 +256,106 @@ async function findDamaged(
  * the log is read once, filtered to the sourceIds we care about, rather than
  * read in full once per skill.
  */
+/** Wire form of DamagedCandidate — Sets do not survive JSON. */
+interface WireCandidate {
+  graphId: string;
+  sourceId: string;
+  label: string;
+  present: string[];
+}
+
+/**
+ * Pass 1, running as the CHILD: scan engrams, write candidates, exit.
+ *
+ * Exiting is the entire point — see runFindDamagedIsolated.
+ */
+async function scanEngramsChild(): Promise<void> {
+  const outFile = process.argv[3];
+  const nameFilter = process.argv[4] || undefined;
+  const cortexDir = process.env.GRAPHNOSIS_CORTEX;
+  const passphrase = process.env.GRAPHNOSIS_PASSPHRASE;
+  if (!outFile || !cortexDir || !passphrase) {
+    console.error('[skill-recover scan-engrams] bad invocation');
+    process.exit(2);
+  }
+  const host = await bootHost(cortexDir, passphrase);
+  const found = await findDamaged(host, nameFilter);
+  const wire = {
+    ...found,
+    candidates: found.candidates.map((c): WireCandidate => ({
+      graphId: c.graphId,
+      sourceId: c.sourceId,
+      label: c.label,
+      present: [...c.present],
+    })),
+  };
+  await fs.writeFile(outFile, JSON.stringify(wire), 'utf8');
+}
+
+/**
+ * Run pass 1 in a separate process, so pass 2 gets a genuinely empty heap.
+ *
+ * Pass 1 loads and unloads all 47 engrams. `unloadGraph` drops the SDK's
+ * indexes, but V8 does not hand the pages back to the OS: the heap still
+ * measured ~6.8 GB when pass 2 started, and pass 2 then died allocating its
+ * first op-log chunk. The same op-log scans fine in `oplog-report`, which
+ * loads no engram — so the op-log was never the problem, the residue was.
+ *
+ * A process boundary is the only thing that actually reclaims it. Pass 1 is
+ * the one that gets exiled (rather than pass 2) because the cortex lock is
+ * exclusive: the child must be gone before the parent can boot, and `apply`
+ * needs the parent to hold a live host afterwards to write the repairs.
+ */
+async function runFindDamagedIsolated(
+  nameFilter: string | undefined,
+): Promise<{
+  candidates: DamagedCandidate[];
+  engramsScanned: number;
+  skillSources: number;
+  failed: Array<{ graphId: string; error: string }>;
+}> {
+  const outFile = path.join(
+    os.tmpdir(),
+    `graphnosis-skill-scan-${process.pid}-${Date.now()}.json`,
+  );
+  const selfPath = fileURLToPath(import.meta.url);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        '--enable-source-maps',
+        `--max-old-space-size=${CHILD_HEAP_MB}`,
+        selfPath,
+        'scan-engrams',
+        outFile,
+        ...(nameFilter ? [nameFilter] : []),
+      ],
+      // The payload travels by file, so host boot chatter on stdout can never
+      // corrupt it. stderr passes through: a child crash must stay visible.
+      { stdio: ['ignore', 'inherit', 'inherit'], env: process.env },
+    );
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`engram scan failed (code=${code} signal=${signal})`));
+    });
+  });
+  try {
+    const wire = JSON.parse(await fs.readFile(outFile, 'utf8')) as {
+      candidates: WireCandidate[];
+      engramsScanned: number;
+      skillSources: number;
+      failed: Array<{ graphId: string; error: string }>;
+    };
+    return {
+      ...wire,
+      candidates: wire.candidates.map((c) => ({ ...c, present: new Set(c.present) })),
+    };
+  } finally {
+    await fs.rm(outFile, { force: true });
+  }
+}
+
 async function scan(
   host: GraphnosisHost,
   candidates: readonly DamagedCandidate[],
@@ -304,6 +414,7 @@ function report(items: DamagedSkill[]): void {
 async function main(): Promise<void> {
   const mode = process.argv[2];
   const nameFilter = process.argv[3];
+  if (mode === 'scan-engrams') return scanEngramsChild();
   if (mode !== 'plan' && mode !== 'apply') {
     console.error('Usage: skill-recover.js <plan|apply> [skill name substring]');
     process.exit(2);
@@ -315,12 +426,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const host = await bootHost(cortexDir, passphrase);
-
-  // Pass 1 — load / scan / unload each engram in turn, so a large cortex does
-  // not sit resident in the heap while pass 2 reads the op-log.
+  // Pass 1 runs in a child process and exits before we boot anything here, so
+  // the op-log read below starts from an empty heap and an unheld cortex lock.
   const { candidates, engramsScanned, skillSources, failed } =
-    await findDamaged(host, nameFilter);
+    await runFindDamagedIsolated(nameFilter);
 
   console.log(
     `\nScanned ${engramsScanned} engram(s), ${skillSources} skill source(s)` +
@@ -349,6 +458,9 @@ async function main(): Promise<void> {
     '\n\nReading the op-log forget trail — one streaming pass, filtered to these\n' +
     'sourceIds. On a multi-GB log this takes a while and prints nothing.\n',
   );
+  // Only now do we take the cortex lock: the scan child has exited, so this
+  // process starts clean and loads no engram until `apply` needs one.
+  const host = await bootHost(cortexDir, passphrase);
   const items = await scan(host, candidates);
   report(items);
 
