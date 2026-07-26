@@ -40,14 +40,24 @@
  * counted and reported; nothing lossy is written without saying so.
  *
  * USAGE
+ * Build first — a fresh clone has no dist/. Use `exec tsc` rather than the
+ * package's `build` script, which also runs generate-skill-demos-content.mjs
+ * and needs the GSK signing key:
+ *
+ *   pnpm --filter @graphnosis-app/desktop-sidecar exec tsc -p tsconfig.json
+ *
+ * Then, from the REPO ROOT:
+ *
  *   GRAPHNOSIS_CORTEX=/path/to/cortex GRAPHNOSIS_PASSPHRASE='…' \
- *     node dist/skill-recover.js plan                  # every damaged skill, no writes
+ *     pnpm --filter @graphnosis-app/desktop-sidecar skill-recover plan
  *
  *   GRAPHNOSIS_CORTEX=… GRAPHNOSIS_PASSPHRASE='…' \
- *     node dist/skill-recover.js plan "Report Format"
+ *     pnpm --filter @graphnosis-app/desktop-sidecar skill-recover plan "Report Format"
  *
  *   GRAPHNOSIS_CORTEX=… GRAPHNOSIS_PASSPHRASE='…' \
- *     node dist/skill-recover.js apply "Report Format"
+ *     pnpm --filter @graphnosis-app/desktop-sidecar skill-recover apply "Report Format"
+ *
+ * Or directly: `node apps/desktop-sidecar/dist/skill-recover.js plan`.
  *
  * `apply` with no skill name repairs every damaged skill it can. It only ever
  * APPENDS nodes to a source that is missing them — it never deletes, never
@@ -61,7 +71,6 @@ import { pathToFileURL } from 'node:url';
 import { embeddings } from '@graphnosis-app/core';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
-import { workerEmbed, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } from './local-embed.js';
 import { restoreSkillNodes } from './skill-trainer.js';
 import { recoverFromForgetTrail, type OplogRecovery } from './skill-recover-oplog.js';
 
@@ -88,6 +97,10 @@ async function bootHost(cortexDir: string, passphrase: string): Promise<Graphnos
   let embedAdapterId = 'graphnosis-app:stub@384';
   let embedDimensions = 384;
   try {
+    // Imported lazily: local-embed spawns its worker pool at MODULE load, so a
+    // static import made even `skill-recover.js` with no arguments fork workers
+    // and then die on an unhandled 'error' event as process.exit raced them.
+    const { workerEmbed, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } = await import('./local-embed.js');
     const probe = await workerEmbed('graphnosis skill recovery probe');
     if (probe.length === LOCAL_EMBED_DIM) {
       embedFn = workerEmbed;
@@ -130,9 +143,41 @@ async function recoverFromOplog(
   return recoverFromForgetTrail(await host.listOplogEvents(), sourceId, alreadyPresent);
 }
 
-async function scan(host: GraphnosisHost, nameFilter?: string): Promise<DamagedSkill[]> {
+/**
+ * Load every engram in the cortex.
+ *
+ * `listGraphs()` returns only RESIDENT graphs, and `GraphnosisHost.open()`
+ * loads none — the sidecar loads them in a boot sweep, which a CLI does not
+ * run. Scanning without this enumerated an empty set and cheerfully reported
+ * "no damaged skills found", which is exactly the wrong answer to give someone
+ * whose skill was destroyed.
+ *
+ * Returns the ids that are resident afterwards, plus any that failed to load
+ * (surfaced to the user — an engram we could not read is NOT evidence of no
+ * damage).
+ */
+async function loadAllEngrams(host: GraphnosisHost): Promise<{
+  loaded: string[];
+  failed: Array<{ graphId: string; error: string }>;
+}> {
+  const failed: Array<{ graphId: string; error: string }> = [];
+  for (const graphId of host.listBootPendingEngramIds(host.listGraphs())) {
+    try {
+      await host.loadGraph(graphId);
+    } catch (e) {
+      failed.push({ graphId, error: (e as Error).message });
+    }
+  }
+  return { loaded: host.listGraphs(), failed };
+}
+
+async function scan(
+  host: GraphnosisHost,
+  graphIds: readonly string[],
+  nameFilter?: string,
+): Promise<DamagedSkill[]> {
   const out: DamagedSkill[] = [];
-  for (const graphId of host.listGraphs()) {
+  for (const graphId of graphIds) {
     for (const src of host.listSources(graphId)) {
       if (src.kind !== 'skill') continue;
       const label = src.ref.replace(/^skill:\d+:/, '');
@@ -208,7 +253,33 @@ async function main(): Promise<void> {
   }
 
   const host = await bootHost(cortexDir, passphrase);
-  const items = await scan(host, nameFilter);
+
+  // Engrams are lazy — load them all before scanning, or the scan sees nothing
+  // and reports "no damage" for a cortex it never actually read.
+  const { loaded, failed } = await loadAllEngrams(host);
+  let skillSources = 0;
+  for (const g of loaded) {
+    skillSources += host.listSources(g).filter((s) => s.kind === 'skill').length;
+  }
+  console.log(
+    `\nScanned ${loaded.length} engram(s), ${skillSources} skill source(s)` +
+    (nameFilter ? ` matching "${nameFilter}"` : ''),
+  );
+  if (failed.length > 0) {
+    console.log(`\n⚠ ${failed.length} engram(s) FAILED to load and were not scanned:`);
+    for (const f of failed) console.log(`     ${f.graphId}: ${f.error}`);
+    console.log('   A clean result below does not cover these.');
+  }
+  if (skillSources === 0) {
+    console.log(
+      '\n⚠ No skill sources found at all. Either this cortex holds no skills, or\n' +
+      '  GRAPHNOSIS_CORTEX points somewhere unexpected. Check the path before\n' +
+      '  concluding nothing is damaged.\n',
+    );
+    return;
+  }
+
+  const items = await scan(host, loaded, nameFilter);
   report(items);
 
   if (mode === 'plan') {
