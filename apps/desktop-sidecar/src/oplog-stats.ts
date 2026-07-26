@@ -266,3 +266,66 @@ export function formatOplogReport(
   }
   return out.join('\n');
 }
+
+// ── Index-only chunk profile ─────────────────────────────────────────────────
+
+export interface ChunkProfile {
+  file: string;
+  fileBytes: number;
+  format: string;
+  chunks: number;
+  declaredEvents: number;
+  ctBytes: number;
+  largestCtLen: number;
+  ctLens: number[];
+}
+
+function percentile(sorted: readonly number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * p)));
+  return sorted[i]!;
+}
+
+/**
+ * Render the chunk-size profile.
+ *
+ * This is readable from headers alone, so it works even on a log that cannot be
+ * decrypted — which is exactly the situation a giant chunk creates: AES-GCM
+ * needs the whole ciphertext in memory to verify its tag, so one oversized
+ * chunk is unreadable at ANY heap size.
+ */
+export function formatChunkProfile(
+  profiles: readonly ChunkProfile[],
+  maxChunkBytes: number,
+): string {
+  const out: string[] = [];
+  out.push('');
+  out.push('═══ Chunk profile (headers only — nothing decrypted) ═══');
+  out.push('');
+  for (const p of profiles) {
+    out.push(`  ${p.file}  [${p.format}]  ${formatBytes(p.fileBytes)}`);
+    out.push(`    chunks           ${p.chunks.toLocaleString()}`);
+    if (p.declaredEvents > 0) {
+      out.push(`    declared events  ${p.declaredEvents.toLocaleString()}` +
+               (p.chunks > 0 ? `  (${(p.declaredEvents / p.chunks).toFixed(1)} per chunk)` : ''));
+    }
+    out.push(`    ciphertext       ${formatBytes(p.ctBytes)}`);
+    out.push(`    chunk size       p50 ${formatBytes(percentile(p.ctLens, 0.5))}` +
+             `  ·  p95 ${formatBytes(percentile(p.ctLens, 0.95))}` +
+             `  ·  max ${formatBytes(p.largestCtLen)}`);
+
+    const oversized = p.ctLens.filter((n) => n > maxChunkBytes);
+    if (oversized.length > 0) {
+      const bytes = oversized.reduce((n, v) => n + v, 0);
+      out.push('');
+      out.push(`    ⚠ ${oversized.length} chunk(s) exceed the ${formatBytes(maxChunkBytes)} read`);
+      out.push(`      ceiling, holding ${formatBytes(bytes)} ` +
+               `(${((bytes / Math.max(1, p.ctBytes)) * 100).toFixed(1)}% of this file).`);
+      out.push('      AES-GCM needs a whole chunk in memory to verify its tag, so');
+      out.push('      these are unreadable at any heap size and are SKIPPED. Their');
+      out.push('      events cannot be recovered without re-chunking the file.');
+    }
+    out.push('');
+  }
+  return out.join('\n');
+}

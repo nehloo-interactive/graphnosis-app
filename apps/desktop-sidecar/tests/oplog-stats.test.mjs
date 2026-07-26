@@ -17,6 +17,7 @@ import {
   rankedRows,
   formatBytes,
   formatOplogReport,
+  formatChunkProfile,
 } from '../dist/oplog-stats.js';
 
 const DAY = 86_400_000;
@@ -158,4 +159,49 @@ test('formatBytes scales through the units', () => {
   assert.equal(formatBytes(2048), '2.0 KB');
   assert.equal(formatBytes(5 * 1024 ** 2), '5.0 MB');
   assert.equal(formatBytes(4.6 * 1024 ** 3), '4.60 GB');
+});
+
+// ── Chunk profile (headers only) ──────────────────────────────────────────────
+//
+// AES-GCM needs a whole chunk in memory to verify its tag, so a single
+// oversized chunk is unreadable at ANY heap size — it OOM'd an 8 GB heap
+// inside ArrayBufferConstructor. Chunk headers carry ctLen, so the shape of a
+// log is readable even when its contents are not. That is what makes this
+// diagnostic worth having: it works precisely when the full read cannot.
+
+test('the chunk profile reports size percentiles and density', () => {
+  const ctLens = [1000, 2000, 3000, 4000, 5000];
+  const text = formatChunkProfile([{
+    file: 'a.oplog', fileBytes: 20_000, format: 'v2',
+    chunks: 5, declaredEvents: 50, ctBytes: 15_000,
+    largestCtLen: 5000, ctLens,
+  }], 256 * 1024 * 1024);
+  assert.match(text, /a\.oplog/);
+  assert.match(text, /10\.0 per chunk/);
+  assert.match(text, /p50 2\.9 KB/);
+  assert.match(text, /max 4\.9 KB/);
+  assert.doesNotMatch(text, /exceed the/, 'no warning for normal chunks');
+});
+
+test('oversized chunks are flagged with how much data they hold', () => {
+  const MAX = 256 * 1024 * 1024;
+  const giant = 2 * 1024 ** 3;
+  const ctLens = [5000, 5000, giant].sort((a, b) => a - b);
+  const text = formatChunkProfile([{
+    file: 'mini.oplog', fileBytes: 4.6 * 1024 ** 3, format: 'v2',
+    chunks: 3, declaredEvents: 100, ctBytes: ctLens.reduce((a, b) => a + b, 0),
+    largestCtLen: giant, ctLens,
+  }], MAX);
+  assert.match(text, /1 chunk\(s\) exceed the 256\.0 MB read/);
+  assert.match(text, /\d+\.\d% of this file/, 'quantifies what is unreachable');
+  assert.match(text, /unreadable at any heap size/);
+});
+
+test('an empty op-log profiles without throwing', () => {
+  const text = formatChunkProfile([{
+    file: 'empty.oplog', fileBytes: 0, format: 'empty',
+    chunks: 0, declaredEvents: 0, ctBytes: 0, largestCtLen: 0, ctLens: [],
+  }], 256 * 1024 * 1024);
+  assert.match(text, /empty\.oplog/);
+  assert.doesNotMatch(text, /NaN/);
 });

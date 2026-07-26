@@ -33,11 +33,14 @@ import * as path from 'node:path';
 import { embeddings } from '@graphnosis-app/core';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
-import { safeScanEvents } from './oplog-safe-read.js';
-import { createOplogStats, recordEvent, formatOplogReport } from './oplog-stats.js';
+import { safeScanEvents, profileOplogChunks } from './oplog-safe-read.js';
+import { createOplogStats, recordEvent, formatOplogReport, formatChunkProfile, formatBytes } from './oplog-stats.js';
 
 /** Matches COMPACTION_MAX_AGE_MS in host.compactOplogIfNeeded. */
 const DEFAULT_RETENTION_DAYS = 30;
+
+/** Mirrors DEFAULT_MAX_CHUNK_BYTES in oplog-safe-read. */
+const MAX_CHUNK_BYTES = 256 * 1024 * 1024;
 
 async function main(): Promise<void> {
   const cortexDir = process.env.GRAPHNOSIS_CORTEX;
@@ -64,10 +67,24 @@ async function main(): Promise<void> {
     embedDimensions: 384,
   });
 
+  const oplogDir = path.join(cortexDir, 'oplog');
+
+  // Headers first. This works even when the log cannot be decrypted, so if a
+  // giant chunk is about to defeat the full read we learn about it here rather
+  // than from an OOM three minutes in.
+  const profiles = await profileOplogChunks(oplogDir);
+  console.log(formatChunkProfile(profiles, MAX_CHUNK_BYTES));
+
   const stats = createOplogStats(Date.now() - ageDays * 86_400_000);
-  console.log(`\nScanning ${path.join(cortexDir, 'oplog')} — streaming, nothing retained…`);
+  console.log(`Scanning ${oplogDir} — streaming, nothing retained…\n`);
 
   const scan = await host.scanOplogEvents((ev) => recordEvent(stats, ev));
+  if (scan.skippedChunks > 0) {
+    console.log(
+      `⚠ Skipped ${scan.skippedChunks} oversized chunk(s) holding ` +
+      `${formatBytes(scan.skippedBytes)}. Everything below EXCLUDES them.`,
+    );
+  }
 
   if (stats.total === 0) {
     console.log('\nNo op-log events found. Check GRAPHNOSIS_CORTEX points at the right cortex.\n');

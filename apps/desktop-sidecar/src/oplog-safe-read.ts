@@ -69,7 +69,7 @@ interface V1IndexEntry {
   next: number;
 }
 
-type IndexEntry = V2IndexEntry | V1IndexEntry;
+export type IndexEntry = V2IndexEntry | V1IndexEntry;
 
 export interface OplogFileIndex {
   format: 'v2' | 'v1' | 'empty';
@@ -387,13 +387,76 @@ async function collectOplogDirSafe(
  * specific set of sourceIds, an audit for one engram, etc. For "give me
  * everything", `safeReadAllEvents` is still the right call.
  */
+/** One file's chunk-size profile, from headers only — nothing is decrypted. */
+export interface OplogChunkProfile {
+  file: string;
+  fileBytes: number;
+  format: 'v2' | 'v1' | 'empty';
+  chunks: number;
+  /** Declared event count summed across chunks (v2 headers only; 0 for v1). */
+  declaredEvents: number;
+  /** Ciphertext bytes summed across chunks. */
+  ctBytes: number;
+  largestCtLen: number;
+  /** Ascending ciphertext lengths, for percentile reporting. */
+  ctLens: number[];
+}
+
+/**
+ * Profile the op-log WITHOUT decrypting a single chunk.
+ *
+ * Chunk headers carry `ctLen` and (on v2) the event `count`, so the shape of a
+ * log — how many chunks, how big, how densely packed — is readable from
+ * positional header reads alone. That matters when the log cannot be decrypted
+ * at all: a chunk large enough to OOM the heap still reports its size here.
+ *
+ * Cheap and safe to run first, before committing to a full read.
+ */
+export async function profileOplogChunks(dir: string): Promise<OplogChunkProfile[]> {
+  let names: string[] = [];
+  try {
+    names = await fsp.readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: OplogChunkProfile[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.oplog')) continue;
+    const filePath = path.join(dir, name);
+    const index = await indexOplogFile(filePath);
+    let fileBytes = 0;
+    try {
+      fileBytes = (await fsp.stat(filePath)).size;
+    } catch { /* diagnostic only */ }
+    const ctLens = index.entries.map((e) => e.ctLen).sort((a, b) => a - b);
+    out.push({
+      file: name,
+      fileBytes,
+      format: index.format,
+      chunks: index.entries.length,
+      declaredEvents: index.entries.reduce(
+        (n, e) => n + (e.kind === 'v2' ? e.count : 0), 0,
+      ),
+      ctBytes: ctLens.reduce((n, v) => n + v, 0),
+      largestCtLen: ctLens.length > 0 ? ctLens[ctLens.length - 1]! : 0,
+      ctLens,
+    });
+  }
+  return out;
+}
+
 export async function safeScanEvents(
   dir: string,
   key: Uint8Array,
   visit: (ev: OpLogEvent, file: string) => void,
-  opts: oplog.ReadOpLogOptions = {},
+  opts: oplog.ReadOpLogOptions & { maxChunkBytes?: number } = {},
 ): Promise<OplogScanStats> {
-  const stats: OplogScanStats = { files: 0, chunks: 0, events: 0, fileBytes: 0 };
+  const maxChunkBytes = opts.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES;
+  let skippedChunks = 0;
+  let skippedBytes = 0;
+  const stats: OplogScanStats = {
+    files: 0, chunks: 0, events: 0, fileBytes: 0, skippedChunks: 0, skippedBytes: 0,
+  };
   let names: string[] = [];
   try {
     names = await fsp.readdir(dir);
@@ -421,6 +484,20 @@ export async function safeScanEvents(
     const fh = await fsp.open(filePath, 'r');
     try {
       for (const entry of index.entries) {
+        // AES-GCM cannot be streamed — verifying the tag needs the whole
+        // ciphertext in memory — so a single oversized chunk is unreadable at
+        // ANY heap size. Observed in the field: a 4.6 GB op-log whose bulk sat
+        // in a handful of giant chunks OOM'd an 8 GB heap inside
+        // ArrayBufferConstructor. Skipping such a chunk loses its events, which
+        // is bad; taking down the whole read loses ALL of them, which is worse.
+        if (entry.ctLen > maxChunkBytes) {
+          skippedChunks++;
+          skippedBytes += entry.ctLen;
+          opts.onIntegrityIssue?.({ kind: 'malformed', file: name,
+            detail: `chunk at ${entry.ctAt} is ${entry.ctLen} bytes, above the ` +
+                    `${maxChunkBytes}-byte read ceiling — skipped` });
+          continue;
+        }
         const chunkEvents = await decryptIndexEntry(fh, entry, key, name, opts);
         for (const ev of chunkEvents) {
           if (typeof ev.seq === 'number') {
@@ -449,8 +526,17 @@ export async function safeScanEvents(
       await fh.close();
     }
   }
+  stats.skippedChunks = skippedChunks;
+  stats.skippedBytes = skippedBytes;
   return stats;
 }
+
+/**
+ * Per-chunk read ceiling. A chunk is one writer flush batch; normal ones are
+ * kilobytes. 256 MB is far above anything legitimate while still leaving room
+ * to decrypt inside a default heap.
+ */
+const DEFAULT_MAX_CHUNK_BYTES = 256 * 1024 * 1024;
 
 /** File-level totals from a streaming scan. Counters only — never events. */
 export interface OplogScanStats {
@@ -460,6 +546,10 @@ export interface OplogScanStats {
   events: number;
   /** Total on-disk bytes of the .oplog files scanned. */
   fileBytes: number;
+  /** Chunks skipped for exceeding the per-chunk read ceiling. */
+  skippedChunks: number;
+  /** Ciphertext bytes in those skipped chunks — i.e. data NOT scanned. */
+  skippedBytes: number;
 }
 
 /**

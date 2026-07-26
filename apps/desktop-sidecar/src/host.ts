@@ -65,7 +65,7 @@ import {
   isOplogResourceError,
   logActivityOplogResourceError,
 } from './log-rate-limit.js';
-import { safeReadAllEvents, safeReadEventsSince, safeCollectEvents, safeScanEvents } from './oplog-safe-read.js';
+import { safeReadAllEvents, safeReadEventsSince, safeCollectEvents, safeScanEvents, type OplogScanStats } from './oplog-safe-read.js';
 import { isOplogRecoveryAnchor, splitBlobByNodeOffsets } from './oplog-retention.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
@@ -6341,7 +6341,7 @@ export class GraphnosisHost {
    */
   async scanOplogEvents(
     visit: (ev: OpLogEvent) => void,
-  ): Promise<{ files: number; chunks: number; events: number; fileBytes: number }> {
+  ): Promise<OplogScanStats> {
     return safeScanEvents(
       path.join(this.opts.cortexDir, 'oplog'),
       this.key,
