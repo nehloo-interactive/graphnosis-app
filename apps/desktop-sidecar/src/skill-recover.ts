@@ -129,6 +129,25 @@ async function bootHost(cortexDir: string, passphrase: string): Promise<Graphnos
     embedAdapterId,
     embedDimensions,
   });
+  // Suppress per-engram op-log reconcile for the whole run.
+  //
+  // loadGraph fires reconcileGraphFromOplog fire-and-forget, and that collects
+  // every event since the engram's checkpoint via safeReadEventsSince. Pass 1
+  // loads 47 engrams in a loop, so 47 unawaited reconciles pile up
+  // concurrently, each materialising a large slice of a 7.7M-event log — 6.7 GB
+  // of live objects for a cortex holding only ~60k nodes. That, not the op-log
+  // read, is what exhausted the heap.
+  //
+  // setBootPhaseActive(true) makes scheduleReconcile QUEUE instead of run, and
+  // we deliberately never call flushBootDeferredWork.
+  //
+  // Correctness: reconcile only replays op-log events onto the .gai. This tool
+  // reads the .gai to spot damaged skills and then reads the op-log itself, so
+  // skipping it costs nothing here. The one risk is a skill that looks damaged
+  // on disk but would be repaired by a pending reconcile — restoreSkillNodes
+  // already skips text present on the source, so that degrades to a no-op
+  // rather than a duplicate.
+  host.setBootPhaseActive(true);
   return host;
 }
 
@@ -221,6 +240,18 @@ async function findDamaged(
       continue;
     }
     engramsScanned++;
+    // Heap trace, on by default. Two prior fixes here were shipped on a
+    // plausible reading of an OOM stack and both turned out wrong, because the
+    // stack only ever names the LAST allocation, never the one that filled the
+    // heap. This makes the growth curve visible: flat means the scan is
+    // innocent, monotonic means loading engrams leaks, and a step at one
+    // engram names the culprit outright.
+    const mb = (n: number) => Math.round(n / 1024 / 1024);
+    const m = process.memoryUsage();
+    console.error(
+      `[skill-recover] scanned ${String(engramsScanned).padStart(3)}/${allIds.length}` +
+      `  heap=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB  ext=${mb(m.external)}MB  rss=${mb(m.rss)}MB`,
+    );
     try {
       for (const src of host.listSources(graphId)) {
         if (src.kind !== 'skill') continue;
