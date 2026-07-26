@@ -520,8 +520,10 @@ async function main(): Promise<void> {
   }
 
   let restored = 0;
+  const repairedSkills: DamagedSkill[] = [];
   for (const it of items) {
     if (it.recovered.length === 0) continue;
+    repairedSkills.push(it);
     // Load the destination engram first. Pass 1 runs in a CHILD process now, so
     // its loadGraph calls died with it — this process has booted a host but
     // holds no resident graph, and restoreSkillNodes went straight to
@@ -534,8 +536,16 @@ async function main(): Promise<void> {
     console.log(`restored ${repaired} node(s) into "${it.label}" (${it.graphId})`);
     restored += repaired;
   }
-  for (const g of new Set(items.map((i) => i.graphId))) await host.save(g);
-  console.log(`\nDone. ${restored} node(s) restored across ${items.length} skill(s).`);
+  // Save (and count) only what was actually repaired. Reporting "across 2
+  // skill(s)" when one of them was unrecoverable reads as a success for a skill
+  // that is still empty — and saving an engram this run never loaded is a
+  // pointless risk.
+  for (const g of new Set(repairedSkills.map((i) => i.graphId))) await host.save(g);
+  const skipped = items.length - repairedSkills.length;
+  console.log(
+    `\nDone. ${restored} node(s) restored across ${repairedSkills.length} skill(s).` +
+    (skipped > 0 ? ` ${skipped} skill(s) had nothing recoverable and were left untouched.` : ''),
+  );
   console.log('Reopen Graphnosis and check each skill walks correctly before retraining.\n');
 }
 
