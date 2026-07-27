@@ -324,11 +324,11 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     // Fall back to TF-IDF when no embeddings are available, or if hybrid throws (e.g.,
     // adapter id mismatch between cached and current embed function).
     const res = h.instance.hasEmbeddings()
-      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k }).catch((e: Error) => {
+      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE }).catch((e: Error) => {
           console.error(`[graphnosis-sidecar] queryHybrid failed (${e.message}) — falling back to TF-IDF`);
-          return h.instance.query(safeQuery, { maxNodes: k });
+          return h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
         })
-      : h.instance.query(safeQuery, { maxNodes: k });
+      : h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
     const seedScores = new Map<string, number>(
       (res.seeds as Array<{ nodeId: string; score: number }>).map(s => [s.nodeId, s.score]),
     );
@@ -360,7 +360,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       // similarity:'embeddings' skips the TF-IDF seed pool entirely, and the
       // query embedding is computed from the raw text BEFORE decomposition /
       // synonym expansion — so seed scores are plain text-vs-node cosines.
-      const res = await h.instance.queryHybrid(safeQuery, { maxNodes: k, similarity: 'embeddings' });
+      const res = await h.instance.queryHybrid(safeQuery, { maxNodes: k, similarity: 'embeddings', blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
       const seedScores = new Map<string, number>(
         (res.seeds as Array<{ nodeId: string; score: number }>).map(s => [s.nodeId, s.score]),
       );
@@ -384,16 +384,38 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     }
   }
 
+  /**
+   * Evidence namespaces ordinary recall must not traverse ACROSS.
+   *
+   * A trained skill is a chain of step nodes joined by `precedes` edges tagged
+   * `skill:seq`. Those nodes share the lexical index with ordinary knowledge, so
+   * a factual query can seed into one step on vocabulary overlap and then unroll
+   * the WHOLE procedure into a node budget meant for facts. Measured on a mock
+   * cortex: a 12-step skill put 4 steps into a 20-node subgraph — 20% of the
+   * budget spent on "Step 4. Internal procedure action 3 — checkpoint, verify".
+   *
+   * This blocks PROPAGATION, never membership. A skill step reached as a seed
+   * still scores and still surfaces — asking "how do I ship a release?" still
+   * finds the procedure. Traversal simply does not walk the chain behind it,
+   * which is what was displacing knowledge.
+   *
+   * Set here, at the sidecar's retrieval boundary, rather than in the SDK: the
+   * SDK is generic and has no opinion about what an evidence namespace means.
+   * The app owns `skill:`, so the app declares it. Skill dispatch and walk do
+   * not come through this path and are unaffected.
+   */
+  private static readonly RECALL_BLOCKED_EVIDENCE = ['skill:'];
+
   async queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult> {
     const h = handle as Internal;
     if (!h.built) h.instance.build(h.graphId);
     const safeQuery = sanitizeQuery(query);
     const res = h.instance.hasEmbeddings()
-      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k }).catch((e: Error) => {
+      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE }).catch((e: Error) => {
           console.error(`[graphnosis-sidecar] queryHybrid failed (${e.message}) — falling back to TF-IDF`);
-          return h.instance.query(safeQuery, { maxNodes: k });
+          return h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
         })
-      : h.instance.query(safeQuery, { maxNodes: k });
+      : h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
 
     const scores = new Map<string, number>(
       res.seeds.map((s: { nodeId: string; score: number }) => [s.nodeId, s.score]),
