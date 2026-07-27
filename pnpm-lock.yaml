@@ -98,8 +98,8 @@ importers:
         specifier: ^0.6.0
         version: 0.6.0
       '@nehloo-interactive/graphnosis-secure-sync':
-        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.3.0
-        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4
+        specifier: github:nehloo-interactive/graphnosis-secure-sync#v0.3.1
+        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/e56fac510721598f9b3bea0cbf421ff2cd157be0
       '@nehloo/graphnosis':
         specifier: ^0.8.0
         version: 0.8.0
@@ -211,8 +211,8 @@ importers:
   packages/graphnosis-app-core:
     dependencies:
       '@nehloo-interactive/graphnosis-secure-sync':
-        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.3.0
-        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4
+        specifier: github:nehloo-interactive/graphnosis-secure-sync#v0.3.1
+        version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/e56fac510721598f9b3bea0cbf421ff2cd157be0
     devDependencies:
       '@types/libsodium-wrappers-sumo':
         specifier: ^0.7.8
@@ -2036,8 +2036,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4':
-    resolution: {tarball: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4}
+  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/e56fac510721598f9b3bea0cbf421ff2cd157be0':
+    resolution: {tarball: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/e56fac510721598f9b3bea0cbf421ff2cd157be0}
     version: 0.3.0
 
   '@nehloo/graphnosis@0.8.0':
@@ -7395,7 +7395,7 @@ snapshots:
   '@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4':
     optional: true
 
-  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/9dd41eb2fe37a82db479dbdf99f260602fd24bc4':
+  '@nehloo-interactive/graphnosis-secure-sync@https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/e56fac510721598f9b3bea0cbf421ff2cd157be0':
     dependencies:
       libsodium-wrappers-sumo: 0.7.16(patch_hash=da53431d2a81810a70c17c15ac5454840c9f42daf0a3fab0968df8c896f11123)
 
