@@ -4,7 +4,7 @@
   "private": true,
   "description": "Personal second-memory desktop app powered by Graphnosis. Local-first, encrypted, multi-graph, attaches relevant subgraph context to any MCP-aware AI.",
   "author": "Nehloo Interactive LLC",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "FSL-1.1-ALv2",
   "packageManager": "pnpm@10.12.1",
   "engines": {
     "node": ">=20"
