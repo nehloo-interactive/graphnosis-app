@@ -482,6 +482,69 @@ async function backfillGraphMetadata(host: GraphnosisHost): Promise<void> {
   }
 }
 
+/**
+ * Why a default-engram load failed, for reporting purposes ONLY.
+ *
+ * Every outcome here is fatal and fail-closed (see the caller) — this exists
+ * so we stop telling the user their passphrase is probably wrong when it
+ * demonstrably is not.
+ *
+ * The three causes are genuinely different problems with different fixes:
+ *
+ *   'decryption' — the bytes would not decrypt with this cortex's data key.
+ *                  Wrong passphrase, or the file was tampered with / swapped.
+ *                  These are the exact messages the secure-sync crypto module
+ *                  raises (`Decryption failed (wrong passphrase or tampered
+ *                  file)`, `Not a Graphnosis App encrypted blob`).
+ *
+ *   'filesystem' — we never got to read the bytes: permissions, a directory
+ *                  where a file should be, too many open files. Nothing to do
+ *                  with the passphrase or with the cortex contents.
+ *
+ *   'structure'  — the file DECRYPTED FINE and then failed the graph loader's
+ *                  own validation: HMAC/checksum mismatch, bad .gai framing,
+ *                  or an out-of-range value the SDK rejects (e.g. SDK 0.10.0's
+ *                  `Invalid graph: directed edge <id> has weight <w>; edge
+ *                  weights must be a finite number in (0, 1.6667)`). The
+ *                  passphrase was correct — pointing the user at it sends them
+ *                  to the one thing that is not the problem.
+ *
+ * Deliberately conservative: anything unrecognized is reported as an unknown
+ * failure with the underlying message, never guessed into 'decryption'.
+ */
+type EngramLoadFailure = 'decryption' | 'filesystem' | 'structure' | 'unknown';
+
+function classifyEngramLoadFailure(err: NodeJS.ErrnoException): EngramLoadFailure {
+  // A real syscall failure — we never got the bytes. Matched on `syscall` /
+  // an errno-shaped code (EACCES, EPERM, EISDIR, …) rather than on `code`
+  // alone, because Node also puts `ERR_*` codes on ordinary runtime errors
+  // and those are not filesystem problems.
+  // (ENOENT is handled by the caller as first-run and never reaches here.)
+  if (typeof err.syscall === 'string' || (typeof err.code === 'string' && /^E[A-Z]+$/.test(err.code))) {
+    return 'filesystem';
+  }
+
+  const msg = err.message ?? '';
+  if (
+    msg.includes('Decryption failed') ||
+    msg.includes('Not a Graphnosis App encrypted blob') ||
+    msg.includes('wrong passphrase')
+  ) {
+    return 'decryption';
+  }
+  // Post-decryption validation, raised by the SDK's fromBuffer / graph loader.
+  if (
+    msg.includes('checksum') ||
+    msg.includes('HMAC') ||
+    msg.includes('Invalid .gai') ||
+    msg.includes('Invalid graph') ||
+    msg.includes('signature')
+  ) {
+    return 'structure';
+  }
+  return 'unknown';
+}
+
 async function acquireCortexLock(cortexDir: string): Promise<() => Promise<void>> {
   // 0o700: this is the user's memory store root — keep other local users out.
   await fs.mkdir(cortexDir, { recursive: true, mode: 0o700 });
@@ -824,10 +887,41 @@ async function main(): Promise<void> {
       });
     } else {
       // Anything else (decryption failure, corrupt file, signature mismatch,
-      // permission errors) is fatal. Surface it loudly so the UI shows
-      // "Wrong passphrase or cortex corrupted" instead of pretending all is well.
+      // permission errors) is fatal — unchanged, deliberately. What changed is
+      // only the DIAGNOSIS: this used to blame the passphrase for every
+      // non-ENOENT failure, including failures that happen well after the file
+      // has been successfully decrypted. Telling someone their passphrase is
+      // probably wrong when the real cause is, say, an edge weight the SDK
+      // rejects sends them to the one thing that is not the problem.
+      const cause = classifyEngramLoadFailure(err);
       console.error(`[graphnosis-sidecar] FATAL: failed to load existing graph: ${err.message}`);
-      console.error('[graphnosis-sidecar] This usually means the passphrase is wrong, or the .gai file is corrupted.');
+      switch (cause) {
+        case 'decryption':
+          console.error(
+            '[graphnosis-sidecar] Cause: the engram file could not be DECRYPTED. ' +
+            'The passphrase is wrong, or the file was replaced/tampered with.',
+          );
+          break;
+        case 'filesystem':
+          console.error(
+            `[graphnosis-sidecar] Cause: the engram file could not be READ (${err.code ?? err.syscall ?? 'syscall failure'}). ` +
+            'This is a filesystem/permission problem — the passphrase is not involved.',
+          );
+          break;
+        case 'structure':
+          console.error(
+            '[graphnosis-sidecar] Cause: the engram file DECRYPTED SUCCESSFULLY but failed ' +
+            'structural validation. The passphrase is correct; the file contents are ' +
+            'corrupt, truncated, or written by an incompatible version. See the error above.',
+          );
+          break;
+        case 'unknown':
+          console.error(
+            '[graphnosis-sidecar] Cause: unrecognized load failure — see the error above. ' +
+            'Do not assume the passphrase is at fault; it may well be correct.',
+          );
+          break;
+      }
       console.error('[graphnosis-sidecar] Refusing to overwrite the existing cortex with a fresh empty graph.');
       throw e;
     }

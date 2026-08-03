@@ -38,6 +38,108 @@ interface Internal extends GraphHandle {
   built: boolean;
 }
 
+/**
+ * Outcome of a single correction. Plain scalars only — the SDK's
+ * `CorrectionResult` stays inside this file, like every other SDK type here
+ * (see the header note in graphnosis-adapter.ts: this module is the only one
+ * that imports the SDK).
+ *
+ * Declared here rather than in graphnosis-adapter.ts only because the adapter
+ * interface still types `applyCorrection` as `Promise<void>`; it belongs next
+ * to `CorrectionEdit` once that declaration is widened.
+ */
+export interface CorrectionOutcome {
+  /** The correction actually landed: the SDK applied it AND reported no errors. */
+  applied: boolean;
+  /** The node the correction targeted — i.e. `edit.nodeId`, echoed back. */
+  nodeId: string;
+  /**
+   * The node that carries the corrected content AFTER the call.
+   *
+   * Equals `nodeId` for an in-place `edit` (SDK 0.8.0) and for `delete`.
+   * Differs for `supersede` — and will differ for `edit` too once the SDK's
+   * indelible edit lands, which is precisely the id the app has no way to
+   * learn today. Callers that persist a node id (sources, skill step chains,
+   * op-log targets) must follow this field, not `nodeId`.
+   */
+  resultNodeId: string;
+  /** SDK counter — 1 when a supersede chain was written, else 0. */
+  nodesSuperseded: number;
+  /** Non-empty when the correction did NOT land. The SDK reports failure here, never by throwing. */
+  errors: string[];
+}
+
+/**
+ * Structural view of the SDK's `CorrectionResult` that is valid ACROSS SDK
+ * VERSIONS. `edit` / `supersede` / `deleteNode` all return it.
+ *
+ *   - `applied` / `errors` — present on every version we support. This is the
+ *     ONLY channel the SDK uses to report a refused correction; it does not
+ *     throw (see `applyCorrectionChecked`).
+ *   - `affectedNodeIds` — added in SDK 0.11.0. **ABSENT on the installed
+ *     0.8.0**, whose `CorrectionResult` is exactly
+ *     `{ applied, nodesAdded, nodesModified, nodesSuperseded, errors }`
+ *     (verified in
+ *     `node_modules/@nehloo/graphnosis/dist/core/corrections/correction-engine.d.ts`).
+ *     Declared optional here for that reason, which is also what forces every
+ *     read of it through an optional chain.
+ *
+ * The SDK's own `CorrectionResult` is assignable to this on both versions, so
+ * no cast is needed at the call sites.
+ */
+type VersionedCorrectionResult = {
+  applied: number;
+  errors: string[];
+  affectedNodeIds?: readonly string[];
+};
+
+/**
+ * The node id that carries the corrected content AFTER an SDK correction.
+ *
+ * WHY THIS EXISTS. SDK 0.10.0 made `edit` INDELIBLE: rather than overwriting
+ * the target in place it RETIRES the target and mints a NEW node. Code that
+ * kept using the id it passed IN therefore holds a retired node from that
+ * version on, while the corrected text sits on a node it never recorded.
+ *
+ * In this file that is not theoretical. `appendDocument`'s return value flows
+ * straight into `host.insertNodeAt`, which splices those ids into
+ * `sourceIndex.bySource[].nodeIds` (host.ts ~5026). Recording a retired id
+ * there is exactly why trained-skill steps became unwalkable after an upgrade.
+ *
+ * SDK 0.11.0 exposes the answer as `CorrectionResult.affectedNodeIds` — the
+ * ids the correction PRODUCED. Reading it defensively makes one expression
+ * correct on both SDKs:
+ *
+ *   - 0.8.0: the field does not exist, `?.` yields `undefined`, and we return
+ *     `targetId` — which is the RIGHT answer there, because the edit really
+ *     was in place.
+ *   - 0.11.0+: we return the minted node.
+ *
+ * The optional chain is load-bearing, not defensive style: `res.affectedNodeIds[0]`
+ * would throw a TypeError on the installed 0.8.0.
+ */
+function liveNodeIdAfterCorrection(res: VersionedCorrectionResult, targetId: string): string {
+  const produced = res.affectedNodeIds?.[0];
+  return typeof produced === 'string' && produced.length > 0 ? produced : targetId;
+}
+
+/**
+ * Did the correction actually land?
+ *
+ * `edit` / `supersede` / `deleteNode` NEVER throw — a refusal comes back as
+ * `{ applied: 0, errors: ['...'] }`. `applied > 0` alone is not enough either:
+ * a non-empty `errors` alongside a positive `applied` is a partial failure, and
+ * is treated as failure here to match `applyCorrectionChecked`.
+ */
+function correctionLanded(res: VersionedCorrectionResult): boolean {
+  return res.applied > 0 && res.errors.length === 0;
+}
+
+/** One-line failure text for a refused correction, for the sidecar's console. */
+function correctionFailureText(res: VersionedCorrectionResult): string {
+  return res.errors.length > 0 ? res.errors.join('; ') : 'the SDK applied no correction';
+}
+
 export class GraphnosisImpl implements GraphnosisAdapter {
   async create(graphId: string): Promise<Internal> {
     return { graphId, instance: new Graphnosis({ name: graphId }), built: false };
@@ -211,24 +313,31 @@ export class GraphnosisImpl implements GraphnosisAdapter {
 
         if (canRewrite) {
           const id = drop[0]!;
-          try {
+          // No try/catch: `edit` never throws. A refusal is REPORTED, in the
+          // return value, and the branch below is the handler for it — it used
+          // to sit inside a `catch` that could never run.
+          const res: VersionedCorrectionResult =
             h.instance.edit(id, inputText, 'SDK appendText artifact rewritten to real content');
+          if (correctionLanded(res)) {
             // Delete any extra artifact nodes beyond the one we rewrote.
             // appendText produces document + section (same sourceRef content),
             // so there are typically 2 entries in drop; keep only the rewritten one.
             for (const extraId of drop.slice(1)) {
               try { h.instance.deleteNode(extraId, 'SDK appendText duplicate sourceRef-header artifact'); } catch { /* ignore */ }
             }
-            // The node id stays the same after `edit`; the caller's
-            // source.nodeIds gets the live id pointing at the real text.
-            newNodeIds = [id];
-          } catch {
-            // Edit failed (rare — SDK refused the correction). Fall
-            // through to the delete path; the caller will throw the
-            // pre-filter "no node ids" error. Strictly not worse than
-            // the world before this fix.
-            for (const id of drop) {
-              try { h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact'); } catch { /* ignore */ }
+            // NOT `id`. On SDK >= 0.10.0 `edit` retired `id` and minted a
+            // replacement carrying the real text; handing `id` back would put
+            // a retired node into the caller's source.nodeIds. On 0.8.0 the
+            // edit was in place and this resolves to `id` anyway.
+            newNodeIds = [liveNodeIdAfterCorrection(res, id)];
+          } else {
+            // Edit refused (unknown id, already-retired target, engine
+            // refusal). Fall through to the delete path; the caller will throw
+            // the pre-filter "no node ids" error rather than record a node
+            // whose content is the raw sourceRef.
+            console.error(`[graphnosis-sidecar] appendText artifact rewrite refused for ${id}: ${correctionFailureText(res)}`);
+            for (const dropId of drop) {
+              try { h.instance.deleteNode(dropId, 'SDK appendText sourceRef-header artifact'); } catch { /* ignore */ }
             }
             newNodeIds = [];
           }
@@ -266,15 +375,22 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       const verbatim = input.content;
       const firstId = newNodeIds[0]!;
       if (newNodeIds.length > 1) {
-        try {
-          h.instance.edit(firstId, verbatim, 'skill single-node insert');
+        const res: VersionedCorrectionResult = h.instance.edit(firstId, verbatim, 'skill single-node insert');
+        if (correctionLanded(res)) {
           for (const extraId of newNodeIds.slice(1)) {
             try { h.instance.deleteNode(extraId, 'skill single-node insert — fragment merged'); } catch { /* ignore */ }
           }
-          newNodeIds = [firstId];
-        } catch {
-          // SDK refused the edit — leave the SDK's chunking as-is rather than
-          // returning a worse state. The caller still gets a valid first id.
+          // The merged step text lives on whatever node the correction
+          // PRODUCED, which on SDK >= 0.10.0 is a NEW node — `firstId` is now
+          // retired. This id goes straight into the source's nodeIds, so
+          // returning `firstId` here is precisely what left imported skill
+          // steps pointing at retired nodes and made them unwalkable.
+          newNodeIds = [liveNodeIdAfterCorrection(res, firstId)];
+        } else {
+          // The SDK refused the merge. It says so by RETURNING, which the old
+          // `catch` could not observe. Behaviour is otherwise unchanged: keep
+          // the first fragment rather than splicing N ids in for one step.
+          console.error(`[graphnosis-sidecar] skill single-node merge refused for ${firstId}: ${correctionFailureText(res)} — keeping the first chunk only`);
           newNodeIds = [firstId];
         }
       } else {
@@ -282,7 +398,19 @@ export class GraphnosisImpl implements GraphnosisAdapter {
         // (the SDK may have trimmed/normalized it during chunking).
         const n = h.instance.graph.nodes.get(firstId);
         if (n && typeof n.content === 'string' && n.content !== verbatim) {
-          try { h.instance.edit(firstId, verbatim, 'skill single-node insert — verbatim'); } catch { /* ignore */ }
+          // The `catch { /* ignore */ }` that used to wrap this call guarded an
+          // exception `edit` cannot throw while hiding the errors it always
+          // can return. Check the result instead.
+          const res: VersionedCorrectionResult = h.instance.edit(firstId, verbatim, 'skill single-node insert — verbatim');
+          if (correctionLanded(res)) {
+            // This assignment is the substantive fix at this site. The old code
+            // never updated newNodeIds even on SUCCESS, so on SDK >= 0.10.0 the
+            // caller recorded the retired `firstId` while the verbatim step
+            // text sat on a minted node nobody held the id for.
+            newNodeIds = [liveNodeIdAfterCorrection(res, firstId)];
+          } else {
+            console.error(`[graphnosis-sidecar] skill single-node verbatim rewrite refused for ${firstId}: ${correctionFailureText(res)} — keeping the SDK's chunked text`);
+          }
         }
       }
     }
@@ -474,22 +602,110 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     return { candidates, rich };
   }
 
+  /**
+   * Interface-compatible entry point. Kept at `Promise<void>` ONLY because
+   * `GraphnosisAdapter.applyCorrection` (graphnosis-adapter.ts:202) still
+   * declares `Promise<void>`, and TypeScript will NOT accept a `Promise<T>`
+   * override for a `Promise<void>` member (`Promise` is invariant here — the
+   * void-returning-function special case does not apply through a type
+   * argument). Widening this signature therefore requires widening the
+   * interface declaration in the same commit.
+   *
+   * Until then the real work — and the outcome — lives in
+   * `applyCorrectionChecked` below. When the adapter interface is widened,
+   * this method collapses to `return this.applyCorrectionChecked(handle, edit)`
+   * and every caller gets the outcome for free.
+   */
   async applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<void> {
+    await this.applyCorrectionChecked(handle, edit);
+  }
+
+  /**
+   * Apply a correction and REPORT WHAT HAPPENED.
+   *
+   * Do not go back to discarding this result. The SDK's correction API does
+   * not signal failure by throwing: `Graphnosis.edit` / `supersede` /
+   * `deleteNode` all funnel through `correct()`, which on failure RETURNS
+   * `{ applied: 0, nodesSuperseded: 0, errors: ['...'] }`. Two concrete bugs
+   * come out of throwing that away:
+   *
+   *   1. A correction that never landed (unknown node id, node already
+   *      retired, engine refusal) is reported to the user as success, and the
+   *      host writes an op-log event for a mutation the graph never took. The
+   *      log then disagrees with the graph, which is exactly the state
+   *      oplog replay cannot recover from.
+   *
+   *   2. The caller cannot learn which node now carries the corrected content.
+   *      Already true on 0.8.0 for `supersede`: it mints a NEW node and
+   *      `correct()` drops the new id on the floor (see the SDK's `correct()`
+   *      — it maps the engine's `affectedNodeId` away). SDK 0.10.0 makes
+   *      `edit` indelible the same way: the target is retired and a
+   *      replacement node is minted. Any caller relying on "the node id stays
+   *      the same after `edit`" silently starts pointing at a retired node on
+   *      that upgrade — see `liveNodeIdAfterCorrection` for the three call
+   *      sites in `appendDocument` that did exactly that.
+   *
+   * `resultNodeId` is resolved two ways, in order:
+   *
+   *   1. `CorrectionResult.affectedNodeIds` (SDK 0.11.0+) — the SDK naming the
+   *      node the correction produced. Authoritative when present.
+   *   2. Observing the node map around the SDK call. Older SDKs (including the
+   *      installed 0.8.0) do not carry the field at all, and this is the only
+   *      technique available there.
+   *
+   * The observation is a size check, not a key-set diff: corrections in this
+   * SDK are soft (a retired node keeps its entry), so `graph.nodes` is
+   * append-only across a correction and its insertion order is stable. If the
+   * size grew, the minted node is the first entry past the old size. That
+   * keeps the common in-place case at O(1) with no allocation, which matters
+   * because the brain engine applies corrections in batches.
+   */
+  async applyCorrectionChecked(handle: GraphHandle, edit: CorrectionEdit): Promise<CorrectionOutcome> {
     const h = handle as Internal;
     if (!h.built) h.instance.build(h.graphId);
+
+    const sizeBefore = h.instance.graph.nodes.size;
+
+    let result: VersionedCorrectionResult & { nodesSuperseded: number };
+
     switch (edit.kind) {
       case 'edit':
         if (edit.content === undefined) throw new Error('edit requires content');
-        h.instance.edit(edit.nodeId, edit.content, edit.reason);
-        return;
+        result = h.instance.edit(edit.nodeId, edit.content, edit.reason);
+        break;
       case 'supersede':
         if (edit.content === undefined) throw new Error('supersede requires content');
-        h.instance.supersede(edit.nodeId, edit.content, edit.reason);
-        return;
+        result = h.instance.supersede(edit.nodeId, edit.content, edit.reason);
+        break;
       case 'delete':
-        h.instance.deleteNode(edit.nodeId, edit.reason);
-        return;
+        result = h.instance.deleteNode(edit.nodeId, edit.reason);
+        break;
     }
+
+    // Which node carries the corrected content now? Prefer the SDK's own
+    // answer (`affectedNodeIds`, 0.11.0+); it falls back to the target, which
+    // is correct for an in-place `edit` on 0.8.0 and for `delete` on any
+    // version.
+    let resultNodeId = liveNodeIdAfterCorrection(result, edit.nodeId);
+    // No field to read (0.8.0) but the SDK minted a node anyway — supersede on
+    // any version, indelible edit on 0.10.0. It is the first entry past the
+    // pre-call size.
+    if (!result.affectedNodeIds?.length && h.instance.graph.nodes.size > sizeBefore) {
+      let i = 0;
+      for (const id of h.instance.graph.nodes.keys()) {
+        if (i++ < sizeBefore) continue;
+        resultNodeId = id;
+        break;
+      }
+    }
+
+    return {
+      applied: result.applied > 0 && result.errors.length === 0,
+      nodeId: edit.nodeId,
+      resultNodeId,
+      nodesSuperseded: result.nodesSuperseded,
+      errors: result.errors,
+    };
   }
 
   async buildEmbeddings(handle: GraphHandle, opts: BuildEmbeddingsAdapterOpts): Promise<void> {
