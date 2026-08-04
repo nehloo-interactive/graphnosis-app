@@ -34,7 +34,7 @@
     "test:skill-compiler": "node --test tests/skill-compiler.test.mjs",
     "test:skill-recover": "node --test tests/skill-recover.test.mjs",
     "test:skill-source-move": "node --test tests/skill-source-move.test.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "node scripts/generate-docs-content.mjs && node scripts/generate-skill-demos-content.mjs && tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@graphnosis-app/core": "workspace:*",
