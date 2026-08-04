@@ -615,6 +615,47 @@ fn classify_startup_failure(stderr_tail: &str, exit_code: Option<i32>) -> String
             suffix,
         );
     }
+    // Version skew: the cortex was written by a NEWER Graphnosis than this
+    // build can read. Nothing is wrong with the data, the passphrase, or the
+    // disk — this build is simply too old, and the only remedy is to update.
+    //
+    // The sidecar emits a purpose-built stable marker for this case and its
+    // comment names this function; without a branch here the user fell through
+    // to the exit-code-1 fallback below and was told "wrong passphrase or a
+    // corrupted cortex file", BOTH of which are false. Telling someone their
+    // memories are corrupted when they are intact is the worst message this
+    // function can produce, so it is handled before any generic branch.
+    //
+    // Matched on the segment before the em-dash so a later punctuation tweak
+    // upstream cannot silently unhook it.
+    if stderr_tail.contains("FATAL: engram written by a newer Graphnosis") {
+        return "This cortex was created by a newer version of Graphnosis than the one \
+                you're running. Your memories are intact and untouched — this build is \
+                simply too old to read them.\n\nUpdate Graphnosis to the latest version \
+                and unlock again. Do not restore from a backup: there is nothing to \
+                recover."
+            .to_string();
+    }
+    // The sidecar refused to replace an existing cortex with an empty graph
+    // after a load failure. The load failure itself has already been reported
+    // on the preceding stderr line; what matters to the user here is that the
+    // refusal PROTECTED their data rather than lost it.
+    if stderr_tail.contains("Refusing to overwrite the existing cortex with a fresh empty graph") {
+        let display_tail = trimmed_stderr_for_display(stderr_tail);
+        let suffix = if display_tail.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nSynapse stderr (last lines):\n{}", display_tail)
+        };
+        return format!(
+            "Graphnosis could not open one of your engrams, and stopped rather than \
+             replacing it with an empty one. Your cortex on disk is unchanged.\n\nThe \
+             cause is in the log below. If it mentions a version, updating Graphnosis \
+             is the fix; otherwise send this text to support and do not delete anything \
+             from your cortex folder.{}",
+            suffix,
+        );
+    }
     // Missing env var, missing node binary, etc. — bubble up.
     if stderr_tail.contains("Missing env var") {
         return format!("Synapse reported a missing configuration value. \
@@ -1052,3 +1093,67 @@ pub async fn run_sso_probe(cortex_dir: &Path) -> Result<SsoDiscoverSnapshot> {
     serde_json::from_str(&json).context("parse SSO probe result")
 }
 
+
+#[cfg(test)]
+mod startup_diagnosis_tests {
+    use super::classify_startup_failure;
+
+    /// The exact line `apps/desktop-sidecar/src/main.ts` emits for version skew.
+    /// Kept verbatim, em-dash included: its own comment calls it a stable marker
+    /// and says it is matched, not parsed. If this constant and that line ever
+    /// diverge, these tests fail and the user silently gets the wrong diagnosis.
+    const SKEW_MARKER: &str =
+        "[graphnosis-sidecar] FATAL: engram written by a newer Graphnosis — update required";
+    const REFUSAL_MARKER: &str =
+        "[graphnosis-sidecar] Refusing to overwrite the existing cortex with a fresh empty graph.";
+
+    /// What the user must NEVER be told when their cortex is fine.
+    const FALSE_BLAME: &str = "wrong passphrase or a corrupted cortex file";
+
+    #[test]
+    fn version_skew_does_not_blame_the_passphrase_or_the_data() {
+        let out = classify_startup_failure(SKEW_MARKER, Some(1));
+        assert!(!out.contains(FALSE_BLAME), "version skew still blames passphrase/corruption: {out}");
+        assert!(out.contains("newer version"), "should name the real cause: {out}");
+        assert!(out.contains("intact"), "should say the data is intact: {out}");
+    }
+
+    #[test]
+    fn version_skew_does_not_send_the_user_to_recovery() {
+        // There is nothing to recover; pointing at a backup risks them
+        // overwriting a healthy cortex with an older one.
+        let out = classify_startup_failure(SKEW_MARKER, Some(1));
+        assert!(out.contains("nothing to"), "should say there is nothing to recover: {out}");
+    }
+
+    #[test]
+    fn refusal_says_the_cortex_is_unchanged() {
+        let out = classify_startup_failure(REFUSAL_MARKER, Some(1));
+        assert!(!out.contains(FALSE_BLAME), "refusal still blames passphrase/corruption: {out}");
+        assert!(out.contains("unchanged"), "should say the cortex is unchanged: {out}");
+    }
+
+    #[test]
+    fn version_skew_is_matched_before_the_generic_fallback() {
+        // Same stderr, no exit code: the marker must win regardless.
+        let with_code = classify_startup_failure(SKEW_MARKER, Some(1));
+        let no_code = classify_startup_failure(SKEW_MARKER, None);
+        assert_eq!(with_code, no_code, "exit code should not change a marker-matched diagnosis");
+    }
+
+    #[test]
+    fn unmarked_failures_still_reach_the_generic_fallback() {
+        // POSITIVE CONTROL: without a marker the old message must still appear,
+        // proving these tests detect the branch rather than a global rewrite.
+        let out = classify_startup_failure("something else went wrong", Some(1));
+        assert!(out.contains(FALSE_BLAME), "generic fallback changed unexpectedly: {out}");
+    }
+
+    #[test]
+    fn quarantine_branch_still_wins_over_the_new_ones() {
+        // Regression guard on ordering: a quarantine failure must keep its own
+        // message and not be captured by the branches added alongside it.
+        let out = classify_startup_failure("quarantined corrupt engram foo.gai", Some(1));
+        assert!(out.contains("quarantined"), "quarantine diagnosis regressed: {out}");
+    }
+}
