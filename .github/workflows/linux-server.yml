@@ -87,9 +87,26 @@ jobs:
           # no assertion, because the green check is read as evidence.
           #
           # Every check below is therefore an explicit `if ! …; then exit 1`.
+          # WHY THESE FETCH TO A FILE INSTEAD OF PIPING INTO grep.
+          #
+          # `curl … | grep -q X` is two bugs stacked. Written with `&& echo ok`
+          # it could never fail, because a failing non-final AND-OR member is
+          # exempt from errexit. Rewritten as `if ! curl … | grep -q`, it began
+          # failing on a page that was served correctly: `grep -q` exits the
+          # instant it matches, the pipe closes under curl, and curl reports
+          # `(23) Failure writing output to destination` — a write error, not an
+          # HTTP one. The check then blames the server for the reader's exit.
+          #
+          # Fetching to a file separates the two questions that were tangled
+          # together: did the request succeed, and does the body contain what it
+          # should. Neither can now be answered by the other's failure.
           echo "— static UI —"
-          if ! curl -fsS "http://127.0.0.1:3456/" | grep -q "<title"; then
-            echo "::error::static UI did not serve an HTML document"; kill $SID 2>/dev/null || true; exit 1
+          if ! curl -fsS -o "$RUNNER_TEMP/ui.html" "http://127.0.0.1:3456/"; then
+            echo "::error::static UI request failed"; kill $SID 2>/dev/null || true; exit 1
+          fi
+          if ! grep -q "<title" "$RUNNER_TEMP/ui.html"; then
+            echo "::error::static UI served $(wc -c < "$RUNNER_TEMP/ui.html") bytes with no <title"
+            head -c 300 "$RUNNER_TEMP/ui.html"; kill $SID 2>/dev/null || true; exit 1
           fi
           echo "ok"
           echo "— unlock —"
@@ -97,10 +114,14 @@ jobs:
             -H 'Content-Type: application/json' -d '{"token":"ci-token"}' \
             | node -e "process.stdin.on('data',d=>{const j=JSON.parse(d);if(!j.token)process.exit(1);process.stdout.write(j.token)})")
           echo "— authed rpc —"
-          if ! curl -fsS -X POST "http://127.0.0.1:3456/api/rpc" \
+          if ! curl -fsS -o "$RUNNER_TEMP/rpc.json" -X POST "http://127.0.0.1:3456/api/rpc" \
             -H 'Content-Type: application/json' -H "Authorization: Bearer $SESSION" \
-            -d '{"method":"graphs.list","params":null}' | grep -q '"result"'; then
-            echo "::error::authed RPC did not return a result"; kill $SID 2>/dev/null || true; exit 1
+            -d '{"method":"graphs.list","params":null}'; then
+            echo "::error::authed RPC request failed"; kill $SID 2>/dev/null || true; exit 1
+          fi
+          if ! grep -q '"result"' "$RUNNER_TEMP/rpc.json"; then
+            echo "::error::authed RPC returned no result field"; head -c 300 "$RUNNER_TEMP/rpc.json"
+            kill $SID 2>/dev/null || true; exit 1
           fi
           echo "ok"
 
