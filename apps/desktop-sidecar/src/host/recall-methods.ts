@@ -4,6 +4,11 @@ import type { HostOptions } from '../host.js';
 import { cachedExtractQueryEntities } from '../query-enrichment-cache.js';
 import { dbg } from '../log-redact.js';
 import {
+  renderPartialRecallNotice,
+  summarizeRecallCoverage,
+  type RecallCoverageInput,
+} from '../recall-coverage.js';
+import {
   isEnrichmentCircuitOpen,
   logEnrichmentFailure,
   recordEnrichmentSuccess,
@@ -300,9 +305,10 @@ export async function hostRecall(
           //   1b. BOOST the score of anchored nodes that ARE in top-k to
           //       ANCHOR_SCORE so they dominate federation.
           //
-          // The 1b step was the silent bug: when a node like "Robert Gomboș"
-          // appeared in the per-engram top-k via weak semantic match (score
-          // ~0.18) AND was also a literal-entity hit for query "robert",
+          // The 1b step was the silent bug: when a node like "Maria Bălan"
+          // (synthetic example) appeared in the per-engram top-k via weak
+          // semantic match (score ~0.18) AND was also a literal-entity hit
+          // for the single-token query "maria",
           // the old code just skipped it ("already there") and let it keep
           // its raw 0.18. Federation then ranked it below higher-scoring
           // noise from other engrams. The fix: when a ranked node matches
@@ -559,6 +565,22 @@ export async function hostRecall(
     // predictions that changed WHICH NODES were recalled.
     if (gnnExpansionCountTotal > 0) {
       richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + `_GNN expanded recall by ${gnnExpansionCountTotal} node(s) at ≥${Math.round(GNN_RECALL_THRESHOLD * 100)}% confidence_`;
+    }
+    // ── Incomplete-recall disclosure ────────────────────────────────────────
+    // `richPrompt` above REPLACED federation's own `renderPrompt`, and with it
+    // the `INCOMPLETE CONTEXT` banner that named the engrams which failed to
+    // answer. secure-sync's `IncompleteFederatedSubgraph.partialPrompt` calls
+    // out this exact hazard: a caller that builds its own prompt from `byGraph`
+    // discards the banner and must disclose the gap itself. Without this line,
+    // a recall that read 3 of 5 engrams reaches the model looking identical to
+    // one that read all 5, and the model asserts absence for memories it was
+    // never shown. A COMPLETE recall is not annotated — see
+    // `renderPartialRecallNotice`.
+    const partialNotice = renderPartialRecallNotice(
+      summarizeRecallCoverage(sub as RecallCoverageInput, (g) => host.getGraphMetadata(g)?.displayName ?? g),
+    );
+    if (partialNotice) {
+      richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + partialNotice;
     }
     return { ...sub, prompt: richPrompt };
 }

@@ -423,13 +423,16 @@ export function extractQueryEntities(query: string): string[] {
   }
   // 7. Short-query fallback: when the user types a 1–3 word query, treat each
   //    standalone lowercase token ≥3 chars as a potential entity. Without
-  //    this, `recall("robert")` extracts NO entities (patterns 2/3/4 all
+  //    this, `recall("maria")` extracts NO entities (patterns 2/3/4 all
   //    require capitalization) and falls back to pure semantic search, which
   //    for a short common name gets distracted by adjacent context and misses
-  //    the literal "Robert Gomboș" node sitting right in the cortex.
+  //    the literal "Maria Bălan" node sitting right in the cortex. ("Maria
+  //    Bălan" is a synthetic stand-in — a common single-token given name plus
+  //    a diacritic-bearing surname, which is the shape that exercises both
+  //    the case-fold and the diacritic-fold paths.)
   //    Anchor matching downstream is already case-insensitive + diacritic-
-  //    folded, so the entity string "robert" still hits a node containing
-  //    "Robert Gomboș". Skipped for longer queries (sentences, conversational
+  //    folded, so the entity string "maria" still hits a node containing
+  //    "Maria Bălan". Skipped for longer queries (sentences, conversational
   //    prompts) where every word becoming an anchor would over-fire.
   const wordTokens = query.trim().split(/\s+/);
   if (wordTokens.length > 0 && wordTokens.length <= 3) {
