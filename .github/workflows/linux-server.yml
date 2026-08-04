@@ -77,20 +77,53 @@ jobs:
             if curl -fsS -o /dev/null "http://127.0.0.1:3456/"; then break; fi
             sleep 1
           done
-          echo "— static UI —"; curl -fsS "http://127.0.0.1:3456/" | grep -q "<title" && echo "ok"
+          # NOTE ON THE SHAPE OF THESE ASSERTIONS.
+          #
+          # They used to read `curl … | grep -q X && echo "ok"`. Under
+          # `set -euo pipefail` that CANNOT FAIL: a command that fails as a
+          # non-final member of an AND-OR list is exempt from errexit, so a
+          # regression made grep return 1, `echo "ok"` was skipped, nothing was
+          # printed, and the step went green. A silent assertion is worse than
+          # no assertion, because the green check is read as evidence.
+          #
+          # Every check below is therefore an explicit `if ! …; then exit 1`.
+          echo "— static UI —"
+          if ! curl -fsS "http://127.0.0.1:3456/" | grep -q "<title"; then
+            echo "::error::static UI did not serve an HTML document"; kill $SID 2>/dev/null || true; exit 1
+          fi
+          echo "ok"
           echo "— unlock —"
           SESSION=$(curl -fsS -X POST "http://127.0.0.1:3456/api/unlock" \
             -H 'Content-Type: application/json' -d '{"token":"ci-token"}' \
             | node -e "process.stdin.on('data',d=>{const j=JSON.parse(d);if(!j.token)process.exit(1);process.stdout.write(j.token)})")
           echo "— authed rpc —"
-          curl -fsS -X POST "http://127.0.0.1:3456/api/rpc" \
+          if ! curl -fsS -X POST "http://127.0.0.1:3456/api/rpc" \
             -H 'Content-Type: application/json' -H "Authorization: Bearer $SESSION" \
-            -d '{"method":"graphs.list","params":null}' | grep -q '"result"' && echo "ok"
+            -d '{"method":"graphs.list","params":null}' | grep -q '"result"'; then
+            echo "::error::authed RPC did not return a result"; kill $SID 2>/dev/null || true; exit 1
+          fi
+          echo "ok"
+
+          # THE ONE NEGATIVE SECURITY ASSERTION IN THIS PIPELINE. It gates the
+          # container publish below, so it has to be the strictest check here,
+          # not the loosest.
+          #
+          # `curl -s` (not -f) is deliberate: a 401 is the expected response and
+          # -f would make curl itself fail on it. The consequence is that a
+          # connection failure yields an empty body and code `000`, so the check
+          # must reject anything that is not exactly 401 rather than accept
+          # anything that is not 200.
           echo "— rejects bad token —"
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:3456/api/rpc" \
             -H 'Content-Type: application/json' -H "Authorization: Bearer nope" \
             -d '{"method":"graphs.list","params":null}')
-          [ "$code" = "401" ] && echo "ok (401)"
+          if [ "$code" != "401" ]; then
+            echo "::error::AUTH BYPASS — a bad bearer token got HTTP $code, expected 401."
+            echo "::error::Refusing to publish. If this is 000 the server was unreachable, which is also a failure."
+            kill $SID 2>/dev/null || true
+            exit 1
+          fi
+          echo "ok (401)"
           kill $SID 2>/dev/null || true
 
   docker:

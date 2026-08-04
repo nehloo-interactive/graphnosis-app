@@ -55,10 +55,80 @@ const run = spawnSync(process.execPath, [tscBin, '--noEmit', '-p', join(PKG_DIR,
   encoding: 'utf8',
   cwd: PKG_DIR,
 });
+// DID TSC ACTUALLY RUN? Check before believing anything it did not say.
+//
+// This counts errors by string-matching tsc's output, and the failure mode of
+// every such counter is the same: NO OUTPUT PARSES AS NO ERRORS. If tsc fails to
+// spawn, is killed, runs out of memory, or rejects the config, `output` is empty,
+// `total` is 0, 0 is below the baseline of 316, and this script prints
+// "improved by 316" and exits 0. A green ratchet would then mean the compiler
+// never ran — which is precisely the class of defect the ratchet exists to catch,
+// reproduced inside the catcher.
+//
+// tsc's exit codes: 0 = clean, 1 = type errors found, 2+ = tsc itself failed.
+if (run.error) {
+  console.error(`typecheck: FAILED — could not run tsc: ${run.error.message}`);
+  process.exit(2);
+}
+if (run.status === null) {
+  console.error(`typecheck: FAILED — tsc was killed by signal ${run.signal}. No result to trust.`);
+  process.exit(2);
+}
+
 const output = `${run.stdout ?? ''}${run.stderr ?? ''}`;
-const lines = output.split('\n').filter((l) => l.includes('error TS'));
+const errorLines = output.split('\n').filter((l) => l.includes('error TS'));
+
+// SEPARATE TYPE ERRORS FROM CONFIG ERRORS, because counting them together is a
+// second way to manufacture a clean run — and the first version of this guard
+// missed it. Pointing tsc at a nonexistent tsconfig emits exactly one line,
+// `error TS5058: The specified path does not exist`. That line CONTAINS
+// "error TS", so a naive count reports 1 error against a baseline of 316 and
+// prints "improved by 315" before exiting 0. The compiler never checked a single
+// file.
+//
+// A per-file type error always carries a `path(line,col):` prefix. A global
+// error — bad config, unreadable file, unknown flag; the TS5xxx/TS6xxx families —
+// never does. Only the former is a type error, and the latter is always fatal
+// regardless of how many there are.
+const isPerFile = (l) => /\(\d+,\d+\):\s*error TS/.test(l);
+const globalErrors = errorLines.filter((l) => !isPerFile(l));
+const lines = errorLines.filter(isPerFile);
 const total = lines.length;
 const ts2304 = lines.filter((l) => l.includes('error TS2304')).length;
+
+if (globalErrors.length > 0) {
+  console.error(
+    `typecheck: FAILED — tsc reported ${globalErrors.length} configuration/invocation error(s).\n` +
+    '  These are not type errors and must not be counted as any. The ratchet below\n' +
+    '  would otherwise read a compiler that never ran as a large improvement.\n',
+  );
+  for (const l of globalErrors.slice(0, 10)) console.error(`  ${l}`);
+  process.exit(2);
+}
+
+// The contradiction guard: tsc reported a failure and we parsed no errors out of
+// it. Either tsc failed for a reason that is not a type error (a bad tsconfig,
+// an unreadable file) or this parser no longer matches tsc's output format. Both
+// mean the number below is fiction, and fiction that reads as an improvement.
+if (run.status !== 0 && total === 0) {
+  console.error(
+    `typecheck: FAILED — tsc exited ${run.status} but produced no parseable "error TS" lines.\n` +
+    '  The count cannot be trusted: either tsc failed for a non-type reason, or its\n' +
+    '  output format changed and this parser is now blind. Raw output follows.\n',
+  );
+  console.error(output.split('\n').slice(0, 20).map((l) => `  ${l}`).join('\n'));
+  process.exit(2);
+}
+
+// The inverse: tsc says clean, and we somehow parsed errors. Equally impossible,
+// equally a sign the parse is wrong.
+if (run.status === 0 && total > 0) {
+  console.error(
+    `typecheck: FAILED — tsc exited 0 but ${total} "error TS" line(s) were parsed.\n` +
+    '  One of the two is wrong; refusing to report either as a result.',
+  );
+  process.exit(2);
+}
 
 const baseline = existsSync(BASELINE_FILE)
   ? JSON.parse(readFileSync(BASELINE_FILE, 'utf8'))

@@ -1,4 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(git rev-parse --show-toplevel)"
-exec "$ROOT/scripts/pre-commit-guard.sh"
+
+# Always run the MAIN worktree's guard, never the one beside the commit.
+#
+# THE DEFECT THIS FIXES
+# ---------------------
+# This used to be `ROOT="$(git rev-parse --show-toplevel)"`, which resolves to
+# whichever worktree the commit is being made from. Linked worktrees are
+# checkouts of older commits, so each carries whatever version of the guard
+# existed then — and a commit made from a stale worktree is checked by a stale
+# guard.
+#
+# Not hypothetical: three linked worktrees carry the 54-line pre-hardening guard.
+# In that version a real-name / real-project match sets `warned` rather than
+# `blocked`, so the commit is allowed through with a line on stderr. The hardened
+# guard turns that same category into `exit 1`, because this repository is PUBLIC
+# and a warning nobody reads is not a control. (The hard `blocked` category still
+# fails in both, so the stale copies are weaker, not absent.)
+#
+# A guard that gets weaker the older your checkout is has the ordering backwards.
+#
+# `--git-common-dir` resolves to the SHARED .git directory from every worktree,
+# unlike `--git-dir`, which points at the per-worktree subdirectory. Its parent is
+# the main working tree, wherever the commit is being made from.
+GIT_COMMON="$(git rev-parse --path-format=absolute --git-common-dir)"
+ROOT="$(cd "$(dirname "$GIT_COMMON")" && pwd)"
+GUARD="$ROOT/scripts/pre-commit-guard.sh"
+
+# Fail closed. A missing or non-executable guard means the check did not run, and
+# that must never be reported by silence — it is the same defect class as running
+# the stale copy above.
+if [ ! -x "$GUARD" ]; then
+  echo "pre-commit: guard not found or not executable at $GUARD" >&2
+  echo "pre-commit: refusing to commit unchecked. Use --no-verify only deliberately." >&2
+  exit 1
+fi
+
+exec "$GUARD"

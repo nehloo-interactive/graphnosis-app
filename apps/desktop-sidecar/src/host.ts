@@ -317,7 +317,13 @@ export function gaiLoadDisposition(err: unknown): GaiLoadDisposition {
  * Deliberately conservative: anything unrecognized is reported as an unknown
  * failure with the underlying message, never guessed into 'decryption'.
  */
-export type EngramLoadFailure = 'decryption' | 'filesystem' | 'structure' | 'version-skew' | 'unknown';
+export type EngramLoadFailure =
+  | 'decryption'
+  | 'filesystem'
+  | 'structure'
+  | 'version-skew'
+  | 'analyzer'
+  | 'unknown';
 
 export function classifyEngramLoadFailure(err: NodeJS.ErrnoException): EngramLoadFailure {
   // A real syscall failure — we never got the bytes. Matched on `syscall` /
@@ -340,6 +346,31 @@ export function classifyEngramLoadFailure(err: NodeJS.ErrnoException): EngramLoa
     msg.includes('wrong passphrase')
   ) {
     return 'decryption';
+  }
+
+  // ── Analyzer mismatch: the file is INTACT and this is not damage ──
+  //
+  // The SDK persists the analyzer's id on the graph and refuses to re-index with
+  // a different one, because silently tokenizing an old index with a new
+  // analyzer degrades recall quality without ever failing. It throws only when
+  // the SAVED id is unknown to this build — which is exactly what a DOWNGRADE
+  // looks like: an engram written by a newer Graphnosis, opened by an older one.
+  //
+  // Without this branch that lands on 'unknown', whose text is "Unrecognized
+  // load failure." — telling a user nothing about a file that is completely
+  // fine, in the one situation where the correct advice is simply "update".
+  // It is the same failure the version-skew branch exists to prevent, arriving
+  // through a different door.
+  //
+  // Matched on `name` and message rather than `instanceof`, deliberately: the
+  // error class ships in the SDK, the pinned SDK version varies, and a
+  // structural check keeps working across every pin including ones where the
+  // class is not exported at all.
+  if (
+    err.name === 'AnalyzerMismatchError' ||
+    msg.includes('analyzer mismatch: index was built with')
+  ) {
+    return 'analyzer';
   }
 
   const cls = classifyGaiFailure(err);
@@ -386,6 +417,15 @@ export function describeEngramLoadFailure(err: NodeJS.ErrnoException): {
         headline: 'The engram file was written by a NEWER version of Graphnosis than this build can read.',
         remedy: 'Nothing is damaged and nothing needs recovering — update Graphnosis to open it. '
           + 'This file has deliberately been left untouched.',
+      };
+    case 'analyzer':
+      return {
+        cause,
+        headline: 'This engram was indexed by a NEWER version of Graphnosis and this build '
+          + 'does not recognise the text analyzer it used.',
+        remedy: 'Your memories are intact and nothing needs recovering — this is an index '
+          + 'question, not a damaged file. Update Graphnosis to open it. The engram has '
+          + 'deliberately been left untouched.',
       };
     case 'unknown':
     default:
