@@ -45,37 +45,22 @@ jobs:
         # actually received it. Nothing else catches this: the binary, installer
         # filename, and updater manifest all come from tauri.conf.json and were
         # perfectly correct.
+        #
+        # 1.31.0 update: the inline loop that used to live here only covered
+        # the two package.json files, so src-tauri/Cargo.toml drifted to
+        # 1.14.3 unnoticed — and remote.rs sends
+        # `graphnosis-desktop/$CARGO_PKG_VERSION` as the outbound User-Agent.
+        # Every release from 1.15.0 on identified itself to the network as
+        # 1.14.3 while the UI said something else, so a bug report citing the
+        # visible version did not identify the Rust build. The list now lives
+        # in scripts/check-versions.mjs, which the same command runs locally
+        # (`pnpm check:versions`) — one list, not two that can disagree.
         run: |
-          CANON=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
-          echo "canonical version (tauri.conf.json): $CANON"
-          FAILED=0
-
-          # Every file that must track the release version. The repo-root
-          # package.json is intentionally excluded: it is the workspace manifest
-          # and has deliberately stayed at its own version across releases.
-          for f in apps/desktop/package.json apps/desktop-sidecar/package.json; do
-            V=$(node -p "require('./$f').version")
-            if [ "$V" != "$CANON" ]; then
-              echo "::error::$f is $V but tauri.conf.json is $CANON"
-              FAILED=1
-            else
-              echo "$f: $V — OK"
-            fi
-          done
-
-          # The tag being built must match too, so a mis-tagged release cannot
-          # publish under the wrong number.
           if [ "${{ github.event_name }}" = "push" ]; then
-            TAG_VER="${GITHUB_REF_NAME#v}"
-            if [ "$TAG_VER" != "$CANON" ]; then
-              echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $CANON"
-              FAILED=1
-            else
-              echo "tag $GITHUB_REF_NAME matches $CANON — OK"
-            fi
+            node scripts/check-versions.mjs "$GITHUB_REF_NAME"
+          else
+            node scripts/check-versions.mjs
           fi
-
-          [ "$FAILED" -eq 0 ] || { echo "Version consistency check FAILED — refusing to build."; exit 1; }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -474,10 +459,34 @@ jobs:
           echo "Found DMG: $DMG_PATH"
           echo "dmg_filename=$(basename "$DMG_PATH")" >> $GITHUB_OUTPUT
 
+          # Release notes come from the changelog, not from commit subjects.
+          #
+          # `--generate-notes` alone emits only commit and PR titles. Under the
+          # neutral-commit-message policy those titles deliberately do NOT
+          # describe behaviour changes, so a release built from them announces
+          # itself as a list of refactors and states none of the things a user
+          # has to be told — a disabled feature, or that existing data is not
+          # repaired. Extract this version's section from the changelog and pass
+          # it as the release body; keep --generate-notes appended for the
+          # commit/PR list underneath.
+          NOTES_FILE="$(mktemp)"
+          awk -v ver="## ${VERSION%%-*}" '
+            index($0, ver) == 1 { on = 1 }
+            on && /^## v?[0-9]+\.[0-9]+\.[0-9]+/ && index($0, ver) != 1 { exit }
+            on { print }
+          ' apps/docs/src/content/docs/changelog.md > "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "::error::No changelog section for ${VERSION} in apps/docs/src/content/docs/changelog.md."
+            echo "::error::That file is also compiled into the shipping sidecar, so it cannot be fixed after release."
+            exit 1
+          fi
+          echo "Release notes (${VERSION}):"; cat "$NOTES_FILE"
+
           if CREATE_OUT=$(gh release create "$VERSION" \
               "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
               "latest.json" \
               --title "Graphnosis ${VERSION}" \
+              --notes-file "$NOTES_FILE" \
               --generate-notes 2>&1); then
             echo "Release created."
           elif echo "$CREATE_OUT" | grep -qi "already exists"; then

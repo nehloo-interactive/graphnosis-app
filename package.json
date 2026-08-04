@@ -13,6 +13,7 @@
     "build": "pnpm -r build",
     "sbom": "npx --yes @cyclonedx/cdxgen -t js -o sbom.cdx.json",
     "check:license-claims": "node scripts/check-license-claims.mjs",
+    "check:versions": "node scripts/check-versions.mjs",
     "licenses":"pnpm licenses list --prod --long",
     "dev:sidecar": "pnpm --filter @graphnosis-app/desktop-sidecar dev",
     "dev:desktop": "pnpm --filter @graphnosis-app/desktop tauri:dev",
