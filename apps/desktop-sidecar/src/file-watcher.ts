@@ -250,7 +250,29 @@ export class FileWatcher {
       // mutation ticks. makeSourceId is deterministic from (kind, ref),
       // so the new record has the same sourceId — we still re-bind for
       // safety in case host implementation changes.
-      await this.host.forgetSource(key.graphId, key.sourceId, { triggeredBy: 'user:ingest' });
+      const cleared = await this.host.forgetSource(key.graphId, key.sourceId, { triggeredBy: 'user:ingest' });
+      // A refused forget is not a licence to re-read. `forgetSource` reports a
+      // declined delete by RETURNING `refusedNodeIds` — it never throws — so
+      // the bare `await` here fell straight through into `ingestFile` and
+      // appended a SECOND full copy of the file's chunks on top of the nodes
+      // that were never removed. Every save of a watched file that the engine
+      // declined to clear added another generation, silently, forever.
+      //
+      // Auto-reingest is genuinely best-effort — there is no user waiting on a
+      // result and no UI channel to fail into — so this does not throw or
+      // unwatch. It declines to make things worse, says why, and stops. The
+      // retry is free and automatic: the next save of this file fires again,
+      // and `lastMtimeMs` has already advanced so no other state is stale.
+      const refused = cleared.refusedNodeIds ?? [];
+      if (refused.length > 0) {
+        console.error(
+          `[file-watcher] NOT reingesting file[${redactId(filePath)}]: the memory engine declined to `
+          + `delete ${refused.length} existing node(s) of source[${redactId(key.sourceId)}] `
+          + `(${refused.join(', ')}). Re-reading now would leave two copies of this file in `
+          + `engram[${redactId(key.graphId)}]. The source is unchanged; the next save retries.`,
+        );
+        return;
+      }
       const record = await ingestFile(this.host, key.graphId, filePath, { triggeredBy: 'user:ingest' });
       this.bySources.set(filePath, { graphId: record.graphId, sourceId: record.sourceId });
     } catch (e) {

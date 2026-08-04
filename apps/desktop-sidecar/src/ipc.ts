@@ -43,8 +43,10 @@ import {
 } from './skill-trainer.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { CorrectionDiff } from './correction.js';
+import type { CorrectionOutcome } from './graphnosis-impl.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
+import { isDegenerateDuplicateCandidate } from './memory-hygiene.js';
 import type { ConnectorManager } from './connectors/manager.js';
 import { getAdminPolicy, isProviderDisabled, setAdminPolicy } from './admin-policy.js';
 import { getConsentPhraseForTier, type McpCallTool } from './mcp-server.js';
@@ -230,12 +232,84 @@ export interface IpcDeps {
   };
 }
 
+/**
+ * Drop the contradiction pairs a correction actually resolved.
+ *
+ * A contradiction pair is the workbench's open question "these two memories
+ * disagree — which is right?". Purging it asserts the question is ANSWERED.
+ * This used to purge every edit in the diff, so an edit the SDK REFUSED still
+ * dismissed its contradiction: the disagreement stayed in the graph while the
+ * one queue item that would have surfaced it again disappeared. That is a
+ * silent loss of a flagged integrity problem, so it is gated on the outcome.
+ *
+ * `outcomes[i]` describes `edits[i]` (see `GraphnosisHost.applyCorrection`,
+ * which pushes before its own applied-check, so the array is dense). Fail
+ * closed: a missing outcome — host-contract drift we cannot verify — counts as
+ * a refusal and keeps the pair.
+ *
+ * From SDK 0.10.0 an `edit` retires its target and mints a replacement, so a
+ * landed edit's stale pairs belong to BOTH ids; on 0.8.0 the two are equal and
+ * this collapses to one. Same idiom as `node.directEdit`.
+ */
 function clearContradictionQueueAfterCorrection(
   deps: IpcDeps,
   diff: CorrectionDiff,
+  outcomes: CorrectionOutcome[],
 ): void {
-  const nodeIds = (diff.edits ?? []).map((e) => e.nodeId);
+  const edits = diff.edits ?? [];
+  const nodeIds: string[] = [];
+  for (let i = 0; i < edits.length; i++) {
+    const outcome = outcomes[i];
+    if (!outcome?.applied) continue;
+    nodeIds.push(edits[i]!.nodeId);
+    if (outcome.resultNodeId !== edits[i]!.nodeId) nodeIds.push(outcome.resultNodeId);
+  }
   if (nodeIds.length > 0) deps.brainEngine?.purgeContradictionPairsForNodes(nodeIds);
+}
+
+/**
+ * Shared outcome reading for the two pending-diff apply handlers
+ * (`corrections.apply`, `correction.apply`). Both used to `return { ok: true }`
+ * unconditionally.
+ *
+ * `retainPending` is the retry decision. Re-applying a diff is NOT idempotent:
+ * `adds` are routed through `ingest`, which always lands, so replaying a diff
+ * whose adds already went in duplicates those memories. So the diff is kept for
+ * a retry only when NOTHING landed — zero edits applied and no adds in the
+ * diff. On a partial application the diff is dropped and the caller is told
+ * exactly which nodes were refused, so a retry can be re-proposed for just
+ * those rather than re-running the half that already succeeded.
+ */
+function readCorrectionApplyOutcome(
+  diff: CorrectionDiff,
+  outcomes: CorrectionOutcome[],
+): { applied: number; total: number; refusedNodeIds: string[]; errors: string[]; retainPending: boolean } {
+  const edits = diff.edits ?? [];
+  const refusedNodeIds: string[] = [];
+  let applied = 0;
+  for (let i = 0; i < edits.length; i++) {
+    if (outcomes[i]?.applied) applied += 1;
+    else refusedNodeIds.push(edits[i]!.nodeId);
+  }
+  return {
+    applied,
+    total: edits.length,
+    refusedNodeIds,
+    errors: outcomes.flatMap((o) => o.errors),
+    retainPending: applied === 0 && (diff.adds?.length ?? 0) === 0,
+  };
+}
+
+/** Human-readable refusal text shared by both apply handlers. */
+function correctionRefusalMessage(
+  r: { applied: number; total: number; refusedNodeIds: string[]; errors: string[]; retainPending: boolean },
+): string {
+  return `Only ${r.applied} of ${r.total} changes were applied; `
+    + `the graph refused ${r.refusedNodeIds.length} (${r.refusedNodeIds.join(', ')})`
+    + (r.errors.length ? `: ${r.errors.join('; ')}` : '.')
+    + (r.retainPending
+      ? ' Nothing was changed — the proposal is still pending and can be retried.'
+      : ' The applied changes stand and the proposal was cleared; re-run the correction for the rest.');
 }
 
 function notifyBrainAfterIngest(deps: IpcDeps, graphId: string, sourceId: string): void {
@@ -925,6 +999,85 @@ async function installCatalogPackage(
   return { ok: true, engramId, contentPull: 'shell-only' };
 }
 
+// ── Memory-Studio similarity: the DESKTOP twin of the MCP audit path ───────
+//
+// `mcp/handlers-audit.ts::findDuplicateHits` gated `check_duplicate` on
+// `host.semanticSimilarityAvailable()`. The two Studio surfaces below are the
+// SAME query against the SAME host from the desktop UI and were left ungated.
+//
+// MEASURED on a stub host (adapter id `graphnosis-app:stub@384`), before this
+// gate existed: `studio.checkDuplicate` at threshold 1.0 — the maximum its own
+// zod schema permits — reported a duplicate at score **15.605** for the probe
+// "quarterly amortization schedule filed with the registrar" against a corpus
+// about peregrines and submarines. Token-disjoint, subject-disjoint, and
+// reported anyway, at every threshold the schema allows. The renderer clamps
+// with `Math.min(1, score)`, so the user saw "100% — Similar content found".
+// CONTROL on the identical host with the identical probe:
+// `searchNodesLexical` returned ZERO hits.
+//
+// The threshold constant is the same bar `mcp/handlers-audit.ts` holds its
+// keyword fallback to. `tests/studio-similarity-gate.test.mjs` asserts the two
+// literals still agree, so this copy cannot drift away from the precedent.
+const KEYWORD_FALLBACK_MIN_THRESHOLD = 0.92;
+
+/** The label the MCP twin prints on every keyword-fallback hit. Same words,
+ *  so both surfaces say the same thing about the same state. */
+const KEYWORD_FALLBACK_LABEL = 'keyword match — no semantic similarity available';
+
+interface StudioSimilarityHit {
+  nodeId: string;
+  score: number;
+  text: string;
+  keywordFallback: boolean;
+}
+
+/**
+ * Similarity hits for the Memory-Studio surfaces, gated on the host's single
+ * capability state exactly as `findDuplicateHits` gates the MCP twin.
+ *
+ * `searchNodesLexical`, NOT `searchNodes`, is the fallback — for the reason
+ * spelled out in handlers-audit.ts: the hybrid path is taken whenever an
+ * embedding index exists, and a placeholder adapter always provides one, so
+ * `searchNodes` would feed the same unnormalised dot products straight back in
+ * under a "keyword match" label. The fallback is held to a stricter bar
+ * (keyword scores saturate on short label nodes) and the degenerate
+ * label-sized candidates are dropped in BOTH modes.
+ *
+ * The check is on ADAPTER IDENTITY, never on the scores that come back. A
+ * score cannot tell you whether the thing that produced it knows what words
+ * mean.
+ */
+async function studioSimilarityHits(
+  host: GraphnosisHost,
+  graphId: string,
+  probeText: string,
+  k: number,
+  threshold: number,
+): Promise<StudioSimilarityHit[]> {
+  const semantic = host.semanticSimilarityAvailable();
+  const raw = semantic
+    ? await withEmbedding(() => host.searchNodes(graphId, probeText, k))
+    : await withEmbedding(async () => host.searchNodesLexical(graphId, probeText, k));
+  const keywordFallback = !semantic;
+  const effective = keywordFallback
+    ? Math.max(threshold, KEYWORD_FALLBACK_MIN_THRESHOLD)
+    : threshold;
+  // `searchNodes`' `text` is empty for embedding-driven hits, so the caller
+  // supplies previews; resolve here so the degeneracy guard sees real text.
+  const previews = new Map<string, string>(
+    (host.listNodes(graphId) as Array<{ id: string; contentPreview?: string }>)
+      .map((n) => [n.id, n.contentPreview ?? '']),
+  );
+  const out: StudioSimilarityHit[] = [];
+  for (const r of raw) {
+    if (r.score < effective) continue;
+    const text = ((r.text ?? '').trim() || previews.get(r.nodeId) || '');
+    if (isDegenerateDuplicateCandidate(probeText, text)) continue;
+    out.push({ nodeId: r.nodeId, score: r.score, text, keywordFallback });
+  }
+  return out;
+}
+
 export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
   // Mark client activity so heavy background brain passes defer to keep the UI
   // responsive — but NOT for the app's recurring reconciliation polls, or
@@ -1203,7 +1356,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         content: z.string().min(1),
         reason: z.string().optional(),
       }).parse(params);
-      await deps.host.applyCorrection(args.graphId, {
+      // The SDK refuses a correction by RETURNING `{ applied: 0, errors: [...] }`
+      // — `edit()` never throws (see graphnosis-impl `applyCorrectionChecked`).
+      // Answering `{ ok: true }` without reading the outcome is a green tick on
+      // a memory that was never changed: editing an already-retired node used to
+      // report success here.
+      const [outcome] = await deps.host.applyCorrection(args.graphId, {
         edits: [{
           kind: 'edit',
           nodeId: args.nodeId,
@@ -1211,8 +1369,29 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           reason: args.reason ?? 'Direct edit from Graphnosis App',
         }],
       }, { triggeredBy: 'user:correct' });
-      deps.brainEngine?.purgeContradictionPairsForNodes([args.nodeId]);
-      return { ok: true };
+      if (!outcome?.applied) {
+        // THROW rather than return `{ ok: false }`. Both callers of this IPC —
+        // `saveInlineEdit` (apps/desktop/src/main.ts) and the Skills editor's
+        // inline card flush (apps/desktop/src/ui/skills.ts) — detect failure
+        // ONLY from the `invoke` rejection and ignore the payload; the skills
+        // editor uses that rejection to revert the card text. A soft
+        // `{ ok: false }` would leave the new text on screen for a correction
+        // that never landed, which is the same lie in a different shape.
+        throw new Error(
+          outcome?.errors.length
+            ? `Correction refused: ${outcome.errors.join('; ')}`
+            : `Correction was not applied to node ${args.nodeId}.`,
+        );
+      }
+      // From SDK 0.10.0 an `edit` retires the target and mints a replacement, so
+      // the stale contradiction pairs belong to BOTH ids. Equal on 0.8.0, where
+      // the edit is in place and this collapses to the single id.
+      deps.brainEngine?.purgeContradictionPairsForNodes(
+        outcome.resultNodeId === args.nodeId ? [args.nodeId] : [args.nodeId, outcome.resultNodeId],
+      );
+      // Hand back the node that CARRIES the correction. The caller passed in a
+      // node that may now be retired; this is the id it must follow.
+      return { ok: true, nodeId: outcome.resultNodeId };
     }
     case 'node.softDelete': {
       // Forget a single node (soft-delete via SDK correction). Used by
@@ -1223,13 +1402,38 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         nodeId: z.string(),
         reason: z.string().optional(),
       }).parse(params);
-      await deps.host.applyCorrection(args.graphId, {
+      // `deleteNode` is an ordinary correction, so it obeys the same contract
+      // as the `edit` above: a refusal (unknown id, already-retired node,
+      // engine refusal) comes back as `{ applied: 0, errors: [...] }` and is
+      // NEVER thrown. Answering `{ ok: true }` regardless reported "forgotten"
+      // for a node still sitting in the graph at its full ingest confidence —
+      // no recall-side filter screens it out, so it keeps coming back.
+      const [outcome] = await deps.host.applyCorrection(args.graphId, {
         edits: [{
           kind: 'delete',
           nodeId: args.nodeId,
           reason: args.reason ?? 'Forgotten from Graphnosis App',
         }],
       }, { triggeredBy: 'user:forget' });
+      if (!outcome?.applied) {
+        // THROW, matching `node.directEdit` — and the caller demands it rather
+        // than merely permitting it. `softDeleteNode`
+        // (apps/desktop/src/main.ts) ignores the payload completely and treats
+        // any resolved promise as success: on a soft `{ ok: false }` it would
+        // rewrite the node's cached confidence to 0, drop it from recents,
+        // re-push the Atlas without it and return `true`, at which point the
+        // deck shows the "forgotten" acknowledgement. The node would vanish
+        // from the UI while remaining live in the cortex — and reappear on the
+        // next real refresh. Only the `invoke` rejection reaches `showError`.
+        throw new Error(
+          outcome?.errors.length
+            ? `Forget refused: ${outcome.errors.join('; ')}`
+            : `Node ${args.nodeId} was not forgotten.`,
+        );
+      }
+      // Strictly after the guard: dropping the node's obligations for a delete
+      // that was refused loses those obligations while the node they belong to
+      // is still there.
       await deps.host.obligationIndex.removeNodeIds([args.nodeId]);
       return { ok: true };
     }
@@ -1877,14 +2081,35 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           edits.push({ kind: 'edit', nodeId: nid, content: updated, reason: `Owner raised dispatch-safe to ${args.dispatchSafe}` });
         }
       }
+      let applied = 0;
       if (edits.length > 0) {
-        await deps.host.applyCorrection(args.graphId, { edits }, { triggeredBy: 'user:raise-dispatch-safe' });
-        deps.host.triggerRelink(args.graphId);
+        // Same refusal semantics as node.directEdit: a rewrite the SDK declined
+        // comes back in the outcome, never as a throw. This one is
+        // security-relevant — reporting a raise that did not reach every body
+        // node would leave the skill's authored `[dispatch-safe: …]` tags
+        // inconsistent while the UI says the unlock succeeded, and the
+        // recomputed cap below is min() over the tags, so a partial rewrite
+        // silently keeps the skill pinned.
+        const outcomes = await deps.host.applyCorrection(
+          args.graphId, { edits }, { triggeredBy: 'user:raise-dispatch-safe' },
+        );
+        applied = outcomes.filter((o) => o.applied).length;
+        if (applied > 0) deps.host.triggerRelink(args.graphId);
+        if (applied < edits.length) {
+          const errors = outcomes.flatMap((o) => o.errors);
+          return {
+            ok: false,
+            reason: 'correction_refused',
+            message: `Only ${applied} of ${edits.length} dispatch-safe tags were rewritten`
+              + (errors.length ? `: ${errors.join('; ')}` : '.'),
+            changed: applied,
+          };
+        }
       }
       // Recompute + echo the resulting cap so the UI can confirm the raise took.
       const readout = deps.host.dispatchSafeReadout(args.graphId)[0];
       const cap = readout?.perSkill.find((p) => p.sourceId === args.sourceId)?.cap ?? 'L3';
-      return { ok: true, changed: edits.length, cap };
+      return { ok: true, changed: applied, cap };
     }
     case 'graphs.dispatchSafeReadout': {
       // Read-only computed view of the effective execution-autonomy ceiling per
@@ -2190,12 +2415,39 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     case 'sources.forget': {
       const { graphId, sourceId } = z.object({ graphId: z.string(), sourceId: z.string() }).parse(params);
       const result = await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:forget' });
-      await deps.host.obligationIndex.removeForSource(graphId, sourceId);
-      // Purge in-memory ghost edges from the brain engine's live caches.
+      // Purge in-memory ghost edges from the brain engine's live caches, keyed
+      // on what the graph ACTUALLY deleted. Safe on either branch — a refused
+      // node is not in `nodeIds`, so its edges are left alone.
       // host.forgetSource already cleaned the on-disk stores.
       if (result.nodeIds.length > 0) {
         deps.brainEngine?.purgeDeletedNodes(result.nodeIds);
       }
+      // `forgetSource` reports a declined delete by RETURNING `refusedNodeIds`
+      // — it never throws — and it RESTORES the source record around the nodes
+      // that survived, so the source is still live and still recallable. This
+      // handler used to hand that object straight back, and every caller
+      // (`runBatchSourceForget`, the per-row Forget widget, the goal-card
+      // delete in main.ts) treats a resolved `invoke` as success and removes
+      // the row. The source vanished from the Sources page while its memories
+      // stayed in the cortex at full confidence.
+      //
+      // THROW, matching `node.softDelete`: those callers detect failure ONLY
+      // from the rejection — a soft `{ ok: false }` would still delete the row.
+      //
+      // Strictly BEFORE `obligationIndex.removeForSource`: the obligations
+      // belong to a source that still exists, and dropping them would lose the
+      // user's deadlines/renewals while the content they hang off is untouched.
+      // Same ordering rule as `node.softDelete`'s `removeNodeIds`.
+      const refusedForget = result.refusedNodeIds ?? [];
+      if (refusedForget.length > 0) {
+        throw new Error(
+          `Source ${sourceId} was NOT forgotten: the memory engine declined to delete `
+          + `${refusedForget.length} of its node(s) (${refusedForget.join(', ')}). `
+          + `Those memories are still live in "${graphId}" and will keep surfacing in recall`
+          + (result.nodeIds.length > 0 ? `; ${result.nodeIds.length} node(s) did go.` : '.'),
+        );
+      }
+      await deps.host.obligationIndex.removeForSource(graphId, sourceId);
       return result;
     }
     case 'sources.reingest': {
@@ -2221,7 +2473,24 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // double-up against the fresh node ids. Save() fires inside both
       // calls, so the push-event channel emits two mutation ticks; the
       // App's pollGraphMutations will pick up the second one and refresh.
-      await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:ingest' });
+      const cleared = await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:ingest' });
+      // A refused forget is NOT a licence to re-ingest. `forgetSource` returns
+      // `refusedNodeIds` rather than throwing, so the old bare `await` fell
+      // through into `ingestFile` below and appended a SECOND full copy of the
+      // file's chunks on top of the ones that were never removed — the exact
+      // "two generations in one engram" state `clearSourceNodes` throws to
+      // prevent. The Sources row then reported "Re-saved N nodes" over a
+      // doubled source. Fail the round-trip instead; the user's content is
+      // untouched and the reingest can be retried.
+      const refusedReingest = cleared.refusedNodeIds ?? [];
+      if (refusedReingest.length > 0) {
+        throw new Error(
+          `Reingest aborted: the memory engine declined to delete ${refusedReingest.length} `
+          + `existing node(s) of source ${sourceId} (${refusedReingest.join(', ')}). `
+          + 'Re-reading the file now would leave two copies of it in this engram, so nothing '
+          + 'was re-read. The source is unchanged.',
+        );
+      }
       // Purge orphan active nodes left by any previous failed reingest.
       // A crash or IPC timeout mid-ingest can leave SDK-graph nodes with no
       // source record; their hashes block the full chunk count from being
@@ -2243,7 +2512,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Skill sources need the preserving move — host.moveSource keeps only the
       // seed node, which for a trained skill is its metadata comment, so a
       // transferred skill would land as a one-node stub with the procedure gone.
-      const { newRecord, forgottenNodeIds } = await moveSourcePreservingSkillNodes(
+      const { newRecord, forgottenNodeIds, refusedNodeIds } = await moveSourcePreservingSkillNodes(
         deps.host, fromGraphId, sourceId, toGraphId,
       );
       // Purge the in-memory cross-engram cache of stale entries anchored to
@@ -2258,7 +2527,26 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // event loop when the user moves several sources in quick succession.
       // The background cross-engram timer (brain-engine) picks it up after the
       // moves settle — a short delay is acceptable for relinking.
-      return newRecord;
+      //
+      // `refusedNodeIds` is the honest half of a move that only half-happened:
+      // the nodes landed in the destination but the SOURCE engram declined to
+      // delete its copies, so this was a COPY, not a move, and the content is
+      // still recallable from `fromGraphId`. Returning the bare `newRecord`
+      // discarded that — the Sources page moved the row and the user believed
+      // the original was gone. Carry it on the record so one shape answers both
+      // "where is it now" and "did the original actually go away".
+      if (refusedNodeIds && refusedNodeIds.length > 0) {
+        return {
+          ...newRecord,
+          refusedNodeIds,
+          moveComplete: false,
+          message:
+            `COPIED, NOT MOVED: engram "${fromGraphId}" refused to delete ${refusedNodeIds.length} `
+            + `node(s), so this source is now in BOTH engrams and will keep surfacing in recall from `
+            + `"${fromGraphId}". Refused node ids: ${refusedNodeIds.join(', ')}.`,
+        };
+      }
+      return { ...newRecord, moveComplete: true };
     }
     case 'corrections.list': {
       // Return every pending diff so the App can render its approval panel.
@@ -2279,9 +2567,24 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { diffId } = z.object({ diffId: z.string() }).parse(params);
       const pending = deps.pendingDiffs.get(diffId);
       if (!pending) throw new Error(`No pending diff ${diffId}. It may have been applied or rejected already.`);
-      await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
-      clearContradictionQueueAfterCorrection(deps, pending.diff);
-      deps.pendingDiffs.delete(diffId);
+      // The SDK refuses a correction by RETURNING `{ applied: 0, errors: [...] }`
+      // — it never throws — so `{ ok: true }` here was unconditional: the
+      // workbench dropped the queue row and repainted "resolved" for changes
+      // the graph declined. Read the outcome; same refusal shape as
+      // `skills.setSkillDispatchSafe`.
+      const outcomes = await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
+      clearContradictionQueueAfterCorrection(deps, pending.diff, outcomes);
+      const result = readCorrectionApplyOutcome(pending.diff, outcomes);
+      if (!result.retainPending) deps.pendingDiffs.delete(diffId);
+      if (result.applied < result.total) {
+        return {
+          ok: false,
+          reason: 'correction_refused',
+          message: correctionRefusalMessage(result),
+          changed: result.applied,
+          graphId: pending.graphId,
+        };
+      }
       return { ok: true, graphId: pending.graphId };
     }
     case 'corrections.reject': {
@@ -2788,6 +3091,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           nodesIncluded: sub.nodesIncluded,
           byGraph,
           audit: sub.audit,
+          // Whether every engram in scope actually answered. This projection
+          // used to stop at `audit`, so a recall that read 3 of 5 engrams
+          // arrived at the UI indistinguishable from one that read all 5 and
+          // the user was shown a partial answer as a complete one. Always
+          // present, so a client cannot mistake "no coverage field" for
+          // "coverage fine". See host.recallCoverage.
+          coverage: deps.host.recallCoverage(sub),
         };
       } finally {
         endP1();
@@ -3026,7 +3336,32 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         id: z.string(),
         action: z.enum(['keep-a', 'keep-b', 'mark-debate', 'dismiss']),
       }).parse(params);
-      await deps.brainEngine?.resolveContradictionPair(id, action);
+      // `resolveContradictionPair` returns `BrainResolveResult` — it bails with
+      // `{ ok: false, reason }` when the delete of the losing side was REFUSED,
+      // deliberately leaving the pair in the review queue so it can be offered
+      // again. Answering `{ ok: true }` over that told the workbench the
+      // contradiction was resolved while both sides stayed live; the card then
+      // reappeared on the next render with no explanation.
+      //
+      // `deps.brainEngine?.` also yields `undefined` when the engine is not
+      // running (locked cortex) — which is not a resolution either, so it gets
+      // its own refusal rather than the old unconditional green tick.
+      const resolved = await deps.brainEngine?.resolveContradictionPair(id, action);
+      if (!resolved) {
+        return {
+          ok: false,
+          reason: 'brain_engine_unavailable',
+          message: 'The brain engine is not running, so nothing was resolved — unlock the cortex and try again.',
+        };
+      }
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          reason: 'resolve_refused',
+          message: `The contradiction was NOT resolved: ${resolved.reason ?? 'the engine refused the change'}.`
+            + ' Both memories are still live and the pair stays in the review queue.',
+        };
+      }
       return { ok: true };
     }
 
@@ -3094,7 +3429,27 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         id: z.string(),
         action: z.enum(['merge', 'keep-both']),
       }).parse(params);
-      await deps.brainEngine?.resolveDuplicatePair(id, action);
+      // Same contract as `brain:resolveContradictionPair`: a refused merge
+      // returns `{ ok: false, reason }` and KEEPS the card in the Check-in
+      // deck (the old code dismissed it permanently, so the duplicate became
+      // unfixable through the UI). Pass the refusal through instead of
+      // stamping the merge as done.
+      const merged = await deps.brainEngine?.resolveDuplicatePair(id, action);
+      if (!merged) {
+        return {
+          ok: false,
+          reason: 'brain_engine_unavailable',
+          message: 'The brain engine is not running, so nothing was merged — unlock the cortex and try again.',
+        };
+      }
+      if (!merged.ok) {
+        return {
+          ok: false,
+          reason: 'resolve_refused',
+          message: `The duplicate was NOT merged: ${merged.reason ?? 'the engine refused the change'}.`
+            + ' Both copies are still live and the card stays in the Check-in deck.',
+        };
+      }
       return { ok: true };
     }
 
@@ -3525,6 +3880,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         sourceId: z.string().min(1),
       }).parse(params);
       const result = await deps.host.reingestSource(graphId, sourceId);
+      // A refused reingest is not an `ok: true` with a payload nobody reads.
+      // Throwing puts it on the dispatch error channel, which is the ONLY
+      // channel the desktop Reingest UI (and every `await ipcCall(...)`) reacts
+      // to — and it matches the sibling refusal paths in this family
+      // (clearSourceNodes, removeNodeFromSource) which already reject.
+      if (result.refused) {
+        throw new Error(
+          `Reingest declined for source ${sourceId}: ${result.reason} ` +
+          `(node(s) the engine would not delete: ${result.refusedNodeIds.join(', ')})`,
+        );
+      }
       return { ok: true, result };
     }
 
@@ -3833,6 +4199,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           nodesIncluded: sub.nodesIncluded,
           byGraph: Object.fromEntries(sub.byGraph),
           audit: sub.audit,
+          // Carried on the slider path too: narrowing the displayed node set
+          // does not make an unread engram read, and the banner must not
+          // disappear because the user moved a slider.
+          coverage: deps.host.recallCoverage(sub),
         };
       }
 
@@ -3857,6 +4227,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         audit: wideSub.audit,
         allCandidates,
         topScore,
+        coverage: deps.host.recallCoverage(wideSub),
       };
     }
 
@@ -3885,6 +4256,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           byGraph: Object.fromEntries(sub.byGraph),
           audit: sub.audit,
           provenance: sub.digDeeperProvenance,
+          coverage: deps.host.recallCoverage(sub),
         };
       }
 
@@ -3905,6 +4277,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         provenance: wideSub.digDeeperProvenance,
         allCandidates,
         topScore,
+        coverage: deps.host.recallCoverage(wideSub),
       };
     }
 
@@ -4062,11 +4435,21 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         if (found) graphIds = [found];
       }
       const neighbors: Array<{ nodeId: string; graphId: string; text: string; score: number; engramName: string }> = [];
+      // The seeds decide which predicted edges are shown at all, so they are a
+      // similarity claim even though their score never reaches the panel. Same
+      // gate as `studio.checkDuplicate` and the MCP `check_duplicate` twin:
+      // with a placeholder adapter behind the vectors these were the SAME
+      // out-of-range hits (measured 15.605 on a token-disjoint probe), fed to
+      // the GNN-neighbour panel as "semantically close seeds".
+      const semanticSeeds = deps.host.semanticSimilarityAvailable();
       for (const graphId of graphIds) {
-        // Get semantically close seeds for this query in this engram
-        const seeds = await withEmbedding(
-          () => deps.host.searchNodes(graphId, args.query, 5) as Promise<Array<{ nodeId: string; score: number }>>,
-        );
+        const seeds = semanticSeeds
+          ? await withEmbedding(
+            () => deps.host.searchNodes(graphId, args.query, 5) as Promise<Array<{ nodeId: string; score: number }>>,
+          )
+          : await withEmbedding(
+            async () => deps.host.searchNodesLexical(graphId, args.query, 5) as Promise<Array<{ nodeId: string; score: number }>>,
+          );
         const seedIds = new Set(seeds.map((s) => s.nodeId));
         // Look up GNN-predicted edges where one end is a seed
         const edges = (deps.brainEngine!.getPredictedEdges(graphId) as unknown) as Array<{ from: string; to: string; score: number }>;
@@ -4088,7 +4471,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const deduped = neighbors
         .filter((n) => { if (seen.has(n.nodeId)) return false; seen.add(n.nodeId); return true; })
         .sort((a, b) => b.score - a.score);
-      return { neighbors: deduped };
+      return {
+        neighbors: deduped,
+        keywordSeeds: !semanticSeeds,
+        ...(semanticSeeds
+          ? {}
+          : { notice: KEYWORD_FALLBACK_LABEL, reason: deps.host.semanticUnavailableReason() }),
+      };
     }
 
     case 'studio.checkDuplicate': {
@@ -4106,36 +4495,39 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         );
         if (found) graphIds = [found];
       }
-      const hits: Array<{ score: number; graphId: string; engramName: string; text: string; nodeId: string }> = [];
+      const hits: Array<{
+        score: number; graphId: string; engramName: string; text: string;
+        nodeId: string; keywordFallback: boolean;
+      }> = [];
+      // Gated on the host's single capability state — see
+      // `studioSimilarityHits`. Node text is resolved in there (searchNodes'
+      // own `text` is empty for embedding-driven hits, and without it the
+      // duplicate list renders an engram + percentage with no content for the
+      // user to judge), so the degeneracy guard sees the real thing.
       for (const graphId of graphIds) {
-        const results = await withEmbedding(
-          () => deps.host.searchNodes(graphId, args.text, 3) as Promise<Array<{ nodeId: string; score: number; contentPreview?: string }>>,
-        );
-        // searchNodes' contentPreview is documented as optional and is in
-        // practice empty for embeddings-driven hits — without a fallback the
-        // duplicate list renders the engram + percentage but no actual node
-        // text, so the user has no way to judge whether the "match" is
-        // really a duplicate. Look up the previews from listNodes once per
-        // engram and join them in.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const previews = new Map<string, string>(
-          (deps.host.listNodes(graphId) as Array<{ id: string; contentPreview?: string }>)
-            .map((n) => [n.id, n.contentPreview ?? '']),
-        );
+        const results = await studioSimilarityHits(deps.host, graphId, args.text, 3, threshold);
         for (const r of results) {
-          if (r.score >= threshold) {
-            const text = ((r.contentPreview ?? '').trim() || previews.get(r.nodeId) || '').slice(0, 240);
-            hits.push({
-              score: r.score,
-              graphId,
-              engramName: deps.host.getGraphMetadata(graphId)?.displayName ?? graphId,
-              text,
-              nodeId: r.nodeId,
-            });
-          }
+          hits.push({
+            score: r.score,
+            graphId,
+            engramName: deps.host.getGraphMetadata(graphId)?.displayName ?? graphId,
+            text: r.text.slice(0, 240),
+            nodeId: r.nodeId,
+            keywordFallback: r.keywordFallback,
+          });
         }
       }
-      return { duplicates: hits, hasDuplicates: hits.length > 0 };
+      const keywordOnly = !deps.host.semanticSimilarityAvailable();
+      return {
+        duplicates: hits,
+        hasDuplicates: hits.length > 0,
+        keywordFallback: keywordOnly,
+        // Same words the MCP twin prints beside every fallback score, so the
+        // renderer never has to invent its own phrasing for this state.
+        ...(keywordOnly
+          ? { notice: KEYWORD_FALLBACK_LABEL, reason: deps.host.semanticUnavailableReason() }
+          : {}),
+      };
     }
 
     case 'studio.setEnabled': {
@@ -5687,9 +6079,20 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { diffId } = z.object({ diffId: z.string().min(1) }).parse(params ?? {});
       const pending = deps.pendingDiffs.get(diffId);
       if (!pending) throw new Error(`No pending diff with id "${diffId}". It may have expired or already been applied.`);
-      await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
-      clearContradictionQueueAfterCorrection(deps, pending.diff);
-      deps.pendingDiffs.delete(diffId);
+      // Same defect as `corrections.apply`: the outcome was discarded and the
+      // panel closed on a green tick regardless of what the graph did. Read it.
+      const outcomes = await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
+      clearContradictionQueueAfterCorrection(deps, pending.diff, outcomes);
+      const result = readCorrectionApplyOutcome(pending.diff, outcomes);
+      if (!result.retainPending) deps.pendingDiffs.delete(diffId);
+      if (result.applied < result.total) {
+        return {
+          ok: false,
+          reason: 'correction_refused',
+          message: correctionRefusalMessage(result),
+          changed: result.applied,
+        };
+      }
       return { ok: true };
     }
 
@@ -6552,6 +6955,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
   const existing = matching[0];
 
   let skillId: string;
+  /** Legacy duplicate sources the engram DECLINED to release (see the loop below). */
+  const duplicatesNotRemoved: Array<{ sourceId: string; refusedNodeIds?: string[]; error?: string }> = [];
   if (existing) {
     // Snapshot the live state before mutating. Same shape trainSkill writes
     // so the history panel renders both paths uniformly.
@@ -6579,12 +6984,26 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     });
 
     // Forget any older duplicate sources (pre-in-place model migration).
+    //
+    // The `catch` was never the failure channel that mattered: `forgetSource`
+    // declines by RETURNING `refusedNodeIds`, so a duplicate the engine would
+    // not release was swallowed here and the handler still answered a bare
+    // `{ ok: true }`. The Skills library then shows ONE row (the canonical
+    // source) while a second, older copy of the same skill is still live in the
+    // engram — walkable, dispatchable and recallable, with no UI affordance
+    // that admits it exists. Collect them and say so; the save itself is
+    // genuinely fine, so it is not turned into a failure.
     for (const dup of matching.slice(1)) {
       try {
-        await deps.host.forgetSource(args.graphId, dup.sourceId, {
+        const res = await deps.host.forgetSource(args.graphId, dup.sourceId, {
           triggeredBy: 'ipc:skill:saveFallback:migrate-duplicates',
         });
-      } catch { /* non-fatal */ }
+        if (res.refusedNodeIds && res.refusedNodeIds.length > 0) {
+          duplicatesNotRemoved.push({ sourceId: dup.sourceId, refusedNodeIds: res.refusedNodeIds });
+        }
+      } catch (e) {
+        duplicatesNotRemoved.push({ sourceId: dup.sourceId, error: (e as Error).message });
+      }
     }
 
     // Wipe the source — rename only after inserts succeed (see trainSkill).
@@ -6639,6 +7058,25 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
   deps.host.triggerRelink(args.graphId);
 
+  // `ok` describes THE SAVE, which genuinely landed — reporting a failure here
+  // would push the user into retraining a skill that is already correct. What
+  // must not be silent is the duplicate cleanup: name the copies that are still
+  // in the engram so the caller cannot present the library as deduplicated.
+  if (duplicatesNotRemoved.length > 0) {
+    return {
+      ok: true,
+      skillId,
+      duplicatesNotRemoved,
+      warning:
+        `Saved, but ${duplicatesNotRemoved.length} older duplicate source(s) of this skill could NOT `
+        + `be removed from "${args.graphId}": `
+        + duplicatesNotRemoved
+          .map((d) => `${d.sourceId} (${d.error ?? `refused: ${(d.refusedNodeIds ?? []).join(', ')}`})`)
+          .join('; ')
+        + '. Those older copies are STILL live and can still be walked and recalled — '
+        + 'do not report the skill library as deduplicated.',
+    };
+  }
   return { ok: true, skillId };
 }
 
@@ -6750,6 +7188,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const imported: Array<{ name: string; sourceId: string }> = [];
       const quarantineItems: Array<{ sourceId: string; lint?: string[]; state: 'quarantined' }> = [];
       const skippedEmpty: string[] = [];
+      /**
+       * SDK seed-artifact nodes the engram DECLINED to delete during cleanup.
+       * See the cleanup block below — these stay live and recallable inside the
+       * imported skill, so the import is reported as partial, not clean.
+       */
+      const artifactsNotRemoved: Array<{ skill: string; sourceId: string; nodeId: string; error: string }> = [];
       for (const skill of payload.skills) {
         // Use the FULL walkable body. A full pack's baseText holds the numbered
         // SOP steps (@needs / @loop / @branch / @skill); trainedTextFallback is a
@@ -6916,12 +7360,42 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             if (full.trim() === refText) artifactIds.push(nid);
           }
           for (const aid of artifactIds) {
+            // ── The catch used to assert a cause it never checked ────────────
+            //
+            // `removeNodeFromSource` signals a REFUSED delete by THROWING
+            // (host.ts: `if (!outcome.applied) throw ...`), and the old
+            // `catch { /* node already gone — non-fatal */ }` swallowed it under
+            // a comment claiming the opposite. "Already gone" and "the memory
+            // engine declined to release it" arrive through the same channel and
+            // were treated as the same benign outcome, so a refused purge left a
+            // node whose entire content is the raw sourceRef string
+            // ("skill:1780…:Vision-based defect inspection") LIVE inside the
+            // imported skill — walkable, recallable, and reported nowhere.
+            //
+            // The genuinely-benign case is now separated STRUCTURALLY rather than
+            // by matching on the error text: re-read the source record and skip
+            // ids that are no longer claimed by it. Anything that throws after
+            // that check is a real failure and is named on the result.
+            const cur = deps.host.getSourceRecord(ingestGraphId, rec.sourceId);
+            if (!cur?.nodeIds.includes(aid)) continue; // already gone — genuinely non-fatal
             try {
               await deps.host.removeNodeFromSource(ingestGraphId, rec.sourceId, aid, {
                 triggeredBy: 'ipc:skill:importGsk',
                 reason: 'SDK seed artifact (sourceRef-text node)',
               });
-            } catch { /* node already gone — non-fatal */ }
+            } catch (e) {
+              const msg = (e as Error).message;
+              artifactsNotRemoved.push({
+                skill: skill.name,
+                sourceId: rec.sourceId,
+                nodeId: aid,
+                error: msg,
+              });
+              console.error(
+                `[ipc:skill:importGsk] seed-artifact node ${aid} could NOT be removed from `
+                + `"${ingestGraphId}"/${rec.sourceId} (${msg}). It is still live and recallable.`,
+              );
+            }
           }
         }
         // Single coalesced relink pass after all paragraphs are in.
@@ -6977,6 +7451,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         graphId: ingestGraphId,
         imported,
         skippedEmpty,
+        // The skills themselves really did import, so this is reported on an
+        // `ok: true` result rather than turned into a failure — the same
+        // decision as `skill:saveFallback`'s `warning`. What must not happen is
+        // the caller presenting a clean import over skills that carry a live
+        // sourceRef-text node the engram would not let go of.
+        ...(artifactsNotRemoved.length > 0 ? {
+          artifactsNotRemoved,
+          warning:
+            `${artifactsNotRemoved.length} SDK seed-artifact node(s) could NOT be removed from the `
+            + `imported skill(s) (${artifactsNotRemoved.map((a) => `${a.skill}/${a.nodeId}`).join(', ')}) — `
+            + 'the memory engine declined the delete. Those nodes hold the raw source reference as their '
+            + 'entire content and are STILL live: they remain walkable and can surface in recall.',
+        } : {}),
       };
     }
 
@@ -7028,13 +7515,24 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const qm = deps.host.getGraphMetadata(fromGid)!;
       const promoted: string[] = [];
       const failures: string[] = [];
+      // A promotion whose source-side delete was REFUSED left a copy behind in
+      // the quarantine engram. `promoteSkillSourcePreservingNodes` reports that
+      // as `refusedNodeIds`; the old code discarded the whole return value, so
+      // the item was stamped `promoted` and the quarantine engram was then
+      // DELETED as "drained" — with quarantined content still inside it.
+      // Those items keep their `quarantined` state and are reported separately.
+      const copiedNotMoved: Array<{ sourceId: string; refusedNodeIds: string[] }> = [];
       for (const sourceId of args.items) {
         const item = qm.quarantine!.items.find((it) => it.sourceId === sourceId);
         if (!item || item.state !== 'quarantined') { failures.push(sourceId); continue; }
         try {
           // moveSource drops non-seed nodes for multi-node skill sources; this
           // wrapper repairs the drop so promoted skills stay walkable.
-          await promoteSkillSourcePreservingNodes(deps.host, fromGid, sourceId, targetGid);
+          const res = await promoteSkillSourcePreservingNodes(deps.host, fromGid, sourceId, targetGid);
+          if (res.refusedNodeIds && res.refusedNodeIds.length > 0) {
+            copiedNotMoved.push({ sourceId, refusedNodeIds: res.refusedNodeIds });
+            continue; // still quarantined — do NOT mark promoted
+          }
           item.state = 'promoted';
           promoted.push(sourceId);
         } catch { failures.push(sourceId); }
@@ -7064,7 +7562,27 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           });
         }
       }
-      return { ok: true, fromGraphId: fromGid, targetEngramId: targetGid, promoted, failures, quarantineDeleted, stillQuarantined: !quarantineDeleted && deps.host.isQuarantined(fromGid) };
+      return {
+        ok: copiedNotMoved.length === 0,
+        fromGraphId: fromGid,
+        targetEngramId: targetGid,
+        promoted,
+        failures,
+        quarantineDeleted,
+        stillQuarantined: !quarantineDeleted && deps.host.isQuarantined(fromGid),
+        ...(copiedNotMoved.length > 0
+          ? {
+              reason: 'promote_incomplete',
+              copiedNotMoved,
+              message:
+                `${copiedNotMoved.length} item(s) were COPIED into "${targetGid}" but NOT removed from `
+                + `quarantine "${fromGid}" — the engram refused the delete. Those items are still `
+                + `quarantined and their content exists in both places: `
+                + copiedNotMoved.map((c) => `${c.sourceId} (${c.refusedNodeIds.join(', ')})`).join('; ')
+                + '. Do not report them as promoted.',
+            }
+          : {}),
+      };
     }
 
     case 'quarantine:reject': {
@@ -7080,11 +7598,22 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const qm = deps.host.getGraphMetadata(fromGid)!;
       const rejected: string[] = [];
       const failures: string[] = [];
+      // `forgetSource` reports a declined delete via `refusedNodeIds` and never
+      // throws, so the catch below was never the failure channel that mattered.
+      // Stamping `rejected` on a refusal marks imported content as discarded
+      // while it is still live in the quarantine engram — and the drain-and-
+      // delete branch underneath would then remove the engram that still holds
+      // it. Keep those items quarantined and say so.
+      const notDiscarded: Array<{ sourceId: string; refusedNodeIds: string[] }> = [];
       for (const sourceId of args.items) {
         const item = qm.quarantine!.items.find((it) => it.sourceId === sourceId);
         if (!item || item.state !== 'quarantined') { failures.push(sourceId); continue; }
         try {
-          await deps.host.forgetSource(fromGid, sourceId, { triggeredBy: 'user:reject-import' });
+          const res = await deps.host.forgetSource(fromGid, sourceId, { triggeredBy: 'user:reject-import' });
+          if (res.refusedNodeIds && res.refusedNodeIds.length > 0) {
+            notDiscarded.push({ sourceId, refusedNodeIds: res.refusedNodeIds });
+            continue; // still quarantined — do NOT mark rejected
+          }
           item.state = 'rejected';
           rejected.push(sourceId);
         } catch { failures.push(sourceId); }
@@ -7110,7 +7639,24 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           });
         }
       }
-      return { ok: true, fromGraphId: fromGid, rejected, failures, quarantineDeleted };
+      return {
+        ok: notDiscarded.length === 0,
+        fromGraphId: fromGid,
+        rejected,
+        failures,
+        quarantineDeleted,
+        ...(notDiscarded.length > 0
+          ? {
+              reason: 'reject_incomplete',
+              notDiscarded,
+              message:
+                `${notDiscarded.length} item(s) were NOT discarded — engram "${fromGid}" refused the `
+                + `delete. That imported content is STILL PRESENT and still quarantined: `
+                + notDiscarded.map((c) => `${c.sourceId} (${c.refusedNodeIds.join(', ')})`).join('; ')
+                + '. Do not report them as rejected.',
+            }
+          : {}),
+      };
     }
 
     case 'crypto:recipientPublicKey': {
@@ -8607,6 +9153,21 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const args = z.object({ dryRun: z.boolean().optional() }).parse(params ?? {});
       const { runRetentionPurge } = await import('./compliance.js');
       const result = await runRetentionPurge(deps.host, deps.cortexDir, args.dryRun === true);
+      // `runRetentionPurge` now reports `incomplete` + a regulator-readable
+      // `summary` when the engine refused some of the deletes. `{ ok: true }`
+      // over that is the last place the lie could survive: the Compliance panel
+      // reads `ok` and then prints "Purge complete — N source(s) affected" from
+      // `items.length`, which counts the sources it TRIED, not the ones it
+      // destroyed. An incomplete purge is a failed retention operation — the one
+      // artifact produced as proof of destruction must not read as proof.
+      if (result.incomplete) {
+        return {
+          ok: false,
+          reason: 'purge_incomplete',
+          message: result.summary,
+          ...result,
+        };
+      }
       return { ok: true, ...result };
     }
 

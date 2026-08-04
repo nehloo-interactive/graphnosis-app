@@ -23,6 +23,77 @@ export async function persistSkillCitedNodes(
   });
 }
 
+/**
+ * Move skill citations from a node the graph RETIRED onto the node it minted
+ * in its place.
+ *
+ * WHY. `skillCitedNodes` is written once, AT TRAIN TIME, and is the only thing
+ * `enqueueSkillsForNodeChange` matches against. A correction that retires and
+ * mints (`supersede` on every supported SDK including the installed 0.8.0;
+ * `edit` too from 0.10.0) leaves the citation naming the RETIRED husk. The
+ * first correction still queues the skill, because `applyCorrection` hands the
+ * enqueue BOTH the pre-correction id and the minted one — but from then on the
+ * skill cites an id no future correction will ever target again, so the SECOND
+ * correction to that same memory matches nothing and the skill silently stops
+ * noticing that its own evidence changed. `computeSkillVitality`'s cited-node
+ * drift count reads the same map and goes wrong the same way: it looks up the
+ * husk, finds it retired, and reports permanent drift that retraining cannot
+ * clear.
+ *
+ * BATCHED ON PURPOSE — do not "simplify" this back to one call per edit.
+ * `host.setSettings` is a full serialise + encrypt + fsync of settings.json
+ * behind a write queue. `applyCorrection` takes a BATCH of edits and the brain
+ * engine drives it in bulk, so a per-edit write would turn one correction batch
+ * into N disk writes and N listener broadcasts. Every move in the batch is
+ * folded into a single settings object and written once — and not at all when
+ * no skill cites any of the moved nodes, which is the overwhelmingly common
+ * case.
+ *
+ * MATCH ON THE VALUE, not `entry.graphId`. In a `SkillCitedNodesEntry`,
+ * `graphId` is the engram the SKILL lives in, while `nodes[nodeId]` is the
+ * engram the CITED node lives in — cited nodes routinely span other personal
+ * engrams (see `syncSkillCitedNodesFromRecipes`). The node we corrected is in
+ * `graphId`, so the value is what has to match; keying off `entry.graphId`
+ * would rebind citations in the wrong engram and miss the right ones.
+ *
+ * Returns true when something actually moved (a settings write happened).
+ */
+export async function rebindSkillCitedNodes(
+  host: GraphnosisHost,
+  graphId: string,
+  moves: Array<{ from: string; to: string }>,
+): Promise<boolean> {
+  const real = moves.filter((m) => m.from !== m.to && m.to.length > 0);
+  if (real.length === 0) return false;
+  const cited = host.getSettings().skillCitedNodes ?? {};
+  const next: Record<string, SkillCitedNodesEntry> = {};
+  let changed = false;
+
+  for (const [sourceId, entry] of Object.entries(cited) as Array<[string, SkillCitedNodesEntry]>) {
+    let nodes: Record<string, string> | undefined;
+    for (const { from, to } of real) {
+      // Only a citation of THIS engram's node moves. A same-id citation that
+      // resolves to a different engram is a different node.
+      if (entry.nodes[from] !== graphId) continue;
+      nodes ??= { ...entry.nodes };
+      delete nodes[from];
+      // Idempotent when the skill already cites the minted id (a skill trained
+      // after an earlier rebind): the husk simply drops out.
+      nodes[to] = graphId;
+    }
+    if (nodes) {
+      next[sourceId] = { ...entry, nodes };
+      changed = true;
+    } else {
+      next[sourceId] = entry;
+    }
+  }
+
+  if (!changed) return false;
+  await host.setSettings({ skillCitedNodes: next });
+  return true;
+}
+
 export async function enqueueSkillsForNodeChange(
   host: GraphnosisHost,
   graphId: string,

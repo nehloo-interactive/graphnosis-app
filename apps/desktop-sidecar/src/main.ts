@@ -14,8 +14,9 @@ import {
   SESSION_LEASE_REFRESH_MS,
 } from '@graphnosis-app/core/cortex';
 import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
-import { GraphnosisHost } from './host.js';
+import { GraphnosisHost, describeEngramLoadFailure } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
+import { evidencePrefixBlockingAvailable, evidencePrefixBlockingUnavailableReason, resolveSdkVersion } from './sdk-capabilities.js';
 import { isDocsGhostEngram, isGhostMetadataEngram, isGhostLoadError, repairDocsGhostEngram, DOCS_ENGRAM_ID } from './docs-ingest.js';
 import { createRequire } from 'node:module';
 import { startIpc, startBackgroundDocsIngest, whenBackgroundDocsIngestDone, schedulePostBootDocsReingest } from './ipc.js';
@@ -316,11 +317,25 @@ async function loadAllGraphsFromDisk(
             void repairDocsGhostEngram(host, appVersion);
           }
         } else {
+          // An engram that fails here is dropped from the picker for the rest
+          // of the session. Until now the ONLY trace was this stderr line,
+          // which a packaged .app user never sees — the engram just wasn't
+          // there any more, with no explanation. Name the cause and push it to
+          // the UI so the disappearance is at least accounted for.
+          const { cause, headline, remedy } = describeEngramLoadFailure(err as NodeJS.ErrnoException);
           console.error(
-            `[graphnosis-sidecar] FAILED to load engram '${graphId}' after ${Date.now() - tLoad}ms: ${err.message}`,
+            `[graphnosis-sidecar] FAILED to load engram '${graphId}' after ${Date.now() - tLoad}ms (${cause}): ${err.message}`,
           );
+          console.error(`[graphnosis-sidecar]   ${headline} ${remedy}`);
           if (err.stack) console.error(err.stack);
           failed++;
+          // Routed through the existing `engram.recovery-needed` channel
+          // rather than a new event kind: that kind is already on the Tauri
+          // allowlist (src-tauri/src/event_stream.rs) and already wired to a
+          // banner, so it reaches the user today. A new kind would be dropped
+          // by event_stream.rs with "unknown frame kind (ignored)" — i.e. it
+          // would be exactly as silent as the bug we are fixing.
+          host.reportEngramLoadFailure(graphId, err as NodeJS.ErrnoException);
         }
       }
     }
@@ -483,67 +498,20 @@ async function backfillGraphMetadata(host: GraphnosisHost): Promise<void> {
 }
 
 /**
- * Why a default-engram load failed, for reporting purposes ONLY.
+ * Why a default-engram load failed, and what to tell the user.
  *
- * Every outcome here is fatal and fail-closed (see the caller) — this exists
- * so we stop telling the user their passphrase is probably wrong when it
+ * Every outcome here is fatal and fail-closed (see the caller) — this exists so
+ * we stop telling the user their passphrase is probably wrong when it
  * demonstrably is not.
  *
- * The three causes are genuinely different problems with different fixes:
- *
- *   'decryption' — the bytes would not decrypt with this cortex's data key.
- *                  Wrong passphrase, or the file was tampered with / swapped.
- *                  These are the exact messages the secure-sync crypto module
- *                  raises (`Decryption failed (wrong passphrase or tampered
- *                  file)`, `Not a Graphnosis App encrypted blob`).
- *
- *   'filesystem' — we never got to read the bytes: permissions, a directory
- *                  where a file should be, too many open files. Nothing to do
- *                  with the passphrase or with the cortex contents.
- *
- *   'structure'  — the file DECRYPTED FINE and then failed the graph loader's
- *                  own validation: HMAC/checksum mismatch, bad .gai framing,
- *                  or an out-of-range value the SDK rejects (e.g. SDK 0.10.0's
- *                  `Invalid graph: directed edge <id> has weight <w>; edge
- *                  weights must be a finite number in (0, 1.6667)`). The
- *                  passphrase was correct — pointing the user at it sends them
- *                  to the one thing that is not the problem.
- *
- * Deliberately conservative: anything unrecognized is reported as an unknown
- * failure with the underlying message, never guessed into 'decryption'.
+ * The classifier itself now lives in `host.ts` alongside the load path's
+ * quarantine decision, and both read the SDK's `codeClass` instead of
+ * substring-matching its message text. It used to live HERE, as a second,
+ * differently-worded substring list from the one in `host.ts` — two classifiers
+ * for one question, free to drift apart, and they did: this one matched
+ * `Invalid graph`, that one did not. See the commentary above
+ * `classifyGaiFailure` in host.ts.
  */
-type EngramLoadFailure = 'decryption' | 'filesystem' | 'structure' | 'unknown';
-
-function classifyEngramLoadFailure(err: NodeJS.ErrnoException): EngramLoadFailure {
-  // A real syscall failure — we never got the bytes. Matched on `syscall` /
-  // an errno-shaped code (EACCES, EPERM, EISDIR, …) rather than on `code`
-  // alone, because Node also puts `ERR_*` codes on ordinary runtime errors
-  // and those are not filesystem problems.
-  // (ENOENT is handled by the caller as first-run and never reaches here.)
-  if (typeof err.syscall === 'string' || (typeof err.code === 'string' && /^E[A-Z]+$/.test(err.code))) {
-    return 'filesystem';
-  }
-
-  const msg = err.message ?? '';
-  if (
-    msg.includes('Decryption failed') ||
-    msg.includes('Not a Graphnosis App encrypted blob') ||
-    msg.includes('wrong passphrase')
-  ) {
-    return 'decryption';
-  }
-  // Post-decryption validation, raised by the SDK's fromBuffer / graph loader.
-  if (
-    msg.includes('checksum') ||
-    msg.includes('HMAC') ||
-    msg.includes('Invalid .gai') ||
-    msg.includes('Invalid graph') ||
-    msg.includes('signature')
-  ) {
-    return 'structure';
-  }
-  return 'unknown';
-}
 
 async function acquireCortexLock(cortexDir: string): Promise<() => Promise<void>> {
   // 0o700: this is the user's memory store root — keep other local users out.
@@ -797,6 +765,44 @@ async function main(): Promise<void> {
     ...(env.federatedUnlockKey ? { federatedUnlockKey: env.federatedUnlockKey } : {}),
   });
 
+  // State the capability once, unconditionally, at boot.
+  //
+  // The WARNING above only fires when the local embedder FAILED to init. With
+  // GRAPHNOSIS_EMBED_DISABLE=1 the whole probe is skipped, so the sidecar came
+  // up on `stubEmbed` — vectors that are a sha256 of the text — with nothing
+  // said at all. "No semantic similarity" is a capability the operator has to
+  // be able to see in the log, not infer from the absence of a warning.
+  if (!host.semanticSimilarityAvailable()) {
+    console.error(
+      `[graphnosis-sidecar] semantic similarity UNAVAILABLE: ${host.semanticUnavailableReason()}. ` +
+      'Duplicate detection reports keyword matches only, .gll edge prediction ranks on TF-IDF alone, ' +
+      'and the .gnn trains without the embedding feature.',
+    );
+  } else {
+    dbg(`[graphnosis-sidecar] semantic similarity available (${host.getEmbedAdapterId()})`);
+  }
+
+  // Same rule, one layer down: state the SDK-side capability once,
+  // unconditionally, at boot.
+  //
+  // `graphnosis-impl.ts` bounds ordinary recall with
+  // `blockedEvidencePrefixes: ['skill:']` so a factual query cannot seed into
+  // one step of a trained skill and unroll the whole procedure into a node
+  // budget meant for facts. That option is SDK 0.8.0+; app 1.31.0 ships on
+  // `^0.7.4`, where the key is simply never read. Nothing throws and no query
+  // looks different, so the ONLY place this loss can be seen is a line the
+  // sidecar prints itself.
+  if (!evidencePrefixBlockingAvailable()) {
+    console.error(
+      `[graphnosis-sidecar] recall evidence bounding UNAVAILABLE: ${evidencePrefixBlockingUnavailableReason()}. ` +
+      'Ordinary recall does not bound traversal across `skill:` evidence, so a factual query that seeds ' +
+      'into a trained-skill step can unroll the step chain behind it and spend part of the node budget on ' +
+      'procedure text. Skill dispatch and skill walk are unaffected.',
+    );
+  } else {
+    dbg(`[graphnosis-sidecar] recall evidence bounding active (@nehloo/graphnosis ${resolveSdkVersion()})`);
+  }
+
   if (env.ssoRole) {
     const mappings = host.getSettings().sso?.groupRoleMappings ?? [];
     await host.setSettings({
@@ -886,43 +892,36 @@ async function main(): Promise<void> {
         createdAt: Date.now(),
       });
     } else {
-      // Anything else (decryption failure, corrupt file, signature mismatch,
-      // permission errors) is fatal — unchanged, deliberately. What changed is
-      // only the DIAGNOSIS: this used to blame the passphrase for every
-      // non-ENOENT failure, including failures that happen well after the file
-      // has been successfully decrypted. Telling someone their passphrase is
-      // probably wrong when the real cause is, say, an edge weight the SDK
-      // rejects sends them to the one thing that is not the problem.
-      const cause = classifyEngramLoadFailure(err);
+      // Anything else (decryption failure, corrupt file, permission errors) is
+      // fatal — unchanged, deliberately. What changed is only the DIAGNOSIS:
+      // this used to blame the passphrase for every non-ENOENT failure,
+      // including failures that happen well after the file has been
+      // successfully decrypted. Telling someone their passphrase is probably
+      // wrong when the real cause is, say, an edge weight the SDK rejects — or
+      // a file written by a NEWER Graphnosis than this build — sends them to
+      // the one thing that is not the problem.
+      const { cause, headline, remedy } = describeEngramLoadFailure(err);
       console.error(`[graphnosis-sidecar] FATAL: failed to load existing graph: ${err.message}`);
-      switch (cause) {
-        case 'decryption':
-          console.error(
-            '[graphnosis-sidecar] Cause: the engram file could not be DECRYPTED. ' +
-            'The passphrase is wrong, or the file was replaced/tampered with.',
-          );
-          break;
-        case 'filesystem':
-          console.error(
-            `[graphnosis-sidecar] Cause: the engram file could not be READ (${err.code ?? err.syscall ?? 'syscall failure'}). ` +
-            'This is a filesystem/permission problem — the passphrase is not involved.',
-          );
-          break;
-        case 'structure':
-          console.error(
-            '[graphnosis-sidecar] Cause: the engram file DECRYPTED SUCCESSFULLY but failed ' +
-            'structural validation. The passphrase is correct; the file contents are ' +
-            'corrupt, truncated, or written by an incompatible version. See the error above.',
-          );
-          break;
-        case 'unknown':
-          console.error(
-            '[graphnosis-sidecar] Cause: unrecognized load failure — see the error above. ' +
-            'Do not assume the passphrase is at fault; it may well be correct.',
-          );
-          break;
+      console.error(`[graphnosis-sidecar] Cause (${cause}): ${headline} ${remedy}`);
+      // Version skew aborts the unlock like every other fatal cause, but it is
+      // the one where nothing is wrong with the cortex at all, so say so
+      // plainly and do NOT mention recovery — there is nothing to recover.
+      if (cause === 'version-skew') {
+        // STABLE MARKER. `src-tauri/src/sidecar.rs::classify_startup_failure`
+        // turns the sidecar's stderr tail into the sentence on the unlock
+        // screen; without a branch for this line the user gets its generic
+        // exit-code-1 fallback, "Most likely cause: wrong passphrase or a
+        // corrupted cortex file" — both of which are false here. Keep this
+        // string byte-stable; it is matched, not parsed.
+        console.error(
+          '[graphnosis-sidecar] FATAL: engram written by a newer Graphnosis — update required',
+        );
+        console.error(
+          '[graphnosis-sidecar] Your cortex is intact and untouched. This build is simply too old to read it.',
+        );
+      } else {
+        console.error('[graphnosis-sidecar] Refusing to overwrite the existing cortex with a fresh empty graph.');
       }
-      console.error('[graphnosis-sidecar] Refusing to overwrite the existing cortex with a fresh empty graph.');
       throw e;
     }
   }

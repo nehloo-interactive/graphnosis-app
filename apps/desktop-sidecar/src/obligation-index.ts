@@ -142,6 +142,50 @@ export class ObligationIndex {
     return false;
   }
 
+  /**
+   * Move index rows onto the nodes a correction minted.
+   *
+   * WHY THIS EXISTS. The map is keyed by the node id, and on the installed SDK
+   * a `supersede` RETIRES the node it was aimed at and MINTS a replacement. So
+   * correcting a memory that carries a deadline left the row on the husk. The
+   * husk still appears in `listNodes` at confidence 0.3, and
+   * `ghampus-reminders.ts` resolves the reminder's label with
+   * `listNodes(ob.graphId).find(n => n.id === ob.nodeId)` and no liveness
+   * filter — so the assistant kept nagging about the deadline using the
+   * PRE-CORRECTION text, and the corrected memory carried no obligation at all.
+   *
+   * `pruneMissingNodes` could not have covered this: the husk is not missing.
+   *
+   * Returns the number of rows rewritten so the caller can report coverage.
+   */
+  async rebindNodeIds(
+    graphId: GraphId,
+    moves: ReadonlyArray<{ from: string; to: string }>,
+  ): Promise<number> {
+    if (moves.length === 0) return 0;
+    await this.ensureLoaded();
+    const moved = new Map(moves.map((m) => [m.from, m.to]));
+    let rewritten = 0;
+    // Snapshot the keys before mutating: a rebind INSERTS new keys into the very
+    // map being walked, and iterating live would let a freshly written row be
+    // considered again by a later move in the same batch.
+    for (const oldId of [...this.entries.keys()]) {
+      const ob = this.entries.get(oldId);
+      // Node ids are unique within an engram, not across the cortex, so an
+      // unscoped match would move another engram's obligation.
+      if (!ob || ob.graphId !== graphId) continue;
+      const newId = moved.get(oldId);
+      if (newId === undefined || newId === oldId) continue;
+      this.entries.delete(oldId);
+      this.entries.set(newId, { ...ob, nodeId: newId });
+      rewritten++;
+    }
+    if (rewritten === 0) return 0;
+    this.dirty = true;
+    await this.persist();
+    return rewritten;
+  }
+
   /** Drop index rows whose nodes no longer exist in the graph. */
   async pruneMissingNodes(
     liveNodeIds: (graphId: GraphId) => Set<string>,

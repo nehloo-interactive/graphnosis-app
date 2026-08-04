@@ -18,17 +18,25 @@ import {
 } from '@graphnosis-app/core';
 import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type OpLogEvent, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisAdapter, GraphHandle, AppendDocumentInput, CorrectionEdit } from './graphnosis-adapter.js';
+import type { CorrectionOutcome } from './graphnosis-impl.js';
 import * as healingJournalMod from './healing-journal.js';
 import * as connectionStoreMod from './connection-store.js';
 import * as associationIndexMod from './association-index.js';
 import * as gnnStoreMod from './gnn-store.js';
 import * as gllOverlayMod from './gll-overlay.js';
 import { redactId, redactPair, dbg } from './log-redact.js';
+import {
+  summarizeRecallCoverage,
+  type RecallCoverage,
+  type RecallCoverageInput,
+} from './recall-coverage.js';
 import { buildCommonEntityPredicate } from './memory-hygiene.js';
+import { semanticSimilarityAvailable, semanticUnavailableReason } from './semantic-availability.js';
+import type { TfidfIndexView } from './tfidf-pairs.js';
 import { evaluateContradictionTriage } from './contradiction-utils.js';
 import { GllWriter } from './gll.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
-import { SkillCallLinkStore } from './skill-call-links.js';
+import { SkillCallLinkStore, type SkillCallLink } from './skill-call-links.js';
 import { SkillRunStore } from './skill-runs.js';
 import { WebAuthnCredentialStore } from './webauthn-store.js';
 import { ConnectorFileMapStore } from './connectors/file-map-store.js';
@@ -146,6 +154,266 @@ export type EngramRecoveryNeededHandler = (payload: {
   lkgBytes?: number;
 }) => void;
 
+// ── Classifying a failed .gai load ───────────────────────────────────────────
+//
+// THE ONE PLACE the app decides what a load failure MEANS. It used to be two
+// places — a `looksCorrupt` substring list in `loadGraphInner` and a second,
+// differently-worded substring list in the sidecar's boot path — and they
+// disagreed with each other. That divergence is the defect this section exists
+// to remove: every consumer now calls in here.
+//
+// The SDK (`@nehloo/graphnosis`, `src/core/errors.ts` as of 0.10.0) publishes a
+// frozen taxonomy for exactly this: a stable `code` (`GAI_CHECKSUM_MISMATCH`,
+// `GAI_VERSION_UNSUPPORTED`, …) and a `codeClass` saying what a consumer should
+// DO about it (`corruption` | `version-skew` | `caller` | `config`). We branch
+// on that, not on message text.
+//
+// WHY WE READ THE FIELD INSTEAD OF CALLING THE SDK's isCorruption()/isVersionSkew():
+//   1. There is no import that reaches them. `src/sdk/index.ts` re-exports only
+//      `AnalyzerMismatchError` and `EmbeddingAdapterMismatchError` from
+//      `core/errors`; `isCorruption`, `isVersionSkew`, `ERROR_CLASS` and
+//      `GraphnosisError` are not on the package's public surface, and the
+//      package `exports` map ("." / "./adapters/*" / "./package.json") blocks a
+//      deep import of `dist/core/errors.js`. If a future SDK exports them,
+//      switch the primary branch below to call them directly.
+//   2. They are `instanceof`-based, and the SDK's own comment warns that
+//      `instanceof` does not survive a duplicated package instance or an
+//      esbuild bundle that inlines it — which this app's MCP bundle does. The
+//      `code`/`codeClass` strings survive both, and survive JSON across an IPC
+//      boundary, which is precisely why the SDK made them own fields.
+//
+// We deliberately do NOT copy the SDK's code→class table here. `codeClass` is
+// computed by the SDK from its own frozen `ERROR_CLASS`, so reading it keeps
+// exactly one copy of that mapping in existence — a second copy is how the app
+// got two classifiers that disagreed in the first place.
+
+/** Mirrors the SDK's `GraphnosisErrorClass`, plus `unknown` for un-coded errors. */
+export type GaiFailureClass = 'corruption' | 'version-skew' | 'caller' | 'config' | 'unknown';
+
+const SDK_FAILURE_CLASSES: ReadonlySet<string> = new Set([
+  'corruption', 'version-skew', 'caller', 'config',
+]);
+
+/**
+ * Classify a `.gai` load failure.
+ *
+ * PRIMARY path: the SDK's own `codeClass`, read straight off the thrown error.
+ *
+ * FALLBACK path: message substrings. This is NOT vestigial and must not be
+ * deleted — two live reasons:
+ *   (a) The installed SDK is currently `@nehloo/graphnosis` 0.7.4, which
+ *       predates the code taxonomy entirely: nothing it throws carries `code`
+ *       or `codeClass`, so today EVERY classification comes through here.
+ *       (Re-measured after the 1.31.0 pin revert 0.8.0 -> ^0.7.4: `codeClass`
+ *       has zero occurrences anywhere in 0.7.4's `dist/`. The claim held on
+ *       0.8.0 and holds a fortiori on the older release.)
+ *   (b) Some of these errors reach a consumer only as text — the sidecar
+ *       serialises a load failure across its IPC socket, and `loadGraph`
+ *       re-throws a synthesized `Error` whose only surviving evidence is the
+ *       message it wrapped.
+ * The fallback mirrors `ERROR_CLASS` as closely as text allows, and in
+ * particular it checks version skew FIRST, because the version-skew message
+ * begins with the same `Invalid .gai file:` prefix as the corruption messages —
+ * that shared prefix is the trap that made a prefix-matcher quarantine good
+ * files written by a newer version.
+ *
+ * NB: no matcher here mentions `signature`. The word appears in no SDK message,
+ * and the two classifiers this replaced both matched it — a dead branch that
+ * would silently re-route an unrelated failure into quarantine the day any
+ * message acquired the word.
+ */
+export function classifyGaiFailure(err: unknown): GaiFailureClass {
+  if (err === null || typeof err !== 'object') return 'unknown';
+  const e = err as { codeClass?: unknown; message?: unknown };
+
+  // PRIMARY — the SDK told us, programmatically.
+  if (typeof e.codeClass === 'string' && SDK_FAILURE_CLASSES.has(e.codeClass)) {
+    return e.codeClass as GaiFailureClass;
+  }
+
+  // FALLBACK — text. See the caveat above for why this still exists.
+  const msg = typeof e.message === 'string' ? e.message : '';
+  if (msg === '') return 'unknown';
+
+  // Version skew FIRST: `Invalid .gai file: format version N is newer than this
+  // reader supports (M)`. It shares the corruption prefix, so any ordering that
+  // tests corruption first destroys a perfectly good file.
+  if (msg.includes('is newer than this reader supports')) return 'version-skew';
+
+  // Caller errors — the file is fine, the CALL was wrong. Never corruption:
+  // quarantining on a key mismatch would rename a healthy engram aside.
+  if (
+    msg.includes('no hmacKey was supplied') ||
+    msg.includes('hmacKey supplied but file is not HMAC-signed')
+  ) {
+    return 'caller';
+  }
+
+  // Damaged bytes. `Invalid graph:` is the 0.10.0 addition the old matcher
+  // missed entirely (it only knew `Invalid .gai`), which is how a failed load
+  // lost its quarantine + .lkg + op-log recovery and just vanished.
+  if (
+    msg.includes('checksum') ||
+    msg.includes('HMAC verification failed') ||
+    msg.includes('magic bytes mismatch') ||
+    msg.includes('header length out of range') ||
+    msg.includes('references a node that is not present') ||
+    msg.includes('Invalid .gai') ||
+    msg.includes('Invalid graph')
+  ) {
+    return 'corruption';
+  }
+
+  // Runtime configuration disagreeing with the stored artifact (`config`).
+  if (
+    msg.includes('analyzer mismatch') ||
+    msg.includes('embedding adapter mismatch')
+  ) {
+    return 'config';
+  }
+
+  return 'unknown';
+}
+
+/** What `loadGraphInner` should DO with a failure from `loadFromBuffer`. */
+export type GaiLoadDisposition = 'quarantine' | 'version-skew' | 'rethrow';
+
+/**
+ * The load path's branch, as a pure function so it can be tested without a
+ * cortex on disk.
+ *
+ * Only `corruption` may quarantine. `version-skew` gets its own disposition
+ * because the file is VALID — the reader is old — and renaming it aside would
+ * destroy good data to fix a problem an app upgrade fixes. Everything else
+ * (`caller`, `config`, `unknown`) is re-thrown intact: we have no evidence the
+ * bytes are damaged, so we must not touch them.
+ */
+export function gaiLoadDisposition(err: unknown): GaiLoadDisposition {
+  const cls = classifyGaiFailure(err);
+  if (cls === 'version-skew') return 'version-skew';
+  if (cls === 'corruption') return 'quarantine';
+  return 'rethrow';
+}
+
+/**
+ * Why a default-engram load failed, for reporting purposes.
+ *
+ * The three original causes are genuinely different problems with different
+ * fixes; `version-skew` is the fourth and the reason this type moved out of the
+ * sidecar entry point — it is the one failure where the correct advice is
+ * "update the app", and it used to be reported as structural damage.
+ *
+ *   'decryption'   — the bytes would not decrypt with this cortex's data key.
+ *                    Wrong passphrase, or the file was tampered with / swapped.
+ *   'filesystem'   — we never got to read the bytes: permissions, a directory
+ *                    where a file should be, too many open files. Nothing to do
+ *                    with the passphrase or with the cortex contents.
+ *   'structure'    — the file DECRYPTED FINE and then failed the graph loader's
+ *                    own validation. The passphrase was correct.
+ *   'version-skew' — the file decrypted and parsed fine and was written by a
+ *                    NEWER Graphnosis than this build can read. Nothing is
+ *                    damaged and nothing needs recovering.
+ *
+ * Deliberately conservative: anything unrecognized is reported as an unknown
+ * failure with the underlying message, never guessed into 'decryption'.
+ */
+export type EngramLoadFailure = 'decryption' | 'filesystem' | 'structure' | 'version-skew' | 'unknown';
+
+export function classifyEngramLoadFailure(err: NodeJS.ErrnoException): EngramLoadFailure {
+  // A real syscall failure — we never got the bytes. Matched on `syscall` /
+  // an errno-shaped code (EACCES, EPERM, EISDIR, …) rather than on `code`
+  // alone, because Node also puts `ERR_*` codes on ordinary runtime errors
+  // and those are not filesystem problems. Checked before the SDK codes for
+  // the same reason: an SDK error never carries an errno-shaped `code`.
+  // (ENOENT is handled by the caller as first-run and never reaches here.)
+  if (typeof err.syscall === 'string' || (typeof err.code === 'string' && /^E[A-Z]+$/.test(err.code))) {
+    return 'filesystem';
+  }
+
+  const msg = err.message ?? '';
+  // Decryption happens in the app's own crypto module, before the SDK ever
+  // sees the bytes, so there is no SDK code to consult — these are the exact
+  // messages secure-sync raises.
+  if (
+    msg.includes('Decryption failed') ||
+    msg.includes('Not a Graphnosis App encrypted blob') ||
+    msg.includes('wrong passphrase')
+  ) {
+    return 'decryption';
+  }
+
+  const cls = classifyGaiFailure(err);
+  if (cls === 'version-skew') return 'version-skew';
+  if (cls === 'corruption' || cls === 'caller' || cls === 'config') return 'structure';
+  return 'unknown';
+}
+
+/**
+ * The sentence a human should read about a failed engram load, and what to do.
+ *
+ * Exists so a load failure can never again be a silent disappearance from the
+ * picker: every caller that drops an engram has something concrete to show.
+ */
+export function describeEngramLoadFailure(err: NodeJS.ErrnoException): {
+  cause: EngramLoadFailure;
+  headline: string;
+  remedy: string;
+} {
+  const cause = classifyEngramLoadFailure(err);
+  switch (cause) {
+    case 'decryption':
+      return {
+        cause,
+        headline: 'The engram file could not be DECRYPTED.',
+        remedy: 'The passphrase is wrong, or the file was replaced/tampered with.',
+      };
+    case 'filesystem':
+      return {
+        cause,
+        headline: `The engram file could not be READ (${err.code ?? err.syscall ?? 'syscall failure'}).`,
+        remedy: 'This is a filesystem/permission problem — the passphrase is not involved.',
+      };
+    case 'structure':
+      return {
+        cause,
+        headline: 'The engram file DECRYPTED SUCCESSFULLY but failed structural validation.',
+        remedy: 'The passphrase is correct; the file contents are corrupt or truncated. '
+          + 'Use Recover from op-log to rebuild it.',
+      };
+    case 'version-skew':
+      return {
+        cause,
+        headline: 'The engram file was written by a NEWER version of Graphnosis than this build can read.',
+        remedy: 'Nothing is damaged and nothing needs recovering — update Graphnosis to open it. '
+          + 'This file has deliberately been left untouched.',
+      };
+    case 'unknown':
+    default:
+      return {
+        cause: 'unknown',
+        headline: 'Unrecognized load failure.',
+        remedy: 'Do not assume the passphrase is at fault; it may well be correct. See the error above.',
+      };
+  }
+}
+
+/**
+ * Why a single `reinforceNode` call did or did not move a node's confidence.
+ *
+ * `no-sdk-primitive` is not an error and not a transient condition: it means
+ * the installed SDK exposes no way to adjust confidence without issuing a
+ * correction, and corrections retire nodes. See `reinforceNode` for the full
+ * account and for the smallest addition that would make it implementable.
+ * TemporalEngine reads this to stop looping once the answer is known.
+ */
+export interface ReinforcementResult {
+  /** True only when the node's confidence actually moved. */
+  applied: boolean;
+  reason?: 'graph-not-loaded' | 'node-not-found' | 'out-of-band' | 'no-sdk-primitive';
+  /** The confidence the node WOULD carry if the primitive existed. */
+  targetConfidence?: number;
+}
+
 /**
  * Format of a cached content blob (before encryption). We prepend a small
  * JSON header so recovery knows how to re-ingest (parser kind, mime, original
@@ -219,6 +487,29 @@ export interface PurgeReport {
   /** True when phase 1 found unrecoverable sources and we refused to rebuild. */
   aborted?: boolean;
 }
+
+/**
+ * The outcome of `reingestSource`.
+ *
+ * `refused` is a THIRD state, distinct from both success and skip: the source
+ * still exists and still holds nodes, but the graph declined to clear them, so
+ * nothing was re-chunked. It is spelled as a discriminant present on EVERY
+ * variant on purpose — the old two-variant type let `if (result.skipped) … else
+ * (success)` compile, and that `else` is exactly where a refusal was being
+ * counted as a reingest. Now the success payload is unreachable until a caller
+ * has narrowed on `refused` too.
+ */
+export type ReingestSourceOutcome =
+  | { skipped: false; refused: false; newNodeIds: string[] }
+  | { skipped: true; refused: false; reason: string }
+  | {
+      skipped: false;
+      refused: true;
+      /** The node ids the engine would not delete — still live, still claimed. */
+      refusedNodeIds: string[];
+      /** Caller-facing explanation, safe to show in a UI or return over IPC. */
+      reason: string;
+    };
 
 export interface RecoveryReport {
   attempted: number;
@@ -326,6 +617,429 @@ export function accumulateWatermark(
   } else if (ev.ts === wm.maxTs && typeof ev.seq === 'number') {
     wm.maxSeq = Math.max(wm.maxSeq ?? -1, ev.seq);
   }
+}
+
+/** The adapter surface `replayNodeCorrections` needs — nothing else. */
+export type CorrectionReplayAdapter = Pick<
+  GraphnosisAdapter,
+  'inspectEdges' | 'getNodesByIds' | 'getFullNodeContent' | 'applyCorrection'
+>;
+
+/**
+ * Move a source record's claim from a node the graph just RETIRED onto the node
+ * the graph minted in its place, keeping the ORIGINAL POSITION.
+ *
+ * Every correction that retires-and-mints has to run this, or the source keeps
+ * listing the husk and nothing claims the node that carries the content:
+ * `purgeOrphanNodes` (an orphan is any active node no source lists) then
+ * soft-deletes it during routine housekeeping, `forgetSource` walks the husk
+ * and leaves the content behind, and a skill's blob — rebuilt from its source's
+ * nodes in order — reverts to the pre-correction text.
+ *
+ * `supersede` mints on EVERY supported SDK version including the installed
+ * 0.8.0; from 0.10.0 `edit` is indelible and mints too. So this is not
+ * future-proofing on one path and live on the other — it is required wherever
+ * `outcome.resultNodeId !== nodeId`.
+ *
+ * REPLACE, don't append: listing both ids would double the step in a rebuilt
+ * skill blob. `SourceIndex` has no `replaceNode`, so `removeNode` +
+ * `insertNodeAt` compose — `removeNode` splices the old id out first, shifting
+ * the tail left by one, which leaves the captured position free (and clamped to
+ * the end when the corrected node was last).
+ *
+ * A torn index is handled in BOTH directions, because the two tears do
+ * opposite damage:
+ *
+ *   • `byNode` names a record that does not LIST the node: `indexOf` is -1 and
+ *     `insertNodeAt` CLAMPS a negative position to 0, teleporting the corrected
+ *     node to the FRONT. That is the very reordering this exists to prevent, so
+ *     -1 appends instead.
+ *   • a record LISTS the node but `byNode` lost the entry: `sourceOf` misses
+ *     and an early return would leave the husk listed and the corrected node
+ *     claimed by nobody — i.e. purge bait. The miss falls back to a scan.
+ *
+ * Returns true if a rebind happened (caller may need to mark the graph dirty).
+ */
+export function rebindNodeInSourceIndex(
+  sourceIndex: sources.SourceIndex | undefined,
+  retiredId: string,
+  mintedId: string | undefined,
+): boolean {
+  if (!sourceIndex) return false;
+  if (!mintedId || mintedId === retiredId) return false; // in-place — nothing moved.
+  // `sourceOf` is the fast path and is right whenever `byNode` is intact.
+  // A MISS is ambiguous, and the two cases it covers need opposite handling:
+  //
+  //   • the node is genuinely source-less (correction `adds` before they are
+  //     re-ingested, brain-engine scratch nodes) — nothing to rebind; or
+  //   • `byNode` lost the entry while a record still LISTS the id. That is the
+  //     mirror image of the stale-`byNode` tear handled below, and returning
+  //     early there is the worst possible outcome: the record keeps listing the
+  //     husk, nothing claims the node carrying the correction, and
+  //     `purgeOrphanNodes` — which soft-deletes any active node no source lists
+  //     and runs before EVERY reingest — destroys the user's edit. Silently.
+  //
+  // Only a scan can tell them apart, so the miss falls back to one. It costs
+  // nothing on the hit path, and the miss path is rare (a corrected node
+  // normally came from an ingest and therefore has a record). Finding the
+  // record also REPAIRS the tear: `insertNodeAt`/`attachNode` re-populate
+  // `byNode` for the minted id.
+  const sourceId = sourceIndex.sourceOf(retiredId)
+    ?? sourceIndex.list().find((r) => r.nodeIds.includes(retiredId))?.sourceId;
+  if (!sourceId) return false;
+  const position = sourceIndex.nodesOf(sourceId).indexOf(retiredId);
+  sourceIndex.removeNode(sourceId, retiredId);
+  if (position < 0) {
+    // Index was inconsistent. Appending keeps the corrected node REACHABLE
+    // (which is the whole point) without asserting a position we don't know.
+    sourceIndex.attachNode(sourceId, mintedId);
+  } else {
+    sourceIndex.insertNodeAt(sourceId, mintedId, position);
+  }
+  return true;
+}
+
+/**
+ * One correction the graph ACCEPTED, reduced to the three facts a rebind needs:
+ * what kind it was, which node we aimed at, and what the graph did.
+ */
+export type AppliedCorrection = {
+  kind: CorrectionEdit['kind'];
+  nodeId: string;
+  outcome: CorrectionOutcome;
+};
+
+/**
+ * The retire→mint moves in a batch of applied corrections.
+ *
+ * THE ONE PLACE that decides what counts as a move, so every consumer of the
+ * mint (source index, skill citations, the cross-engram overlays) agrees:
+ *
+ *   • `delete` never mints. Restricting to `edit`/`supersede` keeps a
+ *     hypothetical future delete-that-mints from rewriting anything.
+ *   • a refused correction moved nothing — `outcome.applied` is the gate, and
+ *     it is checked HERE rather than trusted from the caller, because the two
+ *     callers reach this point by different routes.
+ *   • `resultNodeId === nodeId` is an in-place edit (SDK 0.8.0): nothing moved.
+ */
+/**
+ * Every persisted store `rebindOverlayStoresForMints` moves onto a minted node.
+ *
+ * THE POINT OF THE LIST BEING A VALUE. The helper's first three stores were
+ * "the ones somebody remembered", and the four `brain-*` files, the obligation
+ * index, the GLL overlay, the skill-call links and the attachments were not.
+ * A reader could not tell the difference by looking at the body — an incomplete
+ * helper and a complete one read identically. This list is what the report is
+ * keyed by, so the coverage question is answerable from outside: the helper
+ * returns a count for every name here, and a store that is in the codebase but
+ * not in this list is one nobody wired.
+ *
+ * See `rebindOverlayStoresForMints` for how the census was taken, which two
+ * further live stores are rebound elsewhere, and which stores are historical
+ * records that must NOT be rewritten.
+ */
+export const MINT_REBIND_STORES = [
+  'cross-engram-connections',
+  'gnn-overlay',
+  'association-index',
+  'obligation-index',
+  'gll-overlay',
+  'brain-contradictions',
+  'brain-contradictions-suppressed',
+  'brain-contradiction-dismissals',
+  'brain-insights',
+  'skill-call-links',
+  'attachments',
+] as const;
+
+export type MintRebindStore = typeof MINT_REBIND_STORES[number];
+
+/** What a mint rebind actually did, per store. */
+export interface MintRebindReport {
+  /** Rows rewritten per store. Every store in `MINT_REBIND_STORES` is present,
+   *  at 0 when nothing matched — an absent key means an unwired store. */
+  rewritten: Record<MintRebindStore, number>;
+  /** Stores whose rewrite threw. Best-effort by design: one store's failure
+   *  never costs another its rewrite, and never fails the correction. */
+  failed: MintRebindStore[];
+}
+
+/** The two node-id fields the helper needs off a `brain-engine` contradiction
+ *  row. Structural on purpose — `host.ts` must not import `brain-engine.ts`
+ *  (that module imports the host), and the persisted rows are read back through
+ *  the generic `load*<T>()` accessors anyway. */
+interface MintRebindContradiction {
+  graphId: string;
+  nodeA: string;
+  nodeB: string;
+}
+
+/** Same, for a `brain-engine` insight. */
+interface MintRebindInsight {
+  graphId: string;
+  relevantNodeIds?: string[];
+}
+
+export function citationMovesFromCorrections(
+  applied: readonly AppliedCorrection[],
+): Array<{ from: string; to: string }> {
+  const moves: Array<{ from: string; to: string }> = [];
+  for (const a of applied) {
+    if (a.kind !== 'edit' && a.kind !== 'supersede') continue;
+    if (!a.outcome.applied) continue;
+    const to = a.outcome.resultNodeId;
+    if (to === undefined || to === a.nodeId) continue;
+    moves.push({ from: a.nodeId, to });
+  }
+  return moves;
+}
+
+/**
+ * Move EVERY stored reference to a node the graph just retired onto the node it
+ * minted in its place. The one entry point for "this memory now lives at a
+ * different id".
+ *
+ * WHY IT IS ONE SHARED FUNCTION AND NOT INLINE CODE IN TWO PLACES. There are
+ * two routes to the same mutation — the local `applyCorrection` and the
+ * peer-synced `replayNodeCorrections` — and they have already drifted apart
+ * once: the source-index rebind was added to the local one and forgotten on the
+ * other, so a correction that arrived from another device was destroyed by
+ * routine housekeeping. `rebindNodeInSourceIndex` closed that by being shared.
+ * This closes the rest of the id-keyed state the same way, so a change to what
+ * counts as a move (`citationMovesFromCorrections`) lands on both paths or
+ * neither.
+ *
+ * WHAT IT MOVES, and what each one costs if it does not move:
+ *
+ *   • `settings.skillCitedNodes` — the only map `enqueueSkillsForNodeChange`
+ *     and `computeSkillVitality` match against, written once AT TRAIN TIME.
+ *     Left on the husk, the skill cites an id no future correction will ever
+ *     target again: the staleness signal dies silently after ONE use, and the
+ *     vitality drift count reads a retired node and reports drift that
+ *     retraining cannot clear.
+ *   • the cross-engram connection store, the GNN overlay and the association
+ *     index — all keyed by node id, all pruned on `forgetSource` and none of
+ *     them rebound on a mint. Verified live on the installed 0.8.0: after one
+ *     `supersede` all three still name a node at confidence 0.3 with
+ *     `validUntil` in the past. User-visible as a cross-engram link that goes
+ *     inert the moment either side is corrected, an Explore view whose
+ *     "connected memories" resolve to the user's OLD text, and lifetime
+ *     co-recall weights reset to zero by fixing a typo.
+ *
+ * BATCHED: both `setSettings` and the overlay stores are encrypt+fsync writes,
+ * and both callers work in batches. One pass for the whole batch, and no work
+ * at all when nothing minted — the overwhelmingly common case.
+ *
+ * `host` is `| undefined` rather than optional on purpose: a caller with no
+ * host surface (a direct unit test of the exported replay function) has to say
+ * so, not forget.
+ */
+export async function rebindMintedNodeReferences(
+  host: GraphnosisHost | undefined,
+  graphId: GraphId,
+  applied: readonly AppliedCorrection[],
+): Promise<boolean> {
+  if (!host) return false;
+  const moves = citationMovesFromCorrections(applied);
+  if (moves.length === 0) return false;
+  const { rebindSkillCitedNodes } = await import('./skill-retrain-queue.js');
+  const citationsMoved = await rebindSkillCitedNodes(host, graphId, moves);
+  await host.rebindOverlayStoresForMints(graphId, moves);
+  return citationsMoved;
+}
+
+/**
+ * Replay `editNode` / `supersede` / `deleteNode` events from the op-log onto a
+ * loaded graph, in timestamp order. Extracted from `GraphnosisHost` (it needs
+ * nothing from `this` beyond the adapter) so the idempotence guard below can be
+ * tested directly.
+ *
+ * ── THE BUG THIS REPLACES ─────────────────────────────────────────────────
+ *
+ * The old guard asked "does the node at this id already look like the event's
+ * content?", comparing against `inspectNodes`' 500-char PREVIEW:
+ *
+ *     const preview = after.content.slice(0, 200);
+ *     if (local.contentPreview === preview || local.contentPreview === after.content) continue;
+ *
+ * It answered "no" far more often than it should have:
+ *
+ *   - For content longer than 500 characters NEITHER comparison can ever be
+ *     true — the local side is a truncated preview, both right-hand sides are
+ *     not. Already broken on SDK 0.8.0, where the edit really did land in
+ *     place: every boot re-applied the same edit.
+ *
+ *   - From SDK 0.10.0 it can never be true for ANY length, because the edit no
+ *     longer touches the node at `nodeId` at all. That node is RETIRED and the
+ *     content is minted onto a new one, so the id the guard inspects keeps its
+ *     OLD content forever. Every boot and every peer sync then re-applies the
+ *     same event and mints another duplicate — unbounded growth, and since the
+ *     minted ids are local-only, two devices replaying one `editNode` diverge
+ *     on node id from that point on.
+ *
+ * ── THE QUESTION THE GUARD ACTUALLY HAS TO ASK ────────────────────────────
+ *
+ * Not "does this node look right?" but "has this event already been applied
+ * HERE?". The `supersedes` lineage is the evidence, and it is the same
+ * evidence on every SDK version: `supersede` has always written
+ * `old --supersedes--> new` (SDK `applySupersede`), and 0.10.0's indelible
+ * `edit` retires-and-mints through that same path. So:
+ *
+ *   walk `nodeId` down its supersedes chain to the live tip; if ANY node on
+ *   that chain carries the event's content, the event already landed here.
+ *
+ * Two further consequences of reading the chain, both required for
+ * correctness rather than nice-to-have:
+ *
+ *   - Comparison uses `getFullNodeContent`, not `contentPreview`. A preview is
+ *     a lossy projection; an idempotence check across it is not a check.
+ *
+ *   - The correction is applied to the TIP, not to the original id. Applying
+ *     to a retired node succeeds (the SDK's `applyEdit` does not test
+ *     `validUntil`) and forks the lineage into a second branch, so a second
+ *     distinct edit to the same original would strand the first one.
+ *
+ * The chain is seeded once from `inspectEdges` and then maintained from each
+ * correction's `resultNodeId`, so a batch of events on one node stays linear
+ * without re-scanning the edge set per event.
+ *
+ * ── AND THE SOURCE INDEX HAS TO FOLLOW ────────────────────────────────────
+ *
+ * Knowing a new node was minted is not the same as recording it. This function
+ * tracked `resultNodeId` for its own lineage bookkeeping and told nobody else,
+ * so a peer-synced `supersede` — which mints on the INSTALLED 0.8.0, not only
+ * on some future SDK — left the retired husk in `SourceRecord.nodeIds` and the
+ * corrected node claimed by nothing. `purgeOrphanNodes` soft-deletes exactly
+ * that shape, so a correction that arrived from another device was destroyed by
+ * routine housekeeping. `sourceIndex` closes that: same `rebindNodeInSourceIndex`
+ * the local `applyCorrection` path uses, so both paths cannot drift.
+ *
+ * ── AND SO DO THE SKILL CITATIONS ─────────────────────────────────────────
+ *
+ * `settings.skillCitedNodes` is the second map that names corrected nodes by
+ * id, and it had exactly the same hole: the local path moved it, this one did
+ * not. A peer-synced `supersede` (which MINTS on the installed 0.8.0 — live
+ * today, not latent) left every skill citing the retired husk, so the skill
+ * stopped noticing that its own evidence changed and `computeSkillVitality`
+ * reported permanent, unclearable drift. Both paths now go through
+ * `rebindMintedNodeReferences`, for the same reason the source-index
+ * rebind is shared: one definition of "the graph minted a replacement", so the
+ * two routes cannot drift apart again.
+ *
+ * `sourceIndex` and `citationHost` are `| undefined` rather than optional on
+ * purpose — a caller has to decide, not forget.
+ */
+export async function replayNodeCorrections(
+  adapter: CorrectionReplayAdapter,
+  handle: GraphHandle,
+  graphEvents: readonly OpLogEvent[],
+  sourceIndex: sources.SourceIndex | undefined,
+  citationHost: GraphnosisHost | undefined,
+  graphId: GraphId,
+): Promise<boolean> {
+  let dirty = false;
+  /** Applied corrections, for the one batched citation rebind at the end. */
+  const applied: AppliedCorrection[] = [];
+
+  // retiredId → the node that replaced it.
+  const supersededBy = new Map<string, string>();
+  for (const e of adapter.inspectEdges(handle).directed) {
+    if (e.type === 'supersedes') supersededBy.set(e.from, e.to);
+  }
+
+  /** `id` plus every node that has superseded it, oldest → live tip. */
+  const chainFrom = (id: string): string[] => {
+    const chain = [id];
+    const seen = new Set([id]);
+    let cur = id;
+    for (;;) {
+      const next = supersededBy.get(cur);
+      // A cycle should be impossible, but a corrupt/hand-edited .gai must not
+      // hang boot.
+      if (next === undefined || seen.has(next)) break;
+      chain.push(next);
+      seen.add(next);
+      cur = next;
+    }
+    return chain;
+  };
+
+  for (const ev of graphEvents) {
+    if (ev.target.kind !== 'node') continue;
+    // Filter on op BEFORE walking the lineage: `addNode` dominates a real
+    // op-log (millions of events) and this runs on every boot.
+    if (ev.op !== 'deleteNode' && ev.op !== 'editNode' && ev.op !== 'supersede') continue;
+    const chain = chainFrom(ev.target.id);
+    const tipId = chain[chain.length - 1] as string;
+    const tip = adapter.getNodesByIds(handle, [tipId])[0];
+    if (!tip) continue;
+
+    if (ev.op === 'deleteNode') {
+      // Already soft-deleted here (this replay, an earlier one, or a local
+      // delete) — the SDK's delete floor is 0.1.
+      if (tip.confidence <= 0.2) continue;
+      const outcome = await adapter.applyCorrection(handle, {
+        kind: 'delete',
+        nodeId: tipId,
+        reason: 'oplog-sync: deleted on peer device',
+      });
+      if (!outcome.applied) continue;
+      dirty = true;
+      continue;
+    }
+
+    const after = ev.after as { content?: string; reason?: string } | undefined;
+    if (typeof after?.content !== 'string') continue;
+    const content = after.content;
+
+    // Has this event already been applied here? Any node on the lineage
+    // carrying the target content is proof that it has — whether the SDK
+    // applied it in place (0.8.0) or by retire-and-mint (0.10.0+).
+    if (chain.some((id) => adapter.getFullNodeContent(handle, id) === content)) continue;
+
+    const outcome = await adapter.applyCorrection(handle, {
+      kind: ev.op === 'supersede' ? 'supersede' : 'edit',
+      nodeId: tipId,
+      content,
+      reason: String(after.reason ?? 'oplog-sync'),
+    });
+    if (!outcome.applied) {
+      // The SDK refuses by RETURNING errors, never by throwing. Do not mark
+      // dirty for a mutation the graph did not take.
+      console.error(
+        `[graphnosis-host] oplog replay ${ev.op} refused for node[${redactId(tipId)}]: ` +
+        `${outcome.errors.join('; ') || 'the SDK applied no correction'}`,
+      );
+      continue;
+    }
+    // Retire-and-mint (supersede on any version, indelible edit on 0.10.0+):
+    // extend the lineage so a later event for this node targets the new tip
+    // and the guard above can see the content we just wrote — AND move the
+    // source record's claim onto the minted node, or the peer's correction is
+    // an unclaimed active node that `purgeOrphanNodes` will soft-delete.
+    if (outcome.resultNodeId !== tipId) {
+      supersededBy.set(tipId, outcome.resultNodeId);
+      rebindNodeInSourceIndex(sourceIndex, tipId, outcome.resultNodeId);
+    }
+    // The citation rebind is BATCHED (one settings write for the whole replay),
+    // so record the move here and apply it once the loop is done. Note the
+    // `from` is `tipId`, not `ev.target.id`: the citation was rebound onto the
+    // tip by the previous correction in this same chain, so the tip is the id
+    // any skill actually cites by now.
+    applied.push({
+      kind: ev.op === 'supersede' ? 'supersede' : 'edit',
+      nodeId: tipId,
+      outcome,
+    });
+    dirty = true;
+  }
+
+  // One write for the batch, and none when no skill cites any moved node.
+  // Deliberately NOT gated on `dirty` alone — `dirty` is also set by deletes,
+  // which never mint, and the helper already no-ops on an empty move list.
+  await rebindMintedNodeReferences(citationHost, graphId, applied);
+
+  return dirty;
 }
 
 export class GraphnosisHost {
@@ -446,6 +1160,8 @@ export class GraphnosisHost {
   private saveBlockedWarned = new Set<GraphId>();
   /** One in-app recovery nudge per engram per session (save blocked / promote failed). */
   private recoveryNeededEmitted = new Set<GraphId>();
+  /** One warn per session that reinforce-on-recall is inert (see `reinforceNode`). */
+  private reinforcementUnsupportedWarned = false;
   /** Optional hook — main.ts wires Ghampus nudge + boot toast. */
   private onRecoveryNeeded: EngramRecoveryNeededHandler | null = null;
   /** Dedupe noisy op-log integrity callbacks (future-timestamp per device+file). */
@@ -1177,6 +1893,356 @@ export class GraphnosisHost {
     return gllOverlayMod.decodeGllOverlay(new Uint8Array(blob), this.key);
   }
 
+  /**
+   * Move EVERY cortex-wide, node-id-keyed persisted store onto the nodes a
+   * correction minted. Called only from `rebindMintedNodeReferences`, which is
+   * the shared entry point for both the local and the peer-synced paths.
+   *
+   * `forgetSource` PRUNES some of these when a node goes away; nothing ever
+   * MOVED any of them when a node was replaced, which is the asymmetry this
+   * closes. Each store is independent and best-effort: a failure to rewrite the
+   * GNN overlay must not lose the association-index rewrite, and neither must
+   * fail the user's correction — it already landed in the graph. The returned
+   * report names every store the helper knows about, at 0 when nothing matched,
+   * so "did this store get wired?" is answerable without reading the body.
+   *
+   * ── HOW THE COVERED SET WAS ENUMERATED ────────────────────────────────────
+   *
+   * This helper shipped covering three stores because three were the ones
+   * somebody remembered. Reproduce the census instead of trusting the list:
+   *
+   *   1. `rg --text -no "'[a-z0-9][a-z0-9._-]*\.(json|jsonl|enc|gnn|gll|idx|bin|db|log)'" \
+   *        apps/desktop-sidecar/src packages/graphnosis-app-core`
+   *      → every on-disk artefact name in the sidecar and app-core (40 at time
+   *      of writing). Add the per-engram artefacts, which are path-built rather
+   *      than named by a literal: `<graphId>.gai`, its op-log, `<graphId>.gll`,
+   *      and the skill-snapshot directory.
+   *   2. For each, open the PERSISTED record type and look for a field that
+   *      holds a `.gai` node id — `nodeId` / `nodeIds` / `nodeA` / `nodeB` /
+   *      `from` / `to` / `a` / `b` / `derivedFrom` / `relevantNodeIds` /
+   *      `callerNodeId` / `survivingNodeId` — OR a map KEY built out of one
+   *      (`pairKey(graphId,nodeA,nodeB)`, `ob:<graphId>:<nodeId>`). Grepping
+   *      for `nodeId` alone MISSES four of the eleven below.
+   *   3. Split the hits in two. A LIVE REFERENCE points at the memory as it is
+   *      now, so it must follow a mint. A HISTORICAL RECORD says what was true
+   *      at a past instant, so rewriting it would FALSIFY it — those are listed
+   *      under "deliberately not rebound" and must stay that way.
+   *
+   * LIVE REFERENCES — 13. Eleven are rewritten here:
+   *
+   *   1.  `cross-engram-connections.enc`         nodeA, nodeB
+   *   2.  `neural-network.gnn`                   from, to
+   *   3.  `association-index.enc`                a, b
+   *   4.  `obligation-index.enc`                 the map KEY, = nodeId
+   *   5.  `local-layer.gll` (GLL overlay)        edges.from/.to, assertions.derivedFrom
+   *   6.  `brain-contradictions.json`            nodeA, nodeB
+   *   7.  `brain-contradictions-suppressed.json` nodeA, nodeB
+   *   8.  `brain-contradiction-dismissals.json`  the KEY, = pairKey(graphId,nodeA,nodeB)
+   *   9.  `brain-insights.json`                  relevantNodeIds
+   *   10. `skill-call-links.json.enc`            callerNodeId
+   *   11. `attachments.json`                     nodeIds
+   *
+   * and two are rebound elsewhere, on purpose:
+   *
+   *   12. `settings.json` → `skillCitedNodes` — `rebindSkillCitedNodes`, called
+   *       by `rebindMintedNodeReferences` immediately before this method. It
+   *       stays separate because it must run AFTER the retrain enqueue (the
+   *       queue entry has to record the id the skill was trained on).
+   *   13. `ghampus-reminder-state.json` → `notifiedItems` / `snoozedItems`, keyed
+   *       `ob:<graphId>:<nodeId>`. NOT rebound here, and this is a KNOWN
+   *       residual rather than an oversight: `GhampusReminderScheduler` holds
+   *       that state in memory for the process lifetime and re-persists the
+   *       whole object on every notify, so a write from this method is silently
+   *       reverted by the next tick. Rebinding it belongs to that module. The
+   *       visible cost is bounded and self-clearing — one snooze on one
+   *       obligation is forgotten when its memory is corrected, and both keys
+   *       expire on their own (12h notify cooldown, user-set snooze window).
+   *
+   * DELIBERATELY NOT REBOUND — historical records. Node ids here ARE the
+   * record: `<graphId>.gll` governance log, the `.gai` op-log,
+   * `healing-journal.enc`, the skill snapshots, `mcp-audit.enc`,
+   * `agent-audit.jsonl`, `unattended-runs.jsonl`, `savings-log.jsonl`,
+   * `activity.log`, `recovery.log`, `ghampus-history.jsonl`.
+   *
+   * CHECKED AND NOT NODE-ID-KEYED: `device.json`, `devices.json`, `master.enc`,
+   * `salt.bin`, `recovery.enc`, `policy.json`, `mdm-catalog-bundle.json`,
+   * `catalog-subscriptions.json`, `connector-file-map.json.enc`,
+   * `webauthn-creds.json.enc`, `federated.master.enc`, `session.lease`,
+   * `gez-signing.json`, `skill-dispatch-registry.json`,
+   * `dispatch-export-targets.json`, `canonical-facts.json`,
+   * `proactive-watcher-state.json` (skill-source keyed),
+   * `ghampus-suggestion-state.json` (turn-id keyed),
+   * `ghampus-tips-state.json` (tip-id keyed),
+   * `ghampus-vitality-nudges-state.json` (nudge-id keyed).
+   *
+   * ── SCOPING ───────────────────────────────────────────────────────────────
+   *
+   * `graphId` scoping matters everywhere. Node ids are unique within an engram,
+   * NOT across the cortex, so an unscoped id match would rewrite the wrong
+   * side of a link between two engrams that happen to share an id. Every store
+   * below carries a `graphId` on the row, and every step checks it.
+   *
+   * @internal — public only so the module-level shared helper can reach it.
+   */
+  async rebindOverlayStoresForMints(
+    graphId: GraphId,
+    moves: ReadonlyArray<{ from: string; to: string }>,
+  ): Promise<MintRebindReport> {
+    const rewritten = Object.fromEntries(
+      MINT_REBIND_STORES.map((s) => [s, 0]),
+    ) as Record<MintRebindStore, number>;
+    const failed: MintRebindStore[] = [];
+    if (moves.length === 0) return { rewritten, failed };
+    const moved = new Map(moves.map((m) => [m.from, m.to]));
+
+    /**
+     * Run one store's rewrite. Every store goes through here so that (a) one
+     * store's failure can never cost another store its rewrite or fail the
+     * user's already-landed correction, and (b) the report has an entry for
+     * every store in `MINT_REBIND_STORES` whether or not its step ran — a
+     * missing key would mean a store nobody wired, which is the whole bug class.
+     */
+    const step = async (store: MintRebindStore, run: () => Promise<number>): Promise<void> => {
+      try {
+        rewritten[store] = await run();
+      } catch (e) {
+        failed.push(store);
+        console.error(`[graphnosis-host] mint rebind: could not move ${store}: ${(e as Error).message}`);
+      }
+    };
+
+    await step('cross-engram-connections', async () => {
+      const conns = await this.loadConnectionStore();
+      let n = 0;
+      const next = conns.map((c) => {
+        const a = c.graphA === graphId ? moved.get(c.nodeA) : undefined;
+        const b = c.graphB === graphId ? moved.get(c.nodeB) : undefined;
+        if (a === undefined && b === undefined) return c;
+        n++;
+        return { ...c, ...(a !== undefined ? { nodeA: a } : {}), ...(b !== undefined ? { nodeB: b } : {}) };
+      });
+      // A link whose two ends collapse onto one node is not a link. Only
+      // reachable if two distinct nodes were superseded into the same id, but
+      // persisting a self-loop would show a memory "connected to itself".
+      const cleaned = next.filter((c) => !(c.graphA === c.graphB && c.nodeA === c.nodeB));
+      if (n > 0 || cleaned.length !== next.length) await this.saveConnectionStore(cleaned);
+      return n;
+    });
+
+    await step('gnn-overlay', async () => {
+      const edges = await this.loadGnnStore();
+      let n = 0;
+      const next = edges.map((e) => {
+        if (e.graphId !== graphId) return e;
+        const from = moved.get(e.from);
+        const to = moved.get(e.to);
+        if (from === undefined && to === undefined) return e;
+        n++;
+        return { ...e, ...(from !== undefined ? { from } : {}), ...(to !== undefined ? { to } : {}) };
+      });
+      if (n > 0) await this.saveGnnStore(next.filter((e) => e.from !== e.to));
+      return n;
+    });
+
+    await step('association-index', async () => {
+      const entries = await this.loadAssociationIndex();
+      let n = 0;
+      let folded = false;
+      // `a < b` lexically is the store's own invariant, so a rebind has to
+      // RE-ORDER the pair — a moved endpoint is a brand-new id with no relation
+      // to the old sort position. Re-keying can also collide with an existing
+      // pair (the minted node already co-recalled with the other endpoint), and
+      // two rows for one pair would split the weight the index exists to
+      // accumulate: fold them by summing the lifetime counts.
+      const byPair = new Map<string, associationIndexMod.AssociationEntry>();
+      for (const entry of entries) {
+        let { a, b } = entry;
+        if (entry.graphId === graphId) {
+          const movedA = moved.get(a);
+          const movedB = moved.get(b);
+          if (movedA !== undefined || movedB !== undefined) {
+            n++;
+            a = movedA ?? a;
+            b = movedB ?? b;
+          }
+        }
+        if (a === b) { folded = true; continue; } // self-association is meaningless
+        if (a > b) [a, b] = [b, a];
+        const key = `${entry.graphId} ${a} ${b}`;
+        const prior = byPair.get(key);
+        if (prior) {
+          folded = true;
+          prior.count += entry.count;
+        } else {
+          byPair.set(key, { ...entry, a, b });
+        }
+      }
+      if (n > 0 || folded) await this.saveAssociationIndex([...byPair.values()]);
+      return n;
+    });
+
+    // The store the census caught: the map is keyed BY node id, so a corrected
+    // deadline stayed on the husk and the assistant went on nagging with the
+    // pre-correction text. See `ObligationIndex.rebindNodeIds`.
+    await step('obligation-index', () => this.obligationIndex.rebindNodeIds(graphId, moves));
+
+    await step('gll-overlay', async () => {
+      const { edges, assertions } = await this.loadGllOverlay();
+      let n = 0;
+      const nextEdges = edges.map((e) => {
+        if (e.graphId !== graphId) return e;
+        const from = moved.get(e.from);
+        const to = moved.get(e.to);
+        if (from === undefined && to === undefined) return e;
+        n++;
+        return { ...e, ...(from !== undefined ? { from } : {}), ...(to !== undefined ? { to } : {}) };
+      });
+      const nextAssertions = assertions.map((a) => {
+        if (a.graphId !== graphId) return a;
+        if (!a.derivedFrom.some((id) => moved.has(id))) return a;
+        n++;
+        // De-dupe: two retired nodes superseded into one would otherwise list
+        // the same support twice and read as two independent sources.
+        return { ...a, derivedFrom: [...new Set(a.derivedFrom.map((id) => moved.get(id) ?? id))] };
+      });
+      // A predicted edge from a node to itself is not a prediction — same
+      // reasoning as the connection store's self-loop drop.
+      if (n > 0) await this.saveGllOverlay(nextEdges.filter((e) => e.from !== e.to), nextAssertions);
+      return n;
+    });
+
+    // ── Brain engine: the contradiction queue, its dismissals, its suppression
+    // ring, and the insight list. All four are plain JSON written by
+    // `brain-engine.ts` and all four name nodes. Left behind, the review queue
+    // shows the user the text they already fixed, and the dismissal they
+    // recorded against that pair stops matching — so a contradiction they
+    // deliberately silenced comes back the moment either side is corrected.
+    await step('brain-contradictions', async () => {
+      const pairs = await this.loadContradictionPairs<MintRebindContradiction>();
+      let n = 0;
+      const next: MintRebindContradiction[] = [];
+      for (const c of pairs) {
+        if (c.graphId !== graphId) { next.push(c); continue; }
+        const a = moved.get(c.nodeA);
+        const b = moved.get(c.nodeB);
+        if (a === undefined && b === undefined) { next.push(c); continue; }
+        n++;
+        const rebound = { ...c, ...(a !== undefined ? { nodeA: a } : {}), ...(b !== undefined ? { nodeB: b } : {}) };
+        // Both sides superseded onto one node: there is no longer a pair to
+        // review, and a "contradiction" between a node and itself is nonsense.
+        if (rebound.nodeA === rebound.nodeB) continue;
+        next.push(rebound);
+      }
+      if (n > 0) await this.saveContradictionPairs(next);
+      return n;
+    });
+
+    await step('brain-contradictions-suppressed', async () => {
+      const items = await this.loadSuppressedContradictions<MintRebindContradiction>();
+      let n = 0;
+      const next: MintRebindContradiction[] = [];
+      for (const c of items) {
+        if (c.graphId !== graphId) { next.push(c); continue; }
+        const a = moved.get(c.nodeA);
+        const b = moved.get(c.nodeB);
+        if (a === undefined && b === undefined) { next.push(c); continue; }
+        n++;
+        const rebound = { ...c, ...(a !== undefined ? { nodeA: a } : {}), ...(b !== undefined ? { nodeB: b } : {}) };
+        if (rebound.nodeA === rebound.nodeB) continue;
+        next.push(rebound);
+      }
+      if (n > 0) await this.saveSuppressedContradictions(next);
+      return n;
+    });
+
+    await step('brain-contradiction-dismissals', async () => {
+      const keys = await this.loadContradictionDismissals();
+      // The KEY is the reference here — `pairKey(graphId, nodeA, nodeB)`, which
+      // sorts its two ids. Imported rather than re-implemented: an inlined
+      // `${g}|${a}|${b}` that skipped the sort would silently stop matching.
+      const { pairKey } = await import('./contradiction-utils.js');
+      let n = 0;
+      const next = keys.map((key) => {
+        const parts = key.split('|');
+        if (parts.length !== 3) return key;
+        const [g, a, b] = parts as [string, string, string];
+        if (g !== graphId) return key;
+        const na = moved.get(a);
+        const nb = moved.get(b);
+        if (na === undefined && nb === undefined) return key;
+        n++;
+        return pairKey(g, na ?? a, nb ?? b);
+      });
+      if (n > 0) await this.saveContradictionDismissals([...new Set(next)]);
+      return n;
+    });
+
+    await step('brain-insights', async () => {
+      const insights = await this.loadInsights<MintRebindInsight>();
+      let n = 0;
+      const next = insights.map((i) => {
+        if (i.graphId !== graphId || !Array.isArray(i.relevantNodeIds)) return i;
+        if (!i.relevantNodeIds.some((id) => moved.has(id))) return i;
+        n++;
+        return { ...i, relevantNodeIds: [...new Set(i.relevantNodeIds.map((id) => moved.get(id) ?? id))] };
+      });
+      if (n > 0) await this.saveInsights(next);
+      return n;
+    });
+
+    // Cross-engram skill calls (D1). `callerNodeId` is the STEP that issues the
+    // call; correcting the wording of that step retires it, and the link then
+    // points at a node no walk will ever reach. `setForSource` is a whole-source
+    // replace, so rewrite per caller source — the store exposes no row update.
+    await step('skill-call-links', async () => {
+      const all = await this.skillCallLinks.loadAll();
+      const bySource = new Map<string, { g: string; s: string; links: SkillCallLink[] }>();
+      let n = 0;
+      for (const l of all) {
+        if (l.callerGraphId !== graphId) continue;
+        const to = moved.get(l.callerNodeId);
+        if (to === undefined) continue;
+        n++;
+        const key = `${l.callerGraphId} ${l.callerSourceId}`;
+        if (!bySource.has(key)) {
+          bySource.set(key, {
+            g: l.callerGraphId,
+            s: l.callerSourceId,
+            // Every link from this caller source, not just the moved ones —
+            // `setForSource` drops what it is not handed.
+            links: all.filter((x) => x.callerGraphId === l.callerGraphId && x.callerSourceId === l.callerSourceId),
+          });
+        }
+      }
+      for (const { g, s, links } of bySource.values()) {
+        await this.skillCallLinks.setForSource(g, s, links.map((l) => {
+          const to = moved.get(l.callerNodeId);
+          return to === undefined ? l : { ...l, callerNodeId: to };
+        }));
+      }
+      return n;
+    });
+
+    // Attachments pinned to specific memories. Left behind, the file silently
+    // stops showing up on the memory it documents the moment that memory is
+    // corrected — and `listAttachments({ nodeIds })` is the only way back to it.
+    await step('attachments', async () => {
+      const { listAttachments, updateAttachment } = await import('./attachments-store.js');
+      const all = await listAttachments(this.opts.cortexDir, { graphId });
+      let n = 0;
+      for (const a of all) {
+        if (!a.nodeIds?.some((id) => moved.has(id))) continue;
+        n++;
+        await updateAttachment(this.opts.cortexDir, a.id, {
+          nodeIds: [...new Set(a.nodeIds.map((id) => moved.get(id) ?? id))],
+        });
+      }
+      return n;
+    });
+
+    return { rewritten, failed };
+  }
+
   /** Encrypt + atomically write the Graphnosis Local Layer (LLM overlay). */
   async saveGllOverlay(
     edges: gllOverlayMod.GllPredictedEdge[],
@@ -1431,6 +2497,29 @@ export class GraphnosisHost {
   }
 
   /**
+   * PURE TF-IDF search — the honest keyword path. Scores are normalised
+   * cosines in [0, 1], and no embedding vector is consulted no matter what
+   * the index contains.
+   *
+   * `searchNodes` is NOT this: it routes through the hybrid query whenever an
+   * embedding index exists, which a placeholder adapter always provides. Use
+   * this one wherever the result is going to be LABELLED a keyword match.
+   */
+  async searchNodesLexical(graphId: GraphId, query: string, k = 30): Promise<Array<{ nodeId: string; score: number; text: string; type?: string }>> {
+    const g = this.must(graphId);
+    const active = this.activeNodeIds(graphId);
+    return this.opts.adapter.queryLexical(g.handle, query, k * 3)
+      .filter((r) => active.has(r.nodeId))
+      .slice(0, k)
+      .map((r) => ({
+        nodeId: r.nodeId,
+        score: r.score,
+        text: r.text,
+        ...(r.type !== undefined ? { type: r.type } : {}),
+      }));
+  }
+
+  /**
    * Like `searchNodes` but via the adapter's DIRECT embedding-cosine path —
    * no synonym expansion, no TF-IDF vocab intersection, scores are raw
    * text-vs-node cosines. Built for duplicate/near-duplicate detection
@@ -1527,15 +2616,60 @@ export class GraphnosisHost {
     return this.opts.adapter.inspectEdges(g.handle);
   }
 
+  /** The embedding adapter this host is running on. Provenance, not a score. */
+  getEmbedAdapterId(): string {
+    return this.embedAdapterId;
+  }
+
+  /**
+   * Can anything in this process make a claim about what two texts MEAN?
+   *
+   * Derived from ADAPTER IDENTITY, never from "did numbers come back" — see
+   * `semantic-availability.ts` for why every runtime probe answers yes on the
+   * stub. This is the single state the duplicate surfaces, the `.gll`
+   * edge-prediction pass and the `.gnn` feature vector all read; none of them
+   * may re-derive it from a vector or a score.
+   *
+   * Note it is deliberately NOT consulted by `getNodeEmbeddings` or
+   * `searchNodesDirect`: those report what the INDEX contains, which is a
+   * different (and still true) question. The judgement belongs to the
+   * consumer that is about to state a conclusion.
+   */
+  semanticSimilarityAvailable(): boolean {
+    return semanticSimilarityAvailable(this.embedAdapterId);
+  }
+
+  /** Why `semanticSimilarityAvailable()` is false, for logs and UI copy. */
+  semanticUnavailableReason(): string {
+    return semanticUnavailableReason(this.embedAdapterId);
+  }
+
   /**
    * Raw embedding vectors for all embedded nodes — used by BrainEngine's
    * duplicate scan (cosine pairwise comparison). Returns an empty map
    * when the graph has no embedding index yet.
+   *
+   * WARNING: a non-empty result does NOT mean the vectors mean anything —
+   * on a placeholder adapter this map is full of sha256 noise. Gate on
+   * `semanticSimilarityAvailable()` before drawing a conclusion from it.
    */
   getNodeEmbeddings(graphId: GraphId): Map<string, number[]> {
     const g = this.graphs.get(graphId);
     if (!g) return new Map();
     return this.opts.adapter.getNodeEmbeddings(g.handle);
+  }
+
+  /**
+   * Read-only borrow of the engram's live TF-IDF index — the deterministic
+   * similarity signal, on the substrate's own scale. Null when the engram is
+   * unbuilt or has no index. See `tfidf-pairs.ts`.
+   *
+   * This is a READ. Nothing downstream of it writes to the `.gai`.
+   */
+  getTfidfIndex(graphId: GraphId): TfidfIndexView | null {
+    const g = this.graphs.get(graphId);
+    if (!g) return null;
+    return this.opts.adapter.getTfidfIndex(g.handle);
   }
 
   /**
@@ -1678,35 +2812,86 @@ export class GraphnosisHost {
    * useful strengthen; nodes that go unrecalled for a long time weaken.
    *
    * Skipped if the node is already high-confidence (> 0.9) or soft-deleted
-   * (confidence ≤ 0.2). Non-fatal: any failure is logged and swallowed so
-   * BrainEngine's recall loop isn't disrupted.
+   * (confidence ≤ 0.2).
+   *
+   * ── WHY THIS NO LONGER MUTATES THE GRAPH ──────────────────────────────────
+   *
+   * Until now this issued `applyCorrection({ kind: 'edit', content: <the
+   * node's own content> })` — a no-op edit whose only purpose was to reach
+   * confidence, because `edit` was the only primitive that touched it. That
+   * was wrong three separate ways, and only the third is version-dependent:
+   *
+   *  1. IT SET CONFIDENCE TO 1.0, NOT +0.03. The SDK's `applyEdit` ends with
+   *     `node.confidence = 1.0` ("human-corrected = max confidence"). So every
+   *     recalled node was pinned to maximum confidence while the op-log
+   *     recorded the +0.03 value we intended. The graph and the audit log
+   *     disagreed, and "gentle reinforcement" was in fact a hard override.
+   *
+   *  2. IT TRUNCATED CONTENT. The content passed back in came from
+   *     `inspectNodes`, which returns a PREVIEW (`slice(0, 497) + '…'`).
+   *     `applyEdit` assigns that string to `node.content` verbatim. Any node
+   *     longer than 500 characters therefore LOST ITS TAIL the first time it
+   *     was recalled — silent, irreversible data loss on the hot path.
+   *
+   *  3. FROM SDK 0.10.0 IT WOULD RETIRE THE NODE. `edit` becomes indelible:
+   *     the target is retired and a replacement minted. Reinforcement runs for
+   *     every node of every recall and defaults ON, so on that upgrade every
+   *     recall would retire the very memories it had just returned, and every
+   *     persisted id pointing at them (source index, skill step chains,
+   *     op-log targets) would be left pointing at a tombstone.
+   *
+   * ── WHY THERE IS NO FIX HERE, ONLY A REPORT ───────────────────────────────
+   *
+   * Reinforcement needs exactly one thing: set `GraphNode.confidence` to a
+   * given value. SDK 0.8.0 exposes no way to do that. Its whole confidence
+   * surface is the correction engine — `edit` (→ 1.0), `deleteNode` (→ 0.1),
+   * `supersede` (→ min(c, 0.3)), `forgetBefore` / `forgetTopic` (→ 0.1) — and
+   * every one of them is a correction with retirement semantics we must not
+   * take. The adapter seam (`GraphnosisAdapter`) has no confidence setter
+   * either, and `GraphHandle` is opaque (`{ graphId }`), so the host cannot
+   * reach `graph.nodes` even if that were acceptable layering.
+   *
+   * The smallest thing that would make this implementable, in preference
+   * order:
+   *
+   *   a. SDK: `Graphnosis.setConfidence(nodeId, value, reason)` — an explicit,
+   *      auditable, NON-correction confidence write that neither retires nor
+   *      mints. Reinforcement, temporal decay and the review deck all want it.
+   *   b. Failing that, an adapter primitive `setNodeConfidence(handle, nodeId,
+   *      value)` in `graphnosis-impl.ts` writing `graph.nodes.get(id)!
+   *      .confidence` in place — the same direct-dual-graph write the adapter
+   *      already performs for `linkNodes` / `reweightEdge`, which exist for
+   *      precisely this reason (the SDK has no public `addEdge` either).
+   *
+   * Until one of those lands this returns `{ applied: false, reason:
+   * 'no-sdk-primitive' }` and touches NOTHING: no correction, no op-log event
+   * (writing one for a mutation that never happened is the exact log/graph
+   * divergence op-log replay cannot recover from), no dirty flag, no save.
+   * That is a real loss of function — but the function it replaces was
+   * corrupting content and inverting the confidence model, so a loud no-op is
+   * strictly better than what it replaces.
    */
-  async reinforceNode(graphId: GraphId, nodeId: string): Promise<void> {
+  async reinforceNode(graphId: GraphId, nodeId: string): Promise<ReinforcementResult> {
     const g = this.graphs.get(graphId);
-    if (!g) return;
-    const nodes = this.opts.adapter.inspectNodes(g.handle);
-    const node = nodes.find((n) => n.id === nodeId);
-    if (!node) return;
-    if (node.confidence <= 0.2 || node.confidence > 0.9) return;
-    const newConfidence = Math.min(0.95, node.confidence + 0.03);
-    try {
-      await this.opts.adapter.applyCorrection(g.handle, {
-        kind: 'edit',
-        nodeId,
-        content: node.contentPreview,
-        reason: 'brain:reinforcement',
-      });
-      this.oplogWriter.emit({
-        graphId,
-        op: 'editNode',
-        target: { kind: 'node', id: nodeId },
-        after: { confidence: newConfidence, reason: 'brain:reinforcement', triggeredBy: 'brain:reinforcement' },
-      });
-      g.dirty = true;
-      await this.save(graphId);
-    } catch (err) {
-      console.error(`[brain] reinforceNode(${redactPair(graphId, nodeId)}) failed:`, err);
+    if (!g) return { applied: false, reason: 'graph-not-loaded' };
+    const node = this.opts.adapter.getNodesByIds(g.handle, [nodeId])[0];
+    if (!node) return { applied: false, reason: 'node-not-found' };
+    if (node.confidence <= 0.2 || node.confidence > 0.9) {
+      return { applied: false, reason: 'out-of-band' };
     }
+    // The value we WOULD write. Kept so the intent is visible in the result
+    // (and in any future test) rather than living only in a comment.
+    const targetConfidence = Math.min(0.95, node.confidence + 0.03);
+    if (!this.reinforcementUnsupportedWarned) {
+      this.reinforcementUnsupportedWarned = true;
+      console.warn(
+        `[brain] reinforce-on-recall is INERT on this SDK: adjusting node confidence ` +
+        `requires a non-correction primitive the SDK does not expose (see reinforceNode). ` +
+        `Nodes are returned unchanged; no correction is applied. ` +
+        `First occurrence at ${redactPair(graphId, nodeId)}; suppressed for the rest of this session.`,
+      );
+    }
+    return { applied: false, reason: 'no-sdk-primitive', targetConfidence };
   }
 
   // ── Graph metadata (template, displayName) ──────────────────────────────
@@ -2070,7 +3255,25 @@ export class GraphnosisHost {
     this.touchGraph(graphId);
     if (this.graphs.has(graphId)) return;
     try { await this.loadGraph(graphId); }
-    catch { /* engram may not exist; caller surfaces it normally */ }
+    catch (e) {
+      // Swallowing the reload is deliberate — the caller's must() reports
+      // "Graph not loaded" and that stays the user-facing behaviour. What is
+      // NOT acceptable is swallowing it SILENTLY: a bare `catch {}` here turned
+      // every reason an engram could fail to come back (corrupt bytes, a file
+      // from a newer writer, a permissions change) into the same contentless
+      // "Graph not loaded", with nothing anywhere saying why.
+      const err = e as NodeJS.ErrnoException;
+      if (err?.code === 'ENOENT') {
+        // Genuinely absent — the ordinary case this catch was written for.
+        dbg(`[host] ensureLoaded: engram[${redactId(graphId)}] is not on disk`);
+      } else {
+        const { cause, headline, remedy } = describeEngramLoadFailure(err);
+        console.error(
+          `[graphnosis-host] ensureLoaded could not reload engram '${graphId}' (${cause}): ` +
+          `${err?.message ?? String(e)} — ${headline} ${remedy}`,
+        );
+      }
+    }
     void this.maybeEvict();
   }
 
@@ -2974,11 +4177,46 @@ export class GraphnosisHost {
       // engram as missing and rebuild from the op-log. The quarantined
       // files are kept on disk for forensic / manual recovery — never
       // deleted automatically.
+      //
+      // The branch is `gaiLoadDisposition` (top of this file), which reads the
+      // SDK's own `codeClass` rather than guessing from message text. The old
+      // substring list here missed the SDK's `Invalid graph:` failures entirely
+      // (they got no quarantine, no .lkg, no op-log offer — the engram simply
+      // vanished from the picker) and, worse, routed version skew into
+      // quarantine because that message also starts `Invalid .gai file:`.
       const msg = (e as Error).message ?? '';
-      const looksCorrupt =
-        msg.includes('checksum') || msg.includes('HMAC') ||
-        msg.includes('Invalid .gai') || msg.includes('signature');
-      if (looksCorrupt) {
+      const disposition = gaiLoadDisposition(e);
+      if (disposition === 'version-skew') {
+        // A VALID file from a newer writer. Quarantining it would destroy good
+        // data to "fix" something an app update fixes. Touch nothing on disk:
+        // no rename, no embedding-cache delete, no op-log replay. Tell the user
+        // to update, and make sure the thrown error is NOT the ENOENT-shaped
+        // "quarantined / Recover from op-log" error the sidecar's boot sweep
+        // watches for — that would kick off a rebuild of an intact engram.
+        await this.appendRecoveryLog({
+          event: 'version_skew_refused', graphId, error: msg, sizeBytes: loadedGaiBytes,
+          action: 'left_intact',
+        });
+        console.error(
+          `[graphnosis-host] engram '${graphId}' was written by a NEWER Graphnosis than this build can read: ` +
+          `${msg}. The file is intact and has been left exactly as it is — update Graphnosis to open it. ` +
+          `NOT quarantined: this is not corruption.`,
+        );
+        this.emitRecoveryNeeded(graphId, 'version_skew', loadedGaiBytes, lkgSize);
+        throw e;
+      }
+      if (disposition === 'rethrow') {
+        // `caller` / `config` / unrecognized: we have no evidence the bytes are
+        // damaged, so the file is left untouched. Still emit a diagnostic —
+        // this used to be the silent-disappearance path.
+        console.error(
+          `[graphnosis-host] engram '${graphId}' failed to load and was NOT quarantined ` +
+          `(classified '${classifyGaiFailure(e)}', not corruption): ${msg}. The file is unchanged on disk.`,
+        );
+        this.emitRecoveryNeeded(graphId, `load_failed:${classifyGaiFailure(e)}`, loadedGaiBytes, lkgSize);
+        throw e;
+      }
+      {
         // Before quarantining-to-empty, try the last-known-good sibling (.lkg):
         // the canonical .gai may be a single bad write while the prior good
         // generation is still on disk. On success we continue loading with the
@@ -3016,8 +4254,6 @@ export class GraphnosisHost {
         enoentErr.code = 'ENOENT';
         throw enoentErr;
         }
-      } else {
-        throw e;
       }
     }
     } // !usedTinyLkgRestore
@@ -3217,24 +4453,28 @@ export class GraphnosisHost {
       victims.push(n.id);
     }
     if (victims.length === 0) return;
+    // The `try/catch` that used to wrap this was dead code — the SDK returns
+    // refusals, it does not throw — and the log line below counted ATTEMPTS.
+    // The damage is confined to a triage log (this sweep is idempotent and
+    // retries next boot, and it emits no op-log event so there is no replay
+    // divergence), but a log that says "removed 4" when it removed 0 is what
+    // sends the next person looking in the wrong place.
+    let removed = 0;
     for (const id of victims) {
-      try {
-        await this.opts.adapter.applyCorrection(g.handle, {
-          kind: 'delete',
-          nodeId: id,
-          reason: 'sourceRef-header orphan sweep (post-load housekeeping)',
-        });
-      } catch {
-        // Non-fatal — leave the node soft-alive; recall confidence
-        // filters will still hide it from users.
-      }
+      const outcome = await this.opts.adapter.applyCorrection(g.handle, {
+        kind: 'delete',
+        nodeId: id,
+        reason: 'sourceRef-header orphan sweep (post-load housekeeping)',
+      });
+      if (outcome.applied) removed += 1;
     }
     // Persist the deletions so they survive a restart. The sweep is
     // idempotent so re-running doesn't write again.
     g.dirty = true;
     try { await this.save(graphId); } catch { /* save failure is non-fatal */ }
     console.error(
-      `[graphnosis-host] sourceRef-artifact sweep: removed ${victims.length} orphan node(s) from engram[${redactId(graphId)}]`,
+      `[graphnosis-host] sourceRef-artifact sweep: removed ${removed} of ${victims.length} ` +
+      `orphan node(s) from engram[${redactId(graphId)}]`,
     );
   }
 
@@ -3446,6 +4686,21 @@ export class GraphnosisHost {
   /** Wire once from main.ts to surface recovery-needed events to the UI. */
   setRecoveryNeededHandler(handler: EngramRecoveryNeededHandler | null): void {
     this.onRecoveryNeeded = handler;
+  }
+
+  /**
+   * Report an engram that failed to load and is therefore about to vanish from
+   * the picker. Reuses the recovery-needed channel because it is the one
+   * already plumbed all the way to a UI banner; the `reason` carries the
+   * classification so the banner can say something true.
+   *
+   * Public because the boot sweep in main.ts can fail an engram at stages
+   * `loadGraphInner`'s own catch never sees (bundle parse, embedding cache,
+   * the 90 s queue timeout), and those disappearances were just as silent.
+   */
+  reportEngramLoadFailure(graphId: GraphId, err: NodeJS.ErrnoException): void {
+    const { cause } = describeEngramLoadFailure(err);
+    this.emitRecoveryNeeded(graphId, `load_failed:${cause}`);
   }
 
   /** True when on-disk .lkg is substantially larger than .gai (shrink-save risk). */
@@ -4314,20 +5569,61 @@ export class GraphnosisHost {
   // op-log / snapshot). We don't try to roll back inside the host — that's
   // the snapshot machinery's job.
 
-  /** Reingest one source from its cached content blob. Throws when the
-   *  cache is unavailable so the caller can decide how to surface that
-   *  (skip in a loop, error to the user in single-source mode). */
-  async reingestSource(graphId: GraphId, sourceId: string): Promise<{ skipped: false; newNodeIds: string[] } | { skipped: true; reason: string }> {
+  /**
+   * Reingest one source from its cached content blob. Throws when the
+   * cache is unavailable so the caller can decide how to surface that
+   * (skip in a loop, error to the user in single-source mode).
+   *
+   * ── Why this returns a REFUSAL variant ────────────────────────────────────
+   * A reingest is a forget followed by an ingest. `forgetSource` does not throw
+   * when the engine declines a delete — it honours the refusal by RESTORING the
+   * source record around the survivors and returning `refusedNodeIds`. This
+   * method used to drop that return value on the floor, and the consequence was
+   * not "a duplicate copy" (the description that got this under-prioritised for
+   * three rounds) — it was total, silent loss of the live content:
+   *
+   *   forgetSource deletes the 3 real nodes, the engine declines the 4th, the
+   *   record is restored listing ONLY the survivor → `ingest` then finds an
+   *   EXISTING record for this sourceId and short-circuits (see the duplicate
+   *   guard in `ingest`), re-ingesting nothing and returning that record
+   *   unchanged → `{ skipped:false, newNodeIds:[<the node that could not be
+   *   deleted>] }`. Zero live nodes, recall returns nothing, and every caller
+   *   counts it as a success.
+   *
+   * So a refused forget must stop the reingest before `purgeOrphanNodes` /
+   * `ingest`, and it must be reported in the return value: FIVE call paths
+   * funnel through this one method, and a channel they cannot read is a channel
+   * that does not exist.
+   */
+  async reingestSource(graphId: GraphId, sourceId: string): Promise<ReingestSourceOutcome> {
     const g = this.must(graphId);
     const record = g.sourceIndex.get(sourceId);
     if (!record) {
-      return { skipped: true, reason: 'source not found in index' };
+      return { skipped: true, refused: false, reason: 'source not found in index' };
+    }
+    // ── Pre-flight: refuse BEFORE the forget, not after it ────────────────────
+    // The guard further down turns a refused forget into an honest report, but
+    // by then `forgetSource` has already soft-deleted every node it COULD, and
+    // dropped them from the record. For the refusal shape we can actually
+    // predict — a source claiming a node id the graph does not have (the
+    // crashed-between-saves / partial-sync shape) — the engine's answer is known
+    // in advance, so nothing has to be destroyed to find it out. Checking here
+    // makes the abort non-destructive for that whole class.
+    const undeletable = this.undeletableClaimedNodeIds(g, record.nodeIds ?? []);
+    if (undeletable.length > 0) {
+      return this.reingestRefusalOutcome(
+        graphId, sourceId, record.ref, undeletable,
+        'Nothing was deleted and nothing was re-chunked — the source is exactly as it was, ' +
+        'and its cached content is intact.',
+      );
     }
     const blob = await this.readContentBlob(sourceId);
     if (!blob) {
       const bundled = bundledDocForRef(record.ref);
       if (bundled) {
-        await this.forgetSource(graphId, sourceId, { triggeredBy: 'user:reingest' });
+        const bundledForget = await this.forgetSource(graphId, sourceId, { triggeredBy: 'user:reingest' });
+        const bundledRefusal = this.reingestRefusal(graphId, sourceId, record.ref, bundledForget);
+        if (bundledRefusal) return bundledRefusal;
         await this.purgeOrphanNodes(graphId);
         const result = await this.ingest(
           graphId,
@@ -4336,14 +5632,20 @@ export class GraphnosisHost {
           bundled,
           { triggeredBy: 'user:reingest', skipOplogEmit: true, skipAutoRelink: true, ...(record.addedBy ? { addedBy: record.addedBy } : {}) },
         );
-        return { skipped: false, newNodeIds: result.nodeIds };
+        return { skipped: false, refused: false, newNodeIds: result.nodeIds };
       }
-      return { skipped: true, reason: 'content cache unavailable (cache was off or expired at ingest time)' };
+      return { skipped: true, refused: false, reason: 'content cache unavailable (cache was off or expired at ingest time)' };
     }
     // Soft-delete the existing nodes for this source so the new ingest's
     // chunks replace them. forgetSource also wipes the cache blob — but we
     // already loaded it into memory above, so the order is safe.
-    await this.forgetSource(graphId, sourceId, { triggeredBy: 'user:reingest' });
+    const forgotten = await this.forgetSource(graphId, sourceId, { triggeredBy: 'user:reingest' });
+    // A refused forget means the source still holds nodes. Everything below
+    // this line assumes it does not, so we stop here rather than layer a fresh
+    // ingest on top of — or, as the duplicate guard in `ingest` actually does,
+    // silently skip an ingest onto — a source that was never cleared.
+    const refusal = this.reingestRefusal(graphId, sourceId, record.ref, forgotten);
+    if (refusal) return refusal;
     // Purge any orphan nodes left over from a previous partial reingest.
     // Without this, a crash or IPC timeout mid-ingest can leave active nodes
     // in the SDK graph with no source record — those orphan hashes then block
@@ -4364,7 +5666,60 @@ export class GraphnosisHost {
       docInput,
       { triggeredBy: 'user:reingest', ...(record.addedBy ? { addedBy: record.addedBy } : {}) },
     );
-    return { skipped: false, newNodeIds: result.nodeIds };
+    return { skipped: false, refused: false, newNodeIds: result.nodeIds };
+  }
+
+  /**
+   * The node ids a source claims that the graph does not actually hold. A
+   * `delete` of one of these is refused by the engine every time — verified
+   * against the installed engine, which answers
+   * `{ applied:false, errors:['Node <id> not found'] }` rather than throwing.
+   * Presence is enough: deleting an ALREADY soft-deleted node still applies.
+   */
+  private undeletableClaimedNodeIds(g: LoadedGraph, claimed: string[]): string[] {
+    if (claimed.length === 0) return [];
+    const present = new Set(this.opts.adapter.inspectNodes(g.handle).map((n) => n.id));
+    return claimed.filter((id) => !present.has(id));
+  }
+
+  /** Build + log the refusal outcome. `aftermath` says what state this left behind. */
+  private reingestRefusalOutcome(
+    graphId: GraphId,
+    sourceId: string,
+    ref: string,
+    refusedNodeIds: string[],
+    aftermath: string,
+  ): Extract<ReingestSourceOutcome, { refused: true }> {
+    const reason =
+      `the memory engine will not delete ${refusedNodeIds.length} of this source's node(s), ` +
+      `so the source cannot be cleared and reingest was not performed. ${aftermath}`;
+    console.error(`[host] reingestSource(${redactPair(graphId, sourceId)}) aborted: ${reason} (ref: ${ref})`);
+    return { skipped: false, refused: true, refusedNodeIds: refusedNodeIds.slice(), reason };
+  }
+
+  /**
+   * Turn a `forgetSource` result into a reingest refusal, or `null` when the
+   * forget was clean. The post-hoc net under the pre-flight check above: it
+   * catches refusals the pre-flight cannot predict (an engine that declines a
+   * node it really does hold). Shared by both forget sites in `reingestSource`
+   * so the bundled-doc path cannot drift away from the cached-blob one.
+   */
+  private reingestRefusal(
+    graphId: GraphId,
+    sourceId: string,
+    ref: string,
+    forgotten: { nodeIds: string[]; refusedNodeIds?: string[] },
+  ): Extract<ReingestSourceOutcome, { refused: true }> | null {
+    const refusedNodeIds = forgotten.refusedNodeIds ?? [];
+    if (refusedNodeIds.length === 0) return null;
+    // Deliberately NOT "nothing was lost". By this point `forgetSource` has
+    // soft-deleted the nodes it COULD and dropped them from the record. Saying
+    // otherwise would re-create the exact silence this guard exists to end.
+    return this.reingestRefusalOutcome(
+      graphId, sourceId, ref, refusedNodeIds,
+      'Node(s) removed before the refusal are soft-deleted and no longer listed by this source; ' +
+      'its cached content is intact, so it can be reingested once the refusal is resolved.',
+    );
   }
 
   /** Reingest every source in one engram. Progress fires before each
@@ -4390,6 +5745,14 @@ export class GraphnosisHost {
         const result = await this.reingestSource(graphId, src.sourceId);
         if (result.skipped) {
           skipped.push({ sourceId: src.sourceId, reason: result.reason });
+        } else if (result.refused) {
+          // A refusal is a FAILURE, not a skip and certainly not a reingest.
+          // Counting it as `reingested` is what let the modal paint a green
+          // "Reingested N source(s). 0 failed." over a source that had just
+          // lost its live content. `failed` is the only bucket the UI renders
+          // in red, with the per-source reason attached.
+          failed.push({ sourceId: src.sourceId, ref: src.ref, error: result.reason });
+          console.error(`[host] reingestAllSources(${redactPair(graphId, src.sourceId)}) refused: ${result.reason}`);
         } else {
           reingested += 1;
         }
@@ -4515,7 +5878,18 @@ export class GraphnosisHost {
     this.invalidateOplogCache();
   }
 
-  async forgetSource(graphId: GraphId, sourceId: string, opts?: { triggeredBy?: string; skipOplogEmit?: boolean }): Promise<{ nodeIds: string[] }> {
+  /**
+   * Forget a source: drop its record and soft-delete every node it claimed.
+   *
+   * `nodeIds` is the set the graph ACTUALLY soft-deleted — not the set we
+   * asked it to. `refusedNodeIds` is present (and non-empty) only when the
+   * engine declined one or more deletes, in which case this was NOT a forget:
+   * the source record is restored around the surviving nodes, no `forgetSource`
+   * op-log event is written, the content blob is kept, and the file-watcher is
+   * left watching. See the refusal block inside for why each of those is
+   * load-bearing.
+   */
+  async forgetSource(graphId: GraphId, sourceId: string, opts?: { triggeredBy?: string; skipOplogEmit?: boolean }): Promise<{ nodeIds: string[]; refusedNodeIds?: string[]; purge?: PurgeReport }> {
     const g = this.must(graphId);
     if (opts?.triggeredBy !== 'compliance:retention') {
       this.assertMutationAllowed(graphId, sourceId);
@@ -4526,8 +5900,19 @@ export class GraphnosisHost {
     const nodeIds = g.sourceIndex.forget(sourceId);
     const forgetTrigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
     const forgetStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    /** The nodes the graph actually soft-deleted. */
+    const deletedNodeIds: string[] = [];
+    /**
+     * Nodes the engine REFUSED to delete, named by whichever id is LIVE (the
+     * minted tombstone when the dedup-release edit minted, else the original).
+     */
+    const refusedNodeIds: string[] = [];
+    let firstRefusalError = '';
     for (let i = 0; i < nodeIds.length; i++) {
       const nodeId = nodeIds[i]!;
+      // Captured before the tombstone rewrite so a refused delete can be rolled
+      // back to the user's text rather than left reading `__gn-forgotten:…`.
+      const originalContent = this.opts.adapter.getFullNodeContent(g.handle, nodeId);
       // Capture the content preview BEFORE soft-deleting so the activity log can show it.
       const contentPreview = this.opts.adapter.inspectNodes(g.handle).find(n => n.id === nodeId)?.contentPreview;
       // ── Dedup-table release pass ────────────────────────────────────────
@@ -4545,19 +5930,55 @@ export class GraphnosisHost {
       // preserved — both ops appear in the op-log in order — and the user-
       // visible "forget" semantics are unchanged: confidence still drops to
       // soft-deleted on the immediately-following delete.
+      //
+      // Same retire-and-mint hazard as `clearSourceNodes`: from SDK 0.10.0 the
+      // edit mints the tombstone onto a NEW node, so the delete has to follow
+      // it or the `__gn-forgotten:…` tombstone stays alive and unclaimed after
+      // the source record is gone.
+      let tombstoneId = nodeId;
       try {
-        await this.opts.adapter.applyCorrection(g.handle, {
+        const outcome = await this.opts.adapter.applyCorrection(g.handle, {
           kind: 'edit',
           nodeId,
           content: `__gn-forgotten:${forgetStamp}:${i}:${nodeId}__`,
           reason: `forget source ${sourceId} (dedup-table release)`,
         });
+        if (outcome.applied && outcome.resultNodeId) tombstoneId = outcome.resultNodeId;
       } catch {
         // Edit refused — proceed to delete anyway. The resurrection fallback
         // in graphnosis-impl.ts picks up any subsequent dedup hits.
       }
       // Soft-delete in Graphnosis: node stays for audit, confidence drops, won't be returned by queries.
-      await this.opts.adapter.applyCorrection(g.handle, { kind: 'delete', nodeId, reason: `forget source ${sourceId}` });
+      const del = await this.opts.adapter.applyCorrection(g.handle, { kind: 'delete', nodeId: tombstoneId, reason: `forget source ${sourceId}` });
+      // ── A refused delete means this node was NOT forgotten ────────────────
+      //
+      // The SDK returns refusals, it never throws, so before this guard the
+      // whole tail ran anyway: a `deleteNode` op-log event for a mutation the
+      // graph never took, the content blob deleted, the connection/GNN stores
+      // pruned, and `{ nodeIds }` returned as the forgotten set. The source
+      // vanished from the Sources panel while its nodes stayed LIVE and claimed
+      // by nobody — still surfacing in recall, with no attribution and no UI
+      // affordance to remove them — and op-log replay could never converge,
+      // because the graph has no such delete to replay onto. On the retention
+      // path (`compliance:retention`) the same silence became a regulator-facing
+      // `purged: true` record for content still sitting in the graph.
+      if (!del.applied) {
+        if (!firstRefusalError) firstRefusalError = del.errors.join('; ');
+        // Undo the tombstone: the rewrite was only ever a means to the delete.
+        let liveId = tombstoneId;
+        if (typeof originalContent === 'string' && originalContent.length > 0) {
+          const restore = await this.opts.adapter.applyCorrection(g.handle, {
+            kind: 'edit',
+            nodeId: tombstoneId,
+            content: originalContent,
+            reason: `forget source ${sourceId} (rolled back — delete refused)`,
+          });
+          if (restore.applied && restore.resultNodeId) liveId = restore.resultNodeId;
+        }
+        refusedNodeIds.push(liveId);
+        continue;
+      }
+      deletedNodeIds.push(nodeId);
       if (!opts?.skipOplogEmit) {
         this.oplogWriter.emit({
           graphId,
@@ -4567,7 +5988,27 @@ export class GraphnosisHost {
         });
       }
     }
-    if (!opts?.skipOplogEmit) {
+    // ── Partial forget: put the source back around what survived ───────────
+    //
+    // `sourceIndex.forget()` ran before the loop, so on a refusal the surviving
+    // nodes are live and claimed by NOTHING. That is the shape `purgeOrphanNodes`
+    // soft-deletes on sight, and it is also the shape that makes content recall-
+    // able with no attribution. Restoring the record keeps the memory owned,
+    // ordered and visible in the Sources panel — which is the honest report:
+    // this source was not forgotten.
+    if (refusedNodeIds.length > 0 && priorRecord) {
+      g.sourceIndex.upsert({ ...priorRecord, nodeIds: refusedNodeIds.slice() });
+      console.error(
+        `[graphnosis-host] forgetSource(${redactId(graphId)}/${sourceId}): the memory engine declined ` +
+        `${refusedNodeIds.length} of ${nodeIds.length} delete(s) ` +
+        `(${firstRefusalError || 'no correction applied'}). ` +
+        `The source is NOT forgotten — its record has been restored around the surviving node(s).`,
+      );
+    }
+    // The `forgetSource` event is what a peer device replays to forget the same
+    // source. Emitting it for a forget that did not happen tells every other
+    // device to delete content this one still holds.
+    if (!opts?.skipOplogEmit && refusedNodeIds.length === 0) {
       this.oplogWriter.emit({
         graphId,
         op: 'forgetSource',
@@ -4577,15 +6018,22 @@ export class GraphnosisHost {
     }
     // Forget means forget everywhere — drop the cached content blob too.
     // If the user re-ingests later, we'll cache a fresh copy.
-    await this.deleteContentBlob(sourceId);
+    //
+    // NOT on a partial forget: the blob is the only way a clip/skill source can
+    // ever be moved or recovered, and the source still exists. Deleting it there
+    // would turn "we could not forget this" into "…and now you cannot recover
+    // it either" — an unrecoverable half-delete.
+    if (refusedNodeIds.length === 0) await this.deleteContentBlob(sourceId);
     g.dirty = true;
     await this.save(graphId);
 
     // Prune cross-engram connections and GNN edges that reference the
     // now-forgotten nodes. They're soft-deleted (confidence 0, never recalled)
     // so any cross-engram link anchored to one of them is permanently inert.
-    if (nodeIds.length > 0) {
-      const forgottenSet = new Set(nodeIds);
+    // Keyed on what was actually DELETED: pruning links to a node that is still
+    // live silently strips its cross-engram connections and GNN suggestions.
+    if (deletedNodeIds.length > 0) {
+      const forgottenSet = new Set(deletedNodeIds);
       try {
         const connections = await this.loadConnectionStore();
         const cleanedConns = connections.filter(
@@ -4610,9 +6058,11 @@ export class GraphnosisHost {
       }
     }
 
-    if (nodeIds.length > 0) {
+    // Only the deletes that landed are a reason to mark a skill stale — a
+    // refused delete changed nothing, so retraining on it is work with no input.
+    if (deletedNodeIds.length > 0) {
       const { enqueueSkillsForNodeChange } = await import('./skill-retrain-queue.js');
-      await enqueueSkillsForNodeChange(this, graphId, nodeIds, 'source-forgotten');
+      await enqueueSkillsForNodeChange(this, graphId, deletedNodeIds, 'source-forgotten');
     }
 
     // Tell the file-watcher to stop watching this path. Doing this AFTER
@@ -4620,7 +6070,10 @@ export class GraphnosisHost {
     // the brief window where the encrypted bundle is being rewritten —
     // harmless either way since the watcher debounces, but the post-save
     // order keeps the "watch set mirrors persisted state" invariant.
-    if (priorRecord) {
+    //
+    // Not on a partial forget: the source record still exists, so un-watching
+    // would silently stop syncing a file the user still has in their cortex.
+    if (priorRecord && refusedNodeIds.length === 0) {
       this.fileWatcher?.onSourceForgotten(graphId, sourceId, priorRecord.ref);
     }
 
@@ -4636,7 +6089,16 @@ export class GraphnosisHost {
         console.error(`[graphnosis-host] auto-purge after forget failed: ${(e as Error).message}`);
       }
     }
-    return { nodeIds, ...(purge ? { purge } : {}) };
+    // `nodeIds` is the FORGOTTEN set, so it is what the graph took — not what
+    // we asked for. `sources.forget` hands this straight to the UI as "these
+    // memories are gone" and `compliance.runRetention` stamps `purged: true`
+    // from it; both of those are now true statements. `refusedNodeIds` is the
+    // signal those callers need to stop claiming a complete forget.
+    return {
+      nodeIds: deletedNodeIds,
+      ...(refusedNodeIds.length > 0 ? { refusedNodeIds } : {}),
+      ...(purge ? { purge } : {}),
+    };
   }
 
   /**
@@ -4665,17 +6127,39 @@ export class GraphnosisHost {
     const allNodes = this.opts.adapter.inspectNodes(g.handle);
     const orphans = allNodes.filter((n) => n.confidence > 0.1 && !trackedIds.has(n.id));
     if (orphans.length === 0) return [];
-    console.log(`[host] purgeOrphanNodes(${graphId}): soft-deleting ${orphans.length} orphan node(s)`);
+    // ── Report what LANDED, not what was attempted ─────────────────────────
+    //
+    // The whole job of this method is to free the content hashes that block
+    // re-chunking, and every caller (reingest, `sources.reingest`) treats the
+    // return value as "those blockers are cleared". A refused delete leaves the
+    // hash in the SDK's dedup table, so the next reingest silently produces
+    // FEWER chunks than the file contains — a memory that is in the file on
+    // disk never appears in the engram — while the log and the return value
+    // both said the blocker was gone.
+    const purged: string[] = [];
+    const refused: string[] = [];
     for (const node of orphans) {
-      await this.opts.adapter.applyCorrection(g.handle, {
+      const outcome = await this.opts.adapter.applyCorrection(g.handle, {
         kind: 'delete',
         nodeId: node.id,
         reason: 'purge orphan node — no source record (previous ingest crashed mid-save)',
       });
+      if (outcome.applied) purged.push(node.id);
+      else refused.push(node.id);
+    }
+    console.log(
+      `[host] purgeOrphanNodes(${graphId}): soft-deleted ${purged.length} of ${orphans.length} orphan node(s)`,
+    );
+    if (refused.length > 0) {
+      console.error(
+        `[graphnosis-host] purgeOrphanNodes(${redactId(graphId)}): the memory engine declined ` +
+        `${refused.length} delete(s). Their content hashes still block re-chunking, so the next ` +
+        `reingest of that content will come back short.`,
+      );
     }
     g.dirty = true;
     await this.save(graphId);
-    return orphans.map((n) => n.id);
+    return purged;
   }
 
   /**
@@ -4690,7 +6174,7 @@ export class GraphnosisHost {
     fromGraphId: GraphId,
     sourceId: string,
     toGraphId: GraphId,
-  ): Promise<{ newRecord: SourceRecord; forgottenNodeIds: string[] }> {
+  ): Promise<{ newRecord: SourceRecord; forgottenNodeIds: string[]; refusedNodeIds?: string[] }> {
     if (fromGraphId === toGraphId) throw new Error('Source and destination engram must be different.');
     const fromG = this.must(fromGraphId);
     this.must(toGraphId); // ensure destination exists
@@ -4702,12 +6186,32 @@ export class GraphnosisHost {
 
     let newRecord: SourceRecord;
     let forgottenNodeIds: string[];
+    /**
+     * Nodes the origin engram REFUSED to release. A move is a forget plus an
+     * ingest, so a refused forget makes it a COPY: the content ends up in both
+     * engrams. `forgetSource` now restores the origin's source record around the
+     * survivors, so the duplicate is at least visible and removable rather than
+     * live and unclaimed — but the caller still has to be told, or `sources.move`
+     * and the `transfer_source` tool go on reporting a clean move.
+     */
+    let refusedNodeIds: string[] | undefined;
+    const noteRefusal = (r: { refusedNodeIds?: string[] }): void => {
+      if (!r.refusedNodeIds?.length) return;
+      refusedNodeIds = r.refusedNodeIds;
+      console.error(
+        `[graphnosis-host] moveSource(${redactId(fromGraphId)} → ${redactId(toGraphId)}): the origin ` +
+        `engram kept ${r.refusedNodeIds.length} node(s). This is a COPY, not a move — the source ` +
+        `record has been restored around them in ${redactId(fromGraphId)}.`,
+      );
+    };
 
     if (rec.kind === 'file') {
       // File sources: re-read from disk into target, then forget from source.
       const { ingestFile } = await import('./ingest.js');
       const { withEmbedding } = await import('./embedding-queue.js');
-      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId, { triggeredBy: 'user:ingest' }));
+      const forgot = await this.forgetSource(fromGraphId, sourceId, { triggeredBy: 'user:ingest' });
+      forgottenNodeIds = forgot.nodeIds;
+      noteRefusal(forgot);
       newRecord = await ingestFile(this, toGraphId, rec.ref, {
         wrapIngest: (fn) => withEmbedding(fn),
         triggeredBy: 'user:ingest',
@@ -4728,9 +6232,11 @@ export class GraphnosisHost {
       if (blob && blob.header.nodeOffsets && blob.header.nodeOffsets.length > 0) {
         const segments = splitBlobByNodeOffsets(blob.content, blob.header.nodeOffsets);
         if (segments.length > 0) {
-          ({ nodeIds: forgottenNodeIds } = await this.forgetSource(
+          const forgotSkill = await this.forgetSource(
             fromGraphId, sourceId, { triggeredBy: 'user:ingest' },
-          ));
+          );
+          forgottenNodeIds = forgotSkill.nodeIds;
+          noteRefusal(forgotSkill);
           // Seed the source with the first segment, then append the rest in
           // order — mirroring how the trainer built it in the first place.
           newRecord = await this.ingest(
@@ -4747,7 +6253,7 @@ export class GraphnosisHost {
             );
           }
           this.kickoffRelink(toGraphId);
-          return { newRecord, forgottenNodeIds };
+          return { newRecord, forgottenNodeIds, ...(refusedNodeIds ? { refusedNodeIds } : {}) };
         }
       }
 
@@ -4767,14 +6273,16 @@ export class GraphnosisHost {
         }
         input = { kind: 'markdown', content: nodeTexts.join('\n\n'), sourceRef: rec.ref };
       }
-      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId, { triggeredBy: 'user:ingest' }));
+      const forgotBlob = await this.forgetSource(fromGraphId, sourceId, { triggeredBy: 'user:ingest' });
+      forgottenNodeIds = forgotBlob.nodeIds;
+      noteRefusal(forgotBlob);
       newRecord = await this.ingest(toGraphId, rec.kind, rec.ref, input, { triggeredBy: 'user:ingest' });
     }
 
     // NOTE: kickoffRelink(toGraphId) is already called inside this.ingest() above.
     // Calling it again here would double-fire the debounce, causing two relink
     // passes instead of one when a file source is moved (which calls ingest directly).
-    return { newRecord, forgottenNodeIds };
+    return { newRecord, forgottenNodeIds, ...(refusedNodeIds ? { refusedNodeIds } : {}) };
   }
 
   /**
@@ -4805,6 +6313,24 @@ export class GraphnosisHost {
 
   async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority; includeQuarantined?: boolean }): Promise<federation.FederatedSubgraph> {
     return hostRecall(this as unknown as RecallHost, query, opts);
+  }
+
+  /**
+   * Coverage facts for a federated recall result: did every engram in scope
+   * actually answer, and if not, which ones did not.
+   *
+   * Lives on the host because resolving an engram id to the name the user
+   * knows it by needs `graphMetadata`, which federation does not have. Every
+   * surface that hands a recall result to a person or a model must call this
+   * and disclose an incomplete result — a partial recall presented as a
+   * complete one is how the system ends up asserting "you have no record of
+   * that" about a memory it simply could not read.
+   *
+   * Safe on the currently-pinned secure-sync (v0.3.1), whose federation is
+   * all-or-nothing and reports no failures: it returns `complete: true` there.
+   */
+  recallCoverage(sub: RecallCoverageInput | null | undefined): RecallCoverage {
+    return summarizeRecallCoverage(sub, (g) => this.getGraphMetadata(g)?.displayName ?? g);
   }
 
   async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority }): Promise<federation.FederatedSubgraph & {
@@ -4865,11 +6391,22 @@ export class GraphnosisHost {
   // - `delete`    : soft-delete
   // - `adds`      : ingest fresh content as new source-less nodes (used when the correction
   //                 is "you also remember X" rather than "X was wrong")
+  //
+  // RETURNS one `CorrectionOutcome` per entry of `patches.edits`, in order —
+  // including the REFUSED ones, which is the whole point: the SDK reports a
+  // refusal by returning `{ applied: 0, errors: [...] }`, never by throwing, so
+  // a caller that only sees `Promise<void>` cannot tell a correction that
+  // landed from one that did not. `ipc` calls THIS method (not the adapter), so
+  // until it returned the outcomes the widening done in the adapter was not
+  // observable from the only place the user's correction actually arrives.
+  //
+  // Existing callers that ignore the value are unaffected — brain-engine,
+  // correction.ts, mcp-server, unattended-undo and ipc all `await` and discard.
   async applyCorrection(
     graphId: GraphId,
     patches: { adds?: AppendDocumentInput[]; edits?: CorrectionEdit[] },
     opts?: { correctedBy?: string; triggeredBy?: string },
-  ): Promise<void> {
+  ): Promise<CorrectionOutcome[]> {
     const g = this.must(graphId);
     for (const edit of patches.edits ?? []) {
       if (edit.kind === 'delete' || edit.kind === 'edit' || edit.kind === 'supersede') {
@@ -4899,8 +6436,39 @@ export class GraphnosisHost {
       );
     }
     let correctionDelta = 0;
+    const outcomes: CorrectionOutcome[] = [];
+    /**
+     * Only the edits the graph actually took — drives the retrain pass below.
+     * Each entry keeps its OUTCOME alongside the edit because the id the graph
+     * ended up writing (`outcome.resultNodeId`) is not necessarily the id we
+     * passed in (`edit.nodeId`); the retrain pass needs both.
+     */
+    const appliedEdits: Array<{ edit: CorrectionEdit; outcome: CorrectionOutcome }> = [];
     for (const edit of patches.edits ?? []) {
-      await this.opts.adapter.applyCorrection(g.handle, edit);
+      const outcome = await this.opts.adapter.applyCorrection(g.handle, edit);
+      outcomes.push(outcome);
+      // A refused correction must not leave a trace of a mutation that never
+      // happened. The SDK signals refusal by RETURNING `{ applied: 0,
+      // errors: [...] }`, so without this guard everything below runs anyway:
+      //
+      //   • the op-log event — history for a write the graph never took, which
+      //     is precisely the log/graph divergence oplog replay cannot recover
+      //     from (the graph has no such edit to converge on);
+      //   • `correctionDelta` — the engram's correction count, surfaced in
+      //     stats and used as the op-log-replay baseline, drifts upward by one
+      //     per refusal and never comes back down;
+      //   • the skill-retrain enqueue below — marks every skill touching this
+      //     node stale and schedules real retraining work for content that is
+      //     byte-for-byte unchanged.
+      //
+      // `continue` covers the first two by position; the third is outside the
+      // loop and is handled by only recording APPLIED edits.
+      if (!outcome.applied) continue;
+      appliedEdits.push({ edit, outcome });
+      // The graph may have written the correction onto a DIFFERENT node than
+      // the one we targeted. Move the source record onto it before anything
+      // else observes the index — see `rebindCorrectedNodeInSource`.
+      this.rebindCorrectedNodeInSource(g, edit, outcome);
       this.oplogWriter.emit({
         graphId,
         op: edit.kind === 'delete' ? 'deleteNode' : edit.kind === 'supersede' ? 'supersede' : 'editNode',
@@ -4915,6 +6483,61 @@ export class GraphnosisHost {
     if (correctionDelta > 0) {
       this.correctionsCount.set(graphId, (this.correctionsCount.get(graphId) ?? 0) + correctionDelta);
     }
+    // ── Keep the embedding index in step with the corrected text ────────────
+    //
+    // On the pinned engine `supersede` MINTS: the corrected text lands on a
+    // BRAND-NEW node id, and nothing embedded it. `edit` writes in place and
+    // leaves the node's OLD vector attached. Either way the embedding index
+    // disagreed with the graph, and the user paid for it twice, measured live
+    // on a real host with a deterministic embed adapter:
+    //
+    //   • the corrected text was unreachable by semantic search —
+    //     searchNodesDirect / recall for a paraphrase of the NEW wording
+    //     returned nothing at all, while the same probe for an untouched node
+    //     in the same engram scored 1.0;
+    //   • after an in-place `edit`, a probe for the OLD wording still returned
+    //     the node — the graph said one thing and the vector said another.
+    //
+    // It self-heals on the next full rebuild (ingest, or the next app start),
+    // so the window is "until you next ingest" — which for a user who corrects
+    // a memory and immediately asks about it is exactly the wrong window.
+    //
+    // ONE embed per applied edit, via `embedNodeIds` — NOT `buildEmbeddings`,
+    // which is a whole-graph rebuild (`attachEmbeddings` re-walks every node)
+    // and would put an O(nodes) scan on every correction, including the brain
+    // engine's bulk auto-heal batches.
+    //
+    // Deletes are excluded: their content did not change, and the node is
+    // soft-deleted, so recall filters it on confidence regardless.
+    //
+    // `outcome.resultNodeId ?? edit.nodeId` — the id the graph ACTUALLY wrote,
+    // which is the minted one after a supersede. The retired husk keeps its
+    // existing vector; its text is unchanged, so re-embedding it would burn an
+    // embed call to compute the same number.
+    //
+    // Best-effort: a correction that landed must not be reported as failed
+    // because the index could not be topped up. The worst case on failure is
+    // the pre-existing behaviour — stale until the next rebuild.
+    const reembedIds = [...new Set(
+      appliedEdits
+        .filter(({ edit }) => edit.kind !== 'delete')
+        .map(({ edit, outcome }) => outcome.resultNodeId ?? edit.nodeId),
+    )];
+    if (reembedIds.length > 0) {
+      try {
+        await this.opts.adapter.embedNodeIds(g.handle, reembedIds, {
+          embed: cached(this.embed, g.cache),
+          dimensions: this.embedDimensions,
+          id: this.embedAdapterId,
+        });
+      } catch (e) {
+        console.error(
+          `[graphnosis-host] could not embed ${reembedIds.length} corrected node(s) in ` +
+          `engram[${redactId(graphId)}]: ${(e as Error).message} — the corrected text stays ` +
+          `lexically searchable and re-embeds on the next full rebuild.`,
+        );
+      }
+    }
     g.dirty = true;
     await this.save(graphId);
     // Same auto-relink pass that runs after `ingest` — applyCorrection's
@@ -4923,16 +6546,119 @@ export class GraphnosisHost {
     if ((patches.adds?.length ?? 0) > 0) {
       this.kickoffRelink(graphId);
     }
-    const changedNodeIds = (patches.edits ?? []).map((e) => e.nodeId);
+    // `appliedEdits`, not `patches.edits`: a node whose correction was refused
+    // is unchanged, so retraining the skills that reference it is work with no
+    // input — and `reason` would be derived from an edit kind the graph never
+    // executed (a refused `delete` alongside an applied `edit` would report the
+    // whole batch as 'source-forgotten').
+    //
+    // BOTH ids, when the graph minted a replacement. `enqueueSkillsForNodeChange`
+    // matches against `settings.skillCitedNodes`, which was populated AT TRAIN
+    // TIME and therefore holds the PRE-correction id — so dropping `edit.nodeId`
+    // in favour of `resultNodeId` would silently stop marking skills stale.
+    // Conversely `resultNodeId` alone is what a skill trained AFTER an earlier
+    // rebind cites, so neither id is sufficient on its own. Union, de-duped.
+    const changedNodeIds = [...new Set(
+      appliedEdits.flatMap(({ edit, outcome }) =>
+        outcome.resultNodeId && outcome.resultNodeId !== edit.nodeId
+          ? [edit.nodeId, outcome.resultNodeId]
+          : [edit.nodeId],
+      ),
+    )];
     if (changedNodeIds.length > 0) {
-      const supersede = (patches.edits ?? []).some((e) => e.kind === 'supersede');
-      const deleted = (patches.edits ?? []).some((e) => e.kind === 'delete');
+      const supersede = appliedEdits.some((e) => e.edit.kind === 'supersede');
+      const deleted = appliedEdits.some((e) => e.edit.kind === 'delete');
       const reason = deleted ? 'source-forgotten' as const
         : supersede ? 'source-superseded' as const
         : 'source-edited' as const;
       const { enqueueSkillsForNodeChange } = await import('./skill-retrain-queue.js');
       await enqueueSkillsForNodeChange(this, graphId, changedNodeIds, reason);
     }
+    // ── Move the CITATIONS onto the minted node, after the enqueue ──────────
+    //
+    // The source index was rebound per-edit above; `skillCitedNodes` is the
+    // OTHER map that names corrected nodes by id, and until now nothing moved
+    // it. Left alone it keeps naming the retired husk, so the SECOND correction
+    // to the same memory matches no skill and the staleness signal dies after
+    // one use — see `rebindSkillCitedNodes` for the full argument.
+    //
+    // ORDER IS LOAD-BEARING: after the enqueue, never before. The queue entry
+    // records the id the skill was TRAINED on, which is what the retrain pass
+    // and the Skills panel show the user; rebinding first would rewrite the
+    // citation and the entry would report the minted id as the thing that
+    // changed — an id the user has never seen.
+    //
+    // ONE settings write for the whole batch, and none when nothing cites the
+    // corrected nodes (the common case) — `setSettings` is an encrypt+fsync.
+    //
+    // SHARED with the peer-synced replay path (`replayNodeCorrections`) —
+    // `rebindMintedNodeReferences` owns the single definition of what
+    // counts as a retire→mint move. Inlining the filter here is what let the
+    // two paths drift apart the first time.
+    await rebindMintedNodeReferences(
+      this,
+      graphId,
+      appliedEdits.map(({ edit, outcome }) => ({ kind: edit.kind, nodeId: edit.nodeId, outcome })),
+    );
+    return outcomes;
+  }
+
+  /**
+   * Point the source index at the node that actually CARRIES a correction.
+   *
+   * WHY. A correction does not always land on the node we handed the SDK:
+   *
+   *   • `supersede` mints a replacement node and retires the target — on
+   *     EVERY SDK version we support, including the installed 0.7.4/0.8.0.
+   *     This is not a future-proofing exercise; it is live today.
+   *   • `edit` became INDELIBLE in SDK 0.10.0: it retires the target and mints
+   *     a replacement too, so `resultNodeId !== nodeId` for ordinary user
+   *     edits from that version on.
+   *
+   * The source record kept listing the RETIRED id in both cases, and the node
+   * holding the user's corrected text was listed nowhere. Three things break,
+   * in ascending order of damage:
+   *
+   *   1. `forgetSource` walks `SourceRecord.nodeIds`, so "forget this source"
+   *      soft-deletes the retired husk and LEAVES the corrected content behind.
+   *   2. `purgeOrphanNodes` defines an orphan as an ACTIVE node no source
+   *      record claims — which is exactly what the minted node now is. It runs
+   *      before every reingest, so the correction is eventually soft-deleted.
+   *      The user's edit is destroyed by routine housekeeping.
+   *   3. A skill's blob is rebuilt from its source's nodes in order
+   *      (`refreshSkillContentBlob`), so a corrected step silently reverts to
+   *      its pre-correction text on the next recover.
+   *
+   * This is the same failure mode as the GSK-promote bug, where `moveSource`
+   * dropped skill body nodes and left the imported skill unwalkable.
+   *
+   * REPLACE, don't append. Listing both ids would double the step in a skill's
+   * rebuilt blob (stale text AND corrected text), so the retired id comes out
+   * as the new one goes in, AT THE SAME POSITION — node order is part of a
+   * skill's meaning.
+   *
+   * `SourceIndex` has no `replaceNode`; `removeNode` + `insertNodeAt` compose
+   * into one because `removeNode` splices the old id out first, shifting the
+   * tail left by one, which leaves the captured position free for the new id
+   * (and clamped to the end when the corrected node was last).
+   *
+   * The one case the compose gets WRONG is a stale `byNode` mapping — a node
+   * whose `sourceOf` names a record that does not actually list it. There
+   * `indexOf` is -1, and `insertNodeAt` CLAMPS a negative position to 0, which
+   * would teleport the corrected node to the FRONT of the source. That is the
+   * very reordering this method exists to prevent, so -1 appends instead.
+   */
+  private rebindCorrectedNodeInSource(
+    g: LoadedGraph,
+    edit: CorrectionEdit,
+    outcome: CorrectionOutcome,
+  ): void {
+    // `delete` never mints; restricting the rebind to the two kinds that do
+    // keeps a hypothetical future delete-that-mints from rewriting the index.
+    if (edit.kind !== 'edit' && edit.kind !== 'supersede') return;
+    // One implementation, shared with the op-log replay path, so the local and
+    // peer-synced routes to the same mutation cannot drift apart.
+    rebindNodeInSourceIndex(g.sourceIndex, edit.nodeId, outcome.resultNodeId);
   }
 
   /**
@@ -5100,11 +6826,34 @@ export class GraphnosisHost {
     }
 
     // Soft-delete the graph node first (op-log gets a deleteNode event).
-    await this.opts.adapter.applyCorrection(g.handle, {
+    const outcome = await this.opts.adapter.applyCorrection(g.handle, {
       kind: 'delete',
       nodeId,
       reason: opts?.reason ?? 'removed from trained output',
     });
+    // ── Refused delete: THROW, do not proceed ──────────────────────────────
+    //
+    // Everything below this point asserts the node is gone: a `deleteNode`
+    // op-log event, `sourceIndex.removeNode`, a `reorderSource` event, and a
+    // rebuilt skill blob that excludes the chunk. Running any of it after a
+    // refusal produces the worst possible state — the step vanishes from the
+    // Skills editor and from the recoverable blob while the node stays LIVE at
+    // full confidence and claimed by no source, so the "deleted" step keeps
+    // coming back in recall and `purgeOrphanNodes` reports it as a crash
+    // artifact.
+    //
+    // A throw, not a `{ ok: false }`: this method returns void and its IPC
+    // callers (`source.removeNode`, `skill:importGsk` cleanup) answer
+    // `{ ok: true }` from inside a `try`, so the rejection path is the ONLY
+    // channel that reaches the user. Same decision as `node.softDelete`, which
+    // throws for exactly this reason.
+    if (!outcome.applied) {
+      throw new Error(
+        `Could not remove that step: the memory engine declined to delete node ${nodeId} ` +
+        `(${outcome.errors.join('; ') || 'no correction applied'}). ` +
+        `The step is unchanged and still part of the skill.`,
+      );
+    }
     this.oplogWriter.emit({
       graphId,
       op: 'deleteNode',
@@ -5166,12 +6915,20 @@ export class GraphnosisHost {
     if (!rec) throw new Error(`source ${sourceId} not found in engram ${graphId}`);
     // Snapshot the ids BEFORE we start mutating — sourceIndex.removeNode
     // mutates rec.nodeIds in place.
-    const removedNodeIds = rec.nodeIds.slice();
-    if (removedNodeIds.length === 0) return { removedNodeIds };
+    const targetNodeIds = rec.nodeIds.slice();
+    if (targetNodeIds.length === 0) return { removedNodeIds: [] };
     const reason = opts?.reason ?? 'cleared for in-place retrain';
     const clearStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    for (let i = 0; i < removedNodeIds.length; i++) {
-      const nodeId = removedNodeIds[i]!;
+    /** Only the nodes the graph actually took the delete on. */
+    const removedNodeIds: string[] = [];
+    /** Nodes the engine REFUSED to delete, with its own error text. */
+    const refused: Array<{ nodeId: string; errors: string[] }> = [];
+    for (let i = 0; i < targetNodeIds.length; i++) {
+      const nodeId = targetNodeIds[i]!;
+      // Captured BEFORE the tombstone rewrite below, so a refused delete can be
+      // rolled back to the user's actual step text instead of being left
+      // reading `__gn-cleared:<stamp>:<i>:<id>__`.
+      const originalContent = this.opts.adapter.getFullNodeContent(g.handle, nodeId);
       // ── Dedup-table release pass ────────────────────────────────────────
       // Rewrite the node's content to a unique tombstone BEFORE soft-deleting.
       // The SDK keeps a content-hash dedup table covering every node — even
@@ -5189,27 +6946,66 @@ export class GraphnosisHost {
       // and the node won't surface in recall. The downside is just that the
       // next insert with identical content may hit dedup and need the
       // graphnosis-impl.ts resurrection fallback to recover.
+      //
+      // `tombstoneId` is where the delete below must land. On the installed
+      // 0.8.0 the edit is in place and it is just `nodeId`; from SDK 0.10.0 the
+      // edit RETIRES `nodeId` and mints the tombstone onto a new node, so
+      // deleting `nodeId` would soft-delete an already-retired husk and leave
+      // the `__gn-cleared:…` tombstone ALIVE, claimed by no source — an orphan
+      // that surfaces in recall until `purgeOrphanNodes` happens to sweep it.
+      let tombstoneId = nodeId;
       try {
-        await this.opts.adapter.applyCorrection(g.handle, {
+        const outcome = await this.opts.adapter.applyCorrection(g.handle, {
           kind: 'edit',
           nodeId,
           content: `__gn-cleared:${clearStamp}:${i}:${nodeId}__`,
           reason: `${reason} (dedup-table release)`,
         });
+        if (outcome.applied && outcome.resultNodeId) tombstoneId = outcome.resultNodeId;
       } catch {
         // Edit refused — proceed to delete anyway. Resurrection fallback
         // in graphnosis-impl.ts will pick up the slack on next insert.
       }
-      try {
-        await this.opts.adapter.applyCorrection(g.handle, {
-          kind: 'delete',
-          nodeId,
-          reason,
-        });
-      } catch {
-        // Continue clearing even if one delete fails — orphaned node
-        // remains soft-alive in the graph but is no longer in source.nodeIds.
+      // ── A refused delete is NOT a cleared node ───────────────────────────
+      //
+      // The old `try/catch` here was dead code: the SDK reports a refusal by
+      // RETURNING `{ applied: false, errors: [...] }`, it does not throw. So
+      // the emit + `removeNode` below ran unconditionally and produced the
+      // exact state the comment claimed to tolerate — except worse than
+      // described, because the tombstone edit above had already rewritten the
+      // node's content. The user retrained a skill, was shown a clean new
+      // version, and the cortex kept a full-confidence node whose entire
+      // content is the literal string `__gn-cleared:1785…:3:AMWg8zC…__`, which
+      // recall and dig_deeper then hand to the model as a memory. The op-log
+      // meanwhile claimed a `deleteNode` that never happened, so replay on the
+      // peer had nothing to converge on.
+      const del = await this.opts.adapter.applyCorrection(g.handle, {
+        kind: 'delete',
+        nodeId: tombstoneId,
+        reason,
+      });
+      if (!del.applied) {
+        refused.push({ nodeId: tombstoneId, errors: del.errors });
+        // Undo the tombstone. The step survives as the user wrote it rather
+        // than as dedup-release scaffolding — that rewrite was only ever a
+        // means to the delete, and the delete is not happening.
+        let liveId = tombstoneId;
+        if (typeof originalContent === 'string' && originalContent.length > 0) {
+          const restore = await this.opts.adapter.applyCorrection(g.handle, {
+            kind: 'edit',
+            nodeId: tombstoneId,
+            content: originalContent,
+            reason: `${reason} (rolled back — delete refused)`,
+          });
+          if (restore.applied && restore.resultNodeId) liveId = restore.resultNodeId;
+        }
+        // Keep the source claiming whichever node is now LIVE, so the step is
+        // still reachable/ordered and is not left as purge bait. No-op on the
+        // installed 0.8.0, where nothing minted.
+        rebindNodeInSourceIndex(g.sourceIndex, nodeId, liveId);
+        continue;
       }
+      removedNodeIds.push(nodeId);
       this.oplogWriter.emit({
         graphId,
         op: 'deleteNode',
@@ -5225,13 +7021,33 @@ export class GraphnosisHost {
       graphId,
       op: 'reorderSource' as never,
       target: { kind: 'source', id: sourceId },
+      // What the source ACTUALLY holds now — hard-coding `[]` published an
+      // empty source while refused nodes were still listed in it.
       after: {
-        nodeIds: [],
+        nodeIds: g.sourceIndex.get(sourceId)?.nodeIds.slice() ?? [],
         ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
       },
     });
     g.dirty = true;
     await this.save(graphId);
+    // ── Fail the CLEAR, so the caller does not retrain on top of it ────────
+    //
+    // Every caller of this method (trainSkill's in-place retrain,
+    // repairHollowSkillSource, rollbackSkill's pre-restore clear,
+    // skill:saveFallback) follows it with a sequence of inserts. Returning a
+    // short `removedNodeIds` is not enough: none of them look at it, and a
+    // partial clear followed by a full insert is how a skill ends up holding
+    // TWO generations of steps and walking them both while the UI reports a
+    // clean TRAINED result. The state on disk is consistent (saved above) —
+    // what is refused is the caller's licence to treat the source as empty.
+    if (refused.length > 0) {
+      throw new Error(
+        `Could not clear source ${sourceId} for retrain: the memory engine declined to delete ` +
+        `${refused.length} of ${targetNodeIds.length} node(s) ` +
+        `(${refused[0]!.errors.join('; ') || 'no correction applied'}). ` +
+        `The existing steps are unchanged — retrain aborted rather than layered on top of them.`,
+      );
+    }
     // Defer relink — caller will populate the source and run their own
     // SOP edge linkers after the inserts are done.
     return { removedNodeIds };
@@ -5322,15 +7138,38 @@ export class GraphnosisHost {
     nodeId: string,
     contentPreview: string,
     newConfidence: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const g = this.graphs.get(graphId);
-    if (!g) return;
-    await this.opts.adapter.applyCorrection(g.handle, {
+    if (!g) return false;
+    const outcome = await this.opts.adapter.applyCorrection(g.handle, {
       kind: 'edit',
       nodeId,
       content: contentPreview,
       reason: 'brain:temporal-decay',
     });
+    // ── A refused decay must leave NO trace ────────────────────────────────
+    //
+    // The rebind below was already gated; the op-log emit was not, and that is
+    // the half-fix that makes this site look done. The SDK refuses by RETURNING
+    // `{ applied: false, errors: [...] }` — never by throwing — so an ungated
+    // emit writes an `editNode` event asserting a confidence the graph never
+    // took. That is precisely the log/graph divergence op-log replay cannot
+    // converge on: the peer replays a confidence change with no matching
+    // mutation to reconcile against, and the Recovery/History panel shows a
+    // decay that did not happen. This runs unattended on a daily timer, so
+    // nobody would ever see it.
+    if (!outcome.applied) {
+      console.error(
+        `[graphnosis-host] temporal decay refused for node[${redactId(nodeId)}] in ` +
+        `engram[${redactId(graphId)}]: ${outcome.errors.join('; ') || 'the SDK applied no correction'}`,
+      );
+      return false;
+    }
+    // In place on the installed 0.8.0, but from SDK 0.10.0 `edit` retires the
+    // target and mints a replacement — and a background decay pass silently
+    // orphaning the node it decayed is the worst version of this bug, because
+    // nobody is watching. Same rebind as the user-driven correction path.
+    rebindNodeInSourceIndex(g.sourceIndex, nodeId, outcome.resultNodeId);
     this.oplogWriter.emit({
       graphId,
       op: 'editNode',
@@ -5339,6 +7178,7 @@ export class GraphnosisHost {
     });
     g.dirty = true;
     await this.save(graphId);
+    return true;
   }
 
   /**
@@ -6857,10 +8697,14 @@ export class GraphnosisHost {
 
     // Full replay reconstructs the live source set from the entire log; tail
     // replay only applies deltas — never sweep sources absent from the tail slice.
+    //
+    // `forgetIncomplete` tracks whether every peer-originated forget actually
+    // landed. It gates the checkpoint below, and nothing else — see there.
+    let forgetIncomplete = false;
     if (!tailReplay) {
       for (const s of [...entry.sourceIndex.list()]) {
         if (!liveSources.has(s.sourceId)) {
-          await this.reconcileForgetSource(graphId, entry, s.sourceId);
+          if (!await this.reconcileForgetSource(graphId, entry, s.sourceId)) forgetIncomplete = true;
           dirty = true;
         }
       }
@@ -6868,14 +8712,14 @@ export class GraphnosisHost {
       for (const ev of graphEvents) {
         if (ev.op === 'forgetSource' && ev.target.kind === 'source') {
           if (entry.sourceIndex.get(ev.target.id)) {
-            await this.reconcileForgetSource(graphId, entry, ev.target.id);
+            if (!await this.reconcileForgetSource(graphId, entry, ev.target.id)) forgetIncomplete = true;
             dirty = true;
           }
         }
       }
     }
 
-    dirty = await this.replayNodeCorrectionsFromOplog(entry, graphEvents) || dirty;
+    dirty = await this.replayNodeCorrectionsFromOplog(entry, graphEvents, graphId) || dirty;
 
     if (dirty) {
       entry.dirty = true;
@@ -6883,6 +8727,24 @@ export class GraphnosisHost {
       this.invalidateOplogCache();
     }
 
+    // ── Do not mark work done that was not done ────────────────────────────
+    //
+    // The checkpoint is a promise that every event up to this watermark has
+    // been applied HERE. Advancing it past a forget the engine refused retires
+    // that event permanently: the user forgets a source on their laptop, the
+    // desktop's checkpoint says it replayed, and the content keeps surfacing in
+    // recall on the desktop forever with no source record and no UI affordance
+    // to remove it. Holding the checkpoint back costs a re-scan of the same
+    // tail next boot — reconcile is idempotent by construction (every branch
+    // above re-checks current state), so a retry is free and a lost forget is
+    // not.
+    if (forgetIncomplete) {
+      console.error(
+        `[graphnosis-host] oplog reconcile for engram[${redactId(graphId)}] left a peer forget ` +
+        `incomplete — holding the reconcile checkpoint back so it is retried on the next load.`,
+      );
+      return 'ran';
+    }
     await this.persistOplogReconcileCheckpoint(graphId, watermark);
     return 'ran';
   }
@@ -6919,26 +8781,53 @@ export class GraphnosisHost {
     });
   }
 
-  /** forgetSource during loadGraph reconcile — entry is not yet in graphs.set(). */
+  /**
+   * forgetSource during loadGraph reconcile — entry is not yet in graphs.set().
+   *
+   * Returns TRUE only when the peer's forget fully landed here. A `false` is
+   * what holds the reconcile checkpoint back; without it the caller marked the
+   * event processed forever (see `persistOplogReconcileCheckpoint`) and the
+   * peer's forget was silently lost on this device.
+   */
   private async reconcileForgetSource(
     graphId: GraphId,
     entry: LoadedGraph,
     sourceId: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const priorRecord = entry.sourceIndex.get(sourceId);
     const nodeIds = entry.sourceIndex.forget(sourceId);
+    const survivors: string[] = [];
+    let firstError = '';
     for (const nodeId of nodeIds) {
       const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
       if (!local || local.confidence <= 0.2) continue;
-      await this.opts.adapter.applyCorrection(entry.handle, {
+      const outcome = await this.opts.adapter.applyCorrection(entry.handle, {
         kind: 'delete',
         nodeId,
         reason: 'oplog-sync: source forgotten on peer device',
       });
+      if (!outcome.applied) {
+        if (!firstError) firstError = outcome.errors.join('; ');
+        survivors.push(nodeId);
+      }
+    }
+    if (survivors.length > 0) {
+      // The record was already dropped above, so the surviving nodes are live
+      // and claimed by nobody — `purgeOrphanNodes` bait, and recallable with no
+      // attribution. Restore the record around them; the retry on the next load
+      // (the checkpoint is held back) will find them exactly where it left them.
+      if (priorRecord) entry.sourceIndex.upsert({ ...priorRecord, nodeIds: survivors.slice() });
+      console.error(
+        `[graphnosis-host] oplog reconcile: peer forget of source ${sourceId} in ` +
+        `engram[${redactId(graphId)}] was declined for ${survivors.length} of ${nodeIds.length} ` +
+        `node(s) (${firstError || 'no correction applied'}).`,
+      );
+      return false;
     }
     if (priorRecord && nodeIds.length > 0) {
       // skip op-log emit — replaying existing history
     }
+    return true;
   }
 
   /** Advance per-engram reconcile checkpoint to the high-water of `events`. */
@@ -7102,7 +8991,16 @@ export class GraphnosisHost {
     for (const src of sources) {
       try {
         const result = await this.reingestSource(graphId, src.sourceId);
-        if (!result.skipped) {
+        if (result.refused) {
+          // This runs on LOAD, unattended, to rebuild a graph whose .gai came
+          // back empty. Counting a refusal here would suppress the "still 0
+          // nodes after materialize" warning below — the only signal that the
+          // engram did not come back.
+          console.error(
+            `[graphnosis-host] materialize bundle source refused engram[${redactId(graphId)}] ` +
+            `source[${redactId(src.sourceId)}]: ${result.reason}`,
+          );
+        } else if (!result.skipped) {
           reingested++;
           dirty = true;
         }
@@ -7132,38 +9030,16 @@ export class GraphnosisHost {
   private async replayNodeCorrectionsFromOplog(
     entry: LoadedGraph,
     graphEvents: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+    graphId: GraphId,
   ): Promise<boolean> {
-    let dirty = false;
-    for (const ev of graphEvents) {
-      if (ev.target.kind !== 'node') continue;
-      const nodeId = ev.target.id;
-      if (ev.op === 'deleteNode') {
-        const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
-        if (!local || local.confidence <= 0.2) continue;
-        await this.opts.adapter.applyCorrection(entry.handle, {
-          kind: 'delete',
-          nodeId,
-          reason: 'oplog-sync: deleted on peer device',
-        });
-        dirty = true;
-        continue;
-      }
-      if (ev.op !== 'editNode' && ev.op !== 'supersede') continue;
-      const after = ev.after as { content?: string; reason?: string } | undefined;
-      if (typeof after?.content !== 'string') continue;
-      const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
-      if (!local) continue;
-      const preview = after.content.slice(0, 200);
-      if (local.contentPreview === preview || local.contentPreview === after.content) continue;
-      await this.opts.adapter.applyCorrection(entry.handle, {
-        kind: ev.op === 'supersede' ? 'supersede' : 'edit',
-        nodeId,
-        content: after.content,
-        reason: String(after.reason ?? 'oplog-sync'),
-      });
-      dirty = true;
-    }
-    return dirty;
+    // `entry.sourceIndex` is not optional garnish: a replayed supersede mints a
+    // node on the installed SDK, and without the index the minted node is an
+    // orphan by `purgeOrphanNodes`' definition. `this` is the citation surface
+    // for the same reason — without it a peer-synced supersede leaves every
+    // skill citing the retired husk and the staleness signal dies.
+    return replayNodeCorrections(
+      this.opts.adapter, entry.handle, graphEvents, entry.sourceIndex, this, graphId,
+    );
   }
 
   // ── Recovery ────────────────────────────────────────────────────────────

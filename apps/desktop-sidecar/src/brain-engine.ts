@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { detectPolicyContradictions } from '@graphnosis-app/core';
 import type { GraphnosisHost } from './host.js';
+import type { CorrectionOutcome } from './graphnosis-impl.js';
 import type { LocalLlm } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
 import { VitalityScorer, type VitalityDetailedReport, type VitalityReport } from './vitality.js';
@@ -39,6 +40,27 @@ import {
 /** The result of a federated recall — derived from the host so brain-engine
  *  needn't import the secure-sync federation types directly. */
 type RecallResult = Awaited<ReturnType<GraphnosisHost['recall']>>;
+
+/**
+ * What a review-queue resolution actually did.
+ *
+ * `resolveContradictionPair` and `resolveDuplicatePair` both used to return
+ * `Promise<void>`, which made it IMPOSSIBLE for their callers to tell a
+ * resolution that landed from one the graph refused — the SDK reports a refused
+ * correction by returning `{ applied: 0, errors: [...] }`, never by throwing.
+ * So `ipc` answered `{ ok: true }` and the MCP `resolve_contradiction` tool told
+ * the model "kept A, superseded B (soft-deleted, recoverable)" for deletes that
+ * never happened, while the card left the queue for good.
+ *
+ * Widening the return type is the same move `GraphnosisAdapter.applyCorrection`
+ * made when it stopped returning `void`: callers are not obliged to inspect the
+ * result, but they can no longer fail to receive it.
+ */
+export interface BrainResolveResult {
+  ok: boolean;
+  /** Present only when `ok` is false — the engine's own refusal text. */
+  reason?: string;
+}
 
 /**
  * A deduplication the brain decided it can do autonomously — no human
@@ -1292,9 +1314,9 @@ export class BrainEngine {
     id: string,
     action: 'keep-a' | 'keep-b' | 'mark-debate' | 'dismiss',
     opts?: { triggeredBy?: string },
-  ): Promise<void> {
+  ): Promise<BrainResolveResult> {
     const c = this.contradictionPairs.find((x) => x.id === id);
-    if (!c) return;
+    if (!c) return { ok: false, reason: 'no such contradiction pair' };
     const now = Date.now();
     // Defaults to the in-app user action; the MCP resolve tool passes
     // 'mcp:resolve_contradiction' so the audit trail never claims the user
@@ -1303,8 +1325,9 @@ export class BrainEngine {
     if (action === 'keep-a' || action === 'keep-b') {
       const loserId = action === 'keep-a' ? c.nodeB : c.nodeA;
       const actor = triggeredBy === 'user:correct' ? 'user' : 'approved AI client';
+      let outcome: CorrectionOutcome | undefined;
       try {
-        await this.host.applyCorrection(c.graphId, {
+        [outcome] = await this.host.applyCorrection(c.graphId, {
           edits: [{
             kind: 'delete',
             nodeId: loserId,
@@ -1313,7 +1336,31 @@ export class BrainEngine {
         }, { triggeredBy });
       } catch (err) {
         console.error('[brain] resolveContradictionPair failed:', err);
-        return;
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+      // The catch above is not the failure channel that matters. `deleteNode`
+      // funnels through the SDK's `correct()`, which on refusal RETURNS
+      // `{ applied: 0, errors: ['Node <id> not found'] }` and never throws — so
+      // while this outcome was discarded, everything below ran on a delete the
+      // graph declined: the pair was filtered out of the persisted queue, a
+      // resolved ContradictionPair was pushed into contradictionHistory
+      // claiming the loser was removed, and the callers answered `{ ok: true }`
+      // (ipc `brain:resolveContradictionPair`) / "kept A, superseded B
+      // (soft-deleted, recoverable)" (the MCP `resolve_contradiction` tool).
+      // Both contradictory memories stayed live and kept surfacing in recall,
+      // and because the pair had left the queue it could never be re-offered.
+      //
+      // Bail BEFORE any of that. The pair stays queued, so the user (or the
+      // model) is asked again rather than told a lie once.
+      if (!outcome?.applied) {
+        const why = outcome?.errors.length
+          ? outcome.errors.join('; ')
+          : 'the host returned no outcome for the delete';
+        console.error(
+          `[brain] contradiction resolve refused for node ${loserId}: ${why}`
+          + ' — both sides are still live; the pair stays in the review queue',
+        );
+        return { ok: false, reason: `delete refused: ${why}` };
       }
     }
     const resolved: ContradictionPair = {
@@ -1332,6 +1379,7 @@ export class BrainEngine {
     this.contradictionPairs = this.contradictionPairs.filter((x) => x.id !== id);
     void this.persistContradictionQueue();
     this.vitality.invalidate();
+    return { ok: true };
   }
 
   /** On-demand compare of two ingested sources (in-app, ungated). */
@@ -1574,32 +1622,64 @@ export class BrainEngine {
    * `keep-both` — the user judged them genuinely distinct. Just drop the
    *               pair from the needs-review queue.
    */
-  async resolveDuplicatePair(id: string, action: 'merge' | 'keep-both'): Promise<void> {
+  async resolveDuplicatePair(id: string, action: 'merge' | 'keep-both'): Promise<BrainResolveResult> {
     const c = this.duplicatePairs.find(x => x.id === id);
-    if (!c) return;
+    if (!c) return { ok: false, reason: 'no such duplicate pair' };
     if (action === 'merge') {
       const nodes = this.host.listNodes(c.graphId);
       const a = nodes.find(n => n.id === c.nodeA);
       const b = nodes.find(n => n.id === c.nodeB);
-      if (a && b) {
-        const aWins =
-          a.confidence > b.confidence ||
-          (a.confidence === b.confidence && a.id < b.id);
-        const supersededId = aWins ? b.id : a.id;
-        try {
-          await this.host.applyCorrection(c.graphId, {
-            edits: [{
-              kind: 'delete',
-              nodeId: supersededId,
-              reason: 'user-confirmed duplicate (Check-in review)',
-            }],
-          }, { triggeredBy: 'user:correct' });
-        } catch (err) {
-          console.error('[brain] resolveDuplicatePair merge failed:', err);
-        }
+      // A pair whose nodes are no longer both in the graph cannot be merged.
+      // This used to fall through to the unconditional dismiss below, which
+      // consumed the card for a merge that provably could not have run.
+      if (!a || !b) {
+        console.error(
+          `[brain] duplicate merge skipped for pair ${id}: `
+          + `${!a ? c.nodeA : c.nodeB} is no longer in engram[${redactId(c.graphId)}]`
+          + ' — the card stays in the Check-in deck',
+        );
+        return { ok: false, reason: 'one side of the pair is no longer in the graph' };
+      }
+      const aWins =
+        a.confidence > b.confidence ||
+        (a.confidence === b.confidence && a.id < b.id);
+      const supersededId = aWins ? b.id : a.id;
+      let outcome: CorrectionOutcome | undefined;
+      try {
+        [outcome] = await this.host.applyCorrection(c.graphId, {
+          edits: [{
+            kind: 'delete',
+            nodeId: supersededId,
+            reason: 'user-confirmed duplicate (Check-in review)',
+          }],
+        }, { triggeredBy: 'user:correct' });
+      } catch (err) {
+        console.error('[brain] resolveDuplicatePair merge failed:', err);
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+      // Both the old success path AND the old catch path fell through to
+      // `dismissDuplicatePair(id)` below, so the Check-in card disappeared
+      // either way — and a refusal never even reached the catch, because the
+      // SDK returns `{ applied: 0, errors: [...] }` instead of throwing. The
+      // user confirmed two memories are the same fact, the card was consumed
+      // with `{ ok: true }`, and both copies stayed live. Worse, the dismissal
+      // is permanent: the deck never offers that pair again, so the duplicate
+      // became unfixable through the UI.
+      //
+      // Keep the card when the delete did not land.
+      if (!outcome?.applied) {
+        const why = outcome?.errors.length
+          ? outcome.errors.join('; ')
+          : 'the host returned no outcome for the delete';
+        console.error(
+          `[brain] duplicate merge refused for node ${supersededId}: ${why}`
+          + ' — both copies are still live; the card stays in the Check-in deck',
+        );
+        return { ok: false, reason: `delete refused: ${why}` };
       }
     }
     this.dismissDuplicatePair(id);
+    return { ok: true };
   }
 
   async runDevelop(params: {
@@ -1973,6 +2053,37 @@ export class BrainEngine {
     const yieldToLoop = (): Promise<void> =>
       new Promise<void>((resolve) => setImmediate(resolve));
 
+    // THE CAPABILITY STATE — the same one `mcp/handlers-audit.ts`,
+    // `edge-prediction.ts` and `buildGnnContext` read, and the one this file
+    // did not read at all until now.
+    //
+    // Both tiers below (duplicate pairs at >= DUPLICATE_MIN_SIM, auto-linked
+    // "related" edges in [AUTOLINK_MIN_SIM, DUPLICATE_MIN_SIM)) are decided
+    // ENTIRELY by cosines over `getNodeEmbeddings`, whose vectors are sha256
+    // noise on a placeholder adapter. This scan does not merely report — it
+    // soft-deletes the superseded side of an auto-healed pair and weaves
+    // permanent edges into the `.gai`.
+    //
+    // It was safe until now only by ARITHMETIC ACCIDENT: `duplicate-scan.ts`
+    // uses `@graphnosis-app/core`'s `cosine`, which DOES normalise, and the
+    // stub's normalised noise measures mean -0.0003 / sd 0.1774 over 44,850
+    // unrelated pairs — so AUTOLINK_MIN_SIM 0.78 sits 4.40 sigma out and the
+    // scan finds nothing. That is a property of the numbers, not a guard:
+    // lower the band (or re-dimension the stub) and unguarded garbage lands
+    // in the graph. Measured through this exact helper on stub vectors:
+    // minSim 0.5 -> 4 pairs, 0.4 -> 38, 0.3 -> 79, 0.2 -> 146.
+    //
+    // Shape is `buildGnnContext`'s: the map is simply never consulted, so
+    // every other per-run behaviour (bookkeeping, vitality, the healing
+    // review tail) is unchanged and `found` / `healActions` stay empty.
+    const semanticAvailable = this.host.semanticSimilarityAvailable();
+    if (!semanticAvailable) {
+      dbg(
+        '[brain] duplicate scan: embedding tiers skipped — ' +
+        this.host.semanticUnavailableReason(),
+      );
+    }
+
     try {
       for (const graphId of this.selectDuplicateScanEngrams(this.host.listGraphs())) {
         if (this.host.isBrainMutationsPaused(graphId)) continue;
@@ -1991,7 +2102,9 @@ export class BrainEngine {
           if (active.length < 2) continue;
 
           const nodeById = new Map(active.map(n => [n.id, n]));
-          const allEmbs = this.host.getNodeEmbeddings(graphId);
+          const allEmbs = semanticAvailable
+            ? this.host.getNodeEmbeddings(graphId)
+            : new Map<string, number[]>();
           // Restrict to active, content-bearing nodes that actually have a
           // vector — embeddings live in a separate index, see
           // graphnosis-impl.getNodeEmbeddings.
@@ -2167,8 +2280,11 @@ export class BrainEngine {
       let healedCount = 0;
       for (const act of healActions) {
         try {
-          await this.runAutoHeal(act);
-          healedCount += 1;
+          // Count only the heals that LANDED. `runAutoHeal` returns false when
+          // the graph refused the delete (it logs the engine's reason and
+          // writes no journal record), so this tally — surfaced to the user as
+          // "autonomously healed N duplicate(s)" — can no longer overcount.
+          if (await this.runAutoHeal(act)) healedCount += 1;
         } catch (err) {
           console.error(`[brain] auto-heal failed for ${act.supersededId}:`, err);
         }
@@ -2224,15 +2340,36 @@ export class BrainEngine {
    *
    * This appends to the in-memory journal only; the caller batches the
    * single `saveHealingJournal` write per scan run.
+   *
+   * RETURNS whether the delete landed. It used to return `void`, and the delete
+   * outcome was discarded — so a refused delete (the SDK returns
+   * `{ applied: 0, errors: [...] }`; it does not throw, which is why the
+   * caller's try/catch never saw one) still pushed a HealingRecord naming
+   * survivingNodeId/supersededNodeId, still fired `emitActivity('auto-heal')`,
+   * and still counted toward the "autonomously healed N duplicate(s)" tally the
+   * Autonomous Brain tab and `brain:getHealingJournal` show the user. The
+   * duplicates were still there.
+   *
+   * The second-order damage is why this one matters beyond the wrong number:
+   * `runHealingReview` reads those journal records as ground truth and can fire
+   * a `supersede` on the SURVIVOR to "restore" a node that was never removed.
    */
-  private async runAutoHeal(act: HealAction): Promise<void> {
-    await this.host.applyCorrection(act.graphId, {
+  private async runAutoHeal(act: HealAction): Promise<boolean> {
+    const [outcome] = await this.host.applyCorrection(act.graphId, {
       edits: [{
         kind: 'delete',
         nodeId: act.supersededId,
         reason: `autonomous-healing (${act.rule}): ${act.decisionReason}`,
       }],
     }, { triggeredBy: 'brain:consolidation' });
+    if (!outcome?.applied) {
+      console.error(
+        `[brain] auto-heal delete refused for node ${act.supersededId}: `
+        + (outcome?.errors.length ? outcome.errors.join('; ') : 'the host returned no outcome')
+        + ' — no healing-journal record written; the duplicate is still live',
+      );
+      return false;
+    }
     this.healingJournal.push(makeHealingRecord({
       graphId: act.graphId,
       healedAt: Date.now(),
@@ -2245,6 +2382,7 @@ export class BrainEngine {
       decisionReason: act.decisionReason,
     }));
     this.emitActivity('auto-heal', 'done');
+    return true;
   }
 
   /**
@@ -2333,6 +2471,74 @@ export class BrainEngine {
    * later heal superseded it), there is nothing left to re-judge — we
    * record `confirmed` with an explanatory note and skip the LLM call.
    */
+  /**
+   * The one place a healing-review verdict rewrites the survivor.
+   *
+   * Two things both `reversed` and `resynthesized` got wrong, and both are
+   * user-visible:
+   *
+   *   1. THE OUTCOME WAS DISCARDED. `supersede` reports a refusal by returning
+   *      `{ applied: 0, errors: [...] }` — it does not throw — so the verdict
+   *      was returned unconditionally, `runHealingReview` stamped the record
+   *      `llmReviewed` (never re-judged), counted it as `overturned`, and the
+   *      Brain panel told the user the brain had caught its own mistake and
+   *      swapped in the right memory. Nothing had changed, and the LLM's
+   *      combinedText was thrown away with no retry.
+   *
+   *      A refusal is reachable with a perfectly live survivor: a heal record
+   *      whose `supersededContentSnapshot` is empty makes the engine answer
+   *      "Supersede requires nodeId and content" (verified against the
+   *      installed 0.8.0), and the survivor can also be retired in the async
+   *      gap while the local LLM is thinking.
+   *
+   *      On a refusal the caller records `confirmed` with the engine's own
+   *      words rather than retrying forever — matching how `reviewOneHeal`
+   *      already handles a heal it cannot re-judge (deleted engram, missing
+   *      survivor), and keeping the bounded per-run LLM budget for records that
+   *      can actually be reviewed.
+   *
+   *   2. THE RECORD KEPT NAMING THE HUSK. `supersede` MINTS a new node on the
+   *      installed 0.8.0: the target drops to confidence 0.3 with `validUntil`
+   *      in the past and a fresh node carries the content (verified live). A
+   *      record still pointing at the old id fails `reviewOneHeal`'s own
+   *      survivor-active check on any later pass, which would silently answer
+   *      `confirmed` with "survivor node is no longer in the graph" — the brain
+   *      reporting that it double-checked a merge it never looked at. Rebinding
+   *      to `outcome.resultNodeId` is the same obligation `host.applyCorrection`
+   *      discharges for the source index.
+   */
+  private async applyHealingReviewSupersede(
+    record: HealingRecord,
+    content: string,
+    reason: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const [outcome] = await this.host.applyCorrection(record.graphId, {
+      edits: [{
+        kind: 'supersede',
+        nodeId: record.survivingNodeId,
+        content,
+        reason,
+      }],
+    }, { triggeredBy: 'brain:consolidation' });
+    if (!outcome?.applied) {
+      const why = outcome?.errors.length
+        ? outcome.errors.join('; ')
+        : 'the host returned no outcome for the supersede';
+      console.error(
+        `[brain] healing-review supersede refused for node ${record.survivingNodeId} `
+        + `(heal ${record.id}): ${why} — the memory is unchanged`,
+      );
+      return { ok: false, reason: why };
+    }
+    // Follow the mint. The caller persists the journal right after this
+    // returns, so the rebound id is what lands on disk. The content SNAPSHOTS
+    // stay frozen on purpose — they are the audit of what the deterministic
+    // rule saw, and `llmVerdict`/`llmNote` already record that the review
+    // overrode it.
+    record.survivingNodeId = outcome.resultNodeId;
+    return { ok: true };
+  }
+
   private async reviewOneHeal(
     llm: LocalLlm,
     record: HealingRecord,
@@ -2391,20 +2597,21 @@ export class BrainEngine {
       typeof parsed.combinedText === 'string' ? parsed.combinedText.trim() : '';
 
     switch (parsed.verdict) {
-      case 'reversed':
+      case 'reversed': {
         // Merge stands, but the rule kept the wrong node. Supersede the
         // survivor with the superseded content: the survivor is soft-
         // deleted, a new node carries the content that should have won,
         // and `supersede` preserves the audit lineage.
-        await this.host.applyCorrection(record.graphId, {
-          edits: [{
-            kind: 'supersede',
-            nodeId: record.survivingNodeId,
-            content: record.supersededContentSnapshot,
-            reason: `healing-review: reversed (heal ${record.id})`,
-          }],
-        }, { triggeredBy: 'brain:consolidation' });
+        const applied = await this.applyHealingReviewSupersede(
+          record,
+          record.supersededContentSnapshot,
+          `healing-review: reversed (heal ${record.id})`,
+        );
+        if (!applied.ok) {
+          return { verdict: 'confirmed', note: `supersede refused: ${applied.reason}` };
+        }
         return { verdict: 'reversed', note: note ?? 'deterministic rule kept the wrong node' };
+      }
 
       case 'resynthesized': {
         if (combinedText.length === 0) {
@@ -2415,14 +2622,14 @@ export class BrainEngine {
             note: 'LLM proposed a resynthesis but returned no combined text',
           };
         }
-        await this.host.applyCorrection(record.graphId, {
-          edits: [{
-            kind: 'supersede',
-            nodeId: record.survivingNodeId,
-            content: combinedText,
-            reason: `healing-review: resynthesized (heal ${record.id})`,
-          }],
-        }, { triggeredBy: 'brain:consolidation' });
+        const applied = await this.applyHealingReviewSupersede(
+          record,
+          combinedText,
+          `healing-review: resynthesized (heal ${record.id})`,
+        );
+        if (!applied.ok) {
+          return { verdict: 'confirmed', note: `supersede refused: ${applied.reason}` };
+        }
         return { verdict: 'resynthesized', note: note ?? 'rewrote a cleaner combined memory' };
       }
 
@@ -2438,7 +2645,24 @@ export class BrainEngine {
           record.supersededContentSnapshot,
           `healing-review:unmerged:${record.id}`,
         );
-        const restoredId = restoredIds[0];
+        // NOT `restoredIds[0]`. `addLooseContent` goes through the full ingest
+        // chunker, which mints a document/section scaffold ahead of the
+        // content node — a one-sentence restore came back as three ids on a
+        // live probe, index 0 being a `document` node whose entire content is
+        // the literal string "Untitled". That id then flowed into
+        // `duplicatePairs[].nodeB` and `maybeEnqueuePolarityContradiction`, so
+        // the Check-in card asked the user to adjudicate a memory against an
+        // empty scaffold node — and it is content- and graph-state dependent,
+        // so it does not reproduce on every restore.
+        //
+        // Pick the node that actually carries the restored text; fall back to
+        // the LAST id, which is where the chunker puts the content when an
+        // exact match fails (e.g. the chunker normalised whitespace).
+        const restoredId =
+          restoredIds.find(
+            (nid) => this.host.getFullNodeContent(record.graphId, nid)
+              === record.supersededContentSnapshot,
+          ) ?? restoredIds.at(-1);
         if (restoredId !== undefined) {
           this.duplicatePairs.push({
             id: randomUUID(),
@@ -2695,11 +2919,28 @@ export class BrainEngine {
         break;
       }
       try {
-        const topNodes = await withEmbedding(() => this.host.searchNodes(
-          graphId,
-          'important facts decisions goals plans key information',
-          30,
-        ), 'brain:insight');
+        // The SELECTION is the claim here: whichever 30 nodes come back are
+        // presented to the LLM as this engram's "important facts", and every
+        // insight it writes is about them. `searchNodes` takes the hybrid path
+        // whenever an embedding index exists, and a placeholder adapter always
+        // provides one — with the engine's unnormalised seed scorer measuring
+        // up to 15.6 against a TF-IDF component capped at 1.0, the embedding
+        // noise DOMINATES the ranking outright. So gate it like every other
+        // consumer and rank lexically instead; the probe is a fixed keyword
+        // string, which is exactly what TF-IDF is for. An engram with no
+        // usable lexical index falls through the `< 5` guard below, which is
+        // the honest outcome rather than an insight sourced from sha256.
+        const topNodes = this.host.semanticSimilarityAvailable()
+          ? await withEmbedding(() => this.host.searchNodes(
+            graphId,
+            'important facts decisions goals plans key information',
+            30,
+          ), 'brain:insight')
+          : await withEmbedding(async () => this.host.searchNodesLexical(
+            graphId,
+            'important facts decisions goals plans key information',
+            30,
+          ), 'brain:insight');
         if (topNodes.length < 5) {
           engramsSkippedNoData++;
           continue;

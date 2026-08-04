@@ -58,12 +58,52 @@ export interface SignedEvidencePackExport {
   detachedSig: { manifestHash: string; signatures: EvidencePackSignature[] };
 }
 
+/**
+ * What the graph actually did with one source, in a word.
+ *
+ * `purged: boolean` on its own cannot say "some of it is still here", and
+ * `forgetSource` can come back having deleted only part of a source (the SDK
+ * returns refusals, it never throws — see `host.forgetSource`). A two-valued
+ * field forces that third outcome into one of the two lies: "purged" (content
+ * still live) or "not purged" (content already destroyed).
+ */
+export type RetentionPurgeStatus =
+  /** The graph destroyed every node of this source. */
+  | 'purged'
+  /** Some nodes destroyed, some REFUSED — refused content is still live. */
+  | 'partially-purged'
+  /** Nothing was destroyed: every delete refused, or the purge errored. */
+  | 'not-purged'
+  /** Dry run — this source is a candidate; nothing was attempted. */
+  | 'candidate'
+  /** Not attempted: legal hold, or an active obligation. */
+  | 'skipped';
+
 export interface RetentionPurgeItem {
   graphId: string;
   sourceId: string;
   ingestedAt: number;
   exported: boolean;
+  /**
+   * TRUE only when the graph destroyed EVERY node of the source. A partial
+   * purge is `false` here and `partially-purged` in `purgeStatus`; never read
+   * this field as "nothing survived" without checking `purgeStatus`.
+   */
   purged: boolean;
+  /** The honest outcome. Always present. */
+  purgeStatus: RetentionPurgeStatus;
+  /**
+   * One sentence a regulator can read verbatim, leading with the outcome in
+   * upper case. A partial purge must be legible as partial without anyone
+   * having to compare two counts.
+   */
+  purgeStatement: string;
+  /** Nodes the graph destroyed. Absent when nothing was attempted (dry run/skip). */
+  purgedNodeCount?: number;
+  /** Nodes the graph REFUSED to delete — still live in the engram. */
+  refusedNodeCount?: number;
+  /** Ids of the surviving nodes, so the refusal can be chased down. */
+  refusedNodeIds?: string[];
   skippedReason?: string;
 }
 
@@ -71,6 +111,14 @@ export interface RetentionPurgeResult {
   dryRun: boolean;
   complianceEnabled: boolean;
   items: RetentionPurgeItem[];
+  /**
+   * TRUE when at least one source was attempted and not fully destroyed.
+   * A consumer that only renders `items.length` ("N sources affected") must
+   * check this before presenting the run as a completed purge.
+   */
+  incomplete: boolean;
+  /** Run-level sentence for headers, toasts and report covers. */
+  summary: string;
 }
 
 export interface RecallAsOfMatch {
@@ -256,6 +304,84 @@ async function writeRetentionExportSlice(
   await fs.writeFile(target, JSON.stringify(slice, null, 2), { mode: 0o600 });
 }
 
+/**
+ * Write what the graph DID onto the record, in the words a regulator reads.
+ *
+ * `host.forgetSource` returns the set it actually deleted plus `refusedNodeIds`
+ * — the SDK signals a declined correction by returning `{applied:false}`, never
+ * by throwing. Anything that stamps `purged: true` from the mere absence of an
+ * exception is asserting the destruction of content that may still be live.
+ */
+function stampPurgeOutcome(
+  item: RetentionPurgeItem,
+  purgedNodeCount: number,
+  refusedNodeIds: readonly string[],
+): void {
+  const refused = refusedNodeIds.length;
+  const total = purgedNodeCount + refused;
+  item.purgedNodeCount = purgedNodeCount;
+  item.refusedNodeCount = refused;
+
+  if (refused === 0) {
+    item.purged = true;
+    item.purgeStatus = 'purged';
+    item.purgeStatement =
+      `PURGED — the memory engine destroyed all ${total} node(s) of this source; `
+      + `no content from it remains in engram ${item.graphId}.`;
+    return;
+  }
+
+  item.purged = false;
+  item.refusedNodeIds = refusedNodeIds.slice();
+  const ids = refusedNodeIds.join(', ');
+  if (purgedNodeCount === 0) {
+    item.purgeStatus = 'not-purged';
+    item.purgeStatement =
+      `NOT PURGED — the memory engine REFUSED all ${total} delete(s). No content was destroyed; `
+      + `every node of this source is STILL PRESENT in engram ${item.graphId} (refused node ids: ${ids}).`;
+    return;
+  }
+  item.purgeStatus = 'partially-purged';
+  item.purgeStatement =
+    `PARTIALLY PURGED — the memory engine destroyed ${purgedNodeCount} of ${total} node(s) and `
+    + `REFUSED ${refused}. This source was NOT destroyed: ${refused} node(s) are STILL PRESENT `
+    + `in engram ${item.graphId} (refused node ids: ${ids}).`;
+}
+
+/** Run-level headline. A partial run must never read as a completed purge. */
+function summarizeRetentionRun(dryRun: boolean, items: readonly RetentionPurgeItem[]): {
+  incomplete: boolean;
+  summary: string;
+} {
+  const skipped = items.filter((i) => i.purgeStatus === 'skipped').length;
+  const skippedTail = skipped > 0 ? `, ${skipped} skipped (legal hold or active obligation)` : '';
+  if (dryRun) {
+    const candidates = items.filter((i) => i.purgeStatus === 'candidate').length;
+    return {
+      incomplete: false,
+      summary: `Dry run — ${candidates} source(s) past their retention TTL${skippedTail}. Nothing was destroyed.`,
+    };
+  }
+  const attempted = items.filter((i) => i.purgeStatus !== 'candidate' && i.purgeStatus !== 'skipped');
+  const destroyed = attempted.filter((i) => i.purged).length;
+  const partial = attempted.filter((i) => i.purgeStatus === 'partially-purged').length;
+  const refused = attempted.filter((i) => i.purgeStatus === 'not-purged').length;
+  if (partial + refused === 0) {
+    return {
+      incomplete: false,
+      summary: `Purge complete — ${destroyed} of ${attempted.length} source(s) destroyed${skippedTail}.`,
+    };
+  }
+  return {
+    incomplete: true,
+    summary:
+      `INCOMPLETE PURGE — only ${destroyed} of ${attempted.length} source(s) were destroyed`
+      + `${partial > 0 ? `, ${partial} partially purged` : ''}`
+      + `${refused > 0 ? `, ${refused} refused outright` : ''}${skippedTail}. `
+      + `Content named in those records is STILL PRESENT — this run is not proof of destruction.`,
+  };
+}
+
 export async function runRetentionPurge(
   host: GraphnosisHost,
   cortexDir: string,
@@ -267,7 +393,13 @@ export async function runRetentionPurge(
   const items: RetentionPurgeItem[] = [];
 
   if (!complianceEnabled) {
-    return { dryRun, complianceEnabled: false, items };
+    return {
+      dryRun,
+      complianceEnabled: false,
+      items,
+      incomplete: false,
+      summary: 'Compliance retention is disabled — no source was examined and nothing was destroyed.',
+    };
   }
 
   const graphs = host.graphsWithMetadata();
@@ -289,14 +421,22 @@ export async function runRetentionPurge(
       if (src.legalHold) {
         items.push({
           graphId, sourceId: src.sourceId, ingestedAt: src.ingestedAt,
-          exported: false, purged: false, skippedReason: 'source-legal-hold',
+          exported: false, purged: false,
+          purgeStatus: 'skipped', skippedReason: 'source-legal-hold',
+          purgeStatement:
+            'NOT PURGED — skipped: this source is under legal hold. Nothing was destroyed and all '
+            + 'of its content is STILL PRESENT.',
         });
         continue;
       }
       if (host.obligationIndex.hasActiveForSource(graphId, src.sourceId, now)) {
         items.push({
           graphId, sourceId: src.sourceId, ingestedAt: src.ingestedAt,
-          exported: false, purged: false, skippedReason: 'active-obligation',
+          exported: false, purged: false,
+          purgeStatus: 'skipped', skippedReason: 'active-obligation',
+          purgeStatement:
+            'NOT PURGED — skipped: this source still carries an active obligation. Nothing was '
+            + 'destroyed and all of its content is STILL PRESENT.',
         });
         continue;
       }
@@ -308,6 +448,10 @@ export async function runRetentionPurge(
         ingestedAt: src.ingestedAt,
         exported: false,
         purged: false,
+        purgeStatus: 'candidate',
+        purgeStatement:
+          'NOT PURGED — dry run: this source is past its retention TTL and would be purged. '
+          + 'Nothing was destroyed.',
       };
 
       if (dryRun) {
@@ -334,13 +478,36 @@ export async function runRetentionPurge(
         item.exported = true;
       }
 
-      await host.forgetSource(graphId, src.sourceId, { triggeredBy: 'compliance:retention' });
-      item.purged = true;
+      // `forgetSource` returns what it DID: `nodeIds` is the deleted set and
+      // `refusedNodeIds` names the nodes the engine declined to delete — which
+      // are left LIVE, with the source record restored around them. Stamping
+      // `purged: true` on the absence of a throw asserted a destruction that
+      // never happened, on the one artifact produced as proof of destruction.
+      try {
+        const forgotten = await host.forgetSource(graphId, src.sourceId, { triggeredBy: 'compliance:retention' });
+        stampPurgeOutcome(item, forgotten.nodeIds.length, forgotten.refusedNodeIds ?? []);
+        if (!item.purged) {
+          console.error(
+            `[compliance] retention purge of ${graphId}/${src.sourceId}: ${item.purgeStatement}`,
+          );
+        }
+      } catch (e: unknown) {
+        // A throw mid-sweep used to abandon the whole run, losing the record of
+        // every source already destroyed. Record the failure and carry on: an
+        // unpurged source with a record saying so beats no record at all.
+        const msg = e instanceof Error ? e.message : String(e);
+        item.purged = false;
+        item.purgeStatus = 'not-purged';
+        item.purgeStatement =
+          `NOT PURGED — the purge of this source FAILED (${msg}). Treat every node of this source `
+          + `as STILL PRESENT in engram ${graphId} until a later run reports otherwise.`;
+        console.error(`[compliance] retention purge of ${graphId}/${src.sourceId} failed: ${msg}`);
+      }
       items.push(item);
     }
   }
 
-  return { dryRun, complianceEnabled: true, items };
+  return { dryRun, complianceEnabled: true, items, ...summarizeRetentionRun(dryRun, items) };
 }
 
 function tokenizeQuery(query: string): string[] {

@@ -44,13 +44,28 @@
  *                              ? [result.affectedNodeId] : []`). It is not
  *                              produced by any package installed here.
  *
+ * WHICH TESTS BELOW ARE COVERAGE AND WHICH ARE A CONTRACT — 3 of 11.
+ * -----------------------------------------------------------------
+ * The three that drive `sdkVersion: '0.11.0'` and assert on a MINTED id are
+ * registered through `test.contract`, so their names carry a `[CONTRACT-ONLY:
+ * …]` prefix in the runner's output and the file prints a banner. Nothing
+ * installed produces that result shape, so a green on them says the code is
+ * ready for 0.11.0 — not that anything on this build behaves that way.
+ *
+ * The other eight are reachable today: three assert the INSTALLED 0.8.0 result
+ * shape, three the refusal path (which does not depend on the version), one the
+ * no-edit-needed short circuit, and one is a static read of the source text.
+ *
  * Run after build: node --test tests/indelible-edit-node-id.test.mjs
  */
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { contractLevelSuite } from './_contract-level.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GraphnosisImpl } from '../dist/graphnosis-impl.js';
+
+/** `test` = reachable on the installed SDK 0.8.0; `test.contract` = needs 0.11.0. */
+const test = contractLevelSuite('indelible-edit-node-id.test.mjs');
 
 /**
  * Minimal stand-in for the SDK's `Graphnosis` — only the surface
@@ -124,7 +139,7 @@ const SKILL_REF = 'skill:1730000000:demo-step';
 
 // ── singleNode: multi-chunk merge ───────────────────────────────────────────
 
-test('singleNode merge records the id the correction PRODUCED, not the one passed in', async () => {
+test.contract('singleNode merge records the id the correction PRODUCED, not the one passed in', async () => {
   // Simulated SDK 0.11.0 result shape (see file header) — the installed 0.8.0
   // cannot produce a differing id, so this is the only way to exercise it.
   const instance = makeInstance({ chunks: ['Step 4. Collect the letters of support, etc.', 'and verify each one.'], sourceRef: SKILL_REF, sdkVersion: '0.11.0' });
@@ -185,7 +200,7 @@ test('a REFUSED singleNode merge is surfaced instead of swallowed', async () => 
 
 // ── singleNode: single-chunk verbatim rewrite (the site with `catch {}`) ─────
 
-test('singleNode verbatim rewrite records the produced id — the old code never updated it at all', async () => {
+test.contract('singleNode verbatim rewrite records the produced id — the old code never updated it at all', async () => {
   // Simulated SDK 0.11.0 result shape (see file header).
   const instance = makeInstance({ chunks: ['Step 4. Collect the letters of support, etc.'], sourceRef: SKILL_REF, sdkVersion: '0.11.0' });
   const impl = new GraphnosisImpl();
@@ -247,7 +262,7 @@ test('no edit is attempted when the single chunk already carries the verbatim te
 
 // ── the appendText sourceRef-artifact rewrite ───────────────────────────────
 
-test('the sourceRef-artifact rewrite records the produced id', async () => {
+test.contract('the sourceRef-artifact rewrite records the produced id', async () => {
   // appendText prepends a synthetic `# <sourceRef>` H1, so short content
   // collapses to artifact nodes whose content IS the raw sourceRef. The
   // adapter rewrites the first one to the real text instead of deleting it and

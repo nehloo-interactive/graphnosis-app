@@ -76,6 +76,42 @@ const WATCH_DEBOUNCE_MS = 1500;
 // files hit the .embcache + dedup as no-ops; only genuinely-missing ones land).
 const FULL_RESCAN_INTERVAL_MS = 30 * 60_000; // 30 min
 
+/**
+ * A mirror-mode delete the memory engine DECLINED.
+ *
+ * `host.forgetSource` never throws on a refusal — it RETURNS `refusedNodeIds`
+ * and restores the source record around the nodes it could not release. Both
+ * mirror paths below used to drop that answer, which is how mirror mode
+ * produced its two silent corruptions:
+ *
+ *   prune   — the file is gone from disk, so the ONLY thing that would ever
+ *             retry the delete is the next prune pass, and the pass keyed
+ *             itself off the file-map entry it had just deleted. Deleted
+ *             content stayed in the engram FOREVER, counted as pruned.
+ *   replace — the new copy was ingested and the old one stayed live beside it,
+ *             so one file surfaced twice in recall.
+ */
+type MirrorRefusal = {
+  sourceRef: string;
+  sourceId: string;
+  /** Node ids the engine declined to delete (the returned-refusal shape). */
+  refusedNodeIds?: string[];
+  /** A genuine throw — NOT the refusal channel. Kept distinct on purpose. */
+  error?: string;
+};
+
+/** One line the connector row can show for a mirror delete that did not land. */
+function mirrorRefusalSummary(refusals: MirrorRefusal[]): string | undefined {
+  if (refusals.length === 0) return undefined;
+  const names = refusals.slice(0, 3).map((r) => r.sourceRef).join(', ');
+  const more = refusals.length > 3 ? `, +${refusals.length - 3} more` : '';
+  return (
+    `Mirror mode: the memory engine declined to delete ${refusals.length} source(s) `
+    + `(${names}${more}). Those memories are STILL live in this engram and will keep `
+    + 'surfacing in recall. The next sync retries them.'
+  );
+}
+
 export class ConnectorManager {
   private running = new Map<string, RunningConnector>();
   private webhookServer: http.Server | null = null;
@@ -474,13 +510,18 @@ export class ConnectorManager {
         }
       }
       let limit = BASE_PULL_LIMIT;
+      // Mirror deletes the engine declined, across every batch of this pull.
+      // Surfaced on the connector row via `lastError` below — otherwise a
+      // refused delete is invisible to everyone but the sidecar log.
+      const mirrorRefusals: MirrorRefusal[] = [];
       for (let iter = 0; iter < MAX_DRAIN_ITERS; iter++) {
         if (rc.stopRequested) { console.error(`[connector:${cfg.id}] stopped by user — halting drain.`); break; }
         const since = cfg.lastPulledAt ? new Date(cfg.lastPulledAt) : undefined;
         const events = await rc.connector.pull!(since, limit);
         if (events.length === 0) break;
 
-        const { count, transientFailures } = await this.ingestEvents(cfg, events, rc);
+        const { count, transientFailures, mirrorRefusals: batchRefusals } = await this.ingestEvents(cfg, events, rc);
+        mirrorRefusals.push(...batchRefusals);
         total += count;
         rc.eventsTotal += count;
 
@@ -534,8 +575,14 @@ export class ConnectorManager {
         await new Promise<void>(resolve => setImmediate(resolve));
       }
       // Mirror mode (opt-in): prune sources whose files were deleted on disk.
-      await this.pruneMirroredDeletes(cfg, rc);
-      await this.updateConnectorState(cfg.id, { lastError: undefined });
+      const { refused } = await this.pruneMirroredDeletes(cfg, rc);
+      mirrorRefusals.push(...refused);
+      // A mirror delete the engine declined is a RETENTION failure — content
+      // the user removed at source is still answering recalls — so the pull is
+      // not "clean". Report it on the connector row instead of clearing
+      // `lastError`; the state is genuinely retried on the next sync, so this
+      // is a standing warning, not a dead end.
+      await this.updateConnectorState(cfg.id, { lastError: mirrorRefusalSummary(mirrorRefusals) });
       return total;
     } catch (err) {
       const msg = (err as Error).message;
@@ -555,8 +602,9 @@ export class ConnectorManager {
     await this.updateConnectorState(cfg.id, { lastPulledAt });
   }
 
-  private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[], rc: RunningConnector): Promise<{ count: number; transientFailures: number }> {
-    if (events.length === 0) return { count: 0, transientFailures: 0 };
+  private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[], rc: RunningConnector): Promise<{ count: number; transientFailures: number; mirrorRefusals: MirrorRefusal[] }> {
+    const mirrorRefusals: MirrorRefusal[] = [];
+    if (events.length === 0) return { count: 0, transientFailures: 0, mirrorRefusals };
     const mirror = cfg.options['mirrorDeletes'] === true;
     let count = 0;
     let transientFailures = 0;
@@ -626,11 +674,41 @@ export class ConnectorManager {
         );
         // Mirror mode: replace (not duplicate) when a file is modified — forget
         // the OLD source before we record the new one below.
+        //
+        // The `catch { /* old source already gone — fine */ }` that used to be
+        // the whole of this block asserted something the code never checked. A
+        // source that is genuinely gone does not throw — `forgetSource` returns
+        // `{ nodeIds: [] }` for it. What DOES happen, and what the catch could
+        // never see, is a REFUSAL: the engine declines to release the old
+        // source's nodes and reports them in `refusedNodeIds`. The new copy has
+        // already been ingested by the time we get here, so a swallowed refusal
+        // left BOTH generations of the file live in one engram — the same
+        // document answering a recall twice, with nothing in the UI or the log
+        // admitting it.
         if (mirror && ev.sourceRef && rec?.sourceId) {
           const prev = await this.host.connectorFileMap.get(ev.sourceRef);
           if (prev && prev !== rec.sourceId) {
-            try { await this.host.forgetSource(cfg.graphId, prev, { triggeredBy: 'connector:mirror-replace' }); }
-            catch { /* old source already gone — fine */ }
+            try {
+              const res = await this.host.forgetSource(cfg.graphId, prev, { triggeredBy: 'connector:mirror-replace' });
+              const refusedNodeIds = res.refusedNodeIds ?? [];
+              if (refusedNodeIds.length > 0) {
+                mirrorRefusals.push({ sourceRef: ev.sourceRef, sourceId: prev, refusedNodeIds });
+                console.error(
+                  `[connector:${cfg.id}] mirror-replace: the memory engine declined to delete `
+                  + `${refusedNodeIds.length} node(s) of the PREVIOUS source ${prev} for ${ev.sourceRef} `
+                  + `(${refusedNodeIds.join(', ')}). Engram '${cfg.graphId}' now holds TWO copies of this `
+                  + 'file and both will surface in recall.',
+                );
+              }
+            } catch (e) {
+              // A throw here is a real fault (engram unloaded, mutation blocked)
+              // — not "already gone", which returns cleanly. Report it too.
+              mirrorRefusals.push({ sourceRef: ev.sourceRef, sourceId: prev, error: (e as Error).message });
+              console.error(
+                `[connector:${cfg.id}] mirror-replace: failed to forget the previous source ${prev} for `
+                + `${ev.sourceRef}: ${(e as Error).message}. Engram '${cfg.graphId}' now holds TWO copies of this file.`,
+              );
+            }
           }
         }
         // Record sourceId + content hash for EVERY connector (not just mirror) so
@@ -703,7 +781,7 @@ export class ConnectorManager {
         payload: { jobId: `connector:${cfg.id}`, graphId: cfg.graphId, fileName: '', nodesAdded: count },
       });
     } catch { /* cosmetic */ }
-    return { count, transientFailures };
+    return { count, transientFailures, mirrorRefusals };
   }
 
   /**
@@ -711,26 +789,62 @@ export class ConnectorManager {
    * longer sees on disk. Off by default — connectors are additive, so a deleted
    * file leaves its memory in the cortex unless the user enabled mirrorDeletes.
    */
-  private async pruneMirroredDeletes(cfg: ConnectorConfig, rc: RunningConnector): Promise<number> {
-    if (cfg.options['mirrorDeletes'] !== true) return 0;
-    if (typeof rc.connector.listCurrentSourceRefs !== 'function') return 0;
+  private async pruneMirroredDeletes(
+    cfg: ConnectorConfig,
+    rc: RunningConnector,
+  ): Promise<{ pruned: number; refused: MirrorRefusal[] }> {
+    if (cfg.options['mirrorDeletes'] !== true) return { pruned: 0, refused: [] };
+    if (typeof rc.connector.listCurrentSourceRefs !== 'function') return { pruned: 0, refused: [] };
     const prefix = `${cfg.kind}:${cfg.id}:`;
     const mapped = await this.host.connectorFileMap.entriesForPrefix(prefix);
-    if (mapped.length === 0) return 0;
+    if (mapped.length === 0) return { pruned: 0, refused: [] };
     const current = new Set(await rc.connector.listCurrentSourceRefs());
     let pruned = 0;
+    const refused: MirrorRefusal[] = [];
     for (const [sourceRef, sourceId] of mapped) {
       if (current.has(sourceRef)) continue; // file still there
       try {
-        await this.host.forgetSource(cfg.graphId, sourceId, { triggeredBy: 'connector:mirror-prune' });
+        const res = await this.host.forgetSource(cfg.graphId, sourceId, { triggeredBy: 'connector:mirror-prune' });
+        const refusedNodeIds = res.refusedNodeIds ?? [];
+        if (refusedNodeIds.length > 0) {
+          // THE ONE THAT NEVER SELF-HEALS. The backing file is deleted, so no
+          // future ingest, save or user action re-touches this source — the
+          // prune pass is the only thing that will ever try again, and it finds
+          // its work by walking the file-map. Deleting the entry for a source
+          // the engine REFUSED to release therefore stranded content the user
+          // deleted at source inside the engram permanently, while `pruned++`
+          // and the summary line below reported it as removed.
+          //
+          // Keep the mapping: `sourceRef` is still absent from `current`, so
+          // the next prune pass re-attempts this exact delete. That is the
+          // whole retry channel, and it costs one map entry.
+          refused.push({ sourceRef, sourceId, refusedNodeIds });
+          console.error(
+            `[connector:${cfg.id}] mirror-prune: the memory engine declined to delete `
+            + `${refusedNodeIds.length} node(s) of ${sourceRef} (${refusedNodeIds.join(', ')}). `
+            + `The file is gone from disk but its memories are STILL live in '${cfg.graphId}'. `
+            + 'Keeping the file-map entry so the next sync retries.',
+          );
+          continue;
+        }
         await this.host.connectorFileMap.delete(sourceRef);
         pruned++;
       } catch (e) {
+        // Same reasoning: a throw leaves the mapping in place, so the next pass
+        // retries rather than losing track of the source.
+        refused.push({ sourceRef, sourceId, error: (e as Error).message });
         console.error(`[connector:${cfg.id}] mirror-prune failed for ${sourceRef}: ${(e as Error).message}`);
       }
     }
+    // `pruned` now counts ONLY sources the engram actually released.
     if (pruned > 0) console.error(`[connector:${cfg.id}] mirror mode: pruned ${pruned} deleted file(s).`);
-    return pruned;
+    if (refused.length > 0) {
+      console.error(
+        `[connector:${cfg.id}] mirror mode: ${refused.length} deleted file(s) could NOT be pruned — `
+        + 'their memories remain in the engram. Retrying on the next sync.',
+      );
+    }
+    return { pruned, refused };
   }
 
   private async startWebhookServerIfNeeded(): Promise<void> {
@@ -773,6 +887,11 @@ export class ConnectorManager {
 
     const events = await connector.handleWebhook(body, headers);
     if (rc) {
+      // `mirrorRefusals` is deliberately not promoted to `lastError` here: this
+      // path has no paired success that would ever CLEAR the field (a webhook
+      // connector need never poll), so a one-off refusal would pin a permanent
+      // red row. The per-refusal console.error inside ingestEvents is the
+      // visibility channel for this path, same as its other failures.
       await this.ingestEvents(cfg, events, rc);
       rc.eventsTotal += events.length;
     }

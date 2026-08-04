@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import type { CorrectionEdit, AppendDocumentInput } from './graphnosis-adapter.js';
+import type { CorrectionOutcome } from './graphnosis-impl.js';
 
 // Correction = natural-language graph edit. Two paths, picked automatically by
 // whether the user has enabled the optional Local LLM:
@@ -554,14 +555,18 @@ export async function applyCorrection(opts: {
   mode?: 'deterministic' | 'gnn-expanded' | 'llm-assisted';
   /** Who/what initiated this correction — threads into the op-log `triggeredBy` field. */
   triggeredBy?: string;
-}): Promise<void> {
+}): Promise<CorrectionOutcome[]> {
   const adds: AppendDocumentInput[] = (opts.diff.adds ?? []).map(a => ({
     kind: 'markdown' as const,
     content: a.text,
     sourceRef: a.label ?? `correction:${Date.now()}`,
   }));
   const edits: CorrectionEdit[] = opts.diff.edits;
-  await opts.host.applyCorrection(
+  // One outcome per entry of `edits`, IN ORDER, refusals included — see
+  // `GraphnosisHost.applyCorrection`, which pushes the outcome before its
+  // `if (!outcome.applied) continue`, so the array is never sparse and
+  // `outcomes[i]` always describes `edits[i]`.
+  const outcomes = await opts.host.applyCorrection(
     opts.graphId,
     { adds, edits },
     {
@@ -578,14 +583,39 @@ export async function applyCorrection(opts: {
     ...(opts.mode ? { mode: opts.mode } : {}),
     ...(opts.correctedBy ? { clientName: opts.correctedBy } : {}),
   };
-  for (const edit of edits) {
+  for (let i = 0; i < edits.length; i++) {
+    const edit = edits[i]!;
+    const outcome = outcomes[i];
+    // The .gll is the governance log — the artifact someone reads to answer
+    // "what was changed, by whom, when". The SDK never signals a refusal by
+    // throwing (`edit`/`supersede`/`deleteNode` all RETURN `{ applied: 0,
+    // errors: [...] }`), so appending unconditionally recorded corrections the
+    // graph refused as though they had happened. A confidently wrong audit
+    // trail is worse than a missing one, so this is fail-closed: no outcome at
+    // the matching index (a host-contract drift we cannot verify against) is
+    // treated exactly like a refusal and writes nothing.
+    if (!outcome?.applied) continue;
     await opts.host.gllWriter.append({
       ...gllBase,
       operation: edit.kind === 'delete' ? 'deleteNode' : edit.kind === 'supersede' ? 'supersede' : 'editNode',
-      targetNodeIds: [edit.nodeId],
+      // From SDK 0.10.0 an `edit` retires its target and mints a replacement —
+      // and `supersede` already does on every version — so an entry naming only
+      // `edit.nodeId` points at a RETIRED node. Record both: the id that was
+      // corrected and the id that now carries the content, which is what a
+      // rollback pass ("collect targetNodeIds, revert those nodes") has to
+      // reach. Collapses to the single id when the correction was in place, so
+      // this is byte-identical to the old entry on SDK 0.8.0 edit/delete.
+      // Same idiom as `node.directEdit` in ipc.ts. `targetNodeIds` is already
+      // `string[]` (ingest.ts writes several), so no .gll schema change.
+      targetNodeIds: outcome.resultNodeId === edit.nodeId
+        ? [edit.nodeId]
+        : [edit.nodeId, outcome.resultNodeId],
       after: edit.kind === 'delete' ? {} : { content: edit.content, reason: edit.reason },
     });
   }
+  // Adds need no such guard: `host.applyCorrection` routes them through
+  // `ingest`, which THROWS on failure, and it does so before it touches any
+  // edit — so reaching this line at all means every add landed.
   for (const add of adds) {
     await opts.host.gllWriter.append({
       ...gllBase,
@@ -593,6 +623,13 @@ export async function applyCorrection(opts: {
       after: { content: add.content, sourceRef: add.sourceRef },
     });
   }
+  // Hand the outcomes back so callers can tell a correction that landed from
+  // one the SDK refused, and report the engine's own error text. Same shape
+  // `GraphnosisHost.applyCorrection` returns; consumption idiom already in
+  // ipc.ts — `outcomes.filter(o => o.applied).length` /
+  // `outcomes.flatMap(o => o.errors)`. Widening `Promise<void>` is additive:
+  // every existing caller awaits and discards.
+  return outcomes;
 }
 
 /** Pull a JSON object out of a raw LLM completion. Small local models emit a

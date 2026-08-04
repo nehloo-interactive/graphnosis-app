@@ -17,8 +17,8 @@ function sanitizeQuery(q: string): string {
   return q.replace(/[.*+?^${}()|[\]\\]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-import { Graphnosis, serializeSubgraph } from '@nehloo/graphnosis';
-import type { EmbeddingAdapter, GraphNode, NodeId } from '@nehloo/graphnosis';
+import { Graphnosis, serializeSubgraph, embedNodes } from '@nehloo/graphnosis';
+import type { EmbeddingAdapter, EmbeddingIndex, GraphNode, NodeId } from '@nehloo/graphnosis';
 import type {
   GraphnosisAdapter,
   GraphHandle,
@@ -32,6 +32,7 @@ import type {
   CorrectionEdit,
 } from './graphnosis-adapter.js';
 import type { EmbedFn } from '@graphnosis-app/core/embeddings';
+import { evidencePrefixOption } from './sdk-capabilities.js';
 
 interface Internal extends GraphHandle {
   instance: Graphnosis;
@@ -138,6 +139,43 @@ function correctionLanded(res: VersionedCorrectionResult): boolean {
 /** One-line failure text for a refused correction, for the sidecar's console. */
 function correctionFailureText(res: VersionedCorrectionResult): string {
   return res.errors.length > 0 ? res.errors.join('; ') : 'the SDK applied no correction';
+}
+
+/**
+ * Soft-delete a node and SAY SO WHEN IT DIDN'T HAPPEN.
+ *
+ * `deleteNode` is a correction like any other (SDK `correct()` →
+ * `applyCorrection` → `applyDelete`), so it obeys the same contract the header
+ * of this file spells out: it does NOT throw on refusal, it RETURNS
+ * `{ applied: 0, errors: ['Node <id> not found'] }`. Every cleanup site in
+ * `appendDocument` used to wrap the call in a try/catch whose catch body was
+ * the single word `ignore` — a handler for an exception that cannot happen,
+ * wrapped around a return value nobody read. Net effect: a delete that
+ * silently did not occur.
+ *
+ * That is not cosmetic. These calls exist to remove nodes the app has already
+ * decided the user must never see: sourceRef-header artifacts and merged skill
+ * fragments. A refused delete leaves such a node LIVE — and, because the delete
+ * never ran, at its full ingest confidence, so no recall-side confidence filter
+ * screens it out — while the id is dropped from `newNodeIds` and therefore from
+ * the source's node list. The graph and what the app believes about the graph
+ * diverge, permanently and invisibly.
+ *
+ * Returns whether the delete landed so a caller can act on it; every current
+ * caller only reports, because each one is best-effort cleanup running inside
+ * an append the user asked for and that otherwise SUCCEEDED (see each site).
+ *
+ * `consequence` is the site-specific tail of the log line, matching the
+ * `… refused for <id>: <why> — <what that means>` shape the correction sites
+ * in this file already use.
+ */
+function deleteNodeReporting(g: Graphnosis, nodeId: string, reason: string, consequence: string): boolean {
+  const res: VersionedCorrectionResult = g.deleteNode(nodeId, reason);
+  if (correctionLanded(res)) return true;
+  console.error(
+    `[graphnosis-sidecar] deleteNode refused for ${nodeId} (${reason}): ${correctionFailureText(res)} — ${consequence}`,
+  );
+  return false;
 }
 
 export class GraphnosisImpl implements GraphnosisAdapter {
@@ -322,8 +360,19 @@ export class GraphnosisImpl implements GraphnosisAdapter {
             // Delete any extra artifact nodes beyond the one we rewrote.
             // appendText produces document + section (same sourceRef content),
             // so there are typically 2 entries in drop; keep only the rewritten one.
+            //
+            // Report, do not throw: the insert the user asked for has ALREADY
+            // landed at this point (the rewrite above succeeded and its id is
+            // what we return). Aborting here would fail a completed operation
+            // over failed hygiene. We also keep looping so a refusal on one
+            // duplicate doesn't skip the attempt on the rest.
             for (const extraId of drop.slice(1)) {
-              try { h.instance.deleteNode(extraId, 'SDK appendText duplicate sourceRef-header artifact'); } catch { /* ignore */ }
+              deleteNodeReporting(
+                h.instance,
+                extraId,
+                'SDK appendText duplicate sourceRef-header artifact',
+                'a node whose content is the raw sourceRef stays live in the graph and will surface in queries, recalls and exports, with nothing pointing at it',
+              );
             }
             // NOT `id`. On SDK >= 0.10.0 `edit` retired `id` and minted a
             // replacement carrying the real text; handing `id` back would put
@@ -336,8 +385,20 @@ export class GraphnosisImpl implements GraphnosisAdapter {
             // the pre-filter "no node ids" error rather than record a node
             // whose content is the raw sourceRef.
             console.error(`[graphnosis-sidecar] appendText artifact rewrite refused for ${id}: ${correctionFailureText(res)}`);
+            // Report, do not throw: this branch already propagates. Setting
+            // `newNodeIds = []` below makes host.insertNodeAt raise "SDK
+            // returned no node ids" (host.ts:5002), so the user is told the
+            // insert failed either way. Throwing from inside the loop would
+            // only replace that error with a less specific one AND skip the
+            // remaining artifact deletes, leaving more junk behind, so the
+            // log is the added signal here: it names the nodes that leaked.
             for (const dropId of drop) {
-              try { h.instance.deleteNode(dropId, 'SDK appendText sourceRef-header artifact'); } catch { /* ignore */ }
+              deleteNodeReporting(
+                h.instance,
+                dropId,
+                'SDK appendText sourceRef-header artifact',
+                'the artifact node stays live in the graph after a rewrite that also failed; the insert itself fails at the caller',
+              );
             }
             newNodeIds = [];
           }
@@ -377,8 +438,19 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       if (newNodeIds.length > 1) {
         const res: VersionedCorrectionResult = h.instance.edit(firstId, verbatim, 'skill single-node insert');
         if (correctionLanded(res)) {
+          // Report, do not throw: the merge above landed, so the step the user
+          // saved exists and its id must be returned. A failed fragment delete
+          // is the worst of the three for the user, though — the merged node
+          // now carries the WHOLE step and the undeleted fragment still carries
+          // a piece of it, so a recall can return the same step twice, once
+          // truncated. Hence a named consequence rather than a bare log.
           for (const extraId of newNodeIds.slice(1)) {
-            try { h.instance.deleteNode(extraId, 'skill single-node insert — fragment merged'); } catch { /* ignore */ }
+            deleteNodeReporting(
+              h.instance,
+              extraId,
+              'skill single-node insert — fragment merged',
+              'the fragment stays live and duplicates text that also sits on the merged node — recall and skill walks can return this step twice',
+            );
           }
           // The merged step text lives on whatever node the correction
           // PRODUCED, which on SDK >= 0.10.0 is a NEW node — `firstId` is now
@@ -452,15 +524,53 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     // Fall back to TF-IDF when no embeddings are available, or if hybrid throws (e.g.,
     // adapter id mismatch between cached and current embed function).
     const res = h.instance.hasEmbeddings()
-      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE }).catch((e: Error) => {
+      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k, ...GraphnosisImpl.recallEvidenceGuard() }).catch((e: Error) => {
           console.error(`[graphnosis-sidecar] queryHybrid failed (${e.message}) — falling back to TF-IDF`);
-          return h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
+          return h.instance.query(safeQuery, { maxNodes: k, ...GraphnosisImpl.recallEvidenceGuard() });
         })
-      : h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
+      : h.instance.query(safeQuery, { maxNodes: k, ...GraphnosisImpl.recallEvidenceGuard() });
     const seedScores = new Map<string, number>(
       (res.seeds as Array<{ nodeId: string; score: number }>).map(s => [s.nodeId, s.score]),
     );
     // Only include seeds — structural expansion nodes carry score=0 and add noise.
+    return res.subgraph.nodes
+      .filter((n: GraphNode) => seedScores.has(n.id))
+      .map((n: GraphNode) => ({
+        nodeId: n.id,
+        score: seedScores.get(n.id)!,
+        text: n.content,
+        type: n.type,
+        source: {
+          file: n.source.file,
+          ...(n.source.line !== undefined ? { line: n.source.line } : {}),
+          ...(n.source.section !== undefined ? { section: n.source.section } : {}),
+        },
+      }));
+  }
+
+  /**
+   * PURE TF-IDF query. `query()` above prefers `queryHybrid` whenever
+   * `hasEmbeddings()` is true — and that is true on the stub adapter, whose
+   * vectors are a sha256 of the text. So "fall back to keyword matching" via
+   * `query()` was not actually a fallback: the hybrid seed pool still mixed
+   * in embedding scores from the engine's UNNORMALISED dot-product scorer.
+   *
+   * Measured before this method existed: `check_duplicate` on a stub host
+   * reported a hit at "Score 14.50" while labelling it a keyword match. TF-IDF
+   * cosine cannot exceed 1.0, so 14.50 could only have come from the vectors
+   * the label said were not being used.
+   *
+   * `instance.query()` is the engine's TF-IDF-only path — `findSeeds` scores
+   * with `cosineSimilarity`, which is normalised and bounded to [0, 1].
+   */
+  queryLexical(handle: GraphHandle, query: string, k: number): QueryResult[] {
+    const h = handle as Internal;
+    if (!h.built) h.instance.build(h.graphId);
+    const safeQuery = sanitizeQuery(query);
+    const res = h.instance.query(safeQuery, { maxNodes: k, ...GraphnosisImpl.recallEvidenceGuard() });
+    const seedScores = new Map<string, number>(
+      (res.seeds as Array<{ nodeId: string; score: number }>).map((s) => [s.nodeId, s.score]),
+    );
     return res.subgraph.nodes
       .filter((n: GraphNode) => seedScores.has(n.id))
       .map((n: GraphNode) => ({
@@ -488,7 +598,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       // similarity:'embeddings' skips the TF-IDF seed pool entirely, and the
       // query embedding is computed from the raw text BEFORE decomposition /
       // synonym expansion — so seed scores are plain text-vs-node cosines.
-      const res = await h.instance.queryHybrid(safeQuery, { maxNodes: k, similarity: 'embeddings', blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
+      const res = await h.instance.queryHybrid(safeQuery, { maxNodes: k, similarity: 'embeddings', ...GraphnosisImpl.recallEvidenceGuard() });
       const seedScores = new Map<string, number>(
         (res.seeds as Array<{ nodeId: string; score: number }>).map(s => [s.nodeId, s.score]),
       );
@@ -531,19 +641,49 @@ export class GraphnosisImpl implements GraphnosisAdapter {
    * SDK is generic and has no opinion about what an evidence namespace means.
    * The app owns `skill:`, so the app declares it. Skill dispatch and walk do
    * not come through this path and are unaffected.
+   *
+   * NOT UNCONDITIONAL — see `recallEvidenceGuard()` directly below.
    */
   private static readonly RECALL_BLOCKED_EVIDENCE = ['skill:'];
+
+  /**
+   * The evidence guard as an options fragment, or nothing.
+   *
+   * `blockedEvidencePrefixes` is an SDK 0.8.0 option and app 1.31.0 ships on
+   * `@nehloo/graphnosis: ^0.7.4`, which (caret on a 0.x version pins the minor)
+   * can never resolve to 0.8.0. On 0.7.4 the key is not read — passing it is a
+   * silent no-op, not an error — so this method omits it and the process states
+   * the loss ONCE AT BOOT via `main.ts`, next to the semantic-similarity
+   * capability line, rather than shipping a guard that is present in the source
+   * and absent in effect.
+   *
+   * The capability is decided by `sdk-capabilities.ts` on the RESOLVED SDK's
+   * declared version, never on what a query returns: a 0.8.0 query with no
+   * skill overlap returns a byte-identical node set with and without the guard
+   * (measured in b19859f1), so an outcome-based probe cannot tell "feature
+   * absent" from "feature present and not triggered".
+   *
+   * WHAT 1.31.0 THEREFORE LOSES: a factual query that seeds into one step of a
+   * trained skill will unroll the chain behind it. Measured on a mock cortex in
+   * b19859f1: a 12-step skill put 4 steps into a 20-node subgraph — 20% of a
+   * budget meant for facts. Bounding recovered 3 of those 4 slots. That is the
+   * bound being given up, and it returns with no code change the moment the pin
+   * moves to ^0.8.0 or later.
+   */
+  private static recallEvidenceGuard(): object {
+    return evidencePrefixOption(GraphnosisImpl.RECALL_BLOCKED_EVIDENCE);
+  }
 
   async queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult> {
     const h = handle as Internal;
     if (!h.built) h.instance.build(h.graphId);
     const safeQuery = sanitizeQuery(query);
     const res = h.instance.hasEmbeddings()
-      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE }).catch((e: Error) => {
+      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k, ...GraphnosisImpl.recallEvidenceGuard() }).catch((e: Error) => {
           console.error(`[graphnosis-sidecar] queryHybrid failed (${e.message}) — falling back to TF-IDF`);
-          return h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
+          return h.instance.query(safeQuery, { maxNodes: k, ...GraphnosisImpl.recallEvidenceGuard() });
         })
-      : h.instance.query(safeQuery, { maxNodes: k, blockedEvidencePrefixes: GraphnosisImpl.RECALL_BLOCKED_EVIDENCE });
+      : h.instance.query(safeQuery, { maxNodes: k, ...GraphnosisImpl.recallEvidenceGuard() });
 
     const scores = new Map<string, number>(
       res.seeds.map((s: { nodeId: string; score: number }) => [s.nodeId, s.score]),
@@ -603,21 +743,17 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   }
 
   /**
-   * Interface-compatible entry point. Kept at `Promise<void>` ONLY because
-   * `GraphnosisAdapter.applyCorrection` (graphnosis-adapter.ts:202) still
-   * declares `Promise<void>`, and TypeScript will NOT accept a `Promise<T>`
-   * override for a `Promise<void>` member (`Promise` is invariant here — the
-   * void-returning-function special case does not apply through a type
-   * argument). Widening this signature therefore requires widening the
-   * interface declaration in the same commit.
+   * The interface entry point. Now returns the outcome — the shim that existed
+   * only because `GraphnosisAdapter.applyCorrection` was declared
+   * `Promise<void>` is gone, and every caller gets the outcome for free.
    *
-   * Until then the real work — and the outcome — lives in
-   * `applyCorrectionChecked` below. When the adapter interface is widened,
-   * this method collapses to `return this.applyCorrectionChecked(handle, edit)`
-   * and every caller gets the outcome for free.
+   * (TypeScript would not accept a `Promise<T>` override for a `Promise<void>`
+   * member: `Promise` is invariant through its type argument, so the
+   * void-returning-function special case does not apply. Widening the interface
+   * was therefore a prerequisite, not a nicety.)
    */
-  async applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<void> {
-    await this.applyCorrectionChecked(handle, edit);
+  async applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<CorrectionOutcome> {
+    return this.applyCorrectionChecked(handle, edit);
   }
 
   /**
@@ -724,6 +860,48 @@ export class GraphnosisImpl implements GraphnosisAdapter {
         ? { adapter, batchSize: opts.batchSize }
         : { adapter },
     );
+  }
+
+  /**
+   * Embed exactly `nodeIds` into the index that is already attached — see the
+   * contract on `GraphnosisAdapter.embedNodeIds`.
+   *
+   * Why this exists at all: `buildEmbeddings` above delegates to the SDK's
+   * `attachEmbeddings`, which allocates a FRESH `EmbeddingIndex` and walks
+   * `graph.nodes` in full. It is a rebuild, not an upsert. The correction path
+   * changes one node's text and must not pay a whole-graph scan for it.
+   *
+   * The index lives on the SDK instance's internal `built` object — the same
+   * (and only) access path `getNodeEmbeddings` documents below. `embedNodes`
+   * is a public SDK export and upserts straight into `index.vectors`, so a
+   * node that is already embedded gets its vector REPLACED, which is what an
+   * in-place `edit` needs (its old vector still describes the old text).
+   */
+  async embedNodeIds(handle: GraphHandle, nodeIds: string[], opts: BuildEmbeddingsAdapterOpts): Promise<number> {
+    const h = handle as Internal;
+    if (!h.built || !h.instance.hasEmbeddings()) return 0;
+    const index = (h.instance as unknown as { built?: { embeddingIndex?: EmbeddingIndex } }).built?.embeddingIndex;
+    if (!index) return 0;
+    const items: Array<{ nodeId: NodeId; text: string }> = [];
+    for (const id of new Set(nodeIds)) {
+      const node = h.instance.graph.nodes.get(id);
+      if (!node) continue;
+      // Same exclusions attachEmbeddings applies: structural nodes are
+      // filtered out of the serialized prompt anyway, and providers reject
+      // empty input. Embedding them here would drift the index away from
+      // what a full rebuild produces.
+      if (node.type === 'document' || node.type === 'section') continue;
+      if (!node.content || !node.content.trim()) continue;
+      items.push({ nodeId: id, text: node.content });
+    }
+    if (items.length === 0) return 0;
+    const adapter: EmbeddingAdapter = {
+      id: opts.id,
+      dimensions: opts.dimensions,
+      embed: async (texts: string[]) => Promise.all(texts.map(t => opts.embed(t))),
+    };
+    await embedNodes(index, adapter, items, { intent: 'document' });
+    return items.length;
   }
 
   allNodeIds(handle: GraphHandle): string[] {
@@ -916,6 +1094,23 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       if (vec && vec.length > 0) out.set(id, vec);
     }
     return out;
+  }
+
+  /**
+   * READ-ONLY borrow of the engram's live TF-IDF index. See the interface
+   * doc in graphnosis-adapter.ts for why this is the substrate's own index
+   * and not a recomputation: `undirected-edges.ts` scores every `similar-to`
+   * edge from exactly these maps, so a cosine derived here is on the same
+   * scale as SIMILARITY_THRESHOLD instead of merely near it.
+   */
+  getTfidfIndex(handle: GraphHandle): { documents: Map<string, Map<string, number>>; idf: Map<string, number> } | null {
+    const h = handle as Internal;
+    if (!h.built) return null;
+    const idx = (h.instance as unknown as {
+      graph?: { tfidfIndex?: { documents?: Map<string, Map<string, number>>; idf?: Map<string, number> } };
+    }).graph?.tfidfIndex;
+    if (!idx?.documents || !idx.idf) return null;
+    return { documents: idx.documents, idf: idx.idf };
   }
 
   // Phantom methods purely to anchor the return-type inference for the

@@ -199,6 +199,17 @@ export interface TrainSkillResult {
    *  otherwise be invisible (per-edge errors only reach the sidecar log). */
   structuralEdgeWarning?: string;
   /**
+   * Older duplicate sources of this same skill that the pre-in-place migration
+   * tried to forget and the memory engine DECLINED to release. `forgetSource`
+   * reports a refusal by returning `refusedNodeIds`, never by throwing, so this
+   * used to vanish into a `catch` and the retrain reported an unqualified
+   * success while a second live copy of the skill stayed dispatchable.
+   * Absent when every duplicate went (the overwhelmingly common case).
+   */
+  duplicatesNotRemoved?: Array<{ sourceId: string; refusedNodeIds?: string[]; error?: string }>;
+  /** Human-readable companion to `duplicatesNotRemoved`. Present iff it is. */
+  duplicateWarning?: string;
+  /**
    * Set when an `autonomyLevel` was requested and a skill was saved: reports the
    * applied per-skill autonomy level, including a clamp note when the request
    * exceeded the authored dispatch-safe cap. Absent when no override was asked
@@ -921,6 +932,8 @@ export class SkillTrainer {
     // the atlas. The new model collapses to one source per skill.
     let skillId: string | undefined;
     let autonomyNote: string | undefined;
+    /** Older duplicate sources the engram would not release during migration. */
+    const duplicatesNotRemoved: Array<{ sourceId: string; refusedNodeIds?: string[]; error?: string }> = [];
     if (save) {
       onStatus?.('Saving the trained skill…');
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -1121,12 +1134,34 @@ export class SkillTrainer {
         // Migration: clean up older duplicate sources from pre-in-place model.
         // Their content has already migrated forward (we kept the most recent
         // as `existingSource`); the older ones are dead weight in the atlas.
+        //
+        // The `catch { /* non-fatal */ }` was never the failure channel that
+        // mattered: `forgetSource` declines by RETURNING `refusedNodeIds` and
+        // never throws, so a duplicate the engine would not release was
+        // swallowed here and `trainSkill` returned an unqualified success. The
+        // Skills library then shows ONE row (the retrained source) while a
+        // second, older copy of the same skill stays live in the engram —
+        // walkable, dispatchable and recallable, with nothing admitting it
+        // exists. The retrain itself really did land, so this is reported, not
+        // turned into a failure. (Same shape as ipc `skill:saveFallback`.)
         for (const dup of matchingSkills.slice(1)) {
           try {
-            await this.host.forgetSource(graphId, dup.sourceId, {
+            const res = await this.host.forgetSource(graphId, dup.sourceId, {
               triggeredBy: 'mcp:train_skill:migrate-duplicates',
             });
-          } catch { /* non-fatal */ }
+            if (res.refusedNodeIds && res.refusedNodeIds.length > 0) {
+              duplicatesNotRemoved.push({ sourceId: dup.sourceId, refusedNodeIds: res.refusedNodeIds });
+            }
+          } catch (e) {
+            duplicatesNotRemoved.push({ sourceId: dup.sourceId, error: (e as Error).message });
+          }
+        }
+        if (duplicatesNotRemoved.length > 0) {
+          console.error(
+            `[skill-trainer] train_skill '${baseName}': ${duplicatesNotRemoved.length} older duplicate `
+            + `source(s) were NOT removed from '${graphId}' `
+            + `(${duplicatesNotRemoved.map((d) => d.sourceId).join(', ')}). They are still live and still dispatchable.`,
+          );
         }
 
         // Clear all current nodes from the existing source. The sourceId,
@@ -1316,6 +1351,14 @@ export class SkillTrainer {
       ...(degradedNote !== undefined ? { degradedNote } : {}),
       ...(autonomyNote !== undefined ? { autonomyNote } : {}),
       ...(structuralEdgeWarning !== undefined ? { structuralEdgeWarning } : {}),
+      ...(duplicatesNotRemoved.length > 0 ? {
+        duplicatesNotRemoved,
+        duplicateWarning:
+          `${duplicatesNotRemoved.length} older duplicate source(s) of this skill are STILL live in `
+          + `"${graphId}" (${duplicatesNotRemoved.map((d) => d.sourceId).join(', ')}) — the memory engine `
+          + 'declined to delete them. The Skills library shows one row, but the older copy is still '
+          + 'walkable and dispatchable and can answer in place of the version you just trained.',
+      } : {}),
       conformance,
       coverage,
       ...(scaffoldNotes.length > 0 ? { scaffoldNotes } : {}),
@@ -1987,19 +2030,47 @@ export class SkillTrainer {
    * versions. The flag was meaningful under the previous "one source
    * per retrain" model; we keep it as `_allVersions` so the IPC signature
    * doesn't break and downstream callers can be migrated lazily.
+   *
+   * REFUSAL CONTRACT — the reason the return shape grew a second field.
+   *
+   * `host.forgetSource` never throws when the memory engine declines a delete;
+   * it RETURNS `refusedNodeIds` and restores the source record around the nodes
+   * it could not release. This method used to `await` that call bare and then
+   * unconditionally run `skillSnapshots.deleteAll`, which is
+   * `fs.rm(dir, { recursive: true, force: true })`. So a declined delete
+   * produced a stated success — `{ forgottenSourceIds: [sourceId] }` — over a
+   * skill that was fully intact, having first destroyed every earlier version
+   * of it, the only material `rollback_skill` can restore from. A false outcome
+   * plus irreversible loss of the undo, from one dropped return value.
+   *
+   * The old signature had NO channel to report a refusal, which is why the MCP
+   * layer could not use this method honestly and re-issued `forgetSource` +
+   * `skillSnapshots.deleteAll` itself. With the channel added it calls this
+   * method again (`mcp-server.ts` `delete_skill`), which is deliberate: a
+   * destructive method with no production caller is a gate nothing exercises.
+   * Callers must check `refusedNodeIds`: when it is present the skill is STILL
+   * LIVE, `forgottenSourceIds` is empty, and — the part that matters — the
+   * snapshots are untouched and the delete can be retried.
    */
   async deleteSkill(
     graphId: string,
     sourceId: string,
     _allVersions = false,
-  ): Promise<{ forgottenSourceIds: string[] }> {
+  ): Promise<{ forgottenSourceIds: string[]; refusedNodeIds?: string[] }> {
     const sources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
     const target = sources.find((s) => s.sourceId === sourceId);
     if (!target) throw new Error(`Skill "${sourceId}" not found in graph "${graphId}".`);
-    await this.host.forgetSource(graphId, target.sourceId, { triggeredBy: 'skill:delete' });
+    const res = await this.host.forgetSource(graphId, target.sourceId, { triggeredBy: 'skill:delete' });
+    const refusedNodeIds = res.refusedNodeIds ?? [];
+    if (refusedNodeIds.length > 0) {
+      // Nothing irreversible has happened yet, and nothing irreversible may
+      // happen now: the skill is still in the engram, so its history is still
+      // the live undo for it.
+      return { forgottenSourceIds: [], refusedNodeIds };
+    }
     // Then purge the per-source snapshot directory so a re-trained skill
     // under the same name doesn't surface old history that no longer
-    // logically belongs to it.
+    // logically belongs to it. Gated on the delete having actually landed.
     await this.host.skillSnapshots.deleteAll(graphId, target.sourceId);
     return { forgottenSourceIds: [target.sourceId] };
   }
@@ -2143,20 +2214,37 @@ function deriveSkillNodeRole(text: string): string {
  * (sequence, goals, @loop/@branch, @ctx, and @skill: calls) so a promoted skill
  * is structurally identical to a natively-trained one. Returns how many nodes it
  * had to repair (0 = move was lossless, original edges survived intact).
+ *
+ * ── `refusedNodeIds` ──────────────────────────────────────────────────────
+ *
+ * `host.moveSource` is a forget plus an ingest, and the memory engine can
+ * DECLINE the forget. It signals that by RETURNING `refusedNodeIds` — the SDK
+ * never throws on a refusal — and `forgetSource` then restores the origin's
+ * source record around the survivors. So a "move" the origin refused is really
+ * a COPY: the skill now exists in BOTH engrams.
+ *
+ * This wrapper used to discard that return value entirely (`await
+ * host.moveSource(...)` with no destructuring), which made the signal
+ * unreachable from every production caller. Threaded through here and out of
+ * `moveSourcePreservingSkillNodes` so the IPC/MCP layers can stop reporting a
+ * duplicated skill as a completed transfer. Omitted when empty, exactly like
+ * `host.moveSource` — the two shapes have to agree or a caller that handles one
+ * correctly handles the other wrongly.
  */
 export async function promoteSkillSourcePreservingNodes(
   host: GraphnosisHost,
   fromGraphId: string,
   sourceId: string,
   targetGraphId: string,
-): Promise<{ repaired: number }> {
+): Promise<{ repaired: number; refusedNodeIds?: string[] }> {
   // Snapshot every content node's full text, in source order, BEFORE moving.
   const before = host.getSourceRecord(fromGraphId, sourceId);
   const snapshot = (before?.nodeIds ?? [])
     .map((nid) => (host.getFullNodeContent(fromGraphId, nid) ?? '').trim())
     .filter((t) => t.length > 0);
 
-  await host.moveSource(fromGraphId, sourceId, targetGraphId);
+  const moved = await host.moveSource(fromGraphId, sourceId, targetGraphId);
+  const refusedNodeIds = moved.refusedNodeIds ?? [];
 
   // Which snapshot contents survived the move (compared by full content)?
   const after = host.getSourceRecord(targetGraphId, sourceId);
@@ -2164,10 +2252,11 @@ export async function promoteSkillSourcePreservingNodes(
     (after?.nodeIds ?? []).map((nid) => (host.getFullNodeContent(targetGraphId, nid) ?? '').trim()),
   );
 
-  return restoreSkillNodes(host, targetGraphId, sourceId, snapshot, {
+  const { repaired } = await restoreSkillNodes(host, targetGraphId, sourceId, snapshot, {
     skip: survived,
     triggeredBy: 'skill:promote-preserve',
   });
+  return { repaired, ...(refusedNodeIds.length > 0 ? { refusedNodeIds } : {}) };
 }
 
 /**
@@ -2320,6 +2409,37 @@ export async function snapshotSkillBeforeDestructiveOp(
   }
 }
 
+/**
+ * Move a source between engrams without a skill losing its body.
+ *
+ * ── WHY THIS RETURNS `refusedNodeIds` ─────────────────────────────────────
+ *
+ * `host.moveSource` reports the nodes the origin engram DECLINED to release.
+ * That signal existed and was tested, but it could not reach production: every
+ * real caller — `ipc.ts` `sources.move` (the Sources page) and `mcp-server.ts`
+ * `transfer_source` — goes through THIS wrapper, and the wrapper dropped it on
+ * both branches. The non-skill branch destructured only
+ * `{ newRecord, forgottenNodeIds }`; the skill branch never looked at any
+ * deletion outcome at all, deriving its drop set by diffing the source index
+ * before and after. An index diff cannot tell "the SDK dropped this node and we
+ * restored its content under a new id" apart from "the origin refused to let it
+ * go", so a refused move was reported to the user as a completed transfer while
+ * the skill sat live in BOTH engrams.
+ *
+ * Shape mirrors `host.moveSource` exactly — `refusedNodeIds` omitted when empty
+ * — so the caller code the next layer writes is identical for the wrapper and
+ * the primitive.
+ *
+ * `forgottenNodeIds` on the skill branch EXCLUDES anything reported refused.
+ * The two sets are answers to different questions ("what left the origin" vs
+ * "what the origin would not release") and a node cannot honestly be in both.
+ * Note the subtraction is by id: `forgetSource` rolls a refused node back and
+ * returns the id it is LIVE at, which on the installed SDK (in-place `edit`) is
+ * the id it started at. On an SDK where the rollback edit mints, the original id
+ * really is retired, so it correctly stays in `forgottenNodeIds` — and
+ * `refusedNodeIds` being non-empty is still the signal that says "this was a
+ * copy, not a move", which is the fact the caller has to act on.
+ */
 export async function moveSourcePreservingSkillNodes(
   host: GraphnosisHost,
   fromGraphId: string,
@@ -2329,11 +2449,19 @@ export async function moveSourcePreservingSkillNodes(
   newRecord: ReturnType<GraphnosisHost['getSourceRecord']>;
   forgottenNodeIds: string[];
   repaired: number;
+  refusedNodeIds?: string[];
 }> {
   const record = host.getSourceRecord(fromGraphId, sourceId);
   if (record?.kind !== 'skill') {
     const res = await host.moveSource(fromGraphId, sourceId, targetGraphId);
-    return { newRecord: res.newRecord, forgottenNodeIds: res.forgottenNodeIds, repaired: 0 };
+    return {
+      newRecord: res.newRecord,
+      forgottenNodeIds: res.forgottenNodeIds,
+      repaired: 0,
+      ...(res.refusedNodeIds && res.refusedNodeIds.length > 0
+        ? { refusedNodeIds: res.refusedNodeIds }
+        : {}),
+    };
   }
   // Snapshot BEFORE touching anything. This is the path that produced an
   // unrecoverable skill in the field: moveSource drops nodes without a
@@ -2341,9 +2469,11 @@ export async function moveSourcePreservingSkillNodes(
   // and therefore no op-log previews to recover from. The transfer itself is
   // fixed below, but this keeps a full copy regardless of what the move does.
   await snapshotSkillBeforeDestructiveOp(host, fromGraphId, sourceId, 'move');
-  // The wrapper swallows the primitive's return, so derive the drop set here.
+  // The index diff answers "what is no longer here"; it cannot answer "what was
+  // refused" — for that, `promoteSkillSourcePreservingNodes` now hands back the
+  // primitive's own deletion outcome instead of swallowing it.
   const before = new Set(record?.nodeIds ?? []);
-  const { repaired } = await promoteSkillSourcePreservingNodes(
+  const { repaired, refusedNodeIds = [] } = await promoteSkillSourcePreservingNodes(
     host, fromGraphId, sourceId, targetGraphId,
   );
   // Carry the retrain history across too. Snapshots are keyed by graphId, so
@@ -2352,10 +2482,13 @@ export async function moveSourcePreservingSkillNodes(
   await host.skillSnapshots.move(fromGraphId, targetGraphId, sourceId);
   const after = host.getSourceRecord(targetGraphId, sourceId);
   for (const nid of after?.nodeIds ?? []) before.delete(nid);
+  // A node the origin refused to release was not forgotten — it is still there.
+  for (const nid of refusedNodeIds) before.delete(nid);
   return {
     newRecord: after,
     forgottenNodeIds: [...before],
     repaired,
+    ...(refusedNodeIds.length > 0 ? { refusedNodeIds } : {}),
   };
 }
 

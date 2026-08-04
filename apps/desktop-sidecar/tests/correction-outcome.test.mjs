@@ -176,21 +176,35 @@ test('delete reports the target as the affected node', async () => {
   assert.deepEqual(instance._calls().at(-1), { fn: 'deleteNode', nodeId: 'n2', reason: 'forget source' });
 });
 
-test('existing void callers are unaffected: applyCorrection still resolves undefined and still delegates', async () => {
+// The adapter interface HAS now been widened, so this test's original assertion
+// — `returned === undefined`, "signature must stay void until the adapter
+// interface is widened" — described a temporary state that no longer exists.
+//
+// Its INTENT survives untouched and is what is asserted here: a caller that
+// ignores the return value must be completely unaffected. That was the whole
+// reason the shim existed. What changed is the mechanism, not the guarantee, so
+// the assertion moves rather than the test being deleted or relaxed.
+test('existing callers that ignore the result are unaffected; applyCorrection now RETURNS the outcome', async () => {
   const instance = makeInstance();
   const impl = new GraphnosisImpl();
 
-  const returned = await impl.applyCorrection(handleFor(instance), {
-    kind: 'edit',
-    nodeId: 'n1',
-    content: 'new text',
-    reason: 'user correction',
-  });
+  const edit = { kind: 'edit', nodeId: 'n1', content: 'new text', reason: 'user correction' };
 
-  assert.equal(returned, undefined, 'signature must stay void until the adapter interface is widened');
+  // A caller written against the old `Promise<void>` shape: awaits, ignores.
+  await impl.applyCorrection(handleFor(instance), edit);
   assert.deepEqual(instance._calls(), [
     { fn: 'edit', nodeId: 'n1', content: 'new text', reason: 'user correction' },
-  ]);
+  ], 'a caller that ignores the result still drives exactly the same SDK call');
+
+  // The same call now also HANDS BACK what happened, which is the point of 2.1.
+  const instance2 = makeInstance();
+  const returned = await new GraphnosisImpl().applyCorrection(handleFor(instance2), edit);
+  assert.notEqual(returned, undefined, 'applyCorrection must no longer discard the outcome');
+  assert.equal(returned.applied, true);
+  assert.equal(returned.nodeId, 'n1');
+  assert.equal(typeof returned.resultNodeId, 'string',
+    'the id the correction PRODUCED must reach the caller — that is what four upgrade blockers needed');
+  assert.deepEqual(returned.errors, []);
 });
 
 test('missing content still throws for edit and supersede (unchanged behaviour)', async () => {

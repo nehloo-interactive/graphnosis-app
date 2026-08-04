@@ -3963,7 +3963,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!pending) throw new Error(`No pending diff ${args.diffId}. The user must confirm in the app first.`);
         if (!scopeAllowsGraph(pending.graphId)) return scopeDeniedError(pending.graphId);
         const correctedBy = resolveActingClientName();
-        await applyCorrection({
+        // The SDK signals a refused correction by RETURNING `{ applied: 0,
+        // errors: [...] }` — `edit`/`supersede`/`deleteNode` never throw. This
+        // handler used to answer the literal string 'Applied.' regardless, so
+        // the AI client was told a correction landed that the graph had
+        // declined, and went on to reason (and tell the user) as though the
+        // memory now said something it does not. The governance log is already
+        // honest about this (correction.ts writes .gll entries only for edits
+        // that landed); this is the same truth reaching the model.
+        const outcomes = await applyCorrection({
           host: deps.host,
           graphId: pending.graphId,
           diff: pending.diff,
@@ -3972,8 +3980,41 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(pending.prompt ? { prompt: pending.prompt } : {}),
           triggeredBy: 'mcp:edit',
         });
-        deps.pendingDiffs.delete(args.diffId);
-        return { content: [{ type: 'text', text: 'Applied.' }] };
+        // `outcomes[i]` describes `edits[i]` — dense and index-aligned (see
+        // `GraphnosisHost.applyCorrection`, which pushes before its own
+        // applied-check). Fail closed: a missing outcome counts as a refusal,
+        // matching correction.ts's .gll gate.
+        const applyEdits = pending.diff.edits ?? [];
+        const refusedNodeIds = applyEdits
+          .filter((_e, i) => !outcomes[i]?.applied)
+          .map((e) => e.nodeId);
+        const appliedCount = applyEdits.length - refusedNodeIds.length;
+        if (refusedNodeIds.length === 0) {
+          deps.pendingDiffs.delete(args.diffId);
+          return { content: [{ type: 'text', text: 'Applied.' }] };
+        }
+        // Retry policy. Re-applying a diff is NOT idempotent: `adds` route
+        // through `ingest`, which always lands, so replaying a diff whose adds
+        // already went in duplicates those memories — and on SDK 0.10.0
+        // replaying a landed `edit` targets a now-retired node. So the pending
+        // diff survives only when NOTHING landed (no edit applied AND the diff
+        // carried no adds); then a retry is lossless and the user has not
+        // silently lost a proposal to a transient refusal. On a PARTIAL
+        // application we drop it and name the refused nodes, so the client
+        // re-proposes a correction for just those instead of replaying the half
+        // that already succeeded.
+        const stillPending = appliedCount === 0 && (pending.diff.adds?.length ?? 0) === 0;
+        if (!stillPending) deps.pendingDiffs.delete(args.diffId);
+        const applyErrors = outcomes.flatMap((o) => o.errors);
+        return mcpError(
+          `NOT applied: the graph refused ${refusedNodeIds.length} of ${applyEdits.length} change(s). `
+          + `Applied ${appliedCount}. Refused node(s): ${refusedNodeIds.join(', ')}.`
+          + (applyErrors.length ? ` Engine said: ${applyErrors.join('; ')}.` : '')
+          + (stillPending
+            ? ` Nothing was changed — diff ${args.diffId} is STILL PENDING and can be retried with \`apply\`.`
+            : ` The changes that did land stand; diff ${args.diffId} has been cleared — call \`edit\` again for the rest.`)
+          + ' Do not tell the user the refused memories were corrected.',
+        );
       }
       case 'forget': {
         const args = ForgetInput.parse(rawInput);
@@ -3989,17 +4030,35 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const resForget = requireEngram(deps.host, args.graphId);
         if ('error' in resForget) return resForget.error;
         if (!scopeAllowsGraph(resForget.graphId)) return scopeDeniedError(args.graphId);
-        await deps.host.applyCorrection(
+        // Same defect and same fix as `apply` above: `deleteNode` NEVER THROWS
+        // on a refusal, it returns `{ applied: false, errors: [...] }`. This
+        // handler used to discard the outcomes entirely and then announce
+        // `Forgot N node(s)` unconditionally — so a memory the graph declined
+        // to delete was reported to the AI client as gone. That is the worse
+        // direction of the two failures: the model stops trying to remove it,
+        // tells the user it is forgotten, and the content keeps surfacing in
+        // every later recall.
+        const rawForgetOutcomes = await deps.host.applyCorrection(
           resForget.graphId,
           { edits: targets.map(t => ({ kind: 'delete' as const, nodeId: t.nodeId, reason: 'forgotten by AI client' })) },
           { triggeredBy: 'mcp:forget' },
         );
+        // `outcomes[i]` describes `edits[i]`, and `edits` was built by mapping
+        // `targets` in order, so index i is target i. Fail closed exactly like
+        // `apply`: a short/absent array counts as a refusal rather than an
+        // assumed success. (`delete` never mints a replacement node, so unlike
+        // `edit`/`supersede` there is no `resultNodeId` to reconcile here.)
+        const forgetOutcomes = Array.isArray(rawForgetOutcomes) ? rawForgetOutcomes : [];
+        const forgotten = targets.filter((_t, i) => forgetOutcomes[i]?.applied);
+        const refusedForget = targets.filter((_t, i) => !forgetOutcomes[i]?.applied);
         // Build a response that surfaces what was removed. When we have
         // previews, echo them back so the user (and any later audit) can
         // see what content actually got soft-deleted, not just opaque IDs.
         const lines: string[] = [];
-        lines.push(`Forgot ${targets.length} node${targets.length === 1 ? '' : 's'} from "${args.graphId}":`);
-        for (const t of targets) {
+        if (forgotten.length > 0) {
+          lines.push(`Forgot ${forgotten.length} node${forgotten.length === 1 ? '' : 's'} from "${args.graphId}":`);
+        }
+        for (const t of forgotten) {
           if (t.preview) {
             // Trim preview to a single visible line; keep it under ~140 chars.
             const oneLine = t.preview.replace(/\s+/g, ' ').trim().slice(0, 140);
@@ -4023,7 +4082,21 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             'The user (and the developer) will thank you._'
           );
         }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
+        if (refusedForget.length === 0) {
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        // Unlike `apply` there is no pending diff to retain or clear — `forget`
+        // is addressed by node id, so the client can simply re-issue the call
+        // for the refused ids once whatever blocked them is resolved.
+        const forgetErrors = forgetOutcomes.flatMap((o) => o?.errors ?? []);
+        return mcpError(
+          `NOT forgotten: the graph refused ${refusedForget.length} of ${targets.length} delete${targets.length === 1 ? '' : 's'} in "${args.graphId}". `
+          + `Forgot ${forgotten.length}. Refused node(s): ${refusedForget.map((t) => t.nodeId).join(', ')}.`
+          + (forgetErrors.length ? ` Engine said: ${forgetErrors.join('; ')}.` : '')
+          + ' Those memories are STILL PRESENT and will keep surfacing in recall.'
+          + ' Do not tell the user the refused memories were forgotten.'
+          + (lines.length > 0 ? `\n\n${lines.join('\n')}` : ''),
+        );
       }
       case 'resolve_contradiction': {
         {
@@ -4050,11 +4123,25 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const byId = new Map(deps.brainEngine.getContradictionPairs().map((p) => [p.id, p]));
         const done: string[] = [];
         const missing: string[] = [];
+        // Same defect and same fix as `apply` / `forget` above. `keep_a`/`keep_b`
+        // route through `deleteNode`, which NEVER THROWS on refusal — the engine
+        // returns `{ applied: false }` and `resolveContradictionPair` converts
+        // that into `{ ok: false, reason }`, deliberately KEEPING the pair in the
+        // review queue. This loop discarded that return and told the model
+        // "kept A, superseded B (soft-deleted, recoverable)" for a supersede
+        // that never happened. That is the worse direction: the model reports
+        // the conflict as settled, the user believes the stale memory is gone,
+        // and both sides keep surfacing in every later recall.
+        const refused: Array<{ pairId: string; reason: string }> = [];
         for (const item of args.items) {
           if (!byId.has(item.pairId)) { missing.push(item.pairId); continue; }
-          await deps.brainEngine.resolveContradictionPair(item.pairId, brainAction, {
+          const res = await deps.brainEngine.resolveContradictionPair(item.pairId, brainAction, {
             triggeredBy: 'mcp:resolve_contradiction',
           });
+          if (!res?.ok) {
+            refused.push({ pairId: item.pairId, reason: res?.reason ?? 'the engine returned no outcome' });
+            continue;
+          }
           const oneLine = item.preview.replace(/\s+/g, ' ').trim().slice(0, 160);
           if (args.action === 'mark_debate') {
             done.push(`  • [${item.pairId}] marked as debate — both memories kept: ${oneLine}`);
@@ -4074,6 +4161,19 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (args.action !== 'mark_debate' && done.length > 0) {
           out.push('');
           out.push('_The superseded side is soft-deleted with lineage preserved — recoverable via the Graphnosis app\'s Recover flow._');
+        }
+        if (refused.length > 0) {
+          // Fail the call, exactly like `forget`: the pairs are still queued, so
+          // the client can retry the same pairIds once whatever blocked the
+          // delete is resolved.
+          return mcpError(
+            `NOT resolved: the graph refused ${refused.length} of ${args.items.length} contradiction `
+            + `resolution${args.items.length === 1 ? '' : 's'}. Resolved ${done.length}. `
+            + `Refused pair(s): ${refused.map((r) => `${r.pairId} (${r.reason})`).join('; ')}.`
+            + ' BOTH sides of those pairs are STILL PRESENT and will keep surfacing in recall;'
+            + ' the pairs stay in the review queue. Do not tell the user those contradictions were resolved.'
+            + (out.length > 0 ? `\n\n${out.join('\n')}` : ''),
+          );
         }
         return { content: [{ type: 'text', text: out.join('\n') }] };
       }
@@ -4879,7 +4979,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // Skill sources go through the preserving move: the raw primitive keeps
         // only the seed node, which for a trained skill is its metadata comment
         // — the procedure itself would be dropped on the floor.
-        const { newRecord, forgottenNodeIds, repaired } = await moveSourcePreservingSkillNodes(
+        const { newRecord, forgottenNodeIds, repaired, refusedNodeIds } = await moveSourcePreservingSkillNodes(
           deps.host, resFrom.graphId, args.sourceId, resTo.graphId,
         );
         // Sync in-memory cross-engram cache and rebuild links for the moved nodes.
@@ -4888,6 +4988,24 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
         deps.brainEngine?.runCrossEngramNow();
         const metaTo = deps.host.getGraphMetadata(resTo.graphId);
+        // The nodes landed in the destination, but the SOURCE engram may have
+        // REFUSED to delete its copies — the wrapper reports that as
+        // `refusedNodeIds` and never throws. Announcing "Moved source X to Y"
+        // over a refusal tells the model the content left the origin engram
+        // when it is still there, which matters most on exactly the moves this
+        // tool cares about: the tier check above only guards a move UP, and a
+        // silent copy leaves the material duplicated across two engrams.
+        if (refusedNodeIds && refusedNodeIds.length > 0) {
+          return mcpError(
+            `COPIED, NOT MOVED: source ${args.sourceId} was written into `
+            + `"${metaTo?.displayName ?? resTo.graphId}" (new sourceId: ${newRecord?.sourceId ?? args.sourceId}), `
+            + `but engram "${args.from_engram}" REFUSED to delete ${refusedNodeIds.length} of its node(s): `
+            + `${refusedNodeIds.join(', ')}. That content is STILL PRESENT in "${args.from_engram}" and will `
+            + 'keep surfacing in recall from there — the source now exists in BOTH engrams. '
+            + 'Do not tell the user it was moved.'
+            + xferFooter,
+          );
+        }
         return { content: [{ type: 'text', text:
           `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. ` +
           `New sourceId: ${newRecord?.sourceId ?? args.sourceId}` +
@@ -5509,6 +5627,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
         if (result.structuralEdgeWarning) {
           lines.push(`**⚠ Structure warning:** ${result.structuralEdgeWarning}`);
+        }
+        // The migration pass forgets older duplicate sources of the same skill.
+        // `forgetSource` declines by RETURNING `refusedNodeIds`, and the trainer
+        // now reports that as `duplicateWarning` — but nothing read it, here or
+        // anywhere else, so the model was handed "Skill Training Complete" over
+        // an engram that still holds a second live, walkable, dispatchable copy
+        // of the skill and would tell the user the library was deduplicated.
+        if (result.duplicateWarning) {
+          lines.push(`**⚠ Duplicates NOT removed:** ${result.duplicateWarning}`);
         }
         if (result.coverage && result.coverage.dropped.length > 0) {
           lines.push(
@@ -6177,13 +6304,24 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const meta = deps.host.getGraphMetadata(fromGid)!;
         const promoted: string[] = [];
         const failures: string[] = [];
+        // A refused source-side delete means the item was COPIED out of
+        // quarantine, not moved — `promoteSkillSourcePreservingNodes` reports it
+        // as `refusedNodeIds` and never throws, so the catch below never saw it.
+        // Stamping `promoted` on that both lies to the model and, once every
+        // item is "adjudicated", lifts the quarantine off an engram that still
+        // holds unreviewed imported content.
+        const copiedNotMoved: string[] = [];
         for (const sourceId of args.items) {
           const item = meta.quarantine!.items.find((it) => it.sourceId === sourceId);
           if (!item || item.state !== 'quarantined') { failures.push(`${sourceId} (not quarantined)`); continue; }
           try {
             // moveSource drops non-seed nodes for multi-node skill sources; this
             // wrapper repairs the drop so promoted skills stay walkable.
-            await promoteSkillSourcePreservingNodes(deps.host, fromGid, sourceId, targetGid);
+            const res = await promoteSkillSourcePreservingNodes(deps.host, fromGid, sourceId, targetGid);
+            if (res.refusedNodeIds && res.refusedNodeIds.length > 0) {
+              copiedNotMoved.push(`${sourceId} (refused: ${res.refusedNodeIds.join(', ')})`);
+              continue; // stays quarantined — do NOT mark promoted
+            }
             item.state = 'promoted';
             promoted.push(sourceId);
           } catch (e) {
@@ -6206,6 +6344,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (failures.length) { out.push('', '**Skipped/failed:**'); for (const f of failures) out.push(`- ${f}`); }
         if (!deps.host.isQuarantined(fromGid)) out.push('', '_All items adjudicated — quarantine lifted for this batch._');
         out.push('', '_Promoted skills remain `[dispatch-safe: no]`; raise their autonomy explicitly to enable auto-dispatch._');
+        if (copiedNotMoved.length > 0) {
+          return mcpError(
+            `NOT fully promoted: ${copiedNotMoved.length} of ${args.items.length} item(s) were copied into `
+            + `"${targetGid}" but quarantine "${fromGid}" REFUSED to release them. Promoted ${promoted.length}. `
+            + `Still quarantined (and now present in both engrams): ${copiedNotMoved.join('; ')}. `
+            + 'Do not tell the user those imports were promoted out of quarantine.'
+            + `\n\n${out.join('\n')}`,
+          );
+        }
         return { content: [{ type: 'text', text: out.join('\n') }] };
       }
 
@@ -6227,11 +6374,22 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const meta = deps.host.getGraphMetadata(fromGid)!;
         const rejected: string[] = [];
         const failures: string[] = [];
+        // `forgetSource` signals a declined delete by RETURNING `refusedNodeIds`
+        // — never by throwing — so the catch below was not the failure channel.
+        // "Rejected (discarded)" over a refusal tells the model that imported
+        // content was thrown away while it is still live in the quarantine
+        // engram, and the item-state write underneath would clear the very flag
+        // that keeps it out of recall.
+        const notDiscarded: string[] = [];
         for (const sourceId of args.items) {
           const item = meta.quarantine!.items.find((it) => it.sourceId === sourceId);
           if (!item || item.state !== 'quarantined') { failures.push(`${sourceId} (not quarantined)`); continue; }
           try {
-            await deps.host.forgetSource(fromGid, sourceId, { triggeredBy: 'user:reject-import' });
+            const res = await deps.host.forgetSource(fromGid, sourceId, { triggeredBy: 'user:reject-import' });
+            if (res.refusedNodeIds && res.refusedNodeIds.length > 0) {
+              notDiscarded.push(`${sourceId} (refused: ${res.refusedNodeIds.join(', ')})`);
+              continue; // stays quarantined — do NOT mark rejected
+            }
             item.state = 'rejected';
             rejected.push(sourceId);
           } catch (e) {
@@ -6250,6 +6408,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         ];
         if (failures.length) { out.push('', '**Skipped/failed:**'); for (const f of failures) out.push(`- ${f}`); }
         out.push('', '_Discards are recorded in the op-log and recoverable._');
+        if (notDiscarded.length > 0) {
+          return mcpError(
+            `NOT discarded: quarantine "${fromGid}" REFUSED to delete ${notDiscarded.length} of `
+            + `${args.items.length} item(s). Rejected ${rejected.length}. Still present and still `
+            + `quarantined: ${notDiscarded.join('; ')}. That imported content was NOT thrown away — `
+            + 'do not tell the user it was rejected.'
+            + `\n\n${out.join('\n')}`,
+          );
+        }
         return { content: [{ type: 'text', text: out.join('\n') }] };
       }
 
@@ -6516,9 +6683,60 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
         if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(args.graphId);
-        const result = await deps.skillTrainer.deleteSkill(resEngram.graphId, args.sourceId, args.all_versions ?? false);
+        // ── The delete and the snapshot purge are ORDERED, and the order is
+        //    the fix ────────────────────────────────────────────────────────
+        //
+        // `SkillTrainer.deleteSkill` does two things: `host.forgetSource`, then
+        // `host.skillSnapshots.deleteAll`, which `fs.rm`s the whole per-source
+        // snapshot directory. `forgetSource` declines by RETURNING
+        // `refusedNodeIds` — it never throws — and it RESTORES the source record
+        // around the survivors. The trainer discarded that value and ran the
+        // purge unconditionally, then returned `{ forgottenSourceIds: [id] }`
+        // regardless, and this handler printed "Deleted this skill version …
+        // Recoverable from the Graphnosis app op-log."
+        //
+        // So on a refusal the user was told the skill was deleted, the skill was
+        // still there in full, AND every retrain snapshot — the only copy of its
+        // earlier versions, and the thing `rollback_skill` reads — had been
+        // erased from disk. A stated false outcome plus an irreversible loss of
+        // the material that would undo it.
+        //
+        // The interim fix re-issued `forgetSource` + `deleteAll` HERE, because
+        // `deleteSkill` had no channel to report a refusal through. It has one
+        // now — `refusedNodeIds`, gated so the purge cannot run on a delete that
+        // did not land — so the primitives go back behind the method. Leaving
+        // them duplicated here was the worse outcome of the two: it left
+        // `deleteSkill` with no production caller, and a destructive method that
+        // nothing calls is a method whose gate nothing exercises. One caller,
+        // one gate, one contract.
+        const delGid = resEngram.graphId;
+        const delTarget = deps.host.listSources(delGid)
+          .find((s) => s.kind === 'skill' && s.sourceId === args.sourceId);
+        // Pre-checked rather than left to `deleteSkill`'s own throw: a throw
+        // here becomes a JSON-RPC -32603 that clients render as "Tool execution
+        // failed", which hides the actual reason from the model.
+        if (!delTarget) {
+          return mcpError(`Skill "${args.sourceId}" not found in engram "${args.graphId}".`);
+        }
+        const delResult = await deps.skillTrainer.deleteSkill(
+          delGid, delTarget.sourceId, args.all_versions ?? false,
+        );
+        const delRefused = delResult.refusedNodeIds ?? [];
+        if (delRefused.length > 0) {
+          return mcpError(
+            `NOT deleted: engram "${args.graphId}" REFUSED to delete ${delRefused.length} node(s) of `
+            + `skill ${delTarget.sourceId}: ${delRefused.join(', ')}. The skill is STILL PRESENT — it will `
+            + 'keep appearing in `list_skills`, keep being walkable, and keep surfacing in recall. '
+            + 'Its retrain snapshots were NOT purged, so `skill_history` and `rollback_skill` still work '
+            + 'and nothing has been lost; retry once whatever blocked the delete is resolved. '
+            + 'Do not tell the user the skill was deleted.',
+          );
+        }
+        // The snapshot purge already ran inside `deleteSkill`, and only because
+        // the forget landed: the source is gone, so its history is unreachable
+        // scaffolding rather than the user's only recovery path.
         const scope = args.all_versions ? 'all versions of the skill' : 'this skill version';
-        return { content: [{ type: 'text', text: `Deleted ${scope} (${result.forgottenSourceIds.length} source(s) soft-deleted). Recoverable from the Graphnosis app op-log.` }] };
+        return { content: [{ type: 'text', text: `Deleted ${scope} (1 source(s) soft-deleted). Recoverable from the Graphnosis app op-log.` }] };
       }
 
       default:

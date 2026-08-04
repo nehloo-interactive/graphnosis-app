@@ -112,6 +112,11 @@ export class TemporalEngine {
    * Reinforce nodes that appeared in a recall result — they are useful
    * and should regain a small confidence boost. Capped to avoid
    * over-reinforcement: never raises above 0.95 and adds at most +0.03.
+   *
+   * `no-sdk-primitive` is a property of the installed SDK, not of the node
+   * (see `GraphnosisHost.reinforceNode`), so the answer cannot change part-way
+   * through a batch: bail on the first one instead of walking every recalled
+   * node to be told the same thing. This runs on the recall hot path.
    */
   async reinforceNodes(nodeIds: string[], graphId: string): Promise<void> {
     const settings = this.getSettings();
@@ -119,7 +124,8 @@ export class TemporalEngine {
 
     for (const nodeId of nodeIds) {
       try {
-        await this.host.reinforceNode(graphId, nodeId);
+        const result = await this.host.reinforceNode(graphId, nodeId);
+        if (result.reason === 'no-sdk-primitive') return;
       } catch {
         // Non-fatal — reinforcement is best-effort
       }

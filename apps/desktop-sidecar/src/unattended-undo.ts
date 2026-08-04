@@ -162,7 +162,27 @@ export async function applyUndo(
         // Re-supersede the (now-current) node with its captured pre-state — a
         // round-trip that restores the original content while preserving audit
         // lineage (supersede is undoable by construction).
-        await host.applyCorrection(
+        //
+        // READ THE OUTCOME. The SDK's correction API does not signal failure by
+        // throwing — `supersede` funnels through `correct()`, which on refusal
+        // RETURNS `{ applied: 0, errors: ['Node <id> not found'] }`. The
+        // try/catch below therefore cannot see a refusal, and while this call
+        // discarded the outcome `applyUndo` answered `{ ok: true }` regardless:
+        // ipc's undo handler counted that as `reverted++` and the run-review
+        // pane told the owner N steps were rolled back while the agent's
+        // content was still the live version of the memory. Undo is the
+        // affordance the entire unattended-execution safety story rests on, and
+        // the token's `previousContent` is consumed once — a false success here
+        // costs the owner their only second chance.
+        //
+        // The refusal is reachable, not theoretical: the undo token carries the
+        // node id captured when the step ran, and any later supersede,
+        // `purgeSoftDeleted` rebuild, or peer-synced graph can retire or drop
+        // that id before the owner presses Undo.
+        //
+        // Fail closed on a missing outcome (host-contract drift we cannot
+        // verify), same as the `.gll` writer in correction.ts.
+        const [outcome] = await host.applyCorrection(
           p.graphId,
           {
             edits: [
@@ -176,6 +196,16 @@ export async function applyUndo(
           },
           { triggeredBy: 'unattended:undo' },
         );
+        if (!outcome?.applied) {
+          const why = outcome?.errors.length
+            ? outcome.errors.join('; ')
+            : 'the host returned no outcome for the undo supersede';
+          console.error(
+            `[unattended] undo refused for node ${p.nodeId}: ${why}`
+            + ' — the memory still holds what the agent wrote',
+          );
+          return { ok: false, reason: `supersede refused: ${why}` };
+        }
         return { ok: true, reverted: 'supersede' };
       }
       case 'skill-edit': {
