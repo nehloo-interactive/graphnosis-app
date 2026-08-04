@@ -284,6 +284,12 @@ scripts/.sensitive-needles
 # mechanism text. Owner decision 2026-08-03: track it.
 !/apps/desktop-sidecar/tests/_contract-level.mjs
 
+# Guard for the PDF line-joining contract. Class (a): it asserts required
+# behaviour and carries no defect mechanism. Added with the 1.32.0 fix — the
+# fail-closed default made it invisible to git until negated, which is the
+# policy working, but an unshipped guard protects nobody.
+!/apps/desktop-sidecar/tests/pdf-text-join.test.mjs
+
 # contradiction-eval/ — same two-step: negate the dir, exclude its contents,
 # then negate each file.
 !/apps/desktop-sidecar/tests/contradiction-eval/

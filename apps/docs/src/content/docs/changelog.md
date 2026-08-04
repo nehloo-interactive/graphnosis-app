@@ -11,6 +11,26 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.32.0 — PDF text extraction keeps the whole page
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-03</p>
+
+**Text was being lost when reading PDFs.** Where a line of a PDF ended, the text on that line could be discarded instead of kept. How much was affected depended on how the PDF was produced — some files were nearly unaffected, others lost a large share of their text — and the loss fell hardest on titles and headings, because those most often sit alone on a line.
+
+This release fixes the extraction. PDFs ingested from now on keep their full text.
+
+**PDFs already in your cortex are not re-read by this release.** To recover a PDF that was ingested before this fix, re-add it.
+
+### Fixed
+
+- **PDF text extraction no longer drops end-of-line text.** Affects every PDF added to a cortex before this release, to a degree that varies by document.
+
+### Migrations
+
+None. Your cortex is not rewritten by this release.
+
+---
+
 ## v1.31.0 — Recall stops writing to memory
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-03</p>

@@ -45,7 +45,17 @@
  *
  * Line-break detection uses the `hasEOL` flag when present (pdfjs sets
  * this for newline runs) and falls back to a Y-coordinate change of >1
- * unit. EOL items have empty `str` so they don't add visible text.
+ * unit.
+ *
+ * `hasEOL` DOES NOT IMPLY AN EMPTY `str`. This comment used to assert that it
+ * did, and the loop below acted on it by skipping such items entirely — which
+ * silently discarded their text. The extractor has two paths: it pushes a
+ * standalone `{str:"", hasEOL:true}` marker, but it ALSO sets the flag on an
+ * already-accumulating run, and the flush then emits that run's text with the
+ * flag still attached (`str: <accumulated>, …, hasEOL: <from run state>`).
+ * The second path is ordinary output, not an edge case, and it is biased
+ * toward lines that end a visual row — titles and headings above all. So an
+ * item's text is always emitted, and the break is applied afterwards.
  */
 
 interface PdfTextItem {
@@ -65,16 +75,18 @@ export function joinPdfTextItems(rawItems: unknown[]): string {
   let prevY: number | null = null;
 
   for (const it of items) {
-    if (it.hasEOL) {
-      // pdfjs emits these for newline runs. Mark a line break and clear
-      // positional tracking — the next visible item starts fresh on the
-      // following line.
-      if (!out.endsWith('\n')) out += '\n';
-      prevRight = null;
-      prevY = null;
+    // An item can carry BOTH text and the end-of-line flag, so the text is
+    // emitted first and the break applied after. This used to `continue` on
+    // `hasEOL`, which discarded that text — see the note above the interface.
+    const isEOL = it.hasEOL === true;
+    if (it.str == null || it.str === '') {
+      if (isEOL) {
+        if (!out.endsWith('\n')) out += '\n';
+        prevRight = null;
+        prevY = null;
+      }
       continue;
     }
-    if (it.str == null || it.str === '') continue;
 
     const transform = it.transform ?? [1, 0, 0, 1, 0, 0];
     const x = transform[4] ?? 0;
@@ -105,6 +117,14 @@ export function joinPdfTextItems(rawItems: unknown[]): string {
     out += it.str;
     prevRight = right;
     prevY = y;
+
+    // Break AFTER the text, and reset positional tracking so the next item
+    // starts fresh on the following line.
+    if (isEOL) {
+      if (!out.endsWith('\n')) out += '\n';
+      prevRight = null;
+      prevY = null;
+    }
   }
 
   // NFC normalisation — collapse decomposed sequences like "a" + U+0306
