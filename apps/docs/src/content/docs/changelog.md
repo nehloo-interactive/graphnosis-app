@@ -11,6 +11,27 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.31.0 — Recall stops writing to memory
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-03</p>
+
+**Reinforcement on recall is disabled in this release.** Memories no longer gain a small confidence increase when they appear in a recall result. This is a deliberate, known feature regression, not an oversight: the correction path it depended on is not safe to run on the engine this release pins, and turning it off is the right answer until a proper primitive exists. Connection reinforcement — the strengthening of links between memories recalled together — is unaffected and continues to run.
+
+**This release does not repair existing content.** Anything already affected in your cortex stays as it is. 1.31.0 stops further change; it does not undo any. A repair pass is planned for 1.32.0.
+
+### Changed
+
+- **Declined actions are now reported.** Approving a correction, resolving a duplicate or contradiction, promoting a skill, or a connector's mirror delete: if the memory engine declines, you are told, instead of the view quietly repainting as though it had succeeded.
+- **Incomplete recalls say so.** When part of your memory could not be read, the answer is labelled incomplete and names the engrams that did not respond.
+- **Similarity scoring states what it is based on.** Where no embedding model is loaded, results fall back to the deterministic lexical ranking and are labelled accordingly, rather than being scored on placeholder values.
+- **Version metadata is consistent** across the app, the sidecar and the native build, and is checked before a release can be built.
+
+### Migrations
+
+None. Your cortex is not rewritten by this release, and no action is needed on upgrade.
+
+---
+
 ## v1.30.0 — Skills that survive being moved
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-07-26</p>
