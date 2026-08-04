@@ -130,6 +130,29 @@ Restore points are not a substitute for backups. They live in the same cortex fo
 
 If a save was interrupted, an engram's main file could be missing while its last-known-good copy sat beside it untouched. Graphnosis now finds engrams by that copy too, so instead of quietly vanishing from the picker they appear in **Recovery** and can be restored. Saving itself no longer leaves that gap: the previous version is copied aside before the new one replaces it, so the live file is never absent, whatever interrupts the write.
 
+## When an engram will not open, the reason is the real one
+
+A load can fail for several unrelated reasons, and being told the wrong one is
+worse than being told nothing — "your memories may be corrupted" about a file
+that is perfectly intact is the most alarming way to be wrong. Graphnosis
+distinguishes them and says which it is:
+
+- **The passphrase is wrong, or the file was replaced.** Decryption failed. This
+  is the only case where the passphrase is actually implicated.
+- **The file could not be read at all** — a permissions or disk problem. Nothing
+  to do with the passphrase.
+- **The file decrypted but failed structural validation.** Genuinely damaged or
+  truncated; recover from a restore point or a backup.
+- **It was written by a newer version of Graphnosis.** Nothing is damaged.
+  Update the app to open it; the engram is left untouched.
+- **It was indexed by a newer version whose text analyzer this build does not
+  recognise.** Also not damage — an index question, not a data one. Your
+  memories are intact. Update to open it.
+
+The last two matter most on a downgrade: if you install an older build after a
+newer one has opened an engram, these are what you will see, and neither means
+anything is wrong with your data.
+
 ## Power-user override: `GRAPHNOSIS_DEFAULT_GRAPH`
 
 If you launch the sidecar standalone (for MCP wiring into Claude

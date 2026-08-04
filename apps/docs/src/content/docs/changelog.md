@@ -11,6 +11,22 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.34.0 — Honest answers when an engram will not open
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-04</p>
+
+**One more way of being told the wrong thing is gone.** An engram indexed by a newer version of Graphnosis used to fail with a generic "unrecognized load failure", which tells you nothing about a file that is completely intact. It now says what is actually true: the index was written by a newer build, your memories are fine, and updating will open it. This is what you see if you install an older version after a newer one has opened an engram.
+
+### Fixed
+
+- **A newer index no longer reads as an unknown failure.** The last remaining case where a healthy engram produced an unhelpful message.
+
+### Migrations
+
+None. Your cortex is not rewritten by this release.
+
+---
+
 ## v1.33.0 — Undo, and clearer answers when something goes wrong
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-04</p>
