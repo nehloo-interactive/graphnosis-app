@@ -1,0 +1,99 @@
+# scripts/disclosure-held.txt — the files that MUST NOT become tracked.
+#
+# The counterpart to scripts/tests-allowlist.txt, and deliberately a SEPARATE
+# file for the same reason that one is separate from .gitignore: two
+# independent lists mean a hurried edit fails a check instead of redefining
+# what the check expects.
+#
+#   tests-allowlist.txt  = the PATH policy for tests/ (what may be tracked)
+#   disclosure-held.txt  = the CONTENT policy, repo-wide (what may not)
+#
+# Their intersection must be EMPTY. scripts/check-disclosure-tags.sh fails if
+# it is not, so the two lists cannot silently disagree.
+#
+# WHY THIS LIST EXISTS AT ALL, GIVEN THE HEADER TAGS
+# -------------------------------------------------
+# The `@disclosure:` header in each file is the primary signal, and the check
+# refuses to track anything carrying a (b) or (c) tag. But a header is one
+# `sed -i` away from gone, and a check that only reads headers reports CLEAN
+# the moment the headers are deleted — indistinguishable from a clean tree.
+# This list is the independent witness: every path below must EXIST and must
+# still carry a (b)/(c) tag. Delete a header and the check fails loudly.
+#
+# Source of authority: 2.59a §5.2 + §6.2 + §6.3
+# (Graphnosis/data/audit-archive/findings/PII-DISCLOSURE-TESTTREE-2.59a.md).
+#
+# TO REMOVE A PATH FROM THIS LIST you need an ADOPTION EVENT, not a decision:
+#   class (c)  -> a release ships carrying the audit's working-tree fixes.
+#   class (b) recall-coverage-* / census / oracle -> `src/recall-coverage.ts`
+#              ships AND the resolved secure-sync reports per-graph outcomes.
+#   class (b) skills-train-status-label -> `getSkillTrainStatusLabel` ships.
+# Until then each file below is a working, runnable reproduction of a defect
+# that is live for every user on the shipped build.
+#
+# Format: one repo-relative path per line. `#` and blanks ignored. No globs.
+
+
+# --- sidecar lane, class (c) — live on the shipped build --------------------
+apps/desktop-sidecar/tests/append-delete-visibility.test.mjs
+apps/desktop-sidecar/tests/apply-refusal-honest.test.mjs
+apps/desktop-sidecar/tests/compliance-retention-honesty.test.mjs
+apps/desktop-sidecar/tests/consumer-refusal-honest.test.mjs
+apps/desktop-sidecar/tests/correction-gll-refusal.test.mjs
+apps/desktop-sidecar/tests/correction-mint-embedding.test.mjs
+apps/desktop-sidecar/tests/correction-rebind-semantics.test.mjs
+apps/desktop-sidecar/tests/correction-refusal-brain-undo.test.mjs
+apps/desktop-sidecar/tests/correction-refusal-no-oplog.test.mjs
+apps/desktop-sidecar/tests/correction-source-rebind.test.mjs
+apps/desktop-sidecar/tests/forget-refusal-honest.test.mjs
+apps/desktop-sidecar/tests/gai-error-classification.test.mjs
+apps/desktop-sidecar/tests/host-delete-refusal-honesty.test.mjs
+apps/desktop-sidecar/tests/host-reingest-refusal-honesty.test.mjs
+apps/desktop-sidecar/tests/ipc-correction-outcome.test.mjs
+apps/desktop-sidecar/tests/mint-overlay-rebind.test.mjs
+apps/desktop-sidecar/tests/mint-rebind-store-census.test.mjs
+apps/desktop-sidecar/tests/oplog-replay-citation-rebind.test.mjs
+apps/desktop-sidecar/tests/oplog-replay-idempotence.test.mjs
+apps/desktop-sidecar/tests/oplog-replay-source-rebind.test.mjs
+apps/desktop-sidecar/tests/outer-refusal-honest.test.mjs
+apps/desktop-sidecar/tests/reinforce-no-correction.test.mjs
+apps/desktop-sidecar/tests/skill-cited-rebind.test.mjs
+apps/desktop-sidecar/tests/skill-move-refusal-honest.test.mjs
+apps/desktop-sidecar/tests/skill-warning-consumers.test.mjs
+apps/desktop-sidecar/tests/sync-refusal-honest.test.mjs
+
+# --- sidecar lane, class (c) DEFAULTED — created after 2.59a, unclassified
+#     by it, defaulted to (c) on the fail-closed side ---------------------------
+apps/desktop-sidecar/tests/brain-embedding-gate.test.mjs
+apps/desktop-sidecar/tests/semantic-availability.test.mjs
+apps/desktop-sidecar/tests/studio-similarity-gate.test.mjs
+
+# --- sidecar lane, class (b) — fix not adopted / unshipped module -----------
+apps/desktop-sidecar/tests/_embed-oracle.mjs
+apps/desktop-sidecar/tests/contract-level-census.test.mjs
+apps/desktop-sidecar/tests/embedding-noise-floor.test.mjs
+apps/desktop-sidecar/tests/recall-coverage-partial.test.mjs
+apps/desktop-sidecar/tests/recall-coverage-withheld.test.mjs
+apps/desktop-sidecar/tests/recall-partial-prompt.test.mjs
+
+# --- desktop lane, class (c) ------------------------------------------------
+tests/desktop/reingest-banner-refusal.test.ts
+tests/desktop/skills-import-refusal.test.ts
+tests/desktop/skills-refusal.test.ts
+tests/desktop/studio-edit-refusal.test.ts
+tests/desktop/workbench-refusal.test.ts
+
+# --- desktop lane, class (c) DEFAULTED — created after 2.59a ----------------
+tests/desktop/skills-promote-refusal.test.ts
+
+# --- desktop lane, class (b) ------------------------------------------------
+tests/desktop/skills-train-status-label.test.ts
+
+# --- forensics lane, class (c) LIVE-ON-SHIPPED ------------------------------
+# Added 2026-08-03. Neither file was covered by any guard: outside
+# check-disclosure-tags.sh's LANE_RE (now widened) and unmatched by every needle
+# in pre-commit-guard.sh. detect-reinforcement-damage.mjs is a complete public
+# characterisation of a defect no shipped build has the fix for. Both are 1.32.0
+# / private-disclosure tooling, not repo artifacts.
+scripts/forensics/detect-reinforcement-damage.mjs
+scripts/forensics/make-reinforcement-damage-fixtures.mjs

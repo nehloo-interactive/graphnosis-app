@@ -1,0 +1,43 @@
+# scripts/.sensitive-needles.example — FORMAT DOCUMENTATION ONLY.
+#
+# Every entry below is SYNTHETIC. Never put a real name, organisation, or
+# project in this file: it is TRACKED and this repo is PUBLIC. A denylist of
+# sensitive strings is itself a disclosure of those strings.
+#
+# Setup:
+#   cp scripts/.sensitive-needles.example scripts/.sensitive-needles
+#   # then replace these placeholders with the real strings
+#
+# scripts/.sensitive-needles is gitignored. pre-commit-guard.sh reads it and
+# REFUSES to run (exit 1) if it is missing or empty — it fails closed rather
+# than silently passing.
+#
+# FORMAT
+#   - one needle per line
+#   - blank lines and lines starting with '#' are ignored
+#   - leading/trailing spaces are part of the needle, so don't add any
+#   - matching is SUBSTRING and CASE-INSENSITIVE (grep -Fi), NOT a regex:
+#     '.', '*', '(' etc. are literal characters
+#   - matching is NOT diacritic-folded. "Grünwald" will NOT match
+#     "Grunwald". List BOTH spellings of any name with a diacritic variant.
+#   - list the space-stripped/case-folded form too if the string appears
+#     mangled inside identifiers or fixture ids (e.g. "exampleorgname")
+#   - do NOT hash these. See the long comment in pre-commit-guard.sh: hashes
+#     only match whole-string exact equality, which breaks substring and
+#     case-insensitive matching and would make the guard silently pass.
+
+# --- synthetic people -------------------------------------------------------
+Jane Placeholder
+Sample Testperson
+Example Grunwald
+Example Grünwald
+
+# --- synthetic organisations ------------------------------------------------
+ExampleOrgName
+exampleorgname
+Placeholder Foundation
+Sample Institute International
+
+# --- synthetic project / product names --------------------------------------
+Fictional Project Alpha
+"fictional project alpha"

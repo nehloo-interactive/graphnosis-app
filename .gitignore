@@ -82,16 +82,101 @@ apps/marketing-web/
 *.app.tar.gz
 *.app.tar.gz.sig
 
-# Local-only consistency test suite (per-dev tool, not shipped).
+# Root /tests/ — IGNORED BY DEFAULT, published only by explicit exception.
+#
 # Lives at repo root /tests/ so future test files (frontend, integration,
 # end-to-end) can sit alongside the sidecar-focused ones. The pnpm test:*
-# scripts in /package.json reference these files; clones won't have them
-# until they're recreated. See
-# the polished-questing-beacon plan notes for the rationale.
-# Also covers /tests/rag-comparison-study/ — a local research study comparing
-# Graphnosis to Airweave (paper) and a Milvus-Groq RAG stack. See
-# the peaceful-booping-gosling plan notes. Never ships.
-/tests/
+# scripts in /package.json reference these files. See the
+# polished-questing-beacon plan notes for the original rationale.
+#
+# WHY `/tests/*` AND NOT `/tests/`: git does not descend into an excluded
+# DIRECTORY, so `/tests/` followed by `!/tests/foo.ts` leaves foo.ts ignored —
+# the negation silently does nothing, and you cannot tell that from reading it.
+# Excluding the directory's CONTENTS instead keeps exactly the same
+# fail-closed default while making per-file re-inclusion actually work.
+# Same reason each subdirectory below is re-included and then re-emptied:
+# without the `/tests/<dir>/*` line the whole subdirectory comes back.
+#
+# THE POLICY IS FAIL-CLOSED. A file dropped into tests/ tomorrow is IGNORED
+# until someone writes a `!` line for it here. Publication is never the
+# default; it is always a deliberate, reviewed, per-file act.
+#
+# Adding a `!` line is NOT sufficient on its own. Every path negated below
+# must also appear in scripts/tests-allowlist.txt, and
+# scripts/check-tests-allowlist.sh fails the build if anything tracked or
+# merely VISIBLE under tests/ is missing from that list. The two lists are
+# deliberately independent: a hurried `!` here must fail a check, not redefine
+# what the check expects.
+#
+# NEVER NEGATE, under any deadline:
+#   tests/route-b-*.json  — a REAL CORTEX EXPORT (108 real skill names, real
+#     sourceIds, 12 real engram names). `route-b-fixture.clean.json` is
+#     MIS-NAMED: only personal-name strings were stripped. It is not clean.
+#   tests/corpus-routing-experiment.ts, tests/infer-crosscheck.ts,
+#   tests/savings-experiment.ts  — same real-cortex corpora.
+#   tests/rag-comparison-study/  — a local research study comparing Graphnosis
+#     to Airweave (paper) and a Milvus-Groq RAG stack. See the
+#     peaceful-booping-gosling plan notes. Never ships.
+#   tests/desktop/*.test.ts — class (b)/(c): working reproductions of defects
+#     live on the shipped build. Only the harness files are published.
+#
+# The publishable set below is the class (a) set from the 2.59a disclosure
+# classification — defect fixed AND adopted by every shipped consumer.
+/tests/*
+
+# harness / fixtures
+!/tests/run-all.ts
+!/tests/_helpers.ts
+!/tests/_fixtures.ts
+!/tests/fixtures/
+/tests/fixtures/*
+!/tests/fixtures/skill-walk-golden.json
+
+# pre-audit behavioural/consistency lane
+!/tests/recall.test.ts
+!/tests/recall-variants.test.ts
+!/tests/duplicates.test.ts
+!/tests/metadata.test.ts
+!/tests/sources.test.ts
+!/tests/persistence.test.ts
+!/tests/concurrency.test.ts
+!/tests/settings-matrix.test.ts
+!/tests/edge-cases.test.ts
+!/tests/mutations.test.ts
+!/tests/llm.test.ts
+!/tests/classification-schema.test.ts
+
+# individually classified (a)
+!/tests/pack-crypto.test.ts
+!/tests/quarantine-contract.test.ts
+!/tests/skill-privacy-lock.test.ts
+!/tests/mcp-audit.test.ts
+!/tests/oplog-merge.test.ts
+
+# guard-semantics suites
+!/tests/agent-walker-loops.test.ts
+!/tests/dispatch-safe-readout.test.ts
+!/tests/s7-drift-hook.test.ts
+!/tests/unattended-executor.test.ts
+
+# skill-* structural suites
+!/tests/skill-autonomy.test.ts
+!/tests/skill-chunk-singlenode.test.ts
+!/tests/skill-goal-header-normalize.test.ts
+!/tests/skill-loop-idempotence.test.ts
+!/tests/skill-name-match.test.ts
+!/tests/skill-needs-infer.test.ts
+!/tests/skill-recipe-binding.test.ts
+!/tests/skill-sop-rewrite.test.ts
+!/tests/skill-walk.test.ts
+
+# desktop lane — HARNESS ONLY. The six *.test.ts suites stay ignored.
+!/tests/desktop/
+/tests/desktop/*
+!/tests/desktop/_dom.ts
+!/tests/desktop/_loader.mjs
+!/tests/desktop/tsconfig.json
+
 RELEASE-NOTES.md
 SDK-OBSERVATIONS.md
 test.yml
@@ -147,3 +232,80 @@ apps/desktop/src-tauri/embedded.provisionprofile
 # throwaway local build). Machine-specific; must never reach a release build,
 # where `--config` merging would silently change bundle behaviour.
 apps/desktop/src-tauri/tauri.localtest.conf.json
+
+# Denylist of real names/orgs that scripts/pre-commit-guard.sh refuses to let
+# into a commit. The list is itself the sensitive data — publishing a curated
+# set of "strings this project considers sensitive" discloses those strings.
+# Stays local; the tracked .example holds synthetic entries documenting the
+# format. The guard fails CLOSED (exit 1) when this file is missing or empty.
+scripts/.sensitive-needles
+!scripts/.sensitive-needles.example
+
+# ── apps/desktop-sidecar/tests/ — IGNORED BY DEFAULT, published by exception ──
+#
+# WHY THIS EXISTS: this directory had no ignore stack at all, unlike root
+# /tests/. 36 files here are classified (b)/(c) by scripts/disclosure-held.txt
+# — runnable reproductions of defects that are live on the shipped build — and
+# a single `git add apps/desktop-sidecar/tests/` published every one of them.
+# The release has to stage inside this exact directory, so the trap was armed.
+#
+# Same shape as /tests/* above, and for the same reason: git does not descend
+# into an excluded DIRECTORY, so `dir/` followed by `!dir/foo` leaves foo
+# ignored. Exclude the CONTENTS with /*, then negate each publishable path.
+#
+# FAIL-CLOSED: a file dropped in here tomorrow is IGNORED until someone adds
+# an explicit negation. scripts/check-disclosure-tags.sh fails when anything
+# tagged (b)/(c) is NOT ignored.
+/apps/desktop-sidecar/tests/*
+
+# publishable suites — verified 2026-08-03 to be exactly the set already tracked,
+# and disjoint from the 36 held paths (0 held files are tracked: nothing has
+# been published).
+!/apps/desktop-sidecar/tests/correction-outcome.test.mjs
+!/apps/desktop-sidecar/tests/correction-parse.test.mjs
+!/apps/desktop-sidecar/tests/correction-scope.test.mjs
+!/apps/desktop-sidecar/tests/indelible-edit-node-id.test.mjs
+!/apps/desktop-sidecar/tests/mcp-http-oauth.test.mjs
+!/apps/desktop-sidecar/tests/memory-hygiene.test.mjs
+!/apps/desktop-sidecar/tests/oplog-retention.test.mjs
+!/apps/desktop-sidecar/tests/oplog-stats.test.mjs
+!/apps/desktop-sidecar/tests/oplog-watermark.test.mjs
+!/apps/desktop-sidecar/tests/recall-anchors.test.mjs
+!/apps/desktop-sidecar/tests/sharing-scope.test.mjs
+!/apps/desktop-sidecar/tests/skill-call-linking.test.mjs
+!/apps/desktop-sidecar/tests/skill-call-parse.test.mjs
+!/apps/desktop-sidecar/tests/skill-compiler.test.mjs
+!/apps/desktop-sidecar/tests/skill-recover.test.mjs
+!/apps/desktop-sidecar/tests/skill-source-move.test.mjs
+
+# Q1: tracked indelible-edit-node-id.test.mjs imports this helper. Held+untracked,
+# it broke a fresh clone with ERR_MODULE_NOT_FOUND and silently dropped 11 tests
+# (157/1 fail vs 167/167 with it present). It is a test-registration shim; no
+# mechanism text. Owner decision 2026-08-03: track it.
+!/apps/desktop-sidecar/tests/_contract-level.mjs
+
+# contradiction-eval/ — same two-step: negate the dir, exclude its contents,
+# then negate each file.
+!/apps/desktop-sidecar/tests/contradiction-eval/
+/apps/desktop-sidecar/tests/contradiction-eval/*
+!/apps/desktop-sidecar/tests/contradiction-eval/blind-set.json
+!/apps/desktop-sidecar/tests/contradiction-eval/blind-set.sha256
+!/apps/desktop-sidecar/tests/contradiction-eval/eval-results.json
+!/apps/desktop-sidecar/tests/contradiction-eval/eval-set.json
+!/apps/desktop-sidecar/tests/contradiction-eval/held-out-set.json
+!/apps/desktop-sidecar/tests/contradiction-eval/probe-precision.mjs
+!/apps/desktop-sidecar/tests/contradiction-eval/run-blind.mjs
+!/apps/desktop-sidecar/tests/contradiction-eval/run-e2e.mjs
+!/apps/desktop-sidecar/tests/contradiction-eval/run-eval.mjs
+!/apps/desktop-sidecar/tests/contradiction-eval/run-heldout.mjs
+
+# ── scripts/forensics/ — HELD, never committed ──
+#
+# Untracked, unignored, and covered by no existing guard: outside
+# check-disclosure-tags.sh LANE_RE and unmatched by pre-commit-guard.sh needles.
+# detect-reinforcement-damage.mjs is a complete public characterisation of an
+# unpatched defect (introducing commit, both eras, exact victim lengths, the
+# confidence-pinning block). make-reinforcement-damage-fixtures.mjs additionally
+# carried an absolute scratchpad path. `node scripts/check-versions.mjs` is now
+# called by release.yml, so `git add scripts/` is a command someone WILL run.
+/scripts/forensics/

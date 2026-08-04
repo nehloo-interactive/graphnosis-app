@@ -1,0 +1,104 @@
+# scripts/tests-allowlist.txt — the ONLY files under tests/ that may be tracked.
+#
+# Read by scripts/check-tests-allowlist.sh. This file is deliberately SEPARATE
+# from .gitignore. If the check derived its expectations from .gitignore's `!`
+# lines it would be tautological: someone adding a `!` in a hurry would move
+# the goalposts and the check would agree with them. Two independent lists
+# means a hurried `!` fails the check instead of passing it.
+#
+# Source of authority: the 2.59a disclosure classification
+# (Graphnosis/data/audit-archive/findings/PII-DISCLOSURE-TESTTREE-2.59a.md,
+# §5.2 + §6.1). Class (a) = defect fixed AND adopted by every shipped
+# consumer. Class (b)/(c) suites are working reproductions of defects live on
+# the shipped build and MUST NOT appear here until an adoption event.
+#
+# Format: one repo-relative path per line. `#` comments and blank lines are
+# ignored. No globs — a glob is how an unreviewed file gets in.
+#
+# TO ADD A FILE: classify it (a)/(b)/(c) first, add the path here, AND add the
+# matching `!` negation in .gitignore. Either alone does nothing.
+
+# --- harness / fixtures (2.59a §5.2 "run-all.ts, _helpers.ts, _fixtures.ts") -
+tests/run-all.ts
+tests/_helpers.ts
+tests/_fixtures.ts
+tests/fixtures/skill-walk-golden.json
+
+# --- pre-audit behavioural/consistency lane (2.59a: the 12 named suites) -----
+tests/recall.test.ts
+tests/recall-variants.test.ts
+tests/duplicates.test.ts
+tests/metadata.test.ts
+tests/sources.test.ts
+tests/persistence.test.ts
+tests/concurrency.test.ts
+tests/settings-matrix.test.ts
+tests/edge-cases.test.ts
+tests/mutations.test.ts
+tests/llm.test.ts
+tests/classification-schema.test.ts
+
+# --- individually classified (a) (2.59a: named row-by-row) ------------------
+tests/pack-crypto.test.ts
+tests/quarantine-contract.test.ts
+tests/skill-privacy-lock.test.ts
+tests/mcp-audit.test.ts
+tests/oplog-merge.test.ts
+
+# --- guard-semantics suites (2.59a: matched the "refusal" grep, but the sense
+#     is a guard refusing to exceed a bound, not the SDK refusal class) -------
+tests/agent-walker-loops.test.ts
+tests/dispatch-safe-readout.test.ts
+tests/s7-drift-hook.test.ts
+tests/unattended-executor.test.ts
+
+# --- remaining skill-* structural suites (compiler/parse shape tests) -------
+tests/skill-autonomy.test.ts
+tests/skill-chunk-singlenode.test.ts
+tests/skill-goal-header-normalize.test.ts
+tests/skill-loop-idempotence.test.ts
+tests/skill-name-match.test.ts
+tests/skill-needs-infer.test.ts
+tests/skill-recipe-binding.test.ts
+tests/skill-sop-rewrite.test.ts
+tests/skill-walk.test.ts
+
+# --- desktop lane HARNESS ONLY (2.59a: "_dom.ts, _loader.mjs, tsconfig.json
+#     — harness only, no defect content"). The six tests/desktop/*.test.ts
+#     suites are class (b)/(c) and stay ignored. -------------------------------
+tests/desktop/_dom.ts
+tests/desktop/_loader.mjs
+tests/desktop/tsconfig.json
+
+# ============================================================================
+# HELD — do not uncomment without an explicit owner decision.
+# ============================================================================
+#
+# UNCLASSIFIED by 2.59a §5.2 — they fall under no named row. The reasoning
+# column for the skill-* row reads "compiler/parse/lineage/listing shape
+# tests", which arguably describes gsk-lineage and skills-listing, but the row
+# LABEL is `skill-*` and these do not match it. Held on the fail-closed side;
+# promoting them is a one-line edit once someone rules:
+#   tests/skills-listing.test.ts
+#   tests/gsk-lineage.test.ts
+#   tests/per-skill-autonomy.test.ts
+#   tests/engram-autonomy.test.ts
+#   tests/contradiction-health.test.ts
+#   tests/contradiction-health-scheduler.test.ts
+#
+# BLOCKED PERMANENTLY — not a disclosure class, real-cortex PII. These are a
+# REAL CORTEX EXPORT: 108 real skill names, real sourceIds, 12 real engram
+# names. `route-b-fixture.clean.json` is MIS-NAMED — only personal-name
+# strings were stripped; it is not clean, and the name invites trust it has
+# not earned.
+#   tests/route-b-fixture.json
+#   tests/route-b-fixture.clean.json
+#   tests/route-b-infer-sample.json
+#   tests/corpus-routing-experiment.ts
+#   tests/infer-crosscheck.ts
+#   tests/savings-experiment.ts
+#   tests/rag-comparison-study/**   (out-of-scope local study; never ships)
+#
+# HELD pending an adoption event (a shipped build carrying the audit fixes) —
+# every apps/desktop-sidecar/tests/ class (c) suite and the five class (c)
+# tests/desktop/*.test.ts suites. Tracked by their @disclosure: header tags.
