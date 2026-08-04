@@ -116,6 +116,20 @@ than creating a fresh empty `book-notes` to match the stale preference).
 On the next unlock after you select a different engram, the new choice
 becomes the persisted default.
 
+## Undoing an operation: restore points
+
+Some operations cannot be undone by the memory engine itself — re-ingesting a source, for example, clears what is there before it rebuilds. Graphnosis now saves a snapshot of the engram immediately before any such step, and lists them under **Recovery**.
+
+Each entry names what was about to happen — *"Before re-ingest notes.pdf"* — rather than only when it was taken, because you usually know which action you want to undo, not which save preceded it. Restoring one is itself reversible: the version being replaced is snapshotted first.
+
+The five most recent snapshots per engram are kept. Older ones are removed automatically as new ones are taken, so the space used stays bounded.
+
+Restore points are not a substitute for backups. They live in the same cortex folder as the data they protect, so they do not survive losing that folder — keep independent backups as well.
+
+## An engram that stopped appearing
+
+If a save was interrupted, an engram's main file could be missing while its last-known-good copy sat beside it untouched. Graphnosis now finds engrams by that copy too, so instead of quietly vanishing from the picker they appear in **Recovery** and can be restored. Saving itself no longer leaves that gap: the previous version is copied aside before the new one replaces it, so the live file is never absent, whatever interrupts the write.
+
 ## Power-user override: `GRAPHNOSIS_DEFAULT_GRAPH`
 
 If you launch the sidecar standalone (for MCP wiring into Claude

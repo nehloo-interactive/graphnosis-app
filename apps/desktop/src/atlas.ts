@@ -35,6 +35,10 @@ import * as THREE from 'three';
 // @ts-ignore — no types ship with d3-force-3d.
 import { forceCollide } from 'd3-force-3d';
 
+/** Full turn in radians. Was declared inside one method and referenced from
+ *  another, so the second reference resolved to nothing and threw at runtime. */
+const PI2 = 2 * Math.PI;
+
 export interface AtlasNode {
   id: string;
   text: string;
@@ -1379,7 +1383,6 @@ export class Atlas {
     // Jelly integration: per-node velocities applied directly to node positions.
     const JELLY_DECAY = 0.0017; // per ms — half-life ≈ 400 ms
 
-    const PI2 = 2 * Math.PI;
     const POLE_CLAMP = 0.35; // 20° guard — keeps lookAt numerically stable
     let lastTime = performance.now();
 

@@ -53,6 +53,8 @@ Graphnosis is actively developed. Updates may occasionally change internal data 
 
 **Maintain independent backups of your cortex folder.** Do not rely on Graphnosis as your sole copy of important data.
 
+Before an operation that cannot be undone, the Software saves a snapshot of the affected engram inside your cortex folder, and keeps up to five per engram. These snapshots stay on your device and are never transmitted. Because a snapshot preserves the engram as it was, it may contain content you have since removed, until it is replaced by newer snapshots. You can view and restore them in the app under Recovery.
+
 ---
 
 ## 4. Your responsibilities

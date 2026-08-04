@@ -89,7 +89,7 @@ function getLoadedGraphs(): GraphWithMetadata[] {
   return app().getLoadedGraphs();
 }
 
-function engramDisplayName(graphId: string): string {
+export function engramDisplayName(graphId: string): string {
   const g = getLoadedGraphs().find((x) => x.graphId === graphId);
   if (g) return app().formatEngramLabel(g);
   const entry = agentsSkills.find((s) => s.graphId === graphId);

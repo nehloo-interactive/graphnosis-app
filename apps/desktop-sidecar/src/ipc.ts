@@ -3010,6 +3010,31 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { graphId } = z.object({ graphId: z.string().min(1) }).parse(params ?? {});
       return deps.host.promoteLkgAndReload(graphId);
     }
+    case 'recovery.restorePoints': {
+      // Snapshots taken before a destructive operation. Distinct from `.lkg`,
+      // which every ordinary save rotates — by the time a user wants the state
+      // from before an operation, routine activity has usually replaced it.
+      // Omit `graphId` to list across every engram on disk, which is what a
+      // Recovery panel wants: the user knows what they lost, not where it lived.
+      const { graphId } = z.object({ graphId: z.string().min(1).optional() }).parse(params ?? {});
+      const points = graphId
+        ? (await deps.host.listRestorePoints(graphId)).map((p) => ({ graphId, ...p }))
+        : await deps.host.listAllRestorePoints();
+      return { points };
+    }
+    case 'recovery.promoteRestorePoint': {
+      // Destructive to the CURRENT state, so the host snapshots before acting
+      // and returns the label of that snapshot — restoring is itself undoable.
+      // The host refuses while the engram is loaded; unload first so the
+      // restored file is not overwritten by the in-memory copy on the next save.
+      const { graphId, label } = z.object({
+        graphId: z.string().min(1),
+        label: z.string().min(1),
+      }).parse(params ?? {});
+      if (deps.host.isGraphLoaded(graphId)) await deps.host.unloadGraph(graphId);
+      const result = await deps.host.promoteRestorePoint(graphId, label);
+      return result;
+    }
     case 'recovery.apply': {
       // Re-ingest selected sources. `sourceIds: null` means "all recoverable".
       // ASYNC: returns { accepted, jobId } immediately. Progress and the final

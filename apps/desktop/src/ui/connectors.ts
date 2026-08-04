@@ -3,7 +3,7 @@
  */
 import { IS_TAURI, invoke } from '../platform';
 import { app } from './app-context';
-import { invokeRetry } from './ipc';
+import { invokeRetry, ipcCall } from './ipc';
 import { gAlert } from './dialogs';
 import { escape, escapeHtml, relativeTimeShort } from './util';
 import type { ConnectorKind, ConnectorConfigShape, ConnectorStatus, GraphWithMetadata } from './types';
@@ -412,7 +412,11 @@ export function openConnectorSetupModal(kind: ConnectorKind, existing?: Connecto
   // This modal lives OUTSIDE <main>, so the page-level Presentation masking +
   // MutationObserver never reach it. Mask it explicitly so the Target Engram
   // dropdown redacts engrams that aren't allowlisted for the demo.
-  if (presActive()) applyPresentationMasking(modal);
+  // Both are already on AppContext (app-context.ts) — this called the bare
+  // names instead, so the wiring existed and was bypassed. main.ts imports
+  // FROM this module, so a direct import back would be a cycle; `app` is the
+  // established direction for ui -> main.
+  if (app().presActive()) app().applyPresentationMasking(modal);
 }
 
 /**
@@ -421,7 +425,7 @@ export function openConnectorSetupModal(kind: ConnectorKind, existing?: Connecto
  * disk is the SERVER's, so we open a server-side folder navigator backed by
  * the `fs.listDir` IPC. Returns selected absolute path(s), or [] if cancelled.
  */
-async function pickFolders(): Promise<string[]> {
+export async function pickFolders(): Promise<string[]> {
   if (IS_TAURI) {
     const picked = await invoke<string[]>('pick_folders');
     return picked ?? [];

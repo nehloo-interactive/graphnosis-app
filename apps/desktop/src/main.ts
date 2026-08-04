@@ -122,7 +122,15 @@ import {
   getSkillTrainStatusLabel,
   type SkillListEntry,
 } from './ui/skills';
-import { renderAgentsView } from './ui/agents';
+import { renderAgentsView, engramDisplayName } from './ui/agents';
+import { dismissAttention } from './ui/attention-surfaces';
+import type { GraphMutationPayload } from './ui/types';
+// These were referenced without being imported — each one a ReferenceError that
+// throws the first time its line runs, because Vite strips types without
+// checking them. `isSkillCardDragging` is imported as a live ESM binding, so it
+// reflects the exporting module's current value rather than a stale copy.
+import { isSkillCardDragging, warmVitalityCache, isTrainerBusy } from './ui/skills';
+import { pickFolders } from './ui/connectors';
 import { renderSettingsGraphsList } from './ui/settings-graphs';
 import {
   refreshComplianceSettingsPanel,
@@ -5429,6 +5437,90 @@ function renderLkgRestoreSection(candidates: LkgRecoveryCandidate[]): string {
   return html;
 }
 
+interface RestorePointItem {
+  graphId: string;
+  label: string;
+  operation: string;
+  createdAt?: string;
+  sizeBytes: number;
+  hasBundle: boolean;
+}
+
+/**
+ * Restore points — snapshots taken immediately before a destructive operation.
+ *
+ * Listed above the `.lkg` section because they are more specific: a `.lkg` is
+ * "the last time this file was written", while a restore point is "the moment
+ * before the thing you are trying to undo". Someone opening this panel usually
+ * knows WHICH action they regret, not which save preceded it.
+ */
+function renderRestorePointsSection(points: RestorePointItem[]): string {
+  if (points.length === 0) return '';
+  let html = `<div class="recovery-summary recovery-restore-section" style="margin-bottom: 16px; border: 1px solid var(--accent, #2a7ab0); border-radius: 8px; padding: 12px;">
+    <strong>Undo a recent operation</strong>
+    <p class="subtitle" style="margin-top: 6px;">
+      Saved automatically just before something that could not be undone.
+      Restoring puts that engram back as it was — and takes its own snapshot first,
+      so this is reversible too.
+    </p>`;
+  for (const p of points) {
+    // The operation is the whole point: a list of timestamps asks the user to
+    // guess which entry preceded what they regret.
+    const when = p.createdAt ? new Date(p.createdAt).toLocaleString() : 'time unknown';
+    const warn = p.hasBundle
+      ? ''
+      : ' <span style="color:var(--warn,#b8860b);">· saved without its content bundle</span>';
+    html += `<div class="recovery-item recoverable" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;">
+      <div style="flex:1;min-width:200px;">
+        <strong>${escape(p.graphId)}</strong>
+        <div class="meta">Before ${escape(p.operation)} · ${escape(when)} · ${formatRecoveryBytes(p.sizeBytes)}${warn}</div>
+      </div>
+      <button type="button" class="primary btn-restore-point"
+              data-graph-id="${escape(p.graphId)}" data-label="${escape(p.label)}">Restore</button>
+    </div>`;
+  }
+  html += '</div><hr style="margin: 16px 0; border: 0; border-top: 1px solid var(--border, #333);" />';
+  return html;
+}
+
+function wireRestorePointButtons(): void {
+  els.recoveryBody.querySelectorAll<HTMLButtonElement>('.btn-restore-point').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const graphId = btn.dataset.graphId ?? '';
+      const label = btn.dataset.label ?? '';
+      if (!graphId || !label) return;
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Restoring…';
+      try {
+        // The sidecar unloads the engram first — restoring under a loaded graph
+        // would be overwritten by the in-memory copy on the next save.
+        const result = await ipcCall<{ replacedBy: string | null }>(
+          'recovery.promoteRestorePoint',
+          { graphId, label },
+        );
+        btn.textContent = 'Restored';
+        btn.closest('.recovery-item')?.classList.add('recovered');
+        hideEngramRecoveryBanner();
+        const id = addIngestToast(
+          `${graphId} restored`,
+          result.replacedBy
+            ? 'Put back as it was. The version you just replaced was saved too, so this can be undone.'
+            : 'Put back as it was.',
+        );
+        finishIngestToast(id, 'success');
+        void refreshStats();
+      } catch (e) {
+        // Surface the reason rather than a generic failure — the sidecar's
+        // message names the actual cause (engram still open, point gone).
+        showError(String(e));
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    });
+  });
+}
+
 function wireLkgPromoteButtons(): void {
   els.recoveryBody.querySelectorAll<HTMLButtonElement>('.btn-lkg-promote').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -5566,16 +5658,24 @@ async function openRecoveryPanel(): Promise<void> {
   els.recoveryBody.innerHTML = '<p class="subtitle">Loading…</p>';
   els.btnRecoveryApply.classList.add('hidden');
   try {
-    const [lkgResult, planResult] = await Promise.allSettled([
+    const [lkgResult, planResult, pointsResult] = await Promise.allSettled([
       ipcCall<{ candidates: LkgRecoveryCandidate[] }>('recovery.lkgStatus', {}),
       invoke<RecoveryPlan>('recovery_plan'),
+      ipcCall<{ points: RestorePointItem[] }>('recovery.restorePoints', {}),
     ]);
     const candidates = lkgResult.status === 'fulfilled'
       ? (lkgResult.value.candidates ?? [])
       : [];
+    // Restore points are listed FIRST — they are the most specific answer to
+    // "undo what just happened". A failure to read them must not hide the rest
+    // of the panel, so it degrades to an empty section rather than throwing.
+    const points = pointsResult.status === 'fulfilled'
+      ? (pointsResult.value.points ?? [])
+      : [];
+    const restoreHtml = renderRestorePointsSection(points);
     const lkgHtml = renderLkgRestoreSection(candidates);
     const plan = planResult.status === 'fulfilled' ? planResult.value : null;
-    if (!plan && lkgHtml === '') {
+    if (!plan && lkgHtml === '' && restoreHtml === '') {
       const err = planResult.status === 'rejected' ? String(planResult.reason) : 'Unknown error';
       const sidecarUnreachable = /connect to sidecar|ECONNREFUSED|ENOENT.*sock|sidecar didn'?t respond/i.test(err);
       if (sidecarUnreachable) {
@@ -5590,10 +5690,15 @@ async function openRecoveryPanel(): Promise<void> {
       return;
     }
     if (!plan || plan.total === 0) {
-      els.recoveryBody.innerHTML = lkgHtml || '<p class="subtitle">Nothing to recover.</p>';
-      els.recoverySubtitle.textContent = lkgHtml
-        ? 'Promote a .lkg backup or use op-log recovery when sources are available.'
-        : 'Nothing to recover.';
+      // Restore points first: the most specific undo available.
+      els.recoveryBody.innerHTML =
+        restoreHtml + lkgHtml || '<p class="subtitle">Nothing to recover.</p>';
+      els.recoverySubtitle.textContent = restoreHtml
+        ? 'Undo a recent operation, or promote a backup.'
+        : lkgHtml
+          ? 'Promote a .lkg backup or use op-log recovery when sources are available.'
+          : 'Nothing to recover.';
+      if (restoreHtml) wireRestorePointButtons();
       if (lkgHtml) wireLkgPromoteButtons();
       return;
     }
@@ -5602,6 +5707,11 @@ async function openRecoveryPanel(): Promise<void> {
     if (lkgHtml) {
       els.recoveryBody.insertAdjacentHTML('afterbegin', lkgHtml);
       wireLkgPromoteButtons();
+    }
+    // Inserted last so it lands ABOVE the .lkg section — see the renderer's note.
+    if (restoreHtml) {
+      els.recoveryBody.insertAdjacentHTML('afterbegin', restoreHtml);
+      wireRestorePointButtons();
     }
   } catch (e) {
     const raw = String(e);
@@ -15185,17 +15295,6 @@ document.querySelectorAll<HTMLButtonElement>('.g-activity-chip').forEach((btn) =
 // `lastSeenMutationAt` cursor, so the push path doesn't need its own
 // state — calling it is idempotent if the cursor hasn't advanced.
 
-interface GraphMutationPayload {
-  graphId: string;
-  ts: number;
-  /** Optional partial training-output chunk. Set when graphId matches the
-   *  `__skill_train_chunk__<streamId>` pattern broadcast by skill:train. */
-  chunk?: string;
-  /** Optional per-operation status label. Set on `__skill_train_status__`
-   *  frames — a short, generic, non-sensitive description of the current
-   *  training step for the status bar. */
-  label?: string;
-}
 
 interface EventStreamConnectedPayload {
   ts: number;
@@ -21850,8 +21949,12 @@ function openGezImportModal(): void {
           resultDiv.innerHTML = html;
         }
         fresh.textContent = 'Done';
-        // Refresh sources list
-        void refreshSourcesList();
+        // `refreshSourcesList` was referenced here and defined nowhere — this
+        // call site was its only occurrence in the codebase. Because it sits
+        // inside a try whose catch renders a failure message, a SUCCESSFUL
+        // import was reported to the user as an error. refreshStats() is the
+        // established post-operation refresh (34 other call sites).
+        void refreshStats();
       } catch (e) {
         const resultDiv = document.getElementById('gez-import-result');
         if (resultDiv) { resultDiv.style.display = ''; resultDiv.style.color = 'var(--error)'; resultDiv.textContent = (e as Error).message; }
@@ -23177,7 +23280,11 @@ initAttentionSurfaces({
 document.addEventListener('graphnosis:open-ghampus-attention', () => activateMode('ghampus'));
 document.addEventListener('graphnosis:open-corrections-deck', () => openTrivia());
 document.addEventListener('graphnosis:attention-dismiss', () => {
-  if (lastAttentionCounts) dismissAttentionFromEvent(lastAttentionCounts);
+  // Referenced two names that never existed. `dismissAttention` is the real,
+  // exported function, and `foresightAttentionCounts` is the tracked count set
+  // whose shape is exactly AttentionCounts — so the dismissal signature it
+  // stores matches what the surfaces check against.
+  dismissAttention(foresightAttentionCounts);
 });
 initUnlock({ cortexDir: els.cortexDir, btnUnlock: els.btnUnlock, btnLock: els.btnLock, bootStatusText: els.bootStatusText, unlockStatus: els.unlockStatus, passphrase: els.passphrase });
 initCloudOnboardingHandlers();

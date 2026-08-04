@@ -499,6 +499,20 @@ export interface PurgeReport {
  * counted as a reingest. Now the success payload is unreachable until a caller
  * has narrowed on `refused` too.
  */
+/** A recoverable snapshot of one engram, taken before a destructive operation. */
+export interface RestorePoint {
+  /** Opaque handle — pass back to `promoteRestorePoint`. */
+  label: string;
+  /** What was about to happen when this was taken, e.g. "re-ingest notes.pdf". */
+  operation: string;
+  /** ISO timestamp, absent only if the metadata file was lost. */
+  createdAt?: string;
+  sizeBytes: number;
+  /** False means the graph was snapshotted without its bundle — restorable, but
+   *  content the graph references may be missing. */
+  hasBundle: boolean;
+}
+
 export type ReingestSourceOutcome =
   | { skipped: false; refused: false; newNodeIds: string[] }
   | { skipped: true; refused: false; reason: string }
@@ -4027,6 +4041,35 @@ export class GraphnosisHost {
       seen.add(graphId);
       out.push(graphId);
     }
+    // ── An engram whose `.gai` is gone but whose `.lkg` survives ──────────────
+    // The match above requires a name ENDING in `.gai`/`.aikg`, so `x.gai.lkg`
+    // is not seen. That is fine while the `.gai` exists — and catastrophic when
+    // it does not: the engram is never enumerated, so it is never loaded, never
+    // fails, never quarantined, never offered for recovery. It simply STOPS
+    // APPEARING, while a complete last-known-good copy sits beside it.
+    //
+    // That state is reachable: `writeFileAtomicWithBackup` renames the `.gai`
+    // aside before renaming the new file into place, so a process death in that
+    // window leaves exactly this. Discovering the engram from its `.lkg` turns
+    // "it vanished" into "it needs recovering" for EVERY cause, not just that one.
+    //
+    // Discovery only — the loader decides what to do about it. Being listed is
+    // what makes the recovery paths reachable at all.
+    for (const name of entries) {
+      const m = name.match(/^(.+)\.gai\.lkg$/);
+      if (!m) continue;
+      const graphId = m[1] as GraphId;
+      if (resident.has(graphId) || seen.has(graphId)) continue;
+      // Only when the live file is genuinely absent. A `.lkg` alongside a
+      // healthy `.gai` is the normal steady state and must not be surfaced.
+      if (existsSync(this.graphPath(graphId)) || existsSync(this.legacyGraphPath(graphId))) continue;
+      seen.add(graphId);
+      out.push(graphId);
+      console.error(
+        `[graphnosis-host] engram[${redactId(graphId)}] has no .gai but a .lkg is present — ` +
+        `listing it so recovery can reach it rather than letting it disappear.`,
+      );
+    }
     return out;
   }
 
@@ -4705,6 +4748,16 @@ export class GraphnosisHost {
 
   /** True when on-disk .lkg is substantially larger than .gai (shrink-save risk). */
   needsLkgPromote(gaiBytes: number, lkgBytes: number): boolean {
+    // The `.gai` is GONE. Any `.lkg` with real content is then the only copy of
+    // this engram that exists, so the 10 KB floor below must not apply: that
+    // floor is there to avoid offering to promote an empty stub over a healthy
+    // file, and there is no healthy file to protect here.
+    //
+    // Measured consequence of not special-casing this: a 1 KB engram — small
+    // but perfectly real — was silently ineligible for recovery precisely when
+    // its live file had disappeared. A size threshold tuned for "is this stub
+    // junk?" was answering "is this engram worth saving?".
+    if (gaiBytes === 0) return lkgBytes > 0;
     return lkgBytes > EMPTY_SAVE_BLOCK_MIN_BYTES
       && lkgBytes > gaiBytes / SHRINK_SAVE_BLOCK_RATIO;
   }
@@ -4725,13 +4778,23 @@ export class GraphnosisHost {
       const graphsDir = path.join(this.opts.cortexDir, 'graphs');
       for (const name of await fs.readdir(graphsDir)) {
         if (name.endsWith('.gai')) ids.add(name.slice(0, -4));
+        // An engram whose `.gai` is GONE is the one that most needs recovering,
+        // and keying discovery on `.gai` excluded exactly that case — so the
+        // panel built to promote a `.lkg` could not see the situation it exists
+        // for. Same blindspot as `listBootPendingEngramIds`; fixed in both,
+        // because being invisible at boot AND absent from the recovery list is
+        // what turns a recoverable engram into one that simply disappeared.
+        else if (name.endsWith('.gai.lkg')) ids.add(name.slice(0, -'.gai.lkg'.length));
       }
     } catch { /* no graphs dir yet */ }
 
     const out: LkgRecoveryCandidate[] = [];
     for (const graphId of ids) {
       const { gaiBytes, lkgBytes } = await this.getGaiLkgByteSizes(graphId);
-      if (lkgBytes <= EMPTY_SAVE_BLOCK_MIN_BYTES) continue;
+      // The floor is a junk filter, not a worth-saving test — so it does not
+      // apply when the live file is absent and the `.lkg` is all there is.
+      if (lkgBytes <= EMPTY_SAVE_BLOCK_MIN_BYTES && gaiBytes > 0) continue;
+      if (lkgBytes === 0) continue;
       const needsPromote = this.needsLkgPromote(gaiBytes, lkgBytes);
       if (!needsPromote) continue;
       const meta = this.getGraphMetadata(graphId);
@@ -5636,6 +5699,48 @@ export class GraphnosisHost {
       }
       return { skipped: true, refused: false, reason: 'content cache unavailable (cache was off or expired at ingest time)' };
     }
+    // ── Reconstruct the input BEFORE anything is destroyed ────────────────────
+    // This used to be built after the forget. It is pure and cheap, so building
+    // it here costs nothing and lets the pre-flight below run while the source
+    // is still intact.
+    const docInput: AppendDocumentInput = {
+      kind: blob.header.docKind,
+      content: blob.header.docKind === 'pdf'
+        ? Buffer.from(blob.content)
+        : new TextDecoder().decode(blob.content),
+      sourceRef: record.ref,
+    };
+    // ── A1: refuse a doomed reingest BEFORE the forget, not after ─────────────
+    // The order below is forget-then-rebuild, and it CANNOT be reversed on this
+    // engine: the dedup table is keyed on content hash and a soft-deleted node
+    // still holds its hash, so ingesting the new chunks first returns zero new
+    // ids. `forgetSource` overwrites content precisely to release that hash.
+    // Atomic source replacement needs engine support.
+    //
+    // What is possible here is to not START when the rebuild obviously cannot
+    // finish. An empty payload produces no chunks, so the sequence would clear
+    // the source and then have nothing to put back — the exact shape that loses
+    // a source and returns nothing.
+    //
+    // This does NOT promise the ingest will succeed; only that it is not
+    // guaranteed to fail. Everything it cannot predict is covered by the
+    // restore point below.
+    const payloadSize = typeof docInput.content === 'string'
+      ? docInput.content.trim().length
+      : docInput.content.byteLength;
+    if (payloadSize === 0) {
+      return {
+        skipped: true,
+        refused: false,
+        reason:
+          'the cached copy of this source is empty, so re-ingesting it would clear the source ' +
+          'and have nothing to put back. Nothing was deleted — the source is exactly as it was.',
+      };
+    }
+    // ── A2: restore point, taken while the source is still whole ──────────────
+    // Everything past this line is destructive and cannot be rolled back by the
+    // engine. The snapshot is what makes that recoverable rather than final.
+    const restorePoint = await this.writeRestorePoint(graphId, `re-ingest ${record.ref}`);
     // Soft-delete the existing nodes for this source so the new ingest's
     // chunks replace them. forgetSource also wipes the cache blob — but we
     // already loaded it into memory above, so the order is safe.
@@ -5651,22 +5756,222 @@ export class GraphnosisHost {
     // in the SDK graph with no source record — those orphan hashes then block
     // the full chunk count from being restored.
     await this.purgeOrphanNodes(graphId);
-    // Reconstruct AppendDocumentInput from the cache header + bytes.
-    const docInput: AppendDocumentInput = {
-      kind: blob.header.docKind,
-      content: blob.header.docKind === 'pdf'
-        ? Buffer.from(blob.content)
-        : new TextDecoder().decode(blob.content),
-      sourceRef: record.ref,
-    };
-    const result = await this.ingest(
-      graphId,
-      record.kind,
-      record.ref,
-      docInput,
-      { triggeredBy: 'user:reingest', ...(record.addedBy ? { addedBy: record.addedBy } : {}) },
-    );
-    return { skipped: false, refused: false, newNodeIds: result.nodeIds };
+    // ── A3: if the rebuild fails now, say so precisely ────────────────────────
+    // The old nodes are already released. Letting the raw error propagate told
+    // the user only that the call failed — over remote IPC it reached them as
+    // "HTTP 400" — while their source was gone. The state after this point is
+    // knowable, so it is stated, along with where the previous version is.
+    try {
+      const result = await this.ingest(
+        graphId,
+        record.kind,
+        record.ref,
+        docInput,
+        { triggeredBy: 'user:reingest', ...(record.addedBy ? { addedBy: record.addedBy } : {}) },
+      );
+      return { skipped: false, refused: false, newNodeIds: result.nodeIds };
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      const where = restorePoint
+        ? `The version from before this attempt was saved as a restore point (${restorePoint}) and can be restored.`
+        : 'A restore point could NOT be written before this ran, so the previous version is not available from one.';
+      console.error(
+        `[host] reingestSource(${redactPair(graphId, sourceId)}) FAILED AFTER CLEARING: ${detail} (ref: ${record.ref})`,
+      );
+      throw new Error(
+        `Re-ingest cleared this source but could not rebuild it: ${detail}. ` +
+        `The source is now empty rather than restored. ${where}`,
+      );
+    }
+  }
+
+  /**
+   * Copy a graph's on-disk artifacts aside before a destructive operation.
+   *
+   * `.lkg` does not serve this purpose: it is rotated by EVERY ordinary save,
+   * so by the time a user needs the state from before an operation, routine
+   * activity has usually replaced it. This writes a point that is only created
+   * deliberately, and names the operation that was about to run.
+   *
+   * The graph and its bundle are copied TOGETHER. Restoring one without the
+   * other leaves them inconsistent — the bundle shrinks when content is
+   * released, so a graph paired with a newer bundle is missing content the
+   * graph still references.
+   *
+   * Best-effort by design: a failure to snapshot must not block the operation,
+   * because refusing to act because we could not prepare for failure is worse
+   * than acting. The caller receives `null` and says so in its error rather
+   * than implying a restore point exists.
+   */
+  async writeRestorePoint(graphId: GraphId, operation: string): Promise<string | null> {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const label = `${RESTORE_SUFFIX}-${stamp}`;
+    try {
+      const graph = this.graphPath(graphId);
+      if (!existsSync(graph)) return null;
+      await fs.copyFile(graph, `${graph}${label}`);
+      const bundle = this.bundlePath(graphId);
+      if (existsSync(bundle)) await fs.copyFile(bundle, `${bundle}${label}`);
+      // The operation is what makes a point choosable. A list of timestamps
+      // asks the user to guess which one preceded the thing they regret.
+      await fs.writeFile(
+        `${graph}${label}${RESTORE_META_SUFFIX}`,
+        JSON.stringify({ operation, createdAt: new Date().toISOString() }, null, 2),
+        'utf8',
+      );
+      console.error(
+        `[host] restore point ${label} written for ${redactId(graphId)} before: ${operation}`,
+      );
+      await this.evictOldRestorePoints(graphId);
+      return label;
+    } catch (e) {
+      // Not fatal — see the doc comment. Reported so it is never silent.
+      console.error(
+        `[host] could NOT write a restore point for ${redactId(graphId)} before ${operation}: ` +
+        `${e instanceof Error ? e.message : String(e)}. Proceeding WITHOUT one.`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Restore points for one engram, newest first.
+   *
+   * A point the user cannot see is not a safety net. This is the read side of
+   * `writeRestorePoint`: it exists so a UI can offer "restore the version from
+   * before X" rather than leaving the state recoverable only by someone who
+   * knows the on-disk layout.
+   */
+  async listRestorePoints(graphId: GraphId): Promise<RestorePoint[]> {
+    const graphsDir = path.join(this.opts.cortexDir, 'graphs');
+    const base = `${graphId}.gai${RESTORE_SUFFIX}-`;
+    let files: string[];
+    try { files = await fs.readdir(graphsDir); } catch { return []; }
+    const points: RestorePoint[] = [];
+    for (const f of files) {
+      // The graph copy is the anchor. Its sidecar `.meta` matches the same
+      // prefix, so it is skipped explicitly rather than by a looser pattern.
+      if (!f.startsWith(base) || f.endsWith(RESTORE_META_SUFFIX)) continue;
+      const label = f.slice(`${graphId}.gai`.length);
+      const full = path.join(graphsDir, f);
+      let operation = 'unknown operation';
+      let createdAt: string | undefined;
+      try {
+        const meta = JSON.parse(await fs.readFile(`${full}${RESTORE_META_SUFFIX}`, 'utf8')) as
+          { operation?: string; createdAt?: string };
+        if (meta.operation) operation = meta.operation;
+        if (meta.createdAt) createdAt = meta.createdAt;
+      } catch {
+        // A point whose metadata is missing or unreadable is still a valid
+        // point — the graph bytes are what matter. Reported as unknown rather
+        // than hidden, because hiding it would strand a usable copy.
+      }
+      let sizeBytes = 0;
+      try { sizeBytes = (await fs.stat(full)).size; } catch { /* listed anyway */ }
+      points.push({
+        label,
+        operation,
+        ...(createdAt ? { createdAt } : {}),
+        sizeBytes,
+        hasBundle: existsSync(`${this.bundlePath(graphId)}${label}`),
+      });
+    }
+    // Label embeds an ISO stamp, so lexical sort is chronological.
+    return points.sort((a, b) => b.label.localeCompare(a.label));
+  }
+
+  /**
+   * Every restore point across every engram, newest first.
+   *
+   * Scans the graphs directory once rather than iterating engrams, because the
+   * engram an on-disk point belongs to may not be loaded — and a point for an
+   * engram that failed to load is exactly the one someone needs most.
+   */
+  async listAllRestorePoints(): Promise<(RestorePoint & { graphId: GraphId })[]> {
+    const graphsDir = path.join(this.opts.cortexDir, 'graphs');
+    let files: string[];
+    try { files = await fs.readdir(graphsDir); } catch { return []; }
+    const ids = new Set<GraphId>();
+    for (const f of files) {
+      const m = /^(.+)\.gai\.restore-/.exec(f);
+      if (m?.[1]) ids.add(m[1] as GraphId);
+    }
+    const out: (RestorePoint & { graphId: GraphId })[] = [];
+    for (const id of ids) {
+      for (const p of await this.listRestorePoints(id)) out.push({ graphId: id, ...p });
+    }
+    return out.sort((a, b) => b.label.localeCompare(a.label));
+  }
+
+  /** True while this engram is resident in memory. Restoring under a loaded
+   *  graph is refused — see `promoteRestorePoint`. */
+  isGraphLoaded(graphId: GraphId): boolean {
+    return this.graphs.has(graphId);
+  }
+
+  /**
+   * Put a restore point back. Returns the label of the point written for the
+   * state being replaced, so this is itself undoable.
+   *
+   * Restoring is destructive to the CURRENT state, which is the mistake this
+   * whole mechanism exists to prevent — so it snapshots before it acts. A user
+   * reaching for a restore point is usually already having a bad day; handing
+   * them a one-way door is how that gets worse.
+   *
+   * The graph must not be resident: overwriting the file under a loaded engram
+   * would leave memory and disk disagreeing until the next save silently
+   * rewrote the file back.
+   */
+  async promoteRestorePoint(graphId: GraphId, label: string): Promise<{ replacedBy: string | null }> {
+    if (!label.startsWith(`${RESTORE_SUFFIX}-`)) {
+      throw new Error(`'${label}' is not a restore point label.`);
+    }
+    const graph = this.graphPath(graphId);
+    const src = `${graph}${label}`;
+    if (!existsSync(src)) {
+      throw new Error(`Restore point ${label} no longer exists for this engram.`);
+    }
+    if (this.graphs.has(graphId)) {
+      throw new Error(
+        `'${graphId}' is currently open. Close or lock it before restoring, so the ` +
+        `restored file is not overwritten by the in-memory copy on the next save.`,
+      );
+    }
+    const replacedBy = await this.writeRestorePoint(graphId, `restoring ${label}`);
+    await fs.copyFile(src, graph);
+    const bundleSrc = `${this.bundlePath(graphId)}${label}`;
+    // Together or not at all — see writeRestorePoint. A graph paired with a
+    // bundle from a different moment references content the bundle lacks.
+    if (existsSync(bundleSrc)) await fs.copyFile(bundleSrc, this.bundlePath(graphId));
+    console.error(`[host] promoted restore point ${label} for ${redactId(graphId)}`);
+    return { replacedBy };
+  }
+
+  /**
+   * Keep the newest `MAX_RESTORE_POINTS` and delete the rest.
+   *
+   * Unbounded points would grow without limit on a large cortex — a 16 MB
+   * engram costs 16 MB per point. A cap is what makes the mechanism affordable
+   * enough to leave on by default, and a safety net nobody can afford is one
+   * that gets turned off.
+   */
+  private async evictOldRestorePoints(graphId: GraphId): Promise<void> {
+    try {
+      const points = await this.listRestorePoints(graphId);
+      for (const p of points.slice(MAX_RESTORE_POINTS)) {
+        const graph = `${this.graphPath(graphId)}${p.label}`;
+        await fs.rm(graph, { force: true });
+        await fs.rm(`${graph}${RESTORE_META_SUFFIX}`, { force: true });
+        await fs.rm(`${this.bundlePath(graphId)}${p.label}`, { force: true });
+        console.error(`[host] evicted restore point ${p.label} for ${redactId(graphId)}`);
+      }
+    } catch (e) {
+      // Eviction failing must never fail the operation it followed.
+      console.error(
+        `[host] restore-point eviction failed for ${redactId(graphId)}: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   /**
@@ -9326,6 +9631,17 @@ async function writeFileAtomic(target: string, data: Buffer): Promise<void> {
  *  separate namespace from purge's `.bak` (which startup recovery treats as a
  *  transient purge artifact) so the two never collide. */
 const LKG_SUFFIX = '.lkg';
+/** Suffix for a deliberate pre-operation snapshot. Distinct from `.lkg`, which
+ *  every ordinary save rotates — a restore point is written only when something
+ *  destructive is about to run, and is never rotated away by routine activity. */
+const RESTORE_SUFFIX = '.restore';
+/** Sidecar file holding a restore point's operation label. Separate from the
+ *  graph copy so the copy stays a byte-identical `.gai` that any reader can open. */
+const RESTORE_META_SUFFIX = '.meta';
+/** How many restore points to keep per engram. A 16 MB engram costs 16 MB per
+ *  point; unbounded retention is how a safety net becomes something users turn
+ *  off. Oldest are evicted when a new one is written. */
+const MAX_RESTORE_POINTS = 5;
 
 /** Never overwrite a substantial on-disk .gai/.lkg with a 0-node serialize.
  *  Empty template shells are ~450B; anything above this threshold had real data. */
@@ -9446,12 +9762,41 @@ async function writeFileAtomicWithBackup(target: string, data: Buffer, lkgSuffix
   } finally {
     await fh.close();
   }
-  // Roll the current good file to .lkg (overwrites any prior .lkg atomically).
+  // ── Back the current file up WITHOUT unlinking it ─────────────────────────
+  // This used to `rename(target -> .lkg)` and then `rename(tmp -> target)`,
+  // which leaves a window where `target` DOES NOT EXIST. A process death in
+  // that window left the engram with no `.gai` at all — and until the
+  // discovery fixes alongside this, such an engram simply stopped appearing.
+  //
+  // `rename()` over an existing path is atomic on POSIX, so the target never
+  // has to be moved out of the way first. A hard link is O(1) and shares the
+  // inode; the final `rename` below swaps the DIRECTORY ENTRY, leaving the
+  // link — and therefore the `.lkg` — pointing at the old content, which is
+  // exactly what a last-known-good must do.
+  //
+  // Result: `target` and `.lkg` are each either the old file or the new one at
+  // every instant. Neither is ever absent, whatever happens to this process.
+  const lkg = `${target}${lkgSuffix}`;
+  const linkTmp = `${lkg}.lnk-${process.pid}-${randomBytes(4).toString('hex')}`;
   try {
-    await fs.rename(target, `${target}${lkgSuffix}`);
+    await fs.link(target, linkTmp);
+    await fs.rename(linkTmp, lkg);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; // first-ever write: nothing to back up
+    const code = (e as NodeJS.ErrnoException).code;
+    await fs.rm(linkTmp, { force: true });
+    if (code === 'ENOENT') {
+      // First-ever write: nothing to back up.
+    } else if (code === 'EXDEV' || code === 'EPERM' || code === 'ENOTSUP' || code === 'EOPNOTSUPP') {
+      // Filesystems that refuse hard links (some network and FUSE mounts).
+      // A copy costs a full read+write but preserves the invariant; the old
+      // rename-aside would have reintroduced the window on exactly the setups
+      // least able to tolerate it.
+      await fs.copyFile(target, lkg);
+    } else {
+      throw e;
+    }
   }
+  // Atomic replace. `target` goes straight from the old inode to the new one.
   await fs.rename(tmp, target);
 }
 

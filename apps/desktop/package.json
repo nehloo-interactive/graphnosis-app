@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/desktop",
-  "version": "1.32.0",
+  "version": "1.33.0",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "typecheck": "node scripts/typecheck.mjs",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

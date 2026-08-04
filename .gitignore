@@ -28,6 +28,10 @@ apps/desktop-sidecar/_wip-enterprise/
 # every tauri build (bundles the web UI into the .app) and MUST ship to CI.
 apps/desktop/scripts/*
 !apps/desktop/scripts/copy-webui-resource.mjs
+# typecheck.mjs is the same exception for the same reason: `package.json`'s
+# typecheck script and .github/workflows/typecheck.yml both invoke it, so a
+# clone without it has a manifest pointing at a file that is not there.
+!apps/desktop/scripts/typecheck.mjs
 .env.*
 !.env.example
 
@@ -289,6 +293,10 @@ scripts/.sensitive-needles
 # fail-closed default made it invisible to git until negated, which is the
 # policy working, but an unshipped guard protects nobody.
 !/apps/desktop-sidecar/tests/pdf-text-join.test.mjs
+
+# Restore-point contract (4.96-B). Class (a): asserts required behaviour of a
+# recovery feature; no defect mechanism.
+!/apps/desktop-sidecar/tests/restore-points.test.mjs
 
 # contradiction-eval/ — same two-step: negate the dir, exclude its contents,
 # then negate each file.

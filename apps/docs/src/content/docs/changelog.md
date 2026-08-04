@@ -11,6 +11,34 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.33.0 — Undo, and clearer answers when something goes wrong
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-04</p>
+
+**Some things could not be undone. Now they can.** Re-ingesting a source clears what is there before rebuilding it, and if the rebuild failed there was no way back. Graphnosis now saves a snapshot of the engram immediately before any step like that, and lists them under Recovery — each one named for what was about to happen, not just when it was taken. Restoring is itself reversible: the version being replaced is saved first.
+
+**An engram could stop appearing.** If a save was interrupted, the engram's main file could be missing while an intact copy sat beside it — and nothing looked for that copy, so the engram simply vanished from the picker. It is now found, listed, and restorable. Saving no longer leaves that gap at all: the previous version is copied aside before the new one replaces it, so the live file is never absent.
+
+**And when a cortex will not open, the reason is now the real one.** A cortex written by a newer version used to be reported as a wrong passphrase or a corrupted file. Both were false, and being told your memories may be corrupted when they are intact is the worst possible way to be wrong.
+
+### Added
+
+- **Restore points.** Automatic snapshots before an operation that cannot be undone, with one-click restore under Recovery. The five most recent per engram are kept; older ones are removed automatically.
+
+### Fixed
+
+- **Re-ingest no longer starts what it cannot finish.** If the cached copy of a source is empty, the source is left exactly as it was instead of being cleared first. If a rebuild does fail, the message says so plainly and names the restore point.
+- **Engrams are found by their backup copy** when the main file is missing, instead of disappearing.
+- **Saving never leaves the live file absent**, whatever interrupts it.
+- **Startup failures are diagnosed accurately** — a cortex from a newer version, and a refused overwrite after a failed load, each get their own honest explanation.
+- **Several interface actions** that referenced code that no longer existed, including a `.gez` import that reported success as a failure, and dismissing the attention prompt.
+
+### Migrations
+
+None. Your cortex is not rewritten by this release.
+
+---
+
 ## v1.32.0 — PDF text extraction keeps the whole page
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-03</p>

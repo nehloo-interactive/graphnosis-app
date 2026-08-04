@@ -106,3 +106,18 @@ export interface NodeRecord {
   contentPreview?: string;
   [key: string]: unknown;
 }
+
+/** An event-stream frame announcing that a graph changed. Lived in main.ts,
+ *  which ui/skills.ts cannot import from — it is the app entry, not a module.
+ *  Its siblings are here, so it is here. */
+export interface GraphMutationPayload {
+  graphId: string;
+  ts: number;
+  /** Optional partial training-output chunk. Set when graphId matches the
+   *  `__skill_train_chunk__<streamId>` pattern broadcast by skill:train. */
+  chunk?: string;
+  /** Optional per-operation status label. Set on `__skill_train_status__`
+   *  frames — a short, generic, non-sensitive description of the current
+   *  training step for the status bar. */
+  label?: string;
+}

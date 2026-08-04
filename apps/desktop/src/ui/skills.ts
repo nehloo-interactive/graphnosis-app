@@ -7,7 +7,7 @@ import { app } from './app-context';
 import { gAlert, gConfirm, gPrompt } from './dialogs';
 import { ipcCall, ipcCallTimeout, invokeRetry } from './ipc';
 import { escape, escapeHtml } from './util';
-import type { GraphWithMetadata } from './types';
+import type { GraphWithMetadata, GraphMutationPayload } from './types';
 import {
   AGEMPUS_LEVELS,
   currentAgempusLevel,
@@ -432,7 +432,7 @@ let skillsActiveResult: {
 let skillsOutputView: 'output' | 'diff' = 'output';
 // Set while a skill-card DOM drag is in progress — prevents the Tauri
 // file-drop overlay from showing when the user reorders Trained Output blocks.
-let isSkillCardDragging = false;
+export let isSkillCardDragging = false;
 // Bumped on every paintSkillsReview — stale paintTrainedOutputSourceDriven
 // completions (slow listNodes, double open after train) must not overwrite
 // the panel once a newer skill is selected.
@@ -874,7 +874,7 @@ async function warmRetrainCache(): Promise<void> {
   renderSkillsLibrary();
 }
 
-async function warmVitalityCache(): Promise<void> {
+export async function warmVitalityCache(): Promise<void> {
   const visible = filteredSortedLibrary().slice(0, SKILLS_VITALITY_AUTO_CAP);
   const now = Date.now();
   const due = visible.filter((s) => {

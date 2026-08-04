@@ -1,0 +1,74 @@
+name: Typecheck
+
+# Runs `typecheck` in every workspace project that defines one.
+#
+# WHY THIS EXISTS AS ITS OWN WORKFLOW
+# -----------------------------------
+# Nothing in CI ran `tsc` on the app. The only workflow that fires on pushes to
+# main and on pull requests is linux-server.yml, whose job is to prove the
+# headless sidecar builds on Linux — bolting a type gate onto it would make a
+# type error read as a Linux build failure. test.yml exists on disk but is
+# gitignored and has never been on origin/main, so it gates nothing.
+#
+# The gap this closes is concrete: apps/desktop shipped with 335 standing type
+# errors, 19 of them "Cannot find name". Vite strips types without checking, so
+# those ship as latent ReferenceErrors that throw the first time their line runs.
+#
+# Deliberately cheap: no native deps, no build, no artifacts. Typechecking needs
+# the source and the types, nothing else — so this stays fast enough that nobody
+# is tempted to skip it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  typecheck:
+    name: Typecheck workspace
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # apps/desktop-sidecar typechecks against packages/graphnosis-app-core's
+      # emitted declarations, so the workspace libraries have to exist first.
+      # Only the ones the type graph needs — this is not a full build.
+      - name: Build workspace libraries
+        run: pnpm --filter @graphnosis-app/core build
+
+      # `--if-present` so a project without the script is skipped rather than
+      # failing the run. Projects WITHOUT one are the real gap, and they are
+      # named in the audit step below rather than silently passing.
+      - name: Typecheck
+        run: pnpm -r --if-present typecheck
+
+      # A green run above means "no project regressed". It does NOT mean every
+      # project is covered. Printing the uncovered ones keeps the difference
+      # visible instead of letting a green check imply more than it earned.
+      - name: Report coverage gaps
+        if: always()
+        run: |
+          echo "Projects WITHOUT a typecheck script (not gated by this workflow):"
+          missing=0
+          for f in package.json apps/*/package.json packages/*/package.json; do
+            name=$(node -p "require('./$f').name || '$f'")
+            has=$(node -p "!!(require('./$f').scripts||{}).typecheck")
+            if [ "$has" != "true" ]; then echo "  - $name ($f)"; missing=$((missing+1)); fi
+          done
+          [ "$missing" -eq 0 ] && echo "  (none — every project is gated)"
+          echo "apps/desktop runs a RATCHET against .typecheck-baseline.json:"
+          echo "  new errors fail; fixing errors lowers the ceiling; TS2304 may only go down."
