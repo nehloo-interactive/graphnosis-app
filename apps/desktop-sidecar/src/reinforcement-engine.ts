@@ -7,6 +7,7 @@ import { dbg } from './log-redact.js';
 import { DEFAULT_REINFORCEMENT, type ReinforcementSettings, type AppSettings } from '@graphnosis-app/core/settings';
 import { embeddings } from '@graphnosis-app/core';
 import { GnnLinkPredictor, type PairFeatures } from './gnn.js';
+import { makeTfidfScorer, type TfidfScorer } from './tfidf-pairs.js';
 import { type PredictedEdge, makePredictedEdge } from './gnn-store.js';
 
 const { cosine } = embeddings;
@@ -126,6 +127,13 @@ interface GnnGraphContext {
   /** The engram's existing gnn-predicted edges, for the re-prune pass. */
   predictedEdges: Array<{ from: string; to: string }>;
   embs: Map<string, number[]>;
+  /** Deterministic content signal - the substrate's own TF-IDF index. Null
+   *  only when the engram has no index at all (unbuilt). */
+  tfidf: TfidfScorer | null;
+  /** THE capability state for this run, read once from the host. Never
+   *  re-derived from whether `embs` came back non-empty: on a placeholder
+   *  adapter it always does, full of sha256 noise. */
+  semanticSimilarityAvailable: boolean;
   entities: Map<string, Set<string>>;
   /** Random-walk positional encoding per node — a deterministic structural
    *  fingerprint. Empty for engrams above MAX_GNN_RWPE_NODES. */
@@ -618,13 +626,32 @@ export class ReinforcementEngine {
   }
 
   /** Embedding-similarity basis — pool every engram's vectors under opaque
-   *  keys, run the graph-agnostic LSH once, keep only cross-graph pairs. */
+   *  keys, run the graph-agnostic LSH once, keep only cross-graph pairs.
+   *
+   *  GATED on the host's single capability state, the same one
+   *  `buildGnnContext` (this file, below) and `edge-prediction.ts` already
+   *  read — this was the one raw `getNodeEmbeddings` consumer left in this
+   *  file. The entity-overlap basis is deterministic and keeps running, so a
+   *  placeholder adapter costs this pass one of its two bases rather than
+   *  silencing it, exactly as `.gll` keeps its TF-IDF ranking.
+   *
+   *  Why a guard and not the arithmetic: `cfg.crossEngramMinSim` is
+   *  USER-SETTABLE and its only validation is `> 0`
+   *  (packages/graphnosis-app-core/src/settings/index.ts — `typeof
+   *  rf.crossEngramMinSim === 'number' && rf.crossEngramMinSim > 0`). At the
+   *  0.82 default the stub's normalised noise (mean -0.0003, sd 0.1774 over
+   *  44,850 unrelated pairs) sits 4.63 sigma out and nothing forms. Measured
+   *  through this exact `findSimilarPairs` call on 300 stub vectors: minSim
+   *  0.5 -> 4 pairs, 0.4 -> 38, 0.3 -> 79, 0.2 -> 146. Every one of those
+   *  would be persisted to the connection store as a durable
+   *  `basis: 'embedding-sim'` bridge between two unrelated engrams. */
   private async formCrossEngramByEmbedding(
     graphIds: string[],
     cfg: ReinforcementSettings,
     existing: Set<string>,
     formed: CrossEngramConnection[],
   ): Promise<void> {
+    if (!this.host.semanticSimilarityAvailable()) return;
     const pooled = new Map<string, number[]>();
     const meta = new Map<string, { graphId: string; nodeId: string }>();
     let idx = 0;
@@ -931,7 +958,8 @@ export class ReinforcementEngine {
         contexts.push(ctx);
         const positives = sampleArray(ctx.positivePairs, MAX_GNN_TRAIN_POS);
         for (const [a, b] of positives) {
-          trainingSet.push({ features: this.gnnFeatures(ctx, a, b), label: 1 });
+          const f = this.gnnFeatures(ctx, a, b);
+          if (f) trainingSet.push({ features: f, label: 1 });
         }
         const negTarget = Math.min(MAX_GNN_TRAIN_NEG, Math.max(positives.length, 4) * 2);
         let negAdded = 0;
@@ -939,13 +967,19 @@ export class ReinforcementEngine {
           const a = ctx.nodeIds[(Math.random() * ctx.nodeIds.length) | 0]!;
           const b = ctx.nodeIds[(Math.random() * ctx.nodeIds.length) | 0]!;
           if (a === b || ctx.edgeSet.has(unorderedKey(a, b))) continue;
-          trainingSet.push({ features: this.gnnFeatures(ctx, a, b), label: 0 });
+          const f = this.gnnFeatures(ctx, a, b);
+          if (!f) continue;
+          trainingSet.push({ features: f, label: 0 });
           negAdded += 1;
         }
       }
       if (contexts.length > 0 && trainingSet.length >= 8) {
         // Phase 2 — train ONE cortex-wide model.
-        const model = new GnnLinkPredictor();
+        // ONE cortex-wide model, so ONE width - taken from the host's single
+        // capability state, not from any engram's vector count.
+        const model = new GnnLinkPredictor({
+          semanticSimilarityAvailable: this.host.semanticSimilarityAvailable(),
+        });
         model.train(trainingSet);
         trained = true;
         // Phase 3 — per engram: recompute the overlay slice from scratch
@@ -983,7 +1017,13 @@ export class ReinforcementEngine {
     if (nodes.length < MIN_GNN_NODES) return null;
     const nodeIds = nodes.map((n) => n.id);
     const idSet = new Set(nodeIds);
-    const embs = this.host.getNodeEmbeddings(graphId);
+    const semanticSimilarityAvailable = this.host.semanticSimilarityAvailable();
+    // Loaded either way - but only CONSULTED when a real embedder produced it.
+    const embs = semanticSimilarityAvailable
+      ? this.host.getNodeEmbeddings(graphId)
+      : new Map<string, number[]>();
+    const tfidfIndex = this.host.getTfidfIndex(graphId);
+    const tfidf = tfidfIndex ? makeTfidfScorer(tfidfIndex, nodeIds) : null;
     const entities = new Map<string, Set<string>>();
     for (const n of nodes) {
       entities.set(n.id, new Set((n.entities ?? []).map((e) => e.toLowerCase())));
@@ -1032,18 +1072,39 @@ export class ReinforcementEngine {
     const rwpe = computeRwpe(nodeIds, wadj);
     return {
       graphId, nodeIds, neighbors, edgeSet, positivePairs, predictedEdges,
-      embs, entities, rwpe,
+      embs, tfidf, semanticSimilarityAvailable, entities, rwpe,
     };
   }
 
   /** Deterministic feature vector for a candidate pair within an engram. */
-  private gnnFeatures(ctx: GnnGraphContext, u: string, v: string): PairFeatures {
-    const eu = ctx.embs.get(u);
-    const ev = ctx.embs.get(v);
-    let cos = 0;
-    if (eu && ev && eu.length > 0 && eu.length === ev.length) {
-      cos = Math.max(0, cosine(eu, ev));
+  /**
+   * Feature vector for a candidate pair, or NULL when this pair cannot be
+   * described in the model's feature space.
+   *
+   * The only way to get null is: a real embedder IS loaded (so the model has
+   * an embedding-cosine axis) but one of these two nodes has no vector yet -
+   * mid-backfill, say. Such a pair is SKIPPED. It is not zero-filled: a 0 on
+   * that axis asserts orthogonality, and the model would learn from a claim
+   * nobody made. Dropping the sample loses information honestly; filling it
+   * invents information.
+   */
+  private gnnFeatures(ctx: GnnGraphContext, u: string, v: string): PairFeatures | null {
+    // ABSENT, not zero. `null` here removes the axis from the feature
+    // vector; a 0 would assert the two memories are orthogonal in meaning,
+    // which is a claim nothing in this process is entitled to make when no
+    // real embedder is loaded. See gnn.ts PairFeatures.cosine.
+    let cos: number | null = null;
+    if (ctx.semanticSimilarityAvailable) {
+      const eu = ctx.embs.get(u);
+      const ev = ctx.embs.get(v);
+      if (eu && ev && eu.length > 0 && eu.length === ev.length) {
+        cos = Math.max(0, cosine(eu, ev));
+      }
     }
+    // Always present: derived from the text, needs no model. A pair with no
+    // lexical vector genuinely has zero shared weighted terms, so 0 is a
+    // measurement here rather than a stand-in for a missing one.
+    const tfidfCos = ctx.tfidf ? Math.max(0, ctx.tfidf.score(u, v) ?? 0) : 0;
     const nu = ctx.neighbors.get(u) ?? EMPTY_SET;
     const nv = ctx.neighbors.get(v) ?? EMPTY_SET;
     const [smallN, largeN] = nu.size <= nv.size ? [nu, nv] : [nv, nu];
@@ -1057,8 +1118,10 @@ export class ReinforcementEngine {
     const pu = ctx.rwpe.get(u);
     const pv = ctx.rwpe.get(v);
     const rwpeSim = pu && pv ? rwpeCosine(pu, pv) : 0;
+    if (ctx.semanticSimilarityAvailable && cos === null) return null;
     return {
       cosine: cos,
+      tfidfCosine: tfidfCos,
       commonNeighbors: Math.min(1, common / 8),
       prefAttachment: Math.min(1, Math.log1p(nu.size * nv.size) / 8),
       sharedEntities: Math.min(1, shared / 4),
@@ -1098,7 +1161,12 @@ export class ReinforcementEngine {
     }
     if (!this.gnnEdges) return { added: 0, pruned: 0 };
     const scored = candidates
-      .map(([a, b]) => ({ a, b, score: model.score(this.gnnFeatures(ctx, a, b)) }))
+      .map(([a, b]) => {
+        const f = this.gnnFeatures(ctx, a, b);
+        // Undescribable pair - skipped, never scored on a substituted value.
+        return f ? { a, b, score: model.score(f) } : null;
+      })
+      .filter((c): c is { a: string; b: string; score: number } => c !== null)
       .filter((c) => c.score >= GNN_SCORE_THRESHOLD)
       .sort((x, y) => y.score - x.score)
       .slice(0, adaptiveGnnCap(ctx.nodeIds.length));

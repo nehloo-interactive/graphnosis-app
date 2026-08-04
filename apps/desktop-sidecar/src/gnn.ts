@@ -19,8 +19,26 @@
 /** Deterministically-computed features for one candidate node pair. Each
  *  field is normalised to roughly [0, 1] by the caller. */
 export interface PairFeatures {
-  /** Cosine similarity of the two nodes' embedding vectors (0 if absent). */
-  cosine: number;
+  /**
+   * Cosine similarity of the two nodes' embedding vectors, or `null` when
+   * no real embedder is behind them.
+   *
+   * IT USED TO SAY "0 IF ABSENT". That was the same defect one level down
+   * from the one this file's caller now guards: 0 is a VALUE on this axis,
+   * and it means ORTHOGONAL — a positive claim that the two memories are
+   * maximally dissimilar in meaning. Feeding that for "we do not know"
+   * teaches the model a fact nobody established. When it is null the axis is
+   * REMOVED from the vector (see `featureDim`), not zeroed and not
+   * substituted.
+   */
+  cosine: number | null;
+  /**
+   * TF-IDF cosine of the two nodes' text, on the substrate's own scale.
+   * ALWAYS PRESENT: TF-IDF is derived from the text itself and needs no
+   * model, so this axis never has to be dropped. It is what keeps a content
+   * signal in the vector when the embedding axis is gone.
+   */
+  tfidfCosine: number;
   /** Shared-neighbour count, normalised. */
   commonNeighbors: number;
   /** Preferential attachment — a function of the two nodes' degrees. */
@@ -33,31 +51,74 @@ export interface PairFeatures {
   rwpeSim: number;
 }
 
-const FEATURE_DIM = 5;
+/** Axis count WITH the embedding cosine. */
+const FEATURE_DIM_WITH_COSINE = 6;
+/** Axis count WITHOUT it — the embedding axis is absent, not zeroed. */
+const FEATURE_DIM_NO_COSINE = 5;
 const HIDDEN_DIM = 8;
 
-function featureVec(f: PairFeatures): Float64Array {
+/**
+ * NO MIGRATION IS NEEDED for the dimension change. The MLP is trained
+ * IN-SITU at run time from random init on the engram's own edges — there
+ * are no shipped weights and nothing is persisted across the dimension
+ * boundary (`gnn-store` holds predicted EDGES, not parameters). A run
+ * either trains at 6 or trains at 5, whole.
+ */
+function featureVec(f: PairFeatures, includeCosine: boolean): Float64Array {
+  if (includeCosine) {
+    if (f.cosine === null) {
+      // Refusing loudly beats silently substituting a number. A caller that
+      // built a 6-dim model and then handed over a pair with no embedding
+      // has mixed two incompatible runs; zero-filling here is precisely the
+      // defect this file was changed to remove.
+      throw new Error(
+        '[gnn] featureVec: model expects the embedding-cosine axis but the pair has none. ' +
+        'Construct GnnLinkPredictor with { semanticSimilarityAvailable: false } for this run ' +
+        'instead of substituting a value for an absent signal.',
+      );
+    }
+    return Float64Array.of(
+      f.cosine, f.tfidfCosine, f.commonNeighbors, f.prefAttachment, f.sharedEntities, f.rwpeSim,
+    );
+  }
   return Float64Array.of(
-    f.cosine, f.commonNeighbors, f.prefAttachment, f.sharedEntities, f.rwpeSim,
+    f.tfidfCosine, f.commonNeighbors, f.prefAttachment, f.sharedEntities, f.rwpeSim,
   );
 }
 
 /**
- * A 5→8→1 MLP link-predictor. ReLU hidden layer, sigmoid output, trained
- * with full-batch gradient descent on binary cross-entropy.
+ * A 6→8→1 (or 5→8→1) MLP link-predictor. ReLU hidden layer, sigmoid output,
+ * trained with full-batch gradient descent on binary cross-entropy.
+ *
+ * The input width depends on ONE thing: whether a real embedder is loaded.
+ * With one, the vector is [embeddingCosine, tfidfCosine, commonNeighbors,
+ * prefAttachment, sharedEntities, rwpeSim]. Without one, the embedding axis
+ * is absent entirely and the model trains at width 5 on the remaining
+ * axes — all of which are still fully determined.
  *
  * Index reads carry `!` — the indices are loop counters that are always in
  * bounds; the assertion only satisfies `noUncheckedIndexedAccess`.
  */
 export class GnnLinkPredictor {
-  private readonly w1: Float64Array;  // HIDDEN_DIM × FEATURE_DIM, row-major
+  private readonly w1: Float64Array;  // HIDDEN_DIM × featureDim, row-major
   private readonly b1: Float64Array;  // HIDDEN_DIM
   private readonly w2: Float64Array;  // HIDDEN_DIM
   private b2 = 0;
+  /** True when this model's input includes the embedding-cosine axis. */
+  readonly includeCosine: boolean;
+  /** Input width of this model — 6 with the embedding axis, 5 without. */
+  readonly featureDim: number;
   trained = false;
 
-  constructor() {
-    this.w1 = new Float64Array(HIDDEN_DIM * FEATURE_DIM);
+  /**
+   * @param opts.semanticSimilarityAvailable the host's single capability
+   *   state. Pass `host.semanticSimilarityAvailable()`; do NOT re-derive it
+   *   from whether vectors came back.
+   */
+  constructor(opts: { semanticSimilarityAvailable: boolean }) {
+    this.includeCosine = opts.semanticSimilarityAvailable;
+    this.featureDim = this.includeCosine ? FEATURE_DIM_WITH_COSINE : FEATURE_DIM_NO_COSINE;
+    this.w1 = new Float64Array(HIDDEN_DIM * this.featureDim);
     this.b1 = new Float64Array(HIDDEN_DIM);
     this.w2 = new Float64Array(HIDDEN_DIM);
     // Small random init — the source of the model's non-determinism.
@@ -70,8 +131,8 @@ export class GnnLinkPredictor {
     const a1 = new Float64Array(HIDDEN_DIM);
     for (let h = 0; h < HIDDEN_DIM; h++) {
       let s = this.b1[h]!;
-      const base = h * FEATURE_DIM;
-      for (let i = 0; i < FEATURE_DIM; i++) s += this.w1[base + i]! * x[i]!;
+      const base = h * this.featureDim;
+      for (let i = 0; i < this.featureDim; i++) s += this.w1[base + i]! * x[i]!;
       z1[h] = s;
       a1[h] = s > 0 ? s : 0; // ReLU
     }
@@ -90,9 +151,9 @@ export class GnnLinkPredictor {
     lr = 0.2,
   ): number {
     if (samples.length === 0) return 0;
-    const data = samples.map((s) => ({ x: featureVec(s.features), y: s.label as number }));
+    const data = samples.map((s) => ({ x: featureVec(s.features, this.includeCosine), y: s.label as number }));
     for (let epoch = 0; epoch < epochs; epoch++) {
-      const gw1 = new Float64Array(HIDDEN_DIM * FEATURE_DIM);
+      const gw1 = new Float64Array(HIDDEN_DIM * this.featureDim);
       const gb1 = new Float64Array(HIDDEN_DIM);
       const gw2 = new Float64Array(HIDDEN_DIM);
       let gb2 = 0;
@@ -104,8 +165,8 @@ export class GnnLinkPredictor {
           gw2[h] = gw2[h]! + dz2 * a1[h]!;
           const dz1 = z1[h]! > 0 ? dz2 * this.w2[h]! : 0; // through ReLU
           gb1[h] = gb1[h]! + dz1;
-          const base = h * FEATURE_DIM;
-          for (let i = 0; i < FEATURE_DIM; i++) {
+          const base = h * this.featureDim;
+          for (let i = 0; i < this.featureDim; i++) {
             gw1[base + i] = gw1[base + i]! + dz1 * d.x[i]!;
           }
         }
@@ -131,6 +192,6 @@ export class GnnLinkPredictor {
 
   /** Probability in [0,1] that a pair with these features is a real link. */
   score(features: PairFeatures): number {
-    return this.forward(featureVec(features)).yhat;
+    return this.forward(featureVec(features, this.includeCosine)).yhat;
   }
 }

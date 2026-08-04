@@ -23,6 +23,25 @@ const KEYWORD_FALLBACK_MIN_THRESHOLD = 0.92;
  * threshold, and degenerate label-sized candidates are dropped in both
  * modes — a 10-char heading can cosine at 1.00 against anything once a
  * query vector collapses onto its single term.
+ *
+ * TWO distinct reasons to fall back, both landing on the same honest label:
+ *
+ *   1. `semanticSimilarityAvailable() === false` — there is an embedding
+ *      index and it will happily return scores, but the adapter is a
+ *      placeholder and those scores are sha256 noise. Measured on this
+ *      build: 48.1% of UNRELATED pairs clear 1.0, the strictest threshold
+ *      `CheckDuplicateInput`/`AuditMemoryInput` permit, because the engine's
+ *      embedding seed scorer is an unnormalised dot product over vectors of
+ *      norm ~10. Asking it at all produces confident nonsense, so we do not
+ *      ask. This is what makes main.ts's long-standing "falling back to
+ *      TF-IDF-only retrieval" log TRUE.
+ *   2. `searchNodesDirect` returns null — the engram has no embedding index
+ *      at all. The pre-existing case.
+ *
+ * Note the check is on ADAPTER IDENTITY, never on the scores that come back:
+ * this function has never set `keywordFallback` from a number, and must not
+ * start. A score cannot tell you whether the thing that produced it knows
+ * what words mean.
  */
 async function findDuplicateHits(
   host: GraphnosisHost,
@@ -31,11 +50,21 @@ async function findDuplicateHits(
   k: number,
   threshold: number,
 ): Promise<Array<{ nodeId: string; score: number; text: string; keywordFallback: boolean }>> {
-  let results = await withEmbedding(() => host.searchNodesDirect(graphId, probeText, k));
-  let keywordFallback = false;
+  const semantic = host.semanticSimilarityAvailable();
+  let results = semantic
+    ? await withEmbedding(() => host.searchNodesDirect(graphId, probeText, k))
+    : null;
+  let keywordFallback = !semantic;
   if (results === null) {
     keywordFallback = true;
-    results = await withEmbedding(() => host.searchNodes(graphId, probeText, k));
+    // `searchNodesLexical`, NOT `searchNodes`. The latter takes the HYBRID
+    // path whenever an embedding index exists, and a placeholder adapter
+    // always provides one — so it would quietly feed the noise back in under
+    // a "keyword match" label. Measured before this line was corrected:
+    // check_duplicate reported "Score 14.50 (keyword match)" on a stub host.
+    // A TF-IDF cosine cannot exceed 1.0, so that number could only have come
+    // from the vectors the label said were not in play.
+    results = await withEmbedding(async () => host.searchNodesLexical(graphId, probeText, k));
   }
   const effective = keywordFallback ? Math.max(threshold, KEYWORD_FALLBACK_MIN_THRESHOLD) : threshold;
   return results
@@ -224,7 +253,7 @@ export async function dispatchAuditMcpTool(
             const srcA = deps.host.getNodeSource(a, node.id);
             const srcB = deps.host.getNodeSource(b, hit.nodeId);
             duplicates.push(
-              `Score ${hit.score.toFixed(2)}${hit.keywordFallback ? ' (keyword match — embeddings unavailable)' : ''} | ${deps.host.getGraphMetadata(a)?.displayName ?? a}${srcA ? ` [${srcA}]` : ''} ↔ ${deps.host.getGraphMetadata(b)?.displayName ?? b}${srcB ? ` [${srcB}]` : ''}\n  "${nodeText.slice(0, 80)}…"`,
+              `Score ${hit.score.toFixed(2)}${hit.keywordFallback ? ' (keyword match — no semantic similarity available)' : ''} | ${deps.host.getGraphMetadata(a)?.displayName ?? a}${srcA ? ` [${srcA}]` : ''} ↔ ${deps.host.getGraphMetadata(b)?.displayName ?? b}${srcB ? ` [${srcB}]` : ''}\n  "${nodeText.slice(0, 80)}…"`,
             );
             if (duplicates.length >= 20) break;
           }
@@ -257,7 +286,7 @@ export async function dispatchAuditMcpTool(
         for (const r of results) {
           const meta = deps.host.getGraphMetadata(graphId);
           const sourceId = deps.host.getNodeSource(graphId, r.nodeId);
-          hits.push(`Score ${r.score.toFixed(2)}${r.keywordFallback ? ' (keyword match — embeddings unavailable)' : ''} in ${meta?.displayName ?? graphId}${sourceId ? ` [${sourceId}]` : ''}:\n  "${r.text.slice(0, 120)}"`);
+          hits.push(`Score ${r.score.toFixed(2)}${r.keywordFallback ? ' (keyword match — no semantic similarity available)' : ''} in ${meta?.displayName ?? graphId}${sourceId ? ` [${sourceId}]` : ''}:\n  "${r.text.slice(0, 120)}"`);
         }
       }
       return {

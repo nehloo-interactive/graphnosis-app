@@ -1,3 +1,4 @@
+import type { CorrectionOutcome } from './graphnosis-impl';
 import type { EmbedFn } from '@graphnosis-app/core/embeddings';
 
 // Thin adapter interface in front of the `@nehloo/graphnosis` SDK.
@@ -187,6 +188,17 @@ export interface GraphnosisAdapter {
   queryDirect(handle: GraphHandle, query: string, k: number): Promise<QueryResult[] | null>;
 
   /**
+   * PURE TF-IDF query — no embedding seeds under any circumstances. Scores
+   * are normalised cosines in [0, 1].
+   *
+   * Distinct from `query()`, which prefers the HYBRID path whenever an
+   * embedding index exists. That distinction matters because a stub adapter
+   * still produces an index, so `query()` is not a keyword fallback at all
+   * when no real embedder is loaded — it silently mixes the noise back in.
+   */
+  queryLexical(handle: GraphHandle, query: string, k: number): QueryResult[];
+
+  /**
    * Like `query()` but also returns the traversal's edge structure and a
    * `serialize()` closure for rich === KNOWLEDGE SUBGRAPH === rendering.
    * Use this in the recall path so the federation prompt carries relationship
@@ -194,7 +206,24 @@ export interface GraphnosisAdapter {
    */
   queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult>;
 
-  applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<void>;
+  /**
+   * Apply a correction and REPORT WHAT HAPPENED.
+   *
+   * Returns the outcome rather than `void`, and that is not cosmetic. The SDK's
+   * `edit`/`supersede`/`deleteNode` NEVER THROW — a refusal comes back as
+   * `{ applied: 0, errors: [...] }`. While this returned `void` the app
+   * discarded that, so a correction that never happened was reported to the
+   * user as success and written to the op-log as if it had.
+   *
+   * `resultNodeId` matters just as much. `supersede` has always minted a NEW
+   * node, and from SDK 0.10.0 `edit()` does too — it retires the target. A
+   * caller that keeps the id it passed in is holding a RETIRED node, which is
+   * how trained-skill steps stop being walkable after an upgrade.
+   *
+   * Callers are not obliged to inspect it, but they can no longer fail to
+   * receive it.
+   */
+  applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<CorrectionOutcome>;
 
   /**
    * Create an undirected edge between two existing nodes. Used by the App's
@@ -269,6 +298,21 @@ export interface GraphnosisAdapter {
 
   /** Build embeddings with a cached local embed function. Caller passes (dimensions, id) for adapter provenance. */
   buildEmbeddings(handle: GraphHandle, opts: BuildEmbeddingsAdapterOpts): Promise<void>;
+
+  /**
+   * Embed EXACTLY these node ids into the EXISTING embedding index.
+   *
+   * `buildEmbeddings` is not an incremental API: the SDK's `attachEmbeddings`
+   * discards the index and re-walks every node in the graph, so calling it to
+   * pick up one changed node is an O(nodes) scan. This is the O(ids) door for
+   * the correction path, where exactly one node's text changed.
+   *
+   * Returns the number of nodes actually embedded. Returns 0 — never throws —
+   * when the graph has no embedding index yet (nothing to keep in sync), when
+   * an id is unknown, and for structural / empty nodes, which `attachEmbeddings`
+   * also skips.
+   */
+  embedNodeIds(handle: GraphHandle, nodeIds: string[], opts: BuildEmbeddingsAdapterOpts): Promise<number>;
 
   /** All node IDs currently in the graph. Used by the host to diff append results. */
   allNodeIds(handle: GraphHandle): string[];
@@ -379,6 +423,22 @@ export interface GraphnosisAdapter {
    * empty-map case gracefully — the brain activities skip or no-op.
    */
   getNodeEmbeddings(handle: GraphHandle): Map<string, number[]>;
+
+  /**
+   * READ-ONLY view of the engram's live TF-IDF index — the SAME index the
+   * substrate's own `buildUndirectedEdges` pass scores `similar-to` edges
+   * from, so a number taken from here is directly comparable to
+   * `SIMILARITY_THRESHOLD` (0.3) rather than an approximation of it.
+   *
+   * `documents` is nodeId -> (term -> term frequency); `idf` is term ->
+   * inverse document frequency. The TF-IDF vector of a node is the
+   * elementwise product, which is all `getTfidfVector` does in the engine.
+   * Returns null when the graph is unbuilt or has no index.
+   *
+   * Nothing here mutates anything: TF-IDF is derived state the engine
+   * rebuilds on every load, and this is a borrow of the live maps.
+   */
+  getTfidfIndex(handle: GraphHandle): { documents: Map<string, Map<string, number>>; idf: Map<string, number> } | null;
 }
 
 /**
