@@ -116,6 +116,10 @@ import {
   showSkillsToast,
   isTrainStreaming,
   renderLiveDiff,
+  // The Skills pane owns the training status label (it is the only writer);
+  // renderStatusProcess() below reads it through this accessor. See the note
+  // where the old module-scoped `skillTrainStatusLabel` used to be declared.
+  getSkillTrainStatusLabel,
   type SkillListEntry,
 } from './ui/skills';
 import { renderAgentsView } from './ui/agents';
@@ -5497,14 +5501,51 @@ function ensureEngramRecoveryBanner(): HTMLElement {
   return el;
 }
 
-function showEngramRecoveryBanner(displayName: string): void {
+/**
+ * The banner for an engram the synapse could not open.
+ *
+ * `reason` comes straight from the sidecar. It used to be ignored, and the
+ * banner said "on-disk backup is much larger than the current file" for every
+ * cause — including the two where that is false and the advice is harmful:
+ *
+ *   version_skew   — the file is FINE. It was written by a newer Graphnosis
+ *                    than this build can read. Offering "Open Recovery" invites
+ *                    the user to rebuild an engram that has nothing wrong with
+ *                    it; the fix is to update the app.
+ *   load_failed:*  — the engram failed to load for some other reason and has
+ *                    dropped out of the picker. Before this, that was
+ *                    completely silent: no banner, no toast, no explanation.
+ */
+function showEngramRecoveryBanner(displayName: string, reason?: string): void {
   const el = ensureEngramRecoveryBanner();
   const text = el.querySelector('.studio-banner-text');
+  const name = `<strong>${escape(displayName)}</strong>`;
+  const recoverButton =
+    `<button type="button" class="g-btn primary" style="margin-left:8px;font-size:14px;padding:2px 10px;">Open Recovery</button>`;
   if (text) {
-    text.innerHTML =
-      `<strong>${escape(displayName)}</strong> needs recovery — ` +
-      `on-disk backup is much larger than the current file. ` +
-      `<button type="button" class="g-btn primary" style="margin-left:8px;font-size:14px;padding:2px 10px;">Open Recovery</button>`;
+    if (reason === 'version_skew') {
+      // Deliberately no recovery button: there is nothing to recover.
+      text.innerHTML =
+        `${name} was saved by a newer version of Graphnosis than this one can read. ` +
+        `Your data is intact and untouched — update Graphnosis to open it.`;
+    } else if (reason?.startsWith('load_failed:')) {
+      const cause = reason.slice('load_failed:'.length);
+      const detail = cause === 'decryption'
+        ? 'it could not be decrypted.'
+        : cause === 'filesystem'
+          ? 'its file could not be read — check folder permissions.'
+          : cause === 'structure'
+            ? 'its file failed structural validation.'
+            : 'the synapse reported an unrecognized failure.';
+      text.innerHTML =
+        `${name} could not be opened and is hidden from the picker — ${escape(detail)} ` +
+        `Your passphrase is not necessarily at fault.${cause === 'structure' ? ` ${recoverButton}` : ''}`;
+    } else {
+      text.innerHTML =
+        `${name} needs recovery — ` +
+        `on-disk backup is much larger than the current file. ` +
+        recoverButton;
+    }
     text.querySelector('button')?.addEventListener('click', (e) => {
       e.stopPropagation();
       void openRecoveryPanel();
@@ -15585,7 +15626,7 @@ interface EngramLkgRestoredPayload {
 void listen<EngramRecoveryNeededPayload>('graphnosis://engram-recovery-needed', (evt) => {
   const p = evt.payload;
   if (!p?.displayName) return;
-  showEngramRecoveryBanner(p.displayName);
+  showEngramRecoveryBanner(p.displayName, p.reason);
 });
 
 void listen<EngramLkgRestoredPayload>('graphnosis://engram-lkg-restored', (evt) => {
@@ -15891,13 +15932,26 @@ let brainStatus: {
 // Phases (e.g. 'fullscan', 'duplicate-scan') with a live start-frame but
 // no done-frame yet. Non-empty ⇒ the pane shows its "scanning" state.
 const brainActivePhases = new Set<string>();
-// Current skill-training operation label for the status bar (per-operation
-// status set from __skill_train_status__ frames). Null when no train is
-// running. Takes priority over brain phases in renderStatusProcess since it's
-// a user-initiated foreground action. The label is intentionally generic (no
-// skill/engram name or memory content), and #status-process-text carries
-// data-pres="surface:statusProcess" so it also redacts in Presentation Mode.
-let skillTrainStatusLabel: string | null = null;
+// The current skill-training status label for the status bar now lives in
+// `ui/skills.ts` and is read here through `getSkillTrainStatusLabel()` (see
+// the import block at the top of this file).
+//
+// It used to be `let skillTrainStatusLabel` right here, module-scoped and
+// never exported, while `ui/skills.ts` — the ONLY writer, at nine sites —
+// assigned it as a free identifier. That resolved at runtime purely because
+// Vite/rollup flattens every module into one chunk scope; `tsc` reported all
+// nine as TS2304 "Cannot find name". Under any non-bundled ESM load (the
+// desktop test lane, a future unbundled dev mode, or any tooling that imports
+// `ui/skills.ts` on its own) the first assignment in the training path throws
+// a ReferenceError before the Skills buttons do anything at all.
+//
+// Moving the storage to the writer and importing an accessor here makes the
+// coupling explicit and type-checked in the direction the module graph already
+// runs (main.ts → ui/skills.ts). The reverse — exporting a setter from main.ts
+// and importing it into skills.ts — was tried and rejected: it forms an import
+// cycle whose only escape is main.ts's top-level `bindAppContext()` running as
+// a side effect of importing the Skills pane, which is both wrong and provably
+// breaking (it clobbers the injected context in tests/desktop/skills-refusal).
 // 1s ticker for the countdown line; runs only while the brain pane is shown.
 let scanTickerTimer: ReturnType<typeof setInterval> | null = null;
 // Whether a local LLM is reachable with a model installed. Drives the
@@ -16009,6 +16063,7 @@ function renderStatusProcess(): void {
   // Skill training is a user-initiated foreground operation — show its
   // per-operation status with top priority over background brain phases.
   // (Presentation Mode redaction is handled by the element's data-pres tag.)
+  const skillTrainStatusLabel = getSkillTrainStatusLabel();
   if (skillTrainStatusLabel !== null) {
     wrap.style.display = 'flex';
     text.textContent = skillTrainStatusLabel;
@@ -17347,6 +17402,37 @@ async function refreshNeedsReviewBadge(): Promise<void> {
   }
 }
 
+/**
+ * Run a Check-in deck resolve/dismiss IPC call and surface a refusal.
+ *
+ * `brain:resolveDuplicatePair` / `brain:resolveContradictionPair` RESOLVE with
+ * `{ ok: false, reason, message }` when the graph declined the underlying delete
+ * — the SDK never throws on a refusal. Both call sites used to be
+ * `try { await ipcCall(...) } catch { /* ignore *\/ }`, which caught nothing that
+ * mattered and read the result not at all, so the card's collapse animation
+ * played, the pair stayed queued (deliberately — it is still unresolved), and it
+ * reappeared on the next render with both memories live and no explanation.
+ *
+ * Returns true only when the change actually landed.
+ */
+async function runResolveAction(
+  method: string,
+  params: Record<string, unknown>,
+  fallback: string,
+): Promise<boolean> {
+  try {
+    const res = await ipcCall<{ ok?: boolean; reason?: string; message?: string } | undefined>(method, params);
+    if (res && res.ok === false) {
+      showError(res.message ?? `${fallback} (${res.reason ?? 'refused'})`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    showError(`${fallback} ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
 /** Open the "Needs your review" overlay inside the Deterministic Consolidation
  *  tab. Fetches the current pair list, renders cards, and shows the overlay.
  *  The button in Self-healing triggers this; it never auto-opens. */
@@ -17407,7 +17493,15 @@ async function renderNeedsReview(): Promise<void> {
         card.classList.add('lb-healing');
         requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
       }
-      try { await ipcCall('brain:resolveDuplicatePair', { id, action }); } catch { /* ignore */ }
+      // A refused merge resolves with `{ ok: false, message }` and the engine
+      // KEEPS the card in the deck on purpose. The collapse animation has
+      // already played, so without this the card visibly folds away and then
+      // reappears on the re-render, both copies still live, with no reason
+      // given. Say what happened.
+      await runResolveAction(
+        'brain:resolveDuplicatePair', { id, action },
+        'The duplicate was not merged:',
+      );
       // Re-render after the collapse animation finishes.
       window.setTimeout(() => { void renderNeedsReview(); }, card ? 560 : 0);
     });
@@ -17481,9 +17575,17 @@ async function renderContradictionsReview(): Promise<void> {
         requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
       }
       if (action === 'dismiss') {
-        try { await ipcCall('brain:dismissContradictionPair', { id }); } catch { /* ignore */ }
+        await runResolveAction(
+          'brain:dismissContradictionPair', { id },
+          'The pair could not be dismissed:',
+        );
       } else if (action === 'keep-a' || action === 'keep-b' || action === 'mark-debate') {
-        try { await ipcCall('brain:resolveContradictionPair', { id, action }); } catch { /* ignore */ }
+        // Keep A / Keep B delete the losing side, and the graph can decline —
+        // in which case the pair deliberately stays queued and the card returns.
+        await runResolveAction(
+          'brain:resolveContradictionPair', { id, action },
+          'The contradiction was not resolved:',
+        );
       }
       window.setTimeout(() => {
         void renderContradictionsReview();
@@ -18770,10 +18872,22 @@ void listen<ReingestProgressPayload>('graphnosis://reingest-progress', (evt) => 
     }
     case 'done': {
       barEl.style.width = '100%';
-      phaseEl.textContent = p.cancelled ? 'Cancelled' : 'Done';
       const reingested = p.reingested ?? 0;
       const skippedCount = typeof p.skipped === 'number' ? p.skipped : (p.skipped?.length ?? 0);
       const failedCount = typeof p.failed === 'number' ? p.failed : (p.failed?.length ?? 0);
+      // The headline must not outrank the detail line. `engrams:reingestAll`
+      // deliberately RESOLVES when individual sources are refused — one bad
+      // source out of forty must not abort the run — so a run in which every
+      // single source was refused still arrives here as a normal 'done' frame.
+      // A bare "Done" over `0 reingested … 40 failed` is the lie: the headline
+      // is what the user reads and what they repeat back ("the reingest is
+      // done"), while the counts underneath scroll past. Name the failures in
+      // the phase line itself.
+      phaseEl.textContent = p.cancelled
+        ? 'Cancelled'
+        : failedCount > 0
+          ? `Done — ${failedCount} source(s) failed`
+          : 'Done';
       detailEl.textContent = p.cancelled
         ? `Cancelled after reingesting ${reingested} source(s). ${skippedCount} skipped before cancel. Remaining sources kept their old chunks (recoverable from snapshot).`
         : `Reingested ${reingested} source(s). ${skippedCount} skipped. ${failedCount} failed.`;
@@ -25452,13 +25566,99 @@ function applyRecallPanelLayout(): void {
   panels?.classList.toggle('one-panel', !(showLlm && showRaw));
 }
 
+/**
+ * Whether the recall actually read every engram it was supposed to.
+ *
+ * Optional because an older sidecar does not send it. `undefined` is treated
+ * as "no claim made", NOT as "complete" — see `showRecallCoverageBanner`.
+ */
+type RecallCoverage = {
+  complete: boolean;
+  engramsQueried: number;
+  engramsAnswered: number;
+  failures: Array<{
+    graphId: string; displayName: string; tier: string;
+    reason: 'error' | 'timeout'; error: string;
+  }>;
+};
+
 type RawRecallResult = {
   prompt: string; tokensUsed: number; nodesIncluded: number;
   audit: Array<{ graphId: string; nodesIncluded: number; tokensIncluded: number }>;
   byGraph: Record<string, unknown>;
   allCandidates?: Array<{ nodeId: string; graphId: string; score: number; text: string; type?: string }>;
   topScore?: number;
+  coverage?: RecallCoverage;
 };
+
+/**
+ * Persistent banner when a recall answered from only part of the cortex.
+ *
+ * Structured exactly like `ensureEngramRecoveryBanner` — same `studio-banner`
+ * class, same warn tint, same dismiss button, same insertion point — because
+ * this is the same class of message ("something about your memory is not
+ * right") and the user should not have to learn a second surface for it. It is
+ * a separate element so dismissing one does not hide the other.
+ */
+function ensureRecallCoverageBanner(): HTMLElement {
+  let el = document.getElementById('recall-coverage-banner');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'recall-coverage-banner';
+  el.className = 'studio-banner hidden';
+  el.style.cssText = 'background: color-mix(in srgb, var(--warn, #b8860b) 18%, transparent); border-bottom: 1px solid var(--warn, #b8860b);';
+  el.innerHTML = `
+    <span class="studio-banner-text"></span>
+    <button type="button" class="studio-banner-close" aria-label="Dismiss">×</button>
+  `;
+  const appMain = document.getElementById('app-main') ?? document.querySelector('.app-main');
+  if (appMain?.firstChild) {
+    appMain.insertBefore(el, appMain.firstChild);
+  } else {
+    document.body.prepend(el);
+  }
+  el.querySelector('.studio-banner-close')?.addEventListener('click', () => el?.classList.add('hidden'));
+  return el;
+}
+
+/**
+ * Say so when the answer came from part of the cortex.
+ *
+ * THE DEFECT THIS CLOSES: federation tolerates a per-engram failure so one
+ * broken engram does not cost the user every other engram's answer. The sidecar
+ * then rebuilt the prompt itself and the IPC layer projected the result down to
+ * `{ prompt, tokensUsed, nodesIncluded, byGraph, audit }` — dropping both the
+ * `complete` flag and the failure list. A recall that read 3 of 5 engrams
+ * rendered identically to one that read all 5, so the user was shown a partial
+ * answer as a complete one and had no way to know a memory was missing.
+ *
+ * A COMPLETE recall is never annotated: the banner is hidden. A missing
+ * `coverage` field (older sidecar) is also not annotated — we do not invent a
+ * warning from an absent claim — but it is likewise never treated as proof the
+ * recall was complete anywhere that matters.
+ */
+function showRecallCoverageBanner(coverage: RecallCoverage | undefined): void {
+  if (!coverage || coverage.complete) {
+    document.getElementById('recall-coverage-banner')?.classList.add('hidden');
+    return;
+  }
+  const el = ensureRecallCoverageBanner();
+  const text = el.querySelector('.studio-banner-text');
+  if (text) {
+    const names = coverage.failures.length > 0
+      ? coverage.failures
+          .map((f) => `<strong>${escape(f.displayName)}</strong>${f.reason === 'timeout' ? ' (timed out)' : ''}`)
+          .join(', ')
+      : 'one or more engrams';
+    const scope = coverage.engramsQueried > 0
+      ? `Only ${coverage.engramsAnswered} of ${coverage.engramsQueried} engram${coverage.engramsQueried === 1 ? '' : 's'} answered`
+      : 'Part of your memory could not be read';
+    text.innerHTML =
+      `${scope} — this answer is incomplete. Could not read: ${names}. ` +
+      `A memory missing here is not proof it isn't in your cortex.`;
+  }
+  el.classList.remove('hidden');
+}
 
 function renderRawRecallResult(
   result: RawRecallResult,
@@ -25488,6 +25688,10 @@ function renderRawRecallResult(
   }
   const rawStatus = document.getElementById('studio-raw-status');
   if (rawStatus) rawStatus.textContent = `${result.nodesIncluded}n · ${result.tokensUsed}t`;
+  // Disclose a partial recall before the user reads the answer. Called on
+  // EVERY render (fresh and slider re-run) so the banner both appears and
+  // clears in step with the result actually on screen.
+  showRecallCoverageBanner(result.coverage);
   renderStudioNodeChips(result.byGraph);
   applyRecallPanelLayout();
   panels?.classList.remove('hidden');
@@ -27021,7 +27225,7 @@ let studioTopScore = 0;
 // top regardless of how many candidates the user wants to see. Without this
 // cache, every slider tick triggered a fresh sidecar recall with a tighter
 // budget, and the SDK's federation could rank a different set of nodes at
-// the top — so "robert" might surface "Robert Gomboș" at Broad but not Exact.
+// the top — so "maria" might surface "Maria Bălan" at Broad but not Exact.
 let studioWideResult: RawRecallResult | null = null;
 
 /** Re-render a subset of the cached wide-call result for the current slider
@@ -27076,6 +27280,11 @@ function sliceWideResult(keepIds: Set<string>): RawRecallResult | null {
       nodesIncluded: filteredByGraph[a.graphId]?.length ?? 0,
       tokensIncluded: 0,
     })),
+    // Coverage is a property of the RECALL, not of the slider position.
+    // Narrowing the displayed node set does not make an unread engram read, so
+    // it must survive slicing verbatim — dropping it here would silently clear
+    // the incomplete-recall banner the moment the user touched the slider.
+    ...(studioWideResult.coverage ? { coverage: studioWideResult.coverage } : {}),
   };
 }
 
@@ -28044,7 +28253,25 @@ async function runStudioEdit(): Promise<void> {
 async function applyStudioEdit(): Promise<void> {
   if (!studioPendingDiffId) return;
   try {
-    await ipcCall('correction.apply', { diffId: studioPendingDiffId });
+    // `correction.apply` RESOLVES with `{ ok: false, reason: 'correction_refused',
+    // message }` when the graph declined the edits — the SDK reports a refusal by
+    // returning `{ applied: false }`, never by throwing, so the catch below was
+    // not the failure channel and this took the green path on a refusal.
+    //
+    // The early return is the load-bearing part, not the message. The lines that
+    // follow clear `studioPendingDiffId` and hide the diff panel; on a totally
+    // refused diff the sidecar deliberately RETAINS the pending proposal for a
+    // retry, and discarding the id here would throw away the user's only handle
+    // on it — the proposal would sit in the sidecar with no way to reach it.
+    // Same shape as the guard in ui/skills.ts raiseSkillAutonomy.
+    const res = await ipcCall<{ ok: boolean; message?: string; reason?: string }>(
+      'correction.apply', { diffId: studioPendingDiffId },
+    );
+    if (!res?.ok) {
+      showError(res?.message ?? `The correction was not applied (${res?.reason ?? 'refused'}).`);
+      return;
+    }
+    showError(null);
     studioPendingDiffId = null;
     document.getElementById('studio-edit-diff')?.classList.add('hidden');
     (document.getElementById('studio-edit-correction') as HTMLTextAreaElement | null)!.value = '';

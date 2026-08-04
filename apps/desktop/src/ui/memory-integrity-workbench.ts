@@ -78,6 +78,81 @@ function el(id: string): HTMLElement | null {
   return document.getElementById(id);
 }
 
+/**
+ * The workbench's refusal channel.
+ *
+ * The sidecar answers a declined correction / contradiction resolve with
+ * `{ ok: false, reason: 'correction_refused' | 'resolve_refused', message }` —
+ * it RESOLVES, it does not reject, because the SDK signals a refusal by
+ * returning `{ applied: false }` rather than throwing. Every action button here
+ * used to `try { await ipcCall(...) } catch { /* ignore *\/ }` and then re-render
+ * unconditionally, so a refusal was invisible twice over: the promise resolved,
+ * so the catch never fired, and nobody read the payload. The row simply
+ * reappeared on the next paint with the memory still live and no explanation.
+ *
+ * The notice lives in the workbench ROOT, as a sibling of `#mi-tab-body`, on
+ * purpose: every render* function replaces `#mi-tab-body`'s innerHTML, so a
+ * message painted inside it would be wiped by the very re-render that follows
+ * the failed action. Styling reuses `.mi-pair-card` + `.mi-sev` so this needs no
+ * new CSS (app.css is not ours to edit).
+ */
+function showIntegrityNotice(d: WorkbenchDeps, message: string, kind: 'error' | 'info' = 'error'): void {
+  const box = el('mi-notice');
+  if (!box) return;
+  const sev = kind === 'error' ? 'high' : 'low';
+  const label = kind === 'error' ? 'not applied' : 'note';
+  box.innerHTML = `<div class="mi-pair-card">
+    <div class="mi-pair-head"><span class="mi-sev mi-sev-${sev}">${label}</span>
+      <button type="button" class="btn-sm" data-mi-notice-dismiss>Dismiss</button></div>
+    <p class="brain-subtitle">${d.escapeHtml(message)}</p>
+  </div>`;
+  box.classList.remove('hidden');
+  box.querySelector<HTMLButtonElement>('[data-mi-notice-dismiss]')
+    ?.addEventListener('click', () => clearIntegrityNotice());
+}
+
+function clearIntegrityNotice(): void {
+  const box = el('mi-notice');
+  if (!box) return;
+  box.innerHTML = '';
+  box.classList.add('hidden');
+}
+
+/** Shape every refusal-aware IPC handler in this file answers with. */
+interface RefusableResult {
+  ok?: boolean;
+  reason?: string;
+  message?: string;
+}
+
+/**
+ * Run an action-button IPC call and report the outcome honestly.
+ *
+ * Returns true only when the sidecar confirmed the change landed. Both failure
+ * modes reach the user: a resolved-but-refused payload (`ok: false`) and a
+ * thrown transport/validation error — the second used to be swallowed by a bare
+ * catch, which is why a wedged sidecar looked identical to a successful apply.
+ */
+async function runIntegrityAction(
+  d: WorkbenchDeps,
+  method: string,
+  params: Record<string, unknown>,
+  fallback: string,
+): Promise<boolean> {
+  try {
+    const res = await d.ipcCall<RefusableResult | undefined>(method, params);
+    if (res && res.ok === false) {
+      showIntegrityNotice(d, res.message ?? `${fallback} (${res.reason ?? 'refused'})`);
+      return false;
+    }
+    clearIntegrityNotice();
+    return true;
+  } catch (e) {
+    showIntegrityNotice(d, `${fallback} ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
 function tabBtn(tab: IntegrityTab, label: string, active: boolean): string {
   return `<button type="button" class="btn-sm mi-tab${active ? ' primary' : ''}" data-mi-tab="${tab}">${label}</button>`;
 }
@@ -143,9 +218,14 @@ function wireCorrectionActions(host: ParentNode, d: WorkbenchDeps): void {
     btn.addEventListener('click', async () => {
       const id = btn.dataset['miCorrectionApply'];
       if (!id) return;
-      try {
-        await d.ipcCall('corrections.apply', { diffId: id });
-      } catch { /* ignore */ }
+      // A refused apply resolves with `{ ok: false, message }` and the sidecar
+      // RETAINS the pending diff when nothing landed — so the card correctly
+      // stays in the queue. Without reading the payload that looked like the
+      // Approve button had simply done nothing.
+      await runIntegrityAction(
+        d, 'corrections.apply', { diffId: id },
+        'The correction was not applied:',
+      );
       void renderQueue(d);
       document.dispatchEvent(new CustomEvent('graphnosis:attention-changed'));
     });
@@ -154,9 +234,13 @@ function wireCorrectionActions(host: ParentNode, d: WorkbenchDeps): void {
     btn.addEventListener('click', async () => {
       const id = btn.dataset['miCorrectionReject'];
       if (!id) return;
-      try {
-        await d.ipcCall('corrections.reject', { diffId: id });
-      } catch { /* ignore */ }
+      // `corrections.reject` answers `{ ok: existed }` — `ok: false` means the
+      // diff was already gone, which is worth saying rather than repainting a
+      // queue that silently did not change.
+      await runIntegrityAction(
+        d, 'corrections.reject', { diffId: id },
+        'The correction could not be rejected — it is no longer pending (already applied or rejected).',
+      );
       void renderQueue(d);
       document.dispatchEvent(new CustomEvent('graphnosis:attention-changed'));
     });
@@ -232,9 +316,13 @@ async function renderQueue(d: WorkbenchDeps): Promise<void> {
       const id = btn.dataset['id'];
       const action = btn.dataset['miResolve'];
       if (!id || !action) return;
-      try {
-        await d.ipcCall('brain:resolveContradictionPair', { id, action });
-      } catch { /* ignore */ }
+      // Keep A / Keep B route through a delete the graph can DECLINE. On a
+      // refusal the engine leaves the pair queued on purpose, so the card comes
+      // straight back — which read as a UI glitch until the reason was shown.
+      await runIntegrityAction(
+        d, 'brain:resolveContradictionPair', { id, action },
+        'The contradiction was not resolved:',
+      );
       void renderQueue(d);
       document.dispatchEvent(new CustomEvent('graphnosis:attention-changed'));
     });
@@ -442,10 +530,14 @@ export function mountMemoryIntegrityWorkbench(d: WorkbenchDeps): void {
   mounted = true;
   root.innerHTML = `
     <div class="mi-tabs">${tabBtn('queue', 'Queue', true)}${tabBtn('entity', 'Entity', false)}${tabBtn('sources', 'Sources', false)}${tabBtn('history', 'History', false)}${tabBtn('filtered', 'Filtered', false)}${tabBtn('actions', 'Actions', false)}</div>
+    <div id="mi-notice" class="hidden"></div>
     <div id="mi-tab-body" class="mi-tab-body"></div>`;
   root.querySelectorAll<HTMLButtonElement>('[data-mi-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
       activeTab = (btn.dataset['miTab'] as IntegrityTab) ?? 'queue';
+      // A refusal is about the row the user just acted on; carrying it onto
+      // another tab would be a message with no visible subject.
+      clearIntegrityNotice();
       root.querySelectorAll('[data-mi-tab]').forEach((b) => b.classList.remove('primary'));
       btn.classList.add('primary');
       if (deps) void renderTab(deps);

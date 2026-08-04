@@ -30,6 +30,37 @@ function getLoadedGraphs(): GraphWithMetadata[] {
   return app().getLoadedGraphs();
 }
 
+/**
+ * Current skill-training operation label for the global status bar
+ * (#status-process), set from `__skill_train_status__` frames and from the
+ * source-only training path below. Null when no train is running.
+ * `renderStatusProcess()` in main.ts gives it priority over background brain
+ * phases because it is a user-initiated foreground action. The label is
+ * deliberately generic — no skill/engram name, no memory content — and
+ * #status-process-text carries data-pres="surface:statusProcess" so it also
+ * redacts in Presentation Mode.
+ *
+ * This binding used to live in main.ts as a module-scoped, never-exported
+ * `let`, while this file — its ONLY writer, at nine sites — assigned it as a
+ * free identifier. It resolved solely because Vite/rollup flattens the bundle
+ * into a single scope; `tsc` flagged every one of the nine as TS2304 "Cannot
+ * find name", and under a non-bundled ESM load (the desktop test lane, or any
+ * tool that imports this module on its own) the first write threw a
+ * ReferenceError and took the whole Skills training path down with it.
+ *
+ * The storage now sits with the writer and main.ts reads it through
+ * `getSkillTrainStatusLabel()`, so the writer and the reader stay coupled —
+ * across a real, type-checked import edge that already ran in this direction.
+ */
+let skillTrainStatusLabel: string | null = null;
+
+/** Read the live training status label. main.ts's `renderStatusProcess()` is
+ *  the only consumer; exported so that read is a checked import rather than a
+ *  free identifier that happens to resolve after bundling. */
+export function getSkillTrainStatusLabel(): string | null {
+  return skillTrainStatusLabel;
+}
+
 interface SkillProvenance {
   kind: 'official' | 'community';
   verified: boolean;
@@ -98,6 +129,17 @@ interface SkillTrainResult {
   mode: 'llm' | 'memory-augmented' | 'source-only';
   skillId?: string;
   degradedNote?: string;
+  /**
+   * Older duplicate sources of this skill that the sidecar's migration pass
+   * asked the engram to forget and the engram DECLINED to release. `skill:train`
+   * spreads the trainer's whole result onto the wire, so these fields were
+   * already arriving here — this interface simply did not name them, which made
+   * them unreadable and let the Skills pane report a retrain that deduplicated
+   * nothing as an unqualified success.
+   */
+  duplicatesNotRemoved?: Array<{ sourceId: string; refusedNodeIds?: string[]; error?: string }>;
+  /** Human-readable companion to `duplicatesNotRemoved`. Present iff it is. */
+  duplicateWarning?: string;
   // Upgrade gate
   upgrade_required?: boolean;
   upgrade_url?: string;
@@ -1249,20 +1291,45 @@ async function promoteQuarantined(batch: QuarantineBatchView, sourceIds: string[
   const toastId = app().addIngestToast('Promoting imported skills…', `to "${targetLabel}"`);
   let promoted = 0;
   const failures: string[] = [];
+  // Set when the sidecar reports a promotion whose source-side DELETE was
+  // refused. Hoisted out of the loop because the finish toast below is where it
+  // becomes visible — see the toast decision at the end of this function.
+  let promoteWarning: string | undefined;
   try {
     // Promote ONE skill at a time so its row leaves the review list the moment
     // it lands, instead of the whole panel freezing until all N finish. The
     // sidecar auto-deletes the quarantine engram when its last item is promoted.
     for (const sid of sourceIds) {
       try {
-        const res = await ipcCall<{ ok: boolean; promoted?: string[] }>(
-          'quarantine:promote', { items: [sid], targetEngramId },
-        );
+        // `quarantine:promote` is a copy-then-delete move, and the delete half
+        // CAN be refused. The sidecar reports that as `ok:false` +
+        // `reason:"promote_incomplete"` / `copiedNotMoved` / `message`. This
+        // call used to be typed `{ ok: boolean; promoted?: string[] }`, so all
+        // three were structurally unreachable: `ok:false` did route the item
+        // into the "· N failed" tail below, but "failed" reads as "nothing
+        // happened" when what actually happened is a DUPLICATION — the skill is
+        // now live in the target engram AND still in quarantine, walkable and
+        // recallable from both. Widening the type is the whole fix; the toast
+        // below is where it becomes visible.
+        const res = await ipcCall<{
+          ok: boolean;
+          promoted?: string[];
+          reason?: string;
+          copiedNotMoved?: Array<{ sourceId: string; refusedNodeIds: string[] }>;
+          message?: string;
+        }>('quarantine:promote', { items: [sid], targetEngramId });
         if (res?.ok && (res.promoted?.length ?? 0) > 0) {
           promoted++;
           dropQuarantineItemLocally(batch.graphId, sid);
           renderSkillsLibrary(); // panel shrinks now; the live list fills after the loop
         } else {
+          // Scoped to the copied-not-moved reason: an ordinary refusal really
+          // is "nothing happened" and must keep reading that way. One message
+          // per refused item; the loop sends one item per call, so joining
+          // keeps each sentence verbatim.
+          if (res?.reason === 'promote_incomplete' && res.message) {
+            promoteWarning = promoteWarning ? `${promoteWarning} ${res.message}` : res.message;
+          }
           failures.push(sid);
         }
       } catch { failures.push(sid); }
@@ -1279,11 +1346,29 @@ async function promoteQuarantined(batch: QuarantineBatchView, sourceIds: string[
     await Promise.all([fetchSkillsLibrary(), fetchQuarantineBatches()]);
     populateSkillsEngramPickers();
     expandSkillEngramGroups(new Set([targetEngramId]));
-    app().finishIngestToast(
-      toastId,
-      failures.length > 0 ? 'error' : 'success',
-      `Promoted ${promoted} skill${promoted === 1 ? '' : 's'} into "${targetLabel}"${failures.length > 0 ? ` · ${failures.length} failed` : ''}`,
-    );
+    // A refusal is never silent, and it REPLACES the summary line rather than
+    // racing it — the same rule already applied to `skill:saveFallback`'s
+    // `warning` in runSkillsFallbackTraining() and to `skill:importGsk`'s in
+    // runGskImport(). The finish toast is a single slot finished exactly once,
+    // so "Promoted N skills … · 1 failed" landing last over an item the engram
+    // refused to release from quarantine IS the lie: "failed" tells the owner
+    // nothing happened, while the skill's content now exists in BOTH engrams.
+    // When the sidecar names the copied-not-moved items, its own wording is
+    // what the user gets, verbatim.
+    //
+    // The promotion still LANDED, so everything else on this path (target load,
+    // library + quarantine refresh, dispatch-safe invalidation above) still
+    // runs — the copy is really in the target engram and must not be left
+    // invisible.
+    if (promoteWarning) {
+      app().finishIngestToast(toastId, 'error', promoteWarning);
+    } else {
+      app().finishIngestToast(
+        toastId,
+        failures.length > 0 ? 'error' : 'success',
+        `Promoted ${promoted} skill${promoted === 1 ? '' : 's'} into "${targetLabel}"${failures.length > 0 ? ` · ${failures.length} failed` : ''}`,
+      );
+    }
     void warmVitalityCache();
   } finally {
     skillsQuarantineBusy = false;
@@ -3984,7 +4069,14 @@ async function runSkillTraining(): Promise<void> {
       renderSkillsLibrary();
       void warmVitalityCache();
     }
-    showSkillsToast(`Trained (mode: ${result.mode})`, 'success');
+    // Same rule as the source-only path below: a retrain that left an older,
+    // still-dispatchable copy of the skill live in the engram is not a clean
+    // "Trained". The warning replaces the success line, it does not follow it.
+    if (result.duplicateWarning) {
+      showSkillsToast(result.duplicateWarning, 'error');
+    } else {
+      showSkillsToast(`Trained (mode: ${result.mode})`, 'success');
+    }
     // Training succeeded → the user's input now lives in the engram (or
     // was deliberately previewed). Clear the autosave draft so the next
     // mount doesn't pop the restore banner for a draft that already
@@ -4080,11 +4172,28 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
 
     // Save if the user picked a real engram — free users persist via skill:saveFallback.
     let savedSkillId: string | undefined;
+    // Set when the sidecar saved the skill but could NOT remove the older
+    // duplicate sources of it — see the toast decision at the end of this
+    // function for why it is hoisted this far out.
+    let saveWarning: string | undefined;
     if (params.save) {
       skillTrainStatusLabel = 'Saving the trained skill…';
       app().renderStatusProcess();
       try {
-        const saved = await ipcCall<{ ok: boolean; skillId?: string }>('skill:saveFallback', {
+        // `skill:saveFallback` answers `{ ok: true }` for a save that landed
+        // over a library it could NOT deduplicate, and reports that in
+        // `warning` / `duplicatesNotRemoved`. This call used to be typed
+        // `{ ok: boolean; skillId?: string }`, so the extra fields were
+        // structurally unreachable — the user saw a clean "Skill saved." while
+        // an older copy of the same skill stayed live, walkable and
+        // dispatchable in the engram. Widening the type is the whole fix; the
+        // toast below is where it becomes visible.
+        const saved = await ipcCall<{
+          ok: boolean;
+          skillId?: string;
+          warning?: string;
+          duplicatesNotRemoved?: Array<{ sourceId: string; refusedNodeIds?: string[]; error?: string }>;
+        }>('skill:saveFallback', {
           graphId: params.graphId,
           text: trained,
           skillName: params.skillName,
@@ -4093,6 +4202,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
           addedBy: 'desktop-ui',
           ...(params.goals !== undefined ? { goals: params.goals } : {}),
         });
+        if (saved?.warning) saveWarning = saved.warning;
         if (saved?.ok && saved.skillId) {
           savedSkillId = saved.skillId;
           skillsActiveSourceId = saved.skillId;
@@ -4118,7 +4228,16 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
       },
       { graphId: params.graphId, engramName, ...(savedSkillId !== undefined ? { sourceId: savedSkillId } : {}) },
     );
-    if (!opts.silent) showSkillsToast(params.save && savedSkillId ? 'Skill saved.' : 'Source-only compile complete.', 'success');
+    // A refusal is never silent. `opts.silent` suppresses the SUCCESS toast
+    // because the outer runSkillTraining() flow raises its own — but it must
+    // not suppress the one thing the outer flow cannot know, and the warning
+    // REPLACES the success line rather than racing it: "Skill saved." landing
+    // last over an un-deduplicated library is the exact lie being fixed.
+    if (saveWarning) {
+      showSkillsToast(saveWarning, 'error');
+    } else if (!opts.silent) {
+      showSkillsToast(params.save && savedSkillId ? 'Skill saved.' : 'Source-only compile complete.', 'success');
+    }
   } catch (e) {
     console.warn('[skills] skill:buildContext failed', e);
     showSkillsToast('Build context failed.', 'error');
@@ -4654,6 +4773,19 @@ interface SkillImportResult {
    *  its skills are held for owner review, NOT merged into the live library. */
   quarantined?: boolean;
   quarantineEngramId?: string;
+  /**
+   * Set when `skill:importGsk` landed the pack but could NOT purge the SDK
+   * seed-artifact nodes out of the imported skills — the memory engine
+   * declined the delete. The skills themselves imported, so the sidecar
+   * reports this on an `ok: true` result (the same decision as
+   * `skill:saveFallback`'s `warning`), which is exactly why it has to be
+   * NAMED here: these two fields were already arriving on the wire, but
+   * `SkillImportResult` did not declare them, so they were structurally
+   * unreachable and the user saw a clean import over skills that still carry
+   * a live sourceRef-text node — walkable, recallable, reported nowhere.
+   */
+  warning?: string;
+  artifactsNotRemoved?: Array<{ skill: string; sourceId: string; nodeId: string; error: string }>;
 }
 
 /** Read a File picked from the hidden Import .gsk input and ship it to the
@@ -4758,6 +4890,26 @@ async function runGskImport(): Promise<void> {
     const skippedTag = skipped > 0 ? ` · ${skipped} skipped (empty)` : '';
     scrollSkillsPaneToTop();
 
+    // A refusal is never silent, and it REPLACES the success line rather than
+    // racing it — the same rule already applied to `skill:saveFallback`'s
+    // `warning` in runSkillsFallbackTraining(). The import toast is a single
+    // slot finished exactly once, so "Imported N skills" landing last over a
+    // seed artifact the engram refused to release IS the lie: the user reads
+    // the final line and reports the import as clean. When the sidecar names
+    // survivors, its own wording is what the user gets, verbatim.
+    //
+    // The import still LANDED, so everything else on the success path (library
+    // refresh, quarantine review panel, opening the first skill) still runs —
+    // calling it a failure would push the user into a pointless re-import of a
+    // pack that is already in their cortex.
+    const finishImportToast = (successMsg: string): void => {
+      if (result.warning) {
+        app().finishIngestToast(importToastId, 'error', result.warning);
+      } else {
+        app().finishIngestToast(importToastId, 'success', successMsg);
+      }
+    };
+
     if (result.quarantined) {
       // DEFAULT PATH — the pack landed in a quarantine engram. Its skills are
       // held for owner review, so do NOT merge them into the live library.
@@ -4768,9 +4920,7 @@ async function runGskImport(): Promise<void> {
       await Promise.all([fetchSkillsLibrary(), fetchQuarantineBatches()]);
       populateSkillsEngramPickers();
       renderSkillsLibrary();
-      app().finishIngestToast(
-        importToastId,
-        'success',
+      finishImportToast(
         `Imported ${n} skill${n === 1 ? '' : 's'} to quarantine${verifiedTag}${skippedTag} — review and promote below.`,
       );
       return;
@@ -4799,9 +4949,7 @@ async function runGskImport(): Promise<void> {
     }
     populateSkillsEngramPickers();
     renderSkillsLibrary();
-    app().finishIngestToast(
-      importToastId,
-      'success',
+    finishImportToast(
       `Imported ${n} skill${n === 1 ? '' : 's'} into "${result.engramName ?? graphId}"${verifiedTag}${skippedTag}`,
     );
     void warmVitalityCache();
