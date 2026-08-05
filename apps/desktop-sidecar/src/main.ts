@@ -1381,6 +1381,14 @@ async function main(): Promise<void> {
   skillMaintenanceScheduler.start();
   const sidecarIdleMaintenance = new SidecarIdleMaintenance({ host, cortexDir: env.cortexDir, broadcastRaw });
   sidecarIdleMaintenance.start();
+  // Op-log size check at unlock, not on the 5-minute idle deferral. This is
+  // stat-only (readdir + stat + two small reads per file — no decryption, no
+  // materialisation), and by the time the deferred tick would fire, a cortex
+  // whose journal has outgrown its memories has already been swapping for
+  // minutes. Auto-archives what no reader can read; asks about the rest.
+  void sidecarIdleMaintenance.checkOplogHealth().catch((e: unknown) => {
+    console.error(`[graphnosis-sidecar] op-log health check at unlock failed: ${(e as Error).message}`);
+  });
   // Self-heal cadence: surface newly-detected contradictions for owner
   // adjudication on a timer (never auto-resolves). Counterpart to the skill
   // maintenance scheduler; decision logic is the pure planContradictionSweep().

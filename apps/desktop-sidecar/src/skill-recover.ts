@@ -32,12 +32,19 @@
  *
  * What does survive: forgetSource emits, per node,
  *   `op: 'deleteNode', before: { sourceId, preview }`
- * where `preview` was captured BEFORE the tombstone rewrite. That is
- * `contentPreview`, capped at 500 characters by the adapter.
+ * where `preview` was captured BEFORE the tombstone rewrite.
  *
- * So recovery is faithful for any node under 500 characters — which is most
- * steps and every goal line — and TRUNCATED beyond that. Truncated nodes are
- * counted and reported; nothing lossy is written without saying so.
+ * FROM 1.35.0 that field carries the node's FULL content (`host.ts` forgetSource
+ * now prefers `originalContent` over `contentPreview`), so recovery of anything
+ * forgotten by this build or later is faithful at any length.
+ *
+ * Events written by EARLIER builds carry `contentPreview`, which the adapter
+ * caps at 497 characters plus an ellipsis. Recovery from those is faithful only
+ * under 500 characters and TRUNCATED beyond it — irrecoverably, because the
+ * graph copy was destroyed on the next statement. The field name stays `preview`
+ * for compatibility with those older logs. Truncated entries are still detected
+ * by their trailing ellipsis, counted, and reported; nothing lossy is written
+ * without saying so.
  *
  * USAGE
  * Build first — a fresh clone has no dist/. Use `exec tsc` rather than the
@@ -91,7 +98,8 @@ interface DamagedSkill {
   origin: 'oplog-preview' | 'none';
   /** The engram the forget trail was found in — i.e. where the skill came from. */
   recoveredFrom?: string;
-  /** Recovered entries that hit the 500-char op-log preview cap. */
+  /** Recovered entries written by a pre-1.35.0 build that hit its 497-char
+   *  op-log preview cap. Always 0 for anything forgotten by 1.35.0 or later. */
   truncated: number;
 }
 
@@ -435,10 +443,14 @@ function report(items: DamagedSkill[]): void {
       console.log(`     recoverable: ${it.recovered.length} node(s) from the op-log forget trail`);
       if (it.recoveredFrom) console.log(`     forgotten in: ${it.recoveredFrom}`);
       if (it.truncated > 0) {
-        console.log(`     ⚠ ${it.truncated} node(s) exceeded the 500-char op-log preview cap`);
-        console.log('       and will come back TRUNCATED. Review them before retraining.');
+        console.log(`     ⚠ ${it.truncated} node(s) were forgotten by a pre-1.35.0 build and hit its`);
+        console.log('       497-char op-log preview cap. They will come back TRUNCATED and the');
+        console.log('       missing text is gone. Review them before retraining.');
       } else {
-        console.log('     all nodes are under the 500-char cap — recovery is exact');
+        // Deliberately not "all nodes are under the 500-char cap": from 1.35.0
+        // the op-log stores full content, so most clean recoveries involve no
+        // cap at all and saying otherwise credits a limit that did not apply.
+        console.log('     no truncated entries — every node came back whole');
       }
     } else {
       console.log('     ✗ nothing recoverable — no deleteNode trail for this sourceId in the op-log');
@@ -449,7 +461,7 @@ function report(items: DamagedSkill[]): void {
     if (it.recovered.length > 4) console.log(`       … and ${it.recovered.length - 4} more`);
     console.log('');
   }
-  console.log('Legend:  ✓ exact   ~ some nodes truncated at the 500-char cap   ✗ unrecoverable\n');
+  console.log('Legend:  ✓ exact   ~ some nodes truncated by a pre-1.35.0 build   ✗ unrecoverable\n');
 }
 
 async function main(): Promise<void> {

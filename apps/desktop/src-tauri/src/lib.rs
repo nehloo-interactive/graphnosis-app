@@ -3578,6 +3578,26 @@ fn install_app_menu(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         None::<&str>,
     )?;
 
+    // Quit is OURS, not the predefined item, and the difference is the whole
+    // reason the sidecar used to outlive the app.
+    //
+    // `SubmenuBuilder::quit()` emits the macOS predefined item, which is wired
+    // straight to `sel!(terminate:)`. That path surfaces in Tauri as
+    // `RunEvent::Exit` — NOT `RunEvent::ExitRequested`. The exit hook further
+    // down handles only `ExitRequested`, and its comment claims to cover
+    // "tray Quit, Cmd+Q, macOS App > Quit". It covered the first and not the
+    // other two: pressing ⌘Q terminated the app without ever running the hook,
+    // so the sidecar was reparented to launchd and kept its cortex — and its
+    // memory — resident. Observed three times, at 8.4 GB and again at 24 GB,
+    // still running with PPID 1 long after the app had gone.
+    //
+    // A custom item routes the click through `on_menu_event`, which calls
+    // `app.exit(0)`, which raises `ExitRequested` like every other exit path.
+    // One item, and every quit now converges on one shutdown.
+    let quit_item = MenuItemBuilder::with_id("graphnosis-quit", "Quit Graphnosis")
+        .accelerator("CmdOrCtrl+Q")
+        .build(app)?;
+
     let app_submenu = SubmenuBuilder::new(app, "Graphnosis")
         .item(&about_item)
         .separator()
@@ -3589,7 +3609,7 @@ fn install_app_menu(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .hide_others()
         .show_all()
         .separator()
-        .quit()
+        .item(&quit_item)
         .build()?;
 
     // Standard Edit menu — gives ⌘Z / ⌘X / ⌘C / ⌘V / ⌘A their native
@@ -3624,6 +3644,12 @@ fn install_app_menu(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let app_for_handler = app.clone();
     app.on_menu_event(move |_app, event| {
         match event.id().as_ref() {
+            // ⌘Q and App > Quit land here now instead of going straight to
+            // `terminate:`. `exit(0)` raises ExitRequested, which is where the
+            // sidecar shutdown lives — so quitting actually stops the engine.
+            "graphnosis-quit" => {
+                app_for_handler.exit(0);
+            }
             "graphnosis-about" => {
                 let app_inner = app_for_handler.clone();
                 tauri::async_runtime::spawn(async move {
@@ -4524,11 +4550,23 @@ pub fn run() {
                 }
             }
 
-            // Intercept every exit path (tray Quit, Cmd+Q, macOS App > Quit,
-            // app.exit() from a command, etc.) and synchronously shut down
-            // the sidecar. The tray Quit handler does this too, but Cmd+Q
-            // bypasses it — without this hook the sidecar gets reparented
-            // to launchd and lives on as an orphan.
+            // Intercept every exit path (tray Quit, ⌘Q, macOS App > Quit,
+            // app.exit() from a command) and synchronously shut down the
+            // sidecar, so it never outlives the app.
+            //
+            // THIS HOOK USED TO MISS THE TWO PATHS IT NAMED. ⌘Q and App > Quit
+            // both came from the predefined macOS Quit item, which is wired to
+            // `sel!(terminate:)` and surfaces as `RunEvent::Exit` — a variant
+            // nothing here matched. Only tray Quit ever reached this code. The
+            // menu now uses a custom item that calls `app.exit(0)`, so all four
+            // paths converge on ExitRequested. See `install_app_menu`.
+            //
+            // GRACE PERIOD: seconds, not the 45 s default. macOS force-quits an
+            // app a few seconds after it starts terminating, so a long wait here
+            // does not buy a clean flush — it buys a beachball, then a kill
+            // mid-wait, then the orphan this hook exists to prevent. Four
+            // seconds covers a normal flush; a quit during a long Purge takes
+            // SIGKILL, and the lockfile cleanup in `shutdown_within` handles it.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state = app_handle.state::<AppState>();
                 tauri::async_runtime::block_on(async {
@@ -4540,7 +4578,7 @@ pub fn run() {
                         s.shutdown().await;
                     }
                     if let Some(h) = handle {
-                        let _ = h.shutdown().await;
+                        let _ = h.shutdown_within(std::time::Duration::from_secs(4)).await;
                     }
                 });
             }

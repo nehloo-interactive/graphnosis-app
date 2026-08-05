@@ -11,6 +11,42 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.35.0 — Nothing you delete comes back shorter than it was
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-05</p>
+
+**A memory longer than about 500 characters could come back from Recovery cut off, and nothing said so.** When you forget a source, Graphnosis keeps a copy of each memory in its operation log — that copy is what Recovery restores from, and it is kept forever precisely because the original is gone. It was storing a shortened preview instead of the memory itself. Anything past the cut was not recoverable, and the recovery tool reported the result as exact. Both are fixed: the full text is stored, it is confirmed written to disk before the deletion is reported as done, and where an older version already stored a shortened copy, that entry is now named as truncated rather than counted as whole.
+
+**Editing a long memory in Atlas could replace it with its own first 500 characters.** The editor filled its box with the preview, so saving wrote the preview back over the memory. It now loads the full text before you can edit, and refuses to save if it has not.
+
+**Moving a source between engrams could shorten every memory in it.** The move rebuilt each memory from a preview and then deleted the original. It now rebuilds from the full text, and refuses the move outright if anything it is about to move is already truncated — leaving the source untouched rather than making the loss permanent.
+
+**Quitting from the app menu left the background process running.** ⌘Q and **Quit Graphnosis** now shut it down.
+
+### Added
+
+- **Copy button on error messages.** Errors can be selected and copied as text, so you can paste one into a bug report instead of retyping it.
+
+### Changed
+
+- **Compliance retention exports are now encrypted** with your cortex key, like everything else Graphnosis stores. They previously held readable text in a plain file. They also now contain the complete memory rather than a 200-character excerpt — a record of what was destroyed is only useful if it holds what was destroyed.
+
+### Fixed
+
+- **Semantic similarity no longer switches itself off** after an unlock. A crash in the embedding worker disabled it silently for the rest of the session.
+- **"Address for other devices" is saved.** The field was being dropped before it reached storage, so it was empty every time you reopened Settings.
+- **Deleting a source no longer costs more the larger your engram is.** An internal scan ran once per memory being deleted; it now runs once, and only when needed.
+
+### Security
+
+- Retention export files changed from plaintext `.json` to encrypted `.json.enc`. Existing plaintext exports from earlier versions are left where they are — delete them yourself if you do not want them.
+
+### Migrations
+
+None. Your cortex is not rewritten by this release. Memories already truncated by an earlier version cannot be recovered — the text is gone — but they are now identified rather than reported as intact.
+
+---
+
 ## v1.34.0 — Honest answers when an engram will not open
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-04</p>

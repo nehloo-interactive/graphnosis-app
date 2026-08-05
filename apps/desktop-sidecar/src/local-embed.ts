@@ -51,18 +51,28 @@ const IS_COMPILED_BIN = (() => {
   return false;
 })();
 
-if (process.env['GRAPHNOSIS_WORKER_ROLE']) {
-  // Safety belt: a worker process should NEVER import local-embed.ts. If
-  // we're here, something in the import graph routes back into the main
-  // sidecar code from the worker entry — which would re-spawn workers,
-  // which would re-spawn, etc. Throw loudly so the bug is visible before
-  // damage spreads.
-  throw new Error(
-    `local-embed.ts loaded inside a worker process (GRAPHNOSIS_WORKER_ROLE=` +
-    `${process.env['GRAPHNOSIS_WORKER_ROLE']}). This is a fork-bomb risk; ` +
-    `aborting. Check the router in src/index.ts and the worker entry's import graph.`,
-  );
-}
+// NO TOP-LEVEL THROW HERE. It used to be, and it fired on every unlock.
+//
+// WHY IT WAS WRONG. In the compiled binary the worker IS this binary — the
+// pool re-execs `process.execPath` with GRAPHNOSIS_WORKER_ROLE=embed (see
+// spawnWorker below). `bun build --compile` puts every module in one file, so
+// the worker process evaluates this module's top level whether or not the
+// router at src/index.ts ever imports it. Evaluation is not a fork risk; only
+// SPAWNING is. The check therefore belongs at the spawn site, and it is there
+// now — see the guard at the top of spawnWorker().
+//
+// WHAT IT COST. The throw killed embed-worker-0 on every unlock, the pool
+// respawned it, that copy died the same way, and the sidecar fell back to
+// TF-IDF-only retrieval with a stub adapter returning "hash-derived vectors
+// carrying no meaning". Semantic similarity, duplicate detection, .gll edge
+// ranking and .gnn training were all silently degraded — in a build that
+// reported itself healthy apart from one warning.
+//
+// AND IT SENT THE DEBUGGER THE WRONG WAY. The message read "check the router
+// in src/index.ts and the worker entry's import graph". Both are correct:
+// index.ts routes on the env var before any heavy import, and embed-worker.ts
+// imports only node:fs, node:os and fastembed. Anyone following the error text
+// would have audited two innocent files.
 
 // ── Model identity derived from env ──────────────────────────────────────────
 //
@@ -169,6 +179,23 @@ registerEmbedPoolShutdownHooks();
 // ── Child process lifecycle ──────────────────────────────────────────────────
 
 function spawnWorker(idx: number): ChildProcess {
+  // THE FORK-BOMB GUARD, at the only point where it can mean anything.
+  //
+  // A worker must never spawn workers. If it did, each child would spawn its
+  // own pool, and so on until the machine died. Checking here catches exactly
+  // that — an actual attempt to fork from inside a worker — and cannot be
+  // tripped by a bundler merely evaluating this module in the worker process,
+  // which is what the old top-level check kept doing on every unlock.
+  if (process.env['GRAPHNOSIS_WORKER_ROLE']) {
+    throw new Error(
+      `embed pool tried to spawn a worker from INSIDE a worker process ` +
+      `(GRAPHNOSIS_WORKER_ROLE=${process.env['GRAPHNOSIS_WORKER_ROLE']}). ` +
+      `This is a fork bomb; aborting. Something called the pool's spawn path ` +
+      `in a child — check callers of spawnNextInitial()/spawnWorker(), not the ` +
+      `import graph.`,
+    );
+  }
+
   // Two spawn shapes, same IPC channel + env:
   //   - Compiled binary: re-exec the parent binary itself with
   //     GRAPHNOSIS_WORKER_ROLE=embed. The router at src/index.ts routes

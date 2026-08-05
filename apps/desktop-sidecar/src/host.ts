@@ -1724,6 +1724,16 @@ export class GraphnosisHost {
     return this.opts.cortexDir;
   }
 
+  /** Identity context for the op-log health check (oplog-health.ts): which
+   *  `.oplog` file this install writes, and which devices' files are trusted.
+   *  No key material crosses this boundary. */
+  getOplogDeviceContext(): { currentDeviceId: string; pinnedDeviceIds: string[] } {
+    return {
+      currentDeviceId: this.deviceIdentity.deviceId,
+      pinnedDeviceIds: this.deviceIdentity.pinnedDeviceIds(),
+    };
+  }
+
   /** The cortex data key, for the encrypted-at-rest stores whose encode/decode
    *  lives in their own module (mirrors how mcp-audit.ts / healing-journal.ts
    *  take `dataKey` directly). The host owns key + filesystem wiring; the module
@@ -6258,8 +6268,20 @@ export class GraphnosisHost {
       // Captured before the tombstone rewrite so a refused delete can be rolled
       // back to the user's text rather than left reading `__gn-forgotten:…`.
       const originalContent = this.opts.adapter.getFullNodeContent(g.handle, nodeId);
-      // Capture the content preview BEFORE soft-deleting so the activity log can show it.
-      const contentPreview = this.opts.adapter.inspectNodes(g.handle).find(n => n.id === nodeId)?.contentPreview;
+      // Degenerate-case fallback for the op-log emit below, captured HERE —
+      // before the tombstone rewrite — because reading it afterwards would
+      // return `__gn-forgotten:…` rather than the user's text.
+      //
+      // Guarded on the empty case rather than computed unconditionally:
+      // `inspectNodes` walks the entire node map and builds a 500-char preview
+      // string for EVERY node (graphnosis-impl.ts:940-954), so running it once
+      // per forgotten node was O(n²) — forgetting 100 nodes in the 8.8k-node
+      // skills engram cost ~880k record constructions. `getFullNodeContent`
+      // above is O(1) (graphnosis-impl.ts:1033) and now supplies the recovery
+      // text in every normal case, so this only runs when it came back empty.
+      const contentPreview = originalContent && originalContent.length > 0
+        ? undefined
+        : this.opts.adapter.inspectNodes(g.handle).find(n => n.id === nodeId)?.contentPreview;
       // ── Dedup-table release pass ────────────────────────────────────────
       // Rewrite the node's content to a unique tombstone BEFORE soft-deleting.
       // The SDK keeps a content-hash dedup table covering EVERY node — even
@@ -6325,13 +6347,54 @@ export class GraphnosisHost {
       }
       deletedNodeIds.push(nodeId);
       if (!opts?.skipOplogEmit) {
+        // `before.preview` is the ONLY surviving copy of a graph-only node's
+        // text. `isOplogRecoveryAnchor` (oplog-retention.ts:86) pins exactly
+        // these events against age-based compaction *because* of that.
+        //
+        // It used to carry `contentPreview`, which `graphnosis-impl.ts:954`
+        // caps at `slice(0, 497) + '…'`. So every forgotten node over 500
+        // characters came back from Recover permanently short — and
+        // `skill-recover.ts:38` documented that as expected behaviour
+        // ("faithful for any node under 500 characters … and TRUNCATED
+        // beyond that") rather than as the defect it is. Same shape as the
+        // moveSource incident: a preview standing in for a durable write.
+        //
+        // `originalContent` is the full text, already in scope from :6270
+        // where it was captured for the rollback path — no extra read. The
+        // cost is bytes on the >500-char tail of a deliberately narrow event
+        // class (node-level forget emits no preview at all and is not
+        // retained), and it buys back the entire point of pinning them: a
+        // faithful restore rather than a truncated one.
+        //
+        // Empty content falls through to the preview so the `length > 0`
+        // anchor test in oplog-retention.ts keeps behaving as before.
+        const recoveryText =
+          originalContent && originalContent.length > 0 ? originalContent : contentPreview;
         this.oplogWriter.emit({
           graphId,
           op: 'deleteNode',
           target: { kind: 'node', id: nodeId },
-          before: { sourceId, preview: contentPreview, ...forgetTrigAttr },
+          before: { sourceId, preview: recoveryText, ...forgetTrigAttr },
         });
       }
+    }
+    // ── Confirm the recovery copy is ON DISK before anyone is told it exists ──
+    //
+    // `emit()` is fire-and-forget: it calls `void this.flush()`, and `flush()`
+    // splices events OUT of the in-memory buffer BEFORE the `appendFile` that
+    // persists them, inside a `try/finally` with no `catch`. A rejected write
+    // therefore loses those events silently — the only handler is a process-wide
+    // `unhandledRejection` listener that logs and continues.
+    //
+    // That was survivable while `before.preview` was a 500-char preview of text
+    // the `.gai` still held. It is not survivable now: the tombstone rewrite and
+    // delete above have already destroyed the graph copy, so these events ARE
+    // the memory. Awaiting one flush per forget — not per node — turns a silent
+    // loss into a rejected promise the caller can see, and means
+    // `compliance.ts`'s retention purge cannot stamp `purged: true` on a source
+    // whose last copy never reached disk.
+    if (!opts?.skipOplogEmit && deletedNodeIds.length > 0) {
+      await this.oplogWriter.flush();
     }
     // ── Partial forget: put the source back around what survived ───────────
     //
@@ -6606,14 +6669,47 @@ export class GraphnosisHost {
       if (blob) {
         input = { kind: blob.header.docKind, content: blob.content, sourceRef: blob.header.ref };
       } else {
-        const allNodes = this.listNodes(fromGraphId) as Array<{ id: string; text?: string; contentPreview?: string }>;
-        const nodeTexts = allNodes
-          .filter((n) => this.getNodeSource(fromGraphId, n.id) === sourceId)
-          .map((n) => n.text ?? n.contentPreview ?? '')
-          .filter(Boolean);
+        // Reconstruct from FULL node content, never from the preview.
+        //
+        // This read used to be `n.text ?? n.contentPreview ?? ''` over
+        // `listNodes()`. `listNodes` returns `inspectNodes` output, which has no
+        // `text` field at all — the JSDoc on `getFullNodeContent` two thousand
+        // lines up says so outright: "the general listNodes path returns
+        // contentPreview (capped at 500 chars) which drops the tail of long
+        // nodes". So the first operand was ALWAYS undefined and the fallback was
+        // the only branch that ever ran. The `text?: string` in the inline cast
+        // described a property that does not exist, which is what made the line
+        // read as "full text, preview as backup".
+        //
+        // The next statement is `forgetSource`. So every move of a blob-less
+        // source silently truncated each node to 500 characters and then deleted
+        // the original — unrecoverable, no error, no warning. Same defect as the
+        // reinforceNode incident: a preview fed into a durable write.
+        //
+        // Iterating `rec.nodeIds` rather than filtering every node in the graph
+        // also preserves the source's own node ORDER, which the previous scan
+        // left to `listNodes` ordering.
+        const nodeTexts: string[] = [];
+        const truncated: string[] = [];
+        for (const nodeId of rec.nodeIds) {
+          const full = this.getFullNodeContent(fromGraphId, nodeId);
+          if (!full) continue; // node already gone (soft-deleted) — skip, don't fabricate
+          if (full.endsWith('…')) truncated.push(nodeId);
+          nodeTexts.push(full);
+        }
         if (!nodeTexts.length) {
           throw new Error(
             `Cannot move source ${sourceId} (${rec.kind}): no cached content and no recoverable node text available.`,
+          );
+        }
+        // Refuse rather than launder. If content is ALREADY truncated, moving it
+        // would make that permanent by deleting the origin — better to stop with
+        // the source still intact and say which nodes are affected.
+        if (truncated.length) {
+          throw new Error(
+            `Cannot move source ${sourceId} (${rec.kind}): ${truncated.length} node(s) already hold ` +
+            `truncated content (${truncated.slice(0, 3).join(', ')}${truncated.length > 3 ? ', …' : ''}). ` +
+            `Moving would delete the original and make the truncation permanent. The source has been left untouched.`,
           );
         }
         input = { kind: 'markdown', content: nodeTexts.join('\n\n'), sourceRef: rec.ref };

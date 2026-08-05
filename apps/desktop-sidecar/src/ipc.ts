@@ -18,6 +18,16 @@ import { ingestBundledSkillDemos } from './skill-demos-ingest.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { broadcastOplogCompacted } from './sidecar-idle-maintenance.js';
+import {
+  measureOplogHealth,
+  describeOplogHealth,
+  archiveOplogFiles,
+  listOplogArchives,
+  restoreOplogArchive,
+  readOplogHealthState,
+  writeOplogHealthState,
+  OPLOG_PROMPT_SNOOZE_MS,
+} from './oplog-health.js';
 import { dbg } from './log-redact.js';
 import { logIpcMethodError, logThrottled } from './log-rate-limit.js';
 import { enqueueBackgroundLane, resolveDocsReingestDelayMs } from './background-lane-scheduler.js';
@@ -2845,6 +2855,22 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             host: z.enum(['127.0.0.1', '0.0.0.0']).optional(),
             token: z.string().optional(),
             allowedOrigins: z.array(z.string()).optional(),
+            // Operator-declared address other machines dial for this bridge.
+            //
+            // OMITTING IT HERE MADE THE FIELD UNSAVEABLE, SILENTLY. z.object()
+            // strips unknown keys, so a `publicUrl` sent by the settings UI was
+            // deleted at this boundary and `settings.update` still returned
+            // success. Every other layer was correct — the wizard sent it, the
+            // Rust command passes raw JSON, and the settings normalizer trims
+            // the trailing slash and a pasted `/mcp` — but nothing downstream
+            // ever received a value to normalize. Reopening the panel showed an
+            // empty box with no error anywhere.
+            //
+            // The cost was not cosmetic: `publicUrl` is what lets ANOTHER
+            // machine's Graphnosis configure its AI clients, and it is the
+            // documented fallback the "no Tailscale mapping was detected" error
+            // tells the user to set. Following that instruction did nothing.
+            publicUrl: z.string().optional(),
           }).optional(),
           httpUi: z.object({
             enabled: z.boolean(),
@@ -3001,6 +3027,59 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // of every source ever ingested (minus forgotten), with per-item status
       // (recoverable / file-missing / already-present / etc).
       return deps.host.planRecovery();
+    }
+    case 'recovery.oplogHealth': {
+      // Stat-only: readdir + stat + two small positional reads per file. Never
+      // decrypts, never materialises the log. Safe to call from a UI open.
+      const cortexDir = deps.host.getCortexDir();
+      const { currentDeviceId, pinnedDeviceIds } = deps.host.getOplogDeviceContext();
+      const report = await measureOplogHealth({ cortexDir, currentDeviceId, pinnedDeviceIds });
+      const state = await readOplogHealthState(cortexDir);
+      return { report, prompt: describeOplogHealth(report), snoozedUntil: state.snoozedUntil ?? null };
+    }
+    case 'recovery.archiveOplog': {
+      // The user-consented tier. Moves files aside into
+      // `oplog.archive-<timestamp>/`; nothing is deleted, and
+      // `recovery.restoreOplogArchive` puts them back. Omit `files` to archive
+      // everything, which is what the one-button prompt does and what the
+      // manual fix did by hand.
+      const { files } = z.object({
+        files: z.array(z.string()).min(1).optional(),
+      }).parse(params ?? {});
+      const cortexDir = deps.host.getCortexDir();
+      const { currentDeviceId, pinnedDeviceIds } = deps.host.getOplogDeviceContext();
+      const before = await measureOplogHealth({ cortexDir, currentDeviceId, pinnedDeviceIds });
+      const names = files ?? before.files.map((f) => f.name);
+      const result = await archiveOplogFiles(
+        cortexDir, names, 'user action: free up space', before.files,
+      );
+      const after = await measureOplogHealth({ cortexDir, currentDeviceId, pinnedDeviceIds });
+      deps.broadcastRaw({
+        kind: 'oplog.compacted',
+        name: 'oplog.compacted',
+        payload: {
+          at: Date.now(),
+          eventsRemoved: 0,
+          bytesBefore: before.oplogBytes,
+          bytesAfter: after.oplogBytes,
+          archiveName: result.archiveName,
+        },
+      });
+      return { ...result, bytesBefore: before.oplogBytes, bytesAfter: after.oplogBytes };
+    }
+    case 'recovery.oplogArchives': {
+      return { archives: await listOplogArchives(deps.host.getCortexDir()) };
+    }
+    case 'recovery.restoreOplogArchive': {
+      const { archiveName } = z.object({ archiveName: z.string().min(1) }).parse(params ?? {});
+      return restoreOplogArchive(deps.host.getCortexDir(), archiveName);
+    }
+    case 'recovery.snoozeOplogPrompt': {
+      const cortexDir = deps.host.getCortexDir();
+      const state = await readOplogHealthState(cortexDir);
+      const snoozedUntil = Date.now() + OPLOG_PROMPT_SNOOZE_MS;
+      await writeOplogHealthState(cortexDir, { ...state, snoozedUntil });
+      return { snoozedUntil };
     }
     case 'recovery.lkgStatus': {
       const candidates = await deps.host.listLkgRecoveryCandidates();

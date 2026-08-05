@@ -63,6 +63,14 @@ export class DeviceIdentity {
     return this.pinned.get(deviceId);
   }
 
+  /** Every device id we hold a pinned key for. A v2 op-log chunk signed by a
+   *  device NOT in this set is skipped before decryption by both readers
+   *  (oplog-safe-read.ts:220, SDK oplog/index.ts:293), so it contributes no
+   *  events — which is what makes its file safe to archive. Keys stay private. */
+  pinnedDeviceIds(): string[] {
+    return [...this.pinned.keys()];
+  }
+
   /** Persist the advanced seq so it survives restarts and never rewinds. */
   persistSeq = async (next: number): Promise<void> => {
     if (next <= this.nextSeqValue) return;

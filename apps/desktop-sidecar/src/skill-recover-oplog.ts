@@ -27,9 +27,12 @@
  *
  * What survives is one event per node:
  *   `op: 'deleteNode', before: { sourceId, preview }`
- * where `preview` was captured BEFORE the tombstone rewrite. That is
- * `contentPreview`, capped at 500 characters by the adapter — so recovery is
- * exact for anything shorter and truncated beyond it.
+ * where `preview` was captured BEFORE the tombstone rewrite.
+ *
+ * From 1.35.0 that field carries the node's FULL content, so recovery is exact
+ * at any length. Events from earlier builds carry `contentPreview`, capped at
+ * 497 characters plus an ellipsis — exact below 500, irrecoverably truncated
+ * above it. The trailing ellipsis is how the two are told apart at read time.
  */
 
 /** The tombstone forgetSource writes over a node's content before deleting it. */
@@ -46,7 +49,11 @@ export interface ForgetTrailEvent {
 export interface OplogRecovery {
   /** Recovered node texts, in source order. */
   texts: string[];
-  /** How many of them hit the 500-char preview cap and came back truncated. */
+  /**
+   * How many came back truncated — i.e. were written by a pre-1.35.0 build that
+   * stored `contentPreview` rather than full content, and hit its 497-char cap.
+   * Always 0 for anything forgotten by 1.35.0 or later.
+   */
   truncated: number;
   /** The engram the forget trail was found in — i.e. where the skill came from. */
   fromGraphId?: string;
@@ -81,12 +88,65 @@ export function recoverFromForgetTrail(
     if (!preview || seen.has(preview)) continue;
     // Defensive: never resurrect a tombstone as if it were user content.
     if (TOMBSTONE_RE.test(preview)) continue;
+
+    // ── Cross-version dedup ────────────────────────────────────────────────
+    // `makeSourceId` is deterministic on (kind, ref) — `host.ts:5254`, stated
+    // again at `file-watcher.ts:250` — so a watched file forgotten under a
+    // pre-1.35.0 build and again under this one keeps the SAME sourceId, and
+    // one trail can hold BOTH shapes for the same node: the old capped
+    // `S.slice(0,497)+'…'` and the new full `S`. They are different strings,
+    // so exact-match `seen` lets both through and `restoreSkillNodes` inserts
+    // the node TWICE — a duplicate that did not exist before full content was
+    // stored, because two capped events used to collapse into one.
+    //
+    // Resolve by PREFIX, not by cap detection. Deliberately independent of
+    // `isCapped`: line 87 calls `.trim()`, which strips leading whitespace and
+    // so can shorten a capped entry below its exact 498-char shape. A dedup
+    // that depended on recognising the cap would then false-negative and let
+    // the duplicate through — the failure this guard exists to prevent.
+    const stem = preview.endsWith('…') ? preview.slice(0, -1) : preview;
+    // Something already kept extends this entry: it adds nothing.
+    if (texts.some((t) => t.startsWith(stem))) continue;
+    // This entry extends something already kept: supersede it.
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const prior = texts[i]!;
+      if (!prior.endsWith('…')) continue;
+      if (preview.startsWith(prior.slice(0, -1))) {
+        texts.splice(i, 1);
+        if (isCapped(prior)) truncated--;
+      }
+    }
+
     seen.add(preview);
-    // The adapter caps contentPreview at 500 chars and marks the cut with '…'.
-    if (preview.endsWith('…')) truncated++;
+    if (isCapped(preview)) truncated++;
     texts.push(preview);
     if (fromGraphId === undefined && ev.graphId !== undefined) fromGraphId = ev.graphId;
   }
 
   return { texts, truncated, ...(fromGraphId !== undefined ? { fromGraphId } : {}) };
+}
+
+/**
+ * True when this entry looks like it was written by a pre-1.35.0 build and hit
+ * the preview cap — i.e. text is missing.
+ *
+ * DELIBERATELY LOOSE, and it stays loose. A real capped preview is exactly 498
+ * characters (`graphnosis-impl.ts:954` is `slice(0, 497) + '…'`, and U+2026 is
+ * a single UTF-16 unit), so an exact length test looks more precise. It is the
+ * wrong trade, because the two errors are not symmetric:
+ *
+ *   - False POSITIVE — content that legitimately ends in '…' gets counted.
+ *     The user sees one spurious line in a warning. Cosmetic.
+ *   - False NEGATIVE — a genuinely capped entry goes uncounted, and
+ *     `skill-recover.ts` then prints "every node came back whole" over real,
+ *     unrecoverable loss. That is the failure class this whole change exists
+ *     to remove: a success signal and a silent-loss signal sharing one value.
+ *
+ * An exact-498 test false-negatives for real: line 87 calls `.trim()`, which
+ * strips leading whitespace and shortens the string below 498. So the loose
+ * test is the safe one. Dedup does NOT rely on this function — it works on
+ * prefixes above, precisely so correctness never depends on cap detection.
+ */
+function isCapped(text: string): boolean {
+  return text.endsWith('…');
 }

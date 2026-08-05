@@ -505,6 +505,7 @@ const SSE_TO_TAURI: Record<string, string> = {
   'reingest.progress':            'graphnosis://reingest-progress',
   'quarantine-recovered':         'graphnosis://cortex-recovered-from-quarantine',
   'oplog.compacted':              'graphnosis://oplog-compacted',
+  'oplog.health':                 'graphnosis://oplog-health',
   'engram-budget-warning':        'graphnosis://mcp-session-budget-warning',
   'ghampus.message':              'graphnosis://ghampus-message',
   'ghampus.thinking':             'graphnosis://ghampus-thinking',

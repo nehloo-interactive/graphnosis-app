@@ -130,7 +130,24 @@ impl SidecarHandle {
         self.raw_pid
     }
 
-    pub async fn shutdown(mut self) -> Result<()> {
+    /// Shut down with the default 45 s grace period — the right budget when the
+    /// caller can afford to wait (an explicit lock/relock, a cortex switch).
+    pub async fn shutdown(self) -> Result<()> {
+        self.shutdown_within(Duration::from_secs(45)).await
+    }
+
+    /// Shut down with a caller-chosen grace period.
+    ///
+    /// WHY THIS IS A PARAMETER AND NOT A CONSTANT. The 45 s default exists for a
+    /// real reason recorded below: a Purge re-ingests every live source
+    /// sequentially and can genuinely need 30 s+. But app QUIT cannot spend 45 s
+    /// — macOS gives an app roughly five seconds after `applicationWillTerminate`
+    /// before force-quitting it. Waiting the full grace on the quit path would
+    /// beachball the app, get it killed mid-wait, and orphan the very child the
+    /// wait was meant to reap. The quit path therefore passes a few seconds and
+    /// accepts SIGKILL for the rare mid-Purge quit; the SIGKILL fallback and the
+    /// lockfile cleanup below already handle that case.
+    pub async fn shutdown_within(mut self, grace: Duration) -> Result<()> {
         // Remote placeholder: no local process to signal. Nothing to flush or
         // kill; the remote sidecar owns its own lifecycle. Return early so the
         // lockfile/socket cleanup below (keyed on a sentinel path) is skipped.
@@ -148,13 +165,13 @@ impl SidecarHandle {
                 extern "C" { fn kill(pid: i32, sig: i32) -> i32; }
                 unsafe { kill(pid as i32, 15); }
             }
-            // Wait up to 45 s for the sidecar's graceful-shutdown path to
-            // complete (flush graphs, release lock, exit). The default was 3 s,
-            // but a Purge operation re-ingests every live source sequentially —
-            // on a large cortex that can take 30+ seconds. Killing too soon
-            // leaves a zombie holding port 3457 and the events socket, causing
+            // Wait `grace` for the sidecar's graceful-shutdown path to complete
+            // (flush graphs, release lock, exit). The default was 3 s, but a
+            // Purge operation re-ingests every live source sequentially — on a
+            // large cortex that can take 30+ seconds. Killing too soon leaves a
+            // zombie holding port 3457 and the events socket, causing
             // EADDRINUSE when the next unlock spawns a fresh sidecar.
-            let _ = tokio::time::timeout(Duration::from_secs(45), child.wait()).await;
+            let _ = tokio::time::timeout(grace, child.wait()).await;
         }
         // SIGKILL fallback: always on Windows, after timeout on Unix. kill()
         // on an already-exited child is a no-op (returns an ignorable error).

@@ -2335,7 +2335,8 @@ export async function restoreSkillNodes(
  * Snapshot a skill's current body before an operation that can destroy it.
  *
  * Why snapshots rather than recording pre-edit content in the op-log:
- *   - uncapped. The op-log's `deleteNode.before.preview` is capped at 500
+ *   - uncapped. The op-log's `deleteNode.before.preview` was capped at 497 by
+ *     builds before 1.35.0 and carries full content from 1.35.0 on; it was capped at 500
  *     chars by the adapter, so a long step comes back truncated.
  *   - restorable by the USER from the Skills History panel, not only by a CLI
  *     run against a multi-GB log.

@@ -390,6 +390,39 @@ fn build_node_binary(binary_name: &str, entry_relative: &str) {
     if bun_target.starts_with("bun-windows-") {
         bun_args.push("--windows-hide-console".to_string());
     }
+
+    // Exclude the native tokenizer builds for platforms we are not compiling for.
+    //
+    // `@anush008/tokenizers` (pulled in by fastembed) declares one optional
+    // dependency per platform. pnpm creates a symlink for EVERY one of them and
+    // downloads only the host's, so on macOS the linux-x64 and win32-x64 links
+    // dangle. `bun --compile` resolves statically and follows all three, then
+    // fails on the two that point at nothing:
+    //
+    //   error: File not found ".../@anush008/tokenizers-linux-x64-gnu"
+    //   error: File not found ".../@anush008/tokenizers-win32-x64-msvc"
+    //
+    // The failure is emitted as a cargo warning, so the Rust build still reports
+    // success while the sidecar binary silently stays at whatever the last good
+    // compile produced. Editing sidecar TypeScript then appears to do nothing —
+    // the change never reaches the binary and nothing says so.
+    //
+    // A macOS binary has no use for Linux and Windows .node files anyway, so
+    // marking the non-host variants external is both the fix and the correct
+    // shape. Derived from `bun_target` rather than hardcoded, so a Linux or
+    // Windows build excludes the right two.
+    const TOKENIZER_VARIANTS: &[(&str, &str)] = &[
+        ("bun-darwin", "@anush008/tokenizers-darwin-universal"),
+        ("bun-linux", "@anush008/tokenizers-linux-x64-gnu"),
+        ("bun-windows", "@anush008/tokenizers-win32-x64-msvc"),
+    ];
+    for (platform_prefix, pkg) in TOKENIZER_VARIANTS {
+        if !bun_target.starts_with(platform_prefix) {
+            bun_args.push("--external".to_string());
+            bun_args.push((*pkg).to_string());
+        }
+    }
+
     bun_args.push("--outfile".to_string());
 
     let status = Command::new(&bun)

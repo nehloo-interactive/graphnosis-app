@@ -257,6 +257,14 @@ interface ClaudeConfigResult {
   already_configured: boolean;
   created_file: boolean;
   preserved_servers: string[];
+  /**
+   * Non-fatal note about what was written. Set when the remote endpoint we
+   * emitted was probed and answered as something other than an MCP listener:
+   * the entry is still written (we emit the connection this app is using), but
+   * the modal must not claim unqualified success. `null` when there's nothing
+   * to flag, and absent on older backends.
+   */
+  warning?: string | null;
 }
 
 /** Identifiers accepted by the Rust `configure_mcp_client` / `configure_hermes_client` commands. */
@@ -1264,6 +1272,45 @@ function showError(msg: string | null): void {
   const msgSpan = document.createElement('span');
   msgSpan.className = 'error-msg-text';
   msgSpan.textContent = msg;
+  // Copy, so an error can actually be reported.
+  //
+  // The messages that most need reporting are the long ones — an engram that
+  // will not open arrives with a cause, a stack and an analyzer id, wrapped
+  // across a narrow banner. Selecting that by hand is awkward and retyping it
+  // is not something anyone does, so the detail that would identify the bug
+  // never reaches us.
+  //
+  // IT COPIES THE SANITIZED TEXT, NOT THE RAW ERROR. `sanitizeErrorForDisplay`
+  // above strips absolute filesystem paths, which exists because a banner once
+  // put the full `…/sidecar.sock` path on screen during a recorded demo. A copy
+  // button that reached past it would quietly undo that, and the user pasting
+  // into a public issue would never know. What you see is what you copy.
+  const copiedText = msg;
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'error-copy-btn';
+  copyBtn.title = 'Copy this message';
+  copyBtn.setAttribute('aria-label', 'Copy error message');
+  copyBtn.textContent = 'Copy';
+  copyBtn.addEventListener('click', () => {
+    // navigator.clipboard works inside Tauri webviews on all platforms.
+    void navigator.clipboard.writeText(copiedText).then(
+      () => {
+        copyBtn.textContent = 'Copied';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1600);
+      },
+      () => {
+        // Refused (rare). Select the text so ⌘C still works rather than
+        // leaving a button that silently does nothing.
+        const range = document.createRange();
+        range.selectNodeContents(msgSpan);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        copyBtn.textContent = 'Press ⌘C';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2400);
+      },
+    );
+  });
   const dismissBtn = document.createElement('button');
   dismissBtn.className = 'error-dismiss-btn';
   dismissBtn.title = 'Dismiss';
@@ -1271,6 +1318,7 @@ function showError(msg: string | null): void {
   dismissBtn.textContent = '×';
   dismissBtn.addEventListener('click', () => showError(null));
   active.appendChild(msgSpan);
+  active.appendChild(copyBtn);
   active.appendChild(dismissBtn);
   active.classList.remove('hidden');
 }
@@ -5483,6 +5531,78 @@ function renderRestorePointsSection(points: RestorePointItem[]): string {
   return html;
 }
 
+/**
+ * Archived activity logs — the undo half of the space-freeing action.
+ *
+ * Without this section the "you can put it back at any time" in the confirm
+ * dialog would be a lie the app could not honour, and the archive folders
+ * would sit on disk invisible to the app that made them (which is exactly what
+ * happened to the hand-made `oplog.stale/` directory: no shipped code reads or
+ * writes that name, so nothing could ever restore it).
+ */
+interface OplogArchiveItem {
+  name: string;
+  at: number;
+  bytes: number;
+  fileCount: number;
+  reason: string;
+}
+
+function renderOplogArchivesSection(archives: OplogArchiveItem[]): string {
+  if (archives.length === 0) return '';
+  let html = `<div class="recovery-summary" style="margin-bottom: 16px; border: 1px solid var(--border, #333); border-radius: 8px; padding: 12px;">
+    <strong>Archived activity logs</strong>
+    <p class="subtitle" style="margin-top: 6px;">
+      Space freed by moving Graphnosis's own activity record aside. Your memories were
+      never part of this. Nothing was deleted — the files are still on disk next to your
+      cortex, and restoring puts them back exactly as they were.
+    </p>`;
+  for (const a of archives) {
+    const when = a.at ? new Date(a.at).toLocaleString() : 'time unknown';
+    html += `<div class="recovery-item recoverable" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;">
+      <div style="flex:1;min-width:200px;">
+        <strong>${escape(a.name)}</strong>
+        <div class="meta">${escape(when)} · ${a.fileCount} file(s) · ${formatRecoveryBytes(a.bytes)}</div>
+      </div>
+      <button type="button" class="btn-restore-oplog-archive" data-archive="${escape(a.name)}">Restore</button>
+    </div>`;
+  }
+  html += '</div><hr style="margin: 16px 0; border: 0; border-top: 1px solid var(--border, #333);" />';
+  return html;
+}
+
+function wireOplogArchiveButtons(): void {
+  els.recoveryBody.querySelectorAll<HTMLButtonElement>('.btn-restore-oplog-archive').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const archiveName = btn.dataset.archive ?? '';
+      if (!archiveName) return;
+      const ok = await gConfirm(
+        'Restore this activity log?',
+        'The archived files move back into your cortex. Disk use goes back up by the '
+        + 'amount that was freed, and Graphnosis may feel slower again on a large log.',
+      );
+      if (!ok) return;
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Restoring…';
+      try {
+        const r = await ipcCall<{ restored: string[]; skipped: string[] }>(
+          'recovery.restoreOplogArchive', { archiveName },
+        );
+        const skipped = r.skipped.length > 0
+          ? ` ${r.skipped.length} file(s) were left in the archive because a newer file of the same name is already in use.`
+          : '';
+        await gAlert('Restored', `Put back ${r.restored.length} file(s).${skipped}`);
+        void openRecoveryPanel();
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = orig ?? 'Restore';
+        showError(String(e));
+      }
+    });
+  });
+}
+
 function wireRestorePointButtons(): void {
   els.recoveryBody.querySelectorAll<HTMLButtonElement>('.btn-restore-point').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -5564,6 +5684,97 @@ function wireLkgPromoteButtons(): void {
       }
     });
   });
+}
+
+/**
+ * The op-log growth prompt.
+ *
+ * The sidecar detects the condition and archives what it can on its own; this
+ * is the part it cannot decide alone. One sentence, one button, and no jargon:
+ * the user does not have to know what an op-log is to stop their disk filling
+ * up. Same banner shape as the engram recovery notice above, so it lands in a
+ * place the app has already taught.
+ *
+ * Dismiss = snooze for a week, not "never" — the disk does not stop filling
+ * because the banner was closed.
+ */
+interface OplogHealthPayload {
+  at: number;
+  title: string;
+  body: string;
+  actionLabel: string;
+  bytes: number;
+  oplogBytes: number;
+  graphsBytes: number;
+  reasons: string[];
+}
+
+function ensureOplogHealthBanner(): HTMLElement {
+  let el = document.getElementById('oplog-health-banner');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'oplog-health-banner';
+  el.className = 'studio-banner hidden';
+  el.style.cssText = 'background: color-mix(in srgb, var(--warn, #b8860b) 18%, transparent); border-bottom: 1px solid var(--warn, #b8860b);';
+  el.innerHTML = `
+    <span class="studio-banner-text"></span>
+    <button type="button" class="studio-banner-close" aria-label="Not now">×</button>
+  `;
+  const appMain = document.getElementById('app-main') ?? document.querySelector('.app-main');
+  if (appMain?.firstChild) appMain.insertBefore(el, appMain.firstChild);
+  else document.body.prepend(el);
+  el.querySelector('.studio-banner-close')?.addEventListener('click', () => {
+    el?.classList.add('hidden');
+    void ipcCall('recovery.snoozeOplogPrompt', {}).catch(() => { /* snooze is best-effort */ });
+  });
+  return el;
+}
+
+function showOplogHealthBanner(p: OplogHealthPayload): void {
+  const el = ensureOplogHealthBanner();
+  const text = el.querySelector('.studio-banner-text');
+  if (!text) return;
+  text.innerHTML =
+    `<strong>${escape(p.title)}</strong> ${escape(p.body)}`
+    + `<button type="button" class="g-btn primary" style="margin-left:8px;font-size:14px;padding:2px 10px;">${escape(p.actionLabel)}</button>`;
+  const btn = text.querySelector('button');
+  btn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void runOplogArchive(btn, p);
+  });
+  el.classList.remove('hidden');
+}
+
+async function runOplogArchive(btn: HTMLButtonElement | null, p: OplogHealthPayload): Promise<void> {
+  // Plain-language confirm in the register of runPurge's — names what happens
+  // to the files, and that it is undoable. Deliberately NOT the typed-phrase
+  // confirm used for quarantine deletes: nothing here is destroyed, the files
+  // are renamed into a folder beside the cortex and can be put back.
+  const ok = await gConfirm(
+    p.actionLabel + '?',
+    'Graphnosis keeps a detailed record of everything it has ever done. On this cortex '
+    + 'that record has grown larger than the memories it protects, which is why the app '
+    + 'feels slow and the disk is filling up.\n\n'
+    + 'Your memories, engrams and skills are NOT touched. The record itself is moved into '
+    + 'a dated folder next to your cortex, so nothing is deleted and you can put it back '
+    + 'at any time from Recovery.',
+  );
+  if (!ok) return;
+  const orig = btn?.textContent ?? null;
+  if (btn) { btn.disabled = true; btn.textContent = 'Freeing up…'; }
+  try {
+    const r = await ipcCall<{ archiveName: string; movedFiles: string[]; bytesBefore: number; bytesAfter: number }>(
+      'recovery.archiveOplog', {},
+    );
+    document.getElementById('oplog-health-banner')?.classList.add('hidden');
+    const freed = r.bytesBefore - r.bytesAfter;
+    showTransientStatusBar(
+      `Freed ${formatRecoveryBytes(freed)}. Moved to ${r.archiveName} — restore it any time from Recovery.`,
+    );
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = orig ?? p.actionLabel; }
+    void gAlert('Could not free up space', String(e));
+  }
 }
 
 /** Persistent banner when an engram still needs manual .lkg recovery. */
@@ -5658,10 +5869,11 @@ async function openRecoveryPanel(): Promise<void> {
   els.recoveryBody.innerHTML = '<p class="subtitle">Loading…</p>';
   els.btnRecoveryApply.classList.add('hidden');
   try {
-    const [lkgResult, planResult, pointsResult] = await Promise.allSettled([
+    const [lkgResult, planResult, pointsResult, archivesResult] = await Promise.allSettled([
       ipcCall<{ candidates: LkgRecoveryCandidate[] }>('recovery.lkgStatus', {}),
       invoke<RecoveryPlan>('recovery_plan'),
       ipcCall<{ points: RestorePointItem[] }>('recovery.restorePoints', {}),
+      ipcCall<{ archives: OplogArchiveItem[] }>('recovery.oplogArchives', {}),
     ]);
     const candidates = lkgResult.status === 'fulfilled'
       ? (lkgResult.value.candidates ?? [])
@@ -5674,8 +5886,13 @@ async function openRecoveryPanel(): Promise<void> {
       : [];
     const restoreHtml = renderRestorePointsSection(points);
     const lkgHtml = renderLkgRestoreSection(candidates);
+    // An archive is only ever created by an explicit space-freeing action, so
+    // its presence means the user did something they may want to undo.
+    const archivesHtml = renderOplogArchivesSection(
+      archivesResult.status === 'fulfilled' ? (archivesResult.value.archives ?? []) : [],
+    );
     const plan = planResult.status === 'fulfilled' ? planResult.value : null;
-    if (!plan && lkgHtml === '' && restoreHtml === '') {
+    if (!plan && lkgHtml === '' && restoreHtml === '' && archivesHtml === '') {
       const err = planResult.status === 'rejected' ? String(planResult.reason) : 'Unknown error';
       const sidecarUnreachable = /connect to sidecar|ECONNREFUSED|ENOENT.*sock|sidecar didn'?t respond/i.test(err);
       if (sidecarUnreachable) {
@@ -5692,18 +5909,27 @@ async function openRecoveryPanel(): Promise<void> {
     if (!plan || plan.total === 0) {
       // Restore points first: the most specific undo available.
       els.recoveryBody.innerHTML =
-        restoreHtml + lkgHtml || '<p class="subtitle">Nothing to recover.</p>';
+        restoreHtml + lkgHtml + archivesHtml || '<p class="subtitle">Nothing to recover.</p>';
       els.recoverySubtitle.textContent = restoreHtml
         ? 'Undo a recent operation, or promote a backup.'
         : lkgHtml
           ? 'Promote a .lkg backup or use op-log recovery when sources are available.'
-          : 'Nothing to recover.';
+          : archivesHtml
+            ? 'Put back an archived activity log.'
+            : 'Nothing to recover.';
       if (restoreHtml) wireRestorePointButtons();
       if (lkgHtml) wireLkgPromoteButtons();
+      if (archivesHtml) wireOplogArchiveButtons();
       return;
     }
     currentRecoveryPlan = plan;
     renderPlan(plan);
+    // Appended, not prepended: the archives list is an undo for a maintenance
+    // action, less urgent than either recovery section above it.
+    if (archivesHtml) {
+      els.recoveryBody.insertAdjacentHTML('beforeend', archivesHtml);
+      wireOplogArchiveButtons();
+    }
     if (lkgHtml) {
       els.recoveryBody.insertAdjacentHTML('afterbegin', lkgHtml);
       wireLkgPromoteButtons();
@@ -6279,8 +6505,12 @@ els.btnClaudeApply.addEventListener('click', async () => {
       // If we can't read settings (cortex just locked, etc.) skip the line
       // rather than block the success message.
     }
+    const warningLine = r.warning
+      ? `<p style="margin-top: 8px;" class="error">${escape(r.warning)}</p>`
+      : '';
     els.claudePreview.innerHTML = `
       <p><strong>${escape(headline)}</strong></p>
+      ${warningLine}
       <p style="margin-top: 6px;">${preservedLine}</p>
       ${routingLine}
       <p style="margin-top: 10px; font-size: 15px; color: var(--fg-dim);">
@@ -12167,7 +12397,7 @@ function renderDetailPane(): void {
   // display. Save sends the raw text back through node.directEdit.
   const isEditing = graphnosisEditingId === node.id;
   const contentBlock = isEditing
-    ? `<textarea class="g-detail-edit-textarea" id="g-detail-edit" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${escape(node.contentPreview)}</textarea>
+    ? `<textarea class="g-detail-edit-textarea" id="g-detail-edit" data-preview-len="${node.contentPreview.length}" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${escape(node.contentPreview)}</textarea>
        <div class="g-detail-actions">
          <button class="primary" id="btn-detail-save">Save correction</button>
          <button id="btn-detail-cancel-edit">Cancel</button>
@@ -12382,11 +12612,52 @@ function renderDetailPane(): void {
     });
   });
 
-  // Auto-focus the textarea when entering edit mode.
+  // Auto-focus the textarea when entering edit mode, and replace its seeded
+  // PREVIEW with the node's full stored content.
+  //
+  // The markup seeds from `node.contentPreview`, which is capped at 500 chars —
+  // fine for the read view, destructive for an editor, because whatever sits in
+  // this box is what `saveInlineEdit` writes back as the entire node. Editing a
+  // long memory therefore used to delete everything past the cap.
+  //
+  // `source.listNodes` already returns full content (the sidecar builds it via
+  // host.getFullNodeContent) and is already reachable from the renderer — the
+  // skills editor uses exactly this path. So there is nothing new to expose;
+  // this view simply was not asking.
+  //
+  // Until the fetch lands, `fullLoaded` stays unset and the save guard refuses,
+  // so the window between opening the editor and the content arriving cannot
+  // lose data either.
   if (isEditing) {
     const ta = document.getElementById('g-detail-edit') as HTMLTextAreaElement | null;
     ta?.focus();
     ta?.setSelectionRange(ta.value.length, ta.value.length);
+
+    const editingId = graphnosisEditingId;
+    const node = graphnosisAllNodes.find((n) => n.id === editingId);
+    if (ta && editingId && node?.sourceId && atlasActiveGraph) {
+      void ipcCall<{ nodes?: Array<{ id: string; content?: string }> }>(
+        'source.listNodes',
+        { graphId: atlasActiveGraph, sourceId: node.sourceId },
+      ).then((res) => {
+        // Bail if the user moved on while this was in flight — writing into a
+        // textarea that now belongs to a different node would be worse than the
+        // bug being fixed.
+        if (graphnosisEditingId !== editingId) return;
+        const live = document.getElementById('g-detail-edit') as HTMLTextAreaElement | null;
+        if (!live || live !== ta) return;
+        const full = res?.nodes?.find((n) => n.id === editingId)?.content;
+        if (typeof full !== 'string') return;
+        // Only replace if the user has not started typing — their edits win.
+        if (live.value === node.contentPreview) {
+          live.value = full;
+          live.setSelectionRange(full.length, full.length);
+        }
+        live.dataset['fullLoaded'] = '1';
+      }).catch(() => {
+        /* leave fullLoaded unset — the save guard refuses rather than truncating */
+      });
+    }
   }
 }
 
@@ -12562,6 +12833,38 @@ async function saveInlineEdit(): Promise<void> {
     void gAlert('Empty memory', 'Cannot save an empty memory. Use Forget if you want it gone.');
     return;
   }
+
+  // REFUSE TO SAVE A TRUNCATED BUFFER OVER A LONGER MEMORY.
+  //
+  // The textarea is seeded from `node.contentPreview`, which the sidecar caps at
+  // 500 characters. For any memory longer than that, the editor opened showing a
+  // PREFIX, and saving wrote that prefix back as the whole node — silently
+  // deleting the tail. Changing a single word in a long memory destroyed the
+  // rest of it, with no warning and nothing to undo from.
+  //
+  // The guard below compares what is about to be written against the node's FULL
+  // stored content. `truncatedFrom` is set by the render path when it seeds the
+  // textarea from a preview it knows is short; when set, we refuse rather than
+  // write. Refusing is the right failure: the memory stays intact, and the user
+  // is told why instead of discovering the loss later.
+  // `fullLoaded` is a POSITIVE assertion, set only after the full node content
+  // has actually been fetched and placed in the textarea. Absence means we do
+  // not know what we are about to overwrite, and the safe answer is to refuse.
+  // A preview comfortably under the 500-char cap cannot have lost anything, so
+  // that case stays editable even if the fetch failed — otherwise a transient
+  // IPC error would make every short memory read-only.
+  const PREVIEW_CAP = 500;
+  const previewLen = Number(ta.dataset['previewLen'] ?? '0');
+  if (ta.dataset['fullLoaded'] !== '1' && previewLen >= PREVIEW_CAP - 10) {
+    void gAlert(
+      'The full memory has not loaded yet',
+      'This memory is long enough that the editor may only be showing its first 500 characters. ' +
+      'Saving now could delete the rest, so nothing has been written. Close the editor and reopen ' +
+      'it once the full text appears.',
+    );
+    return;
+  }
+
   const node = graphnosisAllNodes.find((n) => n.id === nodeId);
   if (node && newContent === node.contentPreview.trim()) {
     // No-op; just exit edit mode.
@@ -15761,11 +16064,22 @@ interface OplogCompactedPayload {
   eventsAfter?: number;
   bytesBefore?: number;
   bytesAfter?: number;
+  /** Set when whole files were moved aside rather than events pruned. */
+  archiveName?: string;
 }
 void listen<OplogCompactedPayload>('graphnosis://oplog-compacted', (evt) => {
   const p = evt.payload;
   const n = p.eventsRemoved;
   const eventWord = n === 1 ? 'event' : 'events';
+  if (p.archiveName) {
+    // Whole-file archival (oplog-health.ts), not event-granularity compaction.
+    // Saying "0 events archived" here would be both wrong and alarming.
+    const freed = (p.bytesBefore ?? 0) - (p.bytesAfter ?? 0);
+    showTransientStatusBar(
+      `Cortex maintenance: freed ${formatRecoveryBytes(freed)} of activity log — kept in ${p.archiveName}, restorable from Recovery.`,
+    );
+    return;
+  }
   showTransientStatusBar(`Cortex maintenance: compacted audit log (${n.toLocaleString()} ${eventWord} archived)`);
   notifyOplogCompaction({
     at: p.at,
@@ -15775,6 +16089,10 @@ void listen<OplogCompactedPayload>('graphnosis://oplog-compacted', (evt) => {
     bytesBefore: p.bytesBefore,
     bytesAfter: p.bytesAfter,
   });
+});
+
+void listen<OplogHealthPayload>('graphnosis://oplog-health', (evt) => {
+  showOplogHealthBanner(evt.payload);
 });
 
 /** Debounce handle for the engrams-loading → skills-library refresh. */

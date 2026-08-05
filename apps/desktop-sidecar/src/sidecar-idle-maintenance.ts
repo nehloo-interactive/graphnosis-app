@@ -10,6 +10,16 @@ import type { BroadcastRawFn } from './events.js';
 import { isGhampusBusy } from './ghampus-busy.js';
 import { clientActiveWithin, CLIENT_QUIET_MS, isIngestActive } from './client-activity.js';
 import { dbg } from './log-redact.js';
+import {
+  measureOplogHealth,
+  archiveOplogFiles,
+  describeOplogHealth,
+  readOplogHealthState,
+  writeOplogHealthState,
+  shouldPrompt,
+  formatBytes,
+  type OplogHealthReport,
+} from './oplog-health.js';
 
 export interface SidecarIdleMaintenanceDeps {
   host: GraphnosisHost;
@@ -105,6 +115,27 @@ export class SidecarIdleMaintenance {
 
     this.inFlight = true;
     try {
+      // ── Op-log health, FIRST ────────────────────────────────────────────
+      // Deliberately above refreshAllCorrectionsFromOplog(). That call
+      // materialises the whole op-log (host.ts listOplogEvents), which on the
+      // measured pathology meant 24.37 GB resident with zero operations
+      // queued. A check placed after it pays the exact cost it exists to
+      // prevent — and on a cortex already too big to materialise, the tick
+      // dies before ever reaching the check.
+      const health = await this.checkOplogHealth();
+
+      // Materialising a known-oversized log is how the sidecar gets wedged.
+      // Skip the sweep until the user acts; the corrections it refreshes are
+      // a convenience, and a responsive app is not.
+      if (health?.oversized) {
+        this.lastRunAt = Date.now();
+        dbg(
+          `[sidecar-idle-maintenance] skipping corrections sweep — activity log is `
+          + `${formatBytes(health.oplogBytes)} (${health.reasons.join('+')}); awaiting user action`,
+        );
+        return { action: 'run', detail: 'oplog-oversized' };
+      }
+
       const { compaction } = await this.deps.host.refreshAllCorrectionsFromOplog();
       this.lastRunAt = Date.now();
       if (compaction.compacted) {
@@ -125,6 +156,86 @@ export class SidecarIdleMaintenance {
       return { action: 'skip', detail: 'error' };
     } finally {
       this.inFlight = false;
+    }
+  }
+
+  /**
+   * DETECT → AUTO-HEAL → ASK, in that order, on the stat-only path.
+   *
+   * Auto-heal is limited to files that are provably behaviour-neutral to move
+   * (see oplog-health.ts). Everything else is a question for the user, asked
+   * once and then snoozed — a prompt that reappears every 90 seconds is not a
+   * prompt, it is a fault.
+   *
+   * Public so unlock can run the same pass without waiting out the 5-minute
+   * boot deferral: the disk is already full by then.
+   */
+  async checkOplogHealth(): Promise<OplogHealthReport | null> {
+    const cortexDir = this.deps.cortexDir;
+    if (!cortexDir) return null;
+    try {
+      const { currentDeviceId, pinnedDeviceIds } = this.deps.host.getOplogDeviceContext();
+      let report = await measureOplogHealth({ cortexDir, currentDeviceId, pinnedDeviceIds });
+
+      // ── AUTO-HEAL ────────────────────────────────────────────────────────
+      // Unread-by-construction files. Archived without asking because moving
+      // them aside cannot change a single thing the app returns.
+      if (report.autoReclaimFiles.length > 0) {
+        const result = await archiveOplogFiles(
+          cortexDir, report.autoReclaimFiles,
+          'automatic: op-log files from devices with no pinned key (skipped unread by every reader)',
+          report.files,
+        );
+        if (result.movedFiles.length > 0) {
+          dbg(
+            `[sidecar-idle-maintenance] archived ${result.movedFiles.length} unreadable op-log `
+            + `file(s), ${formatBytes(result.bytes)} → ${result.archiveName}`,
+          );
+          this.deps.broadcastRaw?.({
+            kind: 'oplog.compacted',
+            name: 'oplog.compacted',
+            payload: {
+              at: Date.now(),
+              eventsRemoved: 0,
+              bytesBefore: report.oplogBytes,
+              bytesAfter: report.oplogBytes - result.bytes,
+              archiveName: result.archiveName,
+            },
+          });
+          const state = await readOplogHealthState(cortexDir);
+          await writeOplogHealthState(cortexDir, { ...state, lastAutoArchiveAt: Date.now() });
+          // Re-measure: the auto pass may have brought it back under threshold,
+          // in which case there is nothing to bother the user about.
+          report = await measureOplogHealth({ cortexDir, currentDeviceId, pinnedDeviceIds });
+        }
+      }
+
+      // ── ASK ──────────────────────────────────────────────────────────────
+      if (report.oversized) {
+        const state = await readOplogHealthState(cortexDir);
+        const prompt = describeOplogHealth(report);
+        if (prompt && shouldPrompt(state)) {
+          this.deps.broadcastRaw?.({
+            kind: 'oplog.health',
+            name: 'oplog.health',
+            payload: {
+              at: Date.now(),
+              title: prompt.title,
+              body: prompt.body,
+              actionLabel: prompt.actionLabel,
+              bytes: prompt.bytes,
+              oplogBytes: report.oplogBytes,
+              graphsBytes: report.graphsBytes,
+              reasons: report.reasons,
+            },
+          });
+          await writeOplogHealthState(cortexDir, { ...state, lastPromptAt: Date.now() });
+        }
+      }
+      return report;
+    } catch (e: unknown) {
+      console.error(`[sidecar-idle-maintenance] op-log health check failed: ${(e as Error).message}`);
+      return null;
     }
   }
 

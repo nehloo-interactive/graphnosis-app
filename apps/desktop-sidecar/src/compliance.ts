@@ -9,7 +9,7 @@
  * mutating ops. Obligation expiry uses `expiresAt` — never `validUntil`.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { crypto, oplog } from '@nehloo-interactive/graphnosis-secure-sync';
@@ -292,16 +292,54 @@ export async function buildSignedEvidencePack(
   return { pack: signedPack, manifestHash, signatures, detachedSig };
 }
 
+/** File extension for an export slice. `.enc` so the envelope is self-evident. */
+export const RETENTION_SLICE_EXT = '.json.enc';
+
+/**
+ * Write the pre-purge export slice, ENCRYPTED with the cortex data key.
+ *
+ * This slice is the last copy of content that is destroyed one statement later,
+ * and since it began carrying full node text rather than 200-char cuts, a
+ * retention purge was leaving the complete plaintext of every destroyed memory
+ * sitting in a plain `.json` file — the only unencrypted at-rest artifact in a
+ * cortex where `.gai` graphs (`host.save`), skill snapshots
+ * (`skill-snapshots.ts:111`) and the MCP audit ledger (`mcp-audit.ts:81`) are
+ * all sealed. Same key, same envelope as those, so it is readable exactly by
+ * whoever can already open the cortex.
+ *
+ * Mode 0600 inside a 0700 directory is kept as defence in depth, not as the
+ * protection: file modes do not survive a copy to a backup or a support bundle.
+ */
 async function writeRetentionExportSlice(
   cortexDir: string,
+  dataKey: Uint8Array,
   graphId: string,
   sourceId: string,
   slice: Record<string, unknown>,
 ): Promise<void> {
   const dir = path.join(cortexDir, 'compliance-exports', String(Date.now()));
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-  const target = path.join(dir, `${graphId}__${sourceId}.json`);
-  await fs.writeFile(target, JSON.stringify(slice, null, 2), { mode: 0o600 });
+  const target = path.join(dir, `${graphId}__${sourceId}${RETENTION_SLICE_EXT}`);
+  const plaintext = new TextEncoder().encode(JSON.stringify(slice, null, 2));
+  const ct = await crypto.encrypt(plaintext, dataKey, randomBytes(16));
+  await fs.writeFile(target, Buffer.from(ct), { mode: 0o600 });
+}
+
+/**
+ * Read one export slice back.
+ *
+ * Exists because encrypting a write-only artifact would make the destruction
+ * evidence unopenable, which is worse than the plaintext it replaced: the whole
+ * point of "export before purge" is that someone can later read what was
+ * destroyed. Before this, nothing in the repo read these files at all.
+ */
+export async function readRetentionExportSlice(
+  file: string,
+  dataKey: Uint8Array,
+): Promise<Record<string, unknown>> {
+  const blob = await fs.readFile(file);
+  const plaintext = await crypto.decrypt(new Uint8Array(blob), dataKey);
+  return JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, unknown>;
 }
 
 /**
@@ -460,12 +498,26 @@ export async function runRetentionPurge(
       }
 
       if (shouldExportBeforePurge(metadata, compliance)) {
-        const previews: Array<{ nodeId: string; preview?: string }> = [];
+        // This slice is the proof-of-content artifact a regulator reads AFTER
+        // the source has been destroyed, so it is the last copy and has to
+        // hold the content itself.
+        //
+        // It used to store `contentPreview.slice(0, 200)` — a 200-char cut of
+        // a value `graphnosis-impl.ts:954` has already capped at 497 — so
+        // "export before purge" was false for any node over 200 characters,
+        // and the shortfall was invisible because the very next statement
+        // (`forgetSource`) destroyed the only thing it could be compared
+        // against. `getFullNodeContent` is the correct reader; the same
+        // codebase already uses it for exports at `engram-pack.ts:190`.
+        //
+        // Reading each node directly also removes an O(n²) `listNodes()` call
+        // that ran once per node and scanned the whole engram each time.
+        const nodes: Array<{ nodeId: string; content?: string }> = [];
         for (const nodeId of src.nodeIds) {
-          const preview = host.listNodes(graphId).find((n) => n.id === nodeId)?.contentPreview;
-          previews.push({ nodeId, ...(preview ? { preview: preview.slice(0, 200) } : {}) });
+          const content = host.getFullNodeContent(graphId, nodeId);
+          nodes.push({ nodeId, ...(content ? { content } : {}) });
         }
-        await writeRetentionExportSlice(cortexDir, graphId, src.sourceId, {
+        await writeRetentionExportSlice(cortexDir, host.getCortexDataKey(), graphId, src.sourceId, {
           exportedAt: Date.now(),
           graphId,
           sourceId: src.sourceId,
@@ -473,7 +525,7 @@ export async function runRetentionPurge(
           kind: src.kind,
           ingestedAt: src.ingestedAt,
           nodeCount: src.nodeIds.length,
-          nodePreviews: previews,
+          nodes,
         });
         item.exported = true;
       }
