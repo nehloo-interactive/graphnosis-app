@@ -154,7 +154,15 @@
   --border-strong: rgba(15, 23, 42, 0.22);
   --accent:           #0891b2;   /* cyan-600 — used by buttons, links, focus, active tabs */
   --accent-soft:      #ecfeff;   /* cyan-50  — bg tint behind accented text */
-  --accent-contrast:  #ffffff;   /* text on cyan-600 fill */
+  --accent-contrast:  #ffffff;   /* text on an --accent-fill surface */
+  /* SELECTED-CONTROL SURFACES. `--accent` itself is not a safe text surface:
+     white on #0891b2 is only 3.68:1, below the 4.5:1 AA floor for normal text.
+     --accent-fill is the accent deepened until white clears AA (5.38:1), and
+     --accent-fill-hover deepens it further (9.14:1) so hover moves the fill
+     AWAY from the label instead of toward it. Both flip direction in the dark
+     blocks below, where --accent is the LIGHT color and the label is dark. */
+  --accent-fill:       color-mix(in oklab, var(--accent) 85%, #000);
+  --accent-fill-hover: color-mix(in oklab, var(--accent) 65%, #000);
   --ai-accent:        #7c3aed;   /* violet-600 — AI / non-deterministic surfaces */
   --ai-accent-soft:   #f5f3ff;   /* violet-50 */
   --ai-accent-contrast: #ffffff;
@@ -275,6 +283,14 @@
   --border:    rgba(255, 255, 255, 0.1);
   --error:     #f87171;
   --ok:        #4ade80;
+  /* Dark mode inverts the accent surface: --accent is the LIGHT color here, so
+     the label goes dark and hover LIGHTENS the fill (away from the label).
+     Mirrors the light block's --accent-fill / --accent-fill-hover / -contrast;
+     defined here rather than inherited so the short aliases never leak a light
+     value into dark mode. */
+  --accent-contrast:   #08161b;
+  --accent-fill:       var(--accent);
+  --accent-fill-hover: color-mix(in oklab, var(--accent) 62%, #fff);
 }
 
 /* ============================================================================
@@ -352,5 +368,9 @@
     --border:    rgba(255, 255, 255, 0.1);
     --error:     #f87171;
     --ok:        #4ade80;
+    /* Same inversion as the [data-theme="dark"] block — see the note there. */
+    --accent-contrast:   #08161b;
+    --accent-fill:       var(--accent);
+    --accent-fill-hover: color-mix(in oklab, var(--accent) 62%, #fff);
   }
 }

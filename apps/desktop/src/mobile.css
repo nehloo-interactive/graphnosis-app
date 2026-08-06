@@ -12,11 +12,8 @@
   display: none;
 }
 
-/* Active-engram name in the health panel — mobile-only (desktop shows it in
-   the header picker). Hidden on desktop. */
-.g-health-engram {
-  display: none;
-}
+/* (.g-health-engram — the mobile-only active-engram name inside the Home health
+   gauge — was removed with that gauge on 2026-08-05.) */
 
 /* Legend toggle button (3D Engram toolbar) — mobile-only. */
 .mobile-legend-toggle {
@@ -384,7 +381,7 @@ body.mobile-more-open .mobile-more-sheet {
   /* Only once unlocked — no search/menu on the lock screen (matches bottom nav). */
   body.app-unlocked .mobile-topbar-actions { display: flex !important; }
 
-  /* Toggles — bulletproof visible: explicit size, colour. */
+  /* Toggles — bulletproof visible: explicit size, color. */
   .mobile-menu-toggle {
     display: inline-flex !important;
     visibility: visible !important;
@@ -442,16 +439,17 @@ body.mobile-more-open .mobile-more-sheet {
     box-shadow: 0 12px 32px rgba(0,0,0,0.4);
     z-index: 300;
   }
-  /* Menu surfaces: engram picker (the mobile engram switcher), +New engram,
-     +Files, +Folders, Lock cortex. Hide the sensitivity stack, bug, help. */
-  body.mobile-menu-open .app-header-right > .header-engram-stack,
+  /* Menu surfaces: +New engram, +Files, +Folders, Lock cortex. Hide bug, help. */
   body.mobile-menu-open .app-header-right > #btn-report-bug,
   body.mobile-menu-open .app-header-right > #btn-help {
     display: none !important;
   }
-  /* The engram picker is wrapped by the custom-picker (.engram-picker-wrap +
-     #engram-picker-button) — target those, not the now-hidden native select. */
-  body.mobile-menu-open .app-header-right > .engram-picker-wrap,
+  /* The engram picker used to be surfaced here too. It has been relocated out
+     of .app-header-right entirely — it is now the Memory / 3D Engrams page
+     title (see .atlas-title-line in app.css) — so the rules that sized
+     `.app-header-right > .engram-picker-wrap` inside this menu are gone with
+     it, along with `.header-engram-stack`, a class that no longer exists.
+     Switching engrams on a phone therefore means visiting that page. */
   body.mobile-menu-open .app-header-right > #btn-add-file,
   body.mobile-menu-open .app-header-right > #btn-add-folder,
   body.mobile-menu-open .app-header-right > #btn-new-graph,
@@ -464,18 +462,6 @@ body.mobile-more-open .mobile-more-sheet {
     padding: 8px 12px !important;
     justify-content: flex-start;
     text-align: left;
-  }
-  /* The picker button fills its full-width wrap. */
-  body.mobile-menu-open .app-header-right > .engram-picker-wrap {
-    padding: 0 !important;
-  }
-  body.mobile-menu-open .app-header-right > .engram-picker-wrap > #engram-picker-button {
-    width: 100% !important;
-    max-width: none !important;   /* lift the desktop 220px cap so it fills the row */
-    box-sizing: border-box !important;
-    justify-content: space-between !important;
-    font-size: 13.5px !important;
-    padding: 8px 12px !important;
   }
 
   /* Hide header elements that don't fit on narrow screens */
@@ -518,56 +504,10 @@ body.mobile-more-open .mobile-more-sheet {
   #g-federated-stats::-webkit-scrollbar { display: none; }
   #g-federated-stats > span { flex-shrink: 0; }
 
-  /* ── Engram health: compact pill, tap to expand ─────────────────────────
-     The desktop inline variant uses `flex: 0 0 360px` (a 360px WIDTH in the
-     desktop row). In our mobile column that flex-basis becomes a 360px HEIGHT
-     — the giant empty box. Force auto sizing + a compact inline pill, and
-     reveal the phrase/numbers only when tapped (.g-health-expanded). */
-  .g-health,
-  .g-health.g-health-inline {
-    display: flex !important;
-    flex-wrap: wrap !important;   /* lets the detail box drop to its own row */
-    flex: 0 0 auto !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    height: auto !important;
-    align-items: center;
-    gap: 6px 10px !important;
-    padding: 8px 12px !important;
-    cursor: pointer;
-  }
-  .g-health .g-health-gauge { flex: 0 0 auto; flex-direction: row !important; }
-  .g-health .g-health-meta { display: none; }
-  /* Bar row: "A —— [engram name, 2 lines max]" — engram name fills the rest. */
-  .g-health .g-health-engram {
-    display: -webkit-box !important;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--fg);
-    line-height: 1.25;
-  }
-  /* Tap → the phrase + status appear in a SEPARATE box BELOW the bar, two
-     rows (phrase, then the memories/trust line). */
-  .g-health.g-health-expanded .g-health-meta {
-    display: block !important;
-    flex: 1 1 100% !important;
-    /* Always wrap to its own row BELOW the bar, so the grade + engram name stay
-       together on the top row (the engram span sits after .meta in the DOM, so
-       without this it would get pushed to a third row under the box). */
-    order: 1;
-    margin-top: 8px;
-    padding: 10px 12px;
-    background: var(--color-bg, var(--bg, #0e0e0f));
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
-  .g-health.g-health-expanded .g-health-phrase { margin: 0 0 4px !important; }
-  .g-health.g-health-expanded .g-health-detail { margin: 0 !important; }
+  /* (The mobile compact-pill + tap-to-expand rules for the Home engram-health
+     gauge lived here. The gauge — #g-health and every .g-health* element inside
+     it — was removed from the Home card on 2026-08-05, so all of them matched
+     nothing.) */
 
   /* ── MemoryStudio main grid: single column (no 360px inspector overflow) ── */
   .g-main { grid-template-columns: 1fr !important; }
@@ -892,7 +832,6 @@ body.mobile-more-open .mobile-more-sheet {
      whole view — hide the tabs, chips, health, stats, and dashboard content. */
   body.mobile-search-open .g-tabs,
   body.mobile-search-open .studio-chips,
-  body.mobile-search-open #g-health,
   body.mobile-search-open #g-federated-stats,
   body.mobile-search-open .studio-section,
   body.mobile-search-open .checkin-deck,
@@ -989,13 +928,6 @@ body.mobile-more-open .mobile-more-sheet {
   .app-header-right select {
     font-size: 13px !important;
     padding: 5px 9px !important;
-  }
-  /* Health gauge stops forcing a fixed 360px so the header row fits. */
-  .g-health.g-health-inline {
-    flex: 0 1 auto !important;
-    width: auto !important;
-    min-width: 0 !important;
-    max-width: 300px !important;
   }
   /* Narrower sidebar → more room for the panes (collapse still wins via its
      own body.rail-collapsed rule, which this :not() excludes). */

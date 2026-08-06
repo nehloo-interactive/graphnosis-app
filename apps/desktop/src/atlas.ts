@@ -390,7 +390,7 @@ export class Atlas {
   // ── Instanced node layer (THREE.Points) — task #42 ────────────────────────
   // One GPU draw call for all nodes, replacing the ~2N per-node THREE objects
   // (default sphere + invisible hit sphere) that tank browsing on large graphs.
-  // STAGE A: renders ALONGSIDE the library spheres to validate position/colour/
+  // STAGE A: renders ALONGSIDE the library spheres to validate position/color/
   // size sync; later stages disable the spheres and move picking/drag onto this.
   private nodePoints: THREE.Points | null = null;
   private nodePointsGeom: THREE.BufferGeometry | null = null;
@@ -761,7 +761,7 @@ export class Atlas {
     // 3.9 units — comfortable visually but hard to hit in 3D.
     // We add a transparent sphere 3× larger so the user can click/hover
     // from a wider angle without needing pixel-perfect aim.
-    // `nodeThreeObjectExtend(true)` keeps the original coloured sphere;
+    // `nodeThreeObjectExtend(true)` keeps the original colored sphere;
     // we only add the invisible hit mesh as a sibling in the group.
     g.nodeThreeObjectExtend(true);
     g.nodeThreeObject((n: AtlasNode) => {
@@ -784,7 +784,7 @@ export class Atlas {
     // can call g.refresh() without touching graphData — nodes stay at their
     // physics positions and the simulation never restarts.
     // During a legend hover preview ALL nodes/links are shown regardless of
-    // the current category/source filter — the dim/bright colour callbacks
+    // the current category/source filter — the dim/bright color callbacks
     // carry the emphasis instead of visibility. This lets the user see hidden
     // categories and sources "peek through" during hover.
     g.nodeVisibility((n: AtlasNode) => {
@@ -1254,7 +1254,7 @@ export class Atlas {
     const cy   = clientY - rect.top;
 
     // Cursor ray — pivot will always lie ON this ray so orbiting never
-    // changes the camera's depth relative to the scene (no zoom artefact).
+    // changes the camera's depth relative to the scene (no zoom artifact).
     const ndc = new THREE.Vector2(
       (cx / rect.width)  * 2 - 1,
       -(cy / rect.height) * 2 + 1,
@@ -2267,7 +2267,7 @@ export class Atlas {
     return { r: c.r, g: c.g, b: c.b, a: 1 };
   }
 
-  /** Write per-node colour/alpha/size into the buffers (call on colour-cache
+  /** Write per-node color/alpha/size into the buffers (call on color-cache
    *  invalidation — selection, hover, legend dim, drag). Positions + pulse are
    *  handled per-frame in syncNodePointsFrame(). */
   private updateNodePointsAttributes(): void {
@@ -2930,7 +2930,7 @@ export class Atlas {
     // FOV calculation so the graph fits entirely in the open area, not behind
     // the overlay. Clamp so we don't blow up on pathologically narrow windows.
     // On mobile the legend is hidden, so there's no need to reserve space for
-    // it or shift the graph right — centre in the full canvas instead.
+    // it or shift the graph right — center in the full canvas instead.
     const legendVisible = typeof window === 'undefined' || window.innerWidth > 768;
     const LEGEND_PX = legendVisible ? 212 : 0; // legend left(12) + width(200)
     const visibleW  = Math.max(rect.width - LEGEND_PX, rect.width * 0.3);
@@ -2946,12 +2946,12 @@ export class Atlas {
     const camPos      = graphCenter.clone().sub(fwd.clone().multiplyScalar(camDist));
 
     // TrackballControls calls cam.lookAt(target) every frame, so whatever
-    // we pass as the lookAt argument becomes the rendered image centre.
-    // To make the graph centre appear at the middle of the VISIBLE area
-    // (right of the legend) rather than the raw canvas centre, we shift
+    // we pass as the lookAt argument becomes the rendered image center.
+    // To make the graph center appear at the middle of the VISIBLE area
+    // (right of the legend) rather than the raw canvas center, we shift
     // the lookAt target LEFT by 106 px worth of world units.  TC then
-    // aims slightly left; the graph centre projects 106 px to the right
-    // of the image centre — exactly at the visible-area centre.
+    // aims slightly left; the graph center projects 106 px to the right
+    // of the image center — exactly at the visible-area center.
     const unitsPerPx  = (2 * tanHalfV * camDist) / rect.height;
     const worldShift  = (LEGEND_PX / 2) * unitsPerPx;          // 106 px → world
     const right       = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
@@ -3135,7 +3135,7 @@ export class Atlas {
     this.selectedId = nodeId;
     this.restylePredictedEdges();
     this.setOrbitPivotTo(node);
-    // Maximise opacity so incident edges and the node itself render at
+    // Maximize opacity so incident edges and the node itself render at
     // 100% regardless of the global link/node opacity multipliers.
     this.graph.linkOpacity(1.0);
     this.graph.nodeOpacity(1.0);
@@ -3227,10 +3227,10 @@ export class Atlas {
 
     // ── Legend compensation ──────────────────────────────────────────
     // The atlas legend sits at [left:12px, width:200px] → occupies 212 px.
-    // TC always renders the lookAt target at the image centre.  To make the
-    // node appear at the centre of the VISIBLE area (right of the legend),
+    // TC always renders the lookAt target at the image center.  To make the
+    // node appear at the center of the VISIBLE area (right of the legend),
     // shift the lookAt target LEFT by 106 px of world units.  The node then
-    // projects 106 px to the right of the image centre — at the visible centre.
+    // projects 106 px to the right of the image center — at the visible center.
     const LEGEND_OFFSET_PX = 106; // (200 + 12) / 2
     const rect = this.opts.container.getBoundingClientRect();
     let lookAt = nodePos.clone();
@@ -3575,7 +3575,7 @@ export class Atlas {
   // A small SVG compass in the bottom-right of the graph container that shows
   // the orientation of the world X/Y/Z axes as the camera orbits. Rendered via
   // a requestAnimationFrame loop that reads cam.matrixWorldInverse each tick.
-  // Each axis is drawn as a line from the indicator centre; axes pointing
+  // Each axis is drawn as a line from the indicator center; axes pointing
   // toward the camera appear brighter, axes pointing away are dimmer.
   private setupAxesIndicator(): void {
     const SIZE = 72;
@@ -3969,7 +3969,7 @@ export class Atlas {
       // without the rest of the graph dimming around it.
       if (n.id === this.selectedId) return this.applyAlpha(0xffffff, 1.0);
       // Hover mode: only the anchor (the inspector's node) + the hovered
-      // neighbour are at full brightness. The anchor falls back to selectedId,
+      // neighbor are at full brightness. The anchor falls back to selectedId,
       // so the hover works even with no prior click-selection in the 3D view.
       const hoverAnchor = this.previewAnchorId ?? this.selectedId;
       if (this.previewHighlightId !== null && hoverAnchor !== null) {
