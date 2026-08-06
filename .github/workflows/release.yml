@@ -769,38 +769,54 @@ jobs:
             "Graphnosis_${SEMVER}_amd64.deb#Graphnosis ${VERSION} (Linux .deb)" \
             --clobber
 
-  # Waits for EVERY platform build before flipping the pointer.
+  # ── Refresh the public download links ──────────────────────────────────
   #
-  # CURRENT_VERSION is global — it drives /download/mac, /download/win,
-  # /download/linux and /download/linux-deb alike. Flipping it as soon as
-  # build-mac finished meant the Linux and Windows links pointed at assets whose
-  # builds were still running, so those downloads 404'd until they uploaded.
+  # Waits for EVERY platform build. The prebuild rewrites all four /download/*
+  # targets from one releases/latest lookup, so redeploying before Linux and
+  # Windows have uploaded would publish links to assets that do not exist yet.
   # A few minutes of extra wait is worth never serving a broken download link.
-  update-cloudflare-mac:
+  #
+  # WHAT THIS JOB IS FOR, and what it deliberately no longer does.
+  #
+  # It used to PATCH `CURRENT_VERSION` / `DMG_FILENAME` / `WINDOWS_FILENAME`
+  # onto the Pages project, on the belief that the Function at
+  # apps/docs/functions/download/[platform].ts resolves
+  # `CURRENT_VERSION || FALLBACK_VERSION` at request time.
+  #
+  # CURRENT_VERSION HAS NEVER EXISTED ON THE PROJECT. Confirmed absent from the
+  # Cloudflare dashboard on 2026-08-05. So that branch has always been dead, the
+  # PATCH set a variable nothing reads, and both jobs reported success on every
+  # release while doing nothing at all. Two green jobs, zero effect. They are
+  # removed rather than repaired: a check that cannot fail is worse than absent,
+  # because it is read as evidence.
+  #
+  # What DOES set the download version is the docs prebuild
+  # (apps/docs/scripts/sync-graphnosis-md.mjs), which queries the GitHub
+  # releases/latest API and writes the answer into _redirects and both
+  # FALLBACK_VERSION constants at build time.
+  #
+  # WHICH IS WHY THE REDEPLOY BELOW SURVIVES. It is not cosmetic: it is the only
+  # thing that re-runs that prebuild AFTER the release is published. Measured on
+  # two releases — v1.35.0's Pages build started 72s after this job and picked up
+  # the new version; v1.34.0's only Pages build started 22 minutes BEFORE the
+  # release existed, and its prebuild then failed the (unauthenticated, 60/hr)
+  # API call and silently kept the committed constant, which is why the live page
+  # served v1.28.0 while v1.34.0 was current. Delete this redeploy and the
+  # download page stops updating on release entirely.
+  refresh-download-links:
     runs-on: ubuntu-latest
     needs: [build-mac, build-windows, build-linux]
+    # Worst case is 4 platforms x 40 attempts x 20s max-time plus backoff; the
+    # jobs previously had no ceiling at all against GitHub's 6-hour default.
+    timeout-minutes: 15
     steps:
-      - name: Update Cloudflare env vars (version + mac DMG)
-        env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_PROJECT_NAME: ${{ secrets.CF_PROJECT_NAME }}
-        run: |
-          curl -s -X PATCH \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$CF_PROJECT_NAME" \
-            -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"deployment_configs\": {
-                \"production\": {
-                  \"env_vars\": {
-                    \"CURRENT_VERSION\": { \"value\": \"${{ needs.build-mac.outputs.version }}\" },
-                    \"DMG_FILENAME\": { \"value\": \"${{ needs.build-mac.outputs.dmg }}\" },
-                    \"PUBLIC_RELEASED_VERSION\": { \"value\": \"${{ needs.build-mac.outputs.version }}\" }
-                  }
-                }
-              }
-            }"
+      # Needed for scripts/verify-download-redirect.sh, which holds all the
+      # pass/fail logic so it can be unit-tested with canned inputs offline
+      # (scripts/test-verify-download-redirect.sh) instead of only in CI.
+      - name: Checkout (for the release guard script)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Trigger Cloudflare Pages redeploy
         env:
@@ -808,38 +824,40 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_PROJECT_NAME: ${{ secrets.CF_PROJECT_NAME }}
         run: |
-          curl -s -X POST \
+          bash scripts/verify-download-redirect.sh require-jq
+          # -sS stays quiet but surfaces transport errors; the body is captured
+          # because the Cloudflare API returns HTTP 200 with
+          # {"success": false, "errors": [...]} on many failures, which --fail
+          # alone would NOT catch. On v1.34.0 this POST produced no deployment
+          # at all while the job went green — exactly what check-api now stops.
+          CODE=$(curl -sS -o /tmp/cf-deploy.json -w '%{http_code}' -X POST \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$CF_PROJECT_NAME/deployments" \
-            -H "Authorization: Bearer $CF_API_TOKEN"
+            -H "Authorization: Bearer $CF_API_TOKEN")
+          bash scripts/verify-download-redirect.sh check-api \
+            "$CODE" /tmp/cf-deploy.json "Cloudflare Pages redeploy POST"
 
-  # Runs as soon as build-windows succeeds — unblocks Windows downloads
-  # independently of the mac job timing.
-  # Intentionally sets CURRENT_VERSION + DMG_FILENAME too so this job is
-  # fully self-contained: if update-cloudflare-mac failed or was skipped,
-  # Windows users still get a working, consistent redirect.
-  update-cloudflare-win:
-    runs-on: ubuntu-latest
-    needs: [build-mac, build-windows]
-    steps:
-      - name: Update Cloudflare env vars (version + DMG + Windows MSI)
-        env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_PROJECT_NAME: ${{ secrets.CF_PROJECT_NAME }}
+      # THE ACTUAL GUARD. The step above verifies the MECHANISM (did Cloudflare
+      # accept the redeploy). This verifies the OUTCOME: does the live endpoint
+      # redirect to the version we just built?
+      #
+      # It must be the outcome, because three independent mechanisms can set that
+      # one user-visible value — a Pages env var, the build-time API fetch, and
+      # the committed constant — and each has been wrong at least once. On
+      # 2026-08-05 ~11:45Z the live page served v1.28.0 while both cloudflare jobs
+      # had reported success. A green API call is not evidence of a correct link.
+      #
+      # All four platforms are polled because the prebuild rewrites all four
+      # redirect lines together; if one is wrong they are generally all wrong,
+      # and four requests cost nothing. NOTE: this asserts the VERSION SEGMENT of
+      # the redirect target only. It does not validate the asset FILENAME, so a
+      # correct version with a wrong filename would pass and still 404.
+      #
+      # Not following redirects is deliberate — we assert on the Location header
+      # the Function emits. Following it would 404 on a Linux asset the separate
+      # backfill workflow has not uploaded yet, and misdiagnose that as a
+      # redirect failure.
+      - name: Verify live /download endpoints serve the released version
         run: |
-          curl -s -X PATCH \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$CF_PROJECT_NAME" \
-            -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"deployment_configs\": {
-                \"production\": {
-                  \"env_vars\": {
-                    \"CURRENT_VERSION\": { \"value\": \"${{ needs.build-mac.outputs.version }}\" },
-                    \"DMG_FILENAME\": { \"value\": \"${{ needs.build-mac.outputs.dmg }}\" },
-                    \"PUBLIC_RELEASED_VERSION\": { \"value\": \"${{ needs.build-mac.outputs.version }}\" },
-                    \"WINDOWS_FILENAME\": { \"value\": \"${{ needs.build-windows.outputs.msi }}\" }
-                  }
-                }
-              }
-            }"
+          bash scripts/verify-download-redirect.sh verify \
+            "${{ needs.build-mac.outputs.version }}" \
+            mac win linux linux-deb

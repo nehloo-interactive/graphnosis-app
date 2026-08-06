@@ -6,11 +6,22 @@
 //    with the version badge in the nav — both derived from tauri.conf.json at
 //    build time, no env-var race between CI steps.
 // 3. Updates FALLBACK_VERSION in src/pages/download/[platform].ts and
-//    functions/download/[platform].ts (last-resort when CURRENT_VERSION is unset).
+//    functions/download/[platform].ts.
 //
-// Primary download redirects are still resolved at runtime by the Astro SSR route
-// (src/pages/download/[platform].ts) via CURRENT_VERSION (set by release.yml);
-// _redirects + FALLBACK_VERSION are last-resort fallbacks only.
+// WHAT ACTUALLY SERVES /download/* — corrected 2026-08-05.
+//
+// This file used to claim that redirects are "resolved at runtime via
+// CURRENT_VERSION (set by release.yml); _redirects + FALLBACK_VERSION are
+// last-resort fallbacks only." That was never true in production. CURRENT_VERSION
+// has never existed on the Pages project — confirmed absent from the dashboard —
+// so `CURRENT_VERSION || FALLBACK_VERSION` in the Function has ALWAYS taken the
+// fallback branch, and the value this script writes at build time is the only
+// thing users ever get. It is the primary mechanism, not the safety net.
+//
+// Two consequences worth keeping in mind when editing below:
+//   - a failure here is a user-visible wrong download link, not a degraded one;
+//   - the fallback deliberately tracks the latest PUBLISHED release, so during
+//     a release build it lags by one version until the new assets exist.
 //
 // Runs automatically before `dev` and `build` via the `predev` / `prebuild`
 // lifecycle hooks.
@@ -58,23 +69,67 @@ const currentFallback = (() => {
   }
 })();
 
+// A DEPLOY BUILD MAY NOT GUESS; A LOCAL ONE MAY.
+// Cloudflare Pages sets CF_PAGES, most CI sets CI. Neither is set on a laptop,
+// where an offline `pnpm dev` is legitimate and must not require the network.
+const isDeployBuild = Boolean(process.env['CF_PAGES'] || process.env['CI']);
+
 let version = '';
 try {
   // GitHub's "latest" excludes drafts and pre-releases, so a release that was
   // pulled (marked pre-release) is automatically skipped here too.
+  //
+  // AUTHENTICATE WHENEVER A TOKEN EXISTS. Unauthenticated, this endpoint allows
+  // 60 requests per hour PER IP, and Cloudflare's build runners share addresses.
+  // That ceiling is not theoretical: the live download page served v1.28.0 —
+  // the committed constant below — while releases up to v1.34.0 existed, because
+  // this call failed and the catch quietly kept the old value. A token raises the
+  // ceiling to 5000/hr. Set GITHUB_TOKEN in the Pages build environment.
+  const token = process.env['GITHUB_TOKEN'] || process.env['GH_TOKEN'] || '';
   const res = await fetch(
     'https://api.github.com/repos/nehloo-interactive/graphnosis-app/releases/latest',
-    { headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'graphnosis-docs-prebuild' } },
+    {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'graphnosis-docs-prebuild',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    },
   );
-  if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+  if (!res.ok) {
+    const hint = res.status === 403 || res.status === 429 ? ' — rate limited; set GITHUB_TOKEN' : '';
+    throw new Error(`GitHub API ${res.status}${hint}`);
+  }
   const tag = (await res.json()).tag_name ?? '';
   version = tag.replace(/^v/, '');
-  if (version) console.log(`[prebuild] latest published release → v${version}`);
+  // An empty tag used to fall through as "success" and leave the fallbacks
+  // untouched, which is the same silent-staleness this block now refuses.
+  if (!version) throw new Error('release payload carried no tag_name');
+  console.log(
+    `[prebuild] latest published release → v${version}` +
+    `${token ? ' (authenticated)' : ' (UNAUTHENTICATED — 60/hr, shared per IP)'}`,
+  );
 } catch (err) {
-  // Offline dev, rate limit, API blip — keep whatever is committed rather than
-  // rewriting the fallbacks to something unverified.
+  // THIS CATCH IS WHY THE DOWNLOAD PAGE SERVED A STALE RELEASE.
+  //
+  // Keeping the committed constant is right offline. It is wrong in a deploy
+  // build, where the result is a live download page pointing at an old release
+  // with nothing, anywhere, reporting a problem — a warning in a build log that
+  // succeeds is not a report. Deploy builds fail instead; laptops carry on.
+  if (isDeployBuild) {
+    console.error(
+      `[prebuild] FATAL: could not resolve the latest published release (${err.message}).\n` +
+      `[prebuild] Refusing to publish download links derived from the committed constant ` +
+      `(${currentFallback || 'none'}), which would silently point users at a stale release.\n` +
+      `[prebuild] If this is a rate limit, set GITHUB_TOKEN in the Pages build environment.`,
+    );
+    process.exit(1);
+  }
   version = currentFallback.replace(/^v/, '');
-  console.warn(`[prebuild] could not resolve latest published release (${err.message}) — keeping ${currentFallback || 'existing values'}`);
+  console.warn(
+    `[prebuild] could not resolve latest published release (${err.message}) — ` +
+    `keeping ${currentFallback || 'existing values'} (local build; a deploy build would fail here)`,
+  );
 }
 
 const redirectsFile = new URL('../public/_redirects', import.meta.url);
