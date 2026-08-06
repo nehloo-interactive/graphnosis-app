@@ -93,7 +93,7 @@ pub fn spawn(app: AppHandle, socket_path: PathBuf) -> EventStreamHandle {
                 result = open_and_read(&app, &socket_path) => Some(result),
             };
             match connect_or_cancel {
-                None => return, // cancelled
+                None => return, // canceled
                 Some(Ok(())) => {
                     // Connection ended cleanly (sidecar closed the socket).
                     // Reset backoff and consecutive-failure counter.
@@ -117,7 +117,7 @@ pub fn spawn(app: AppHandle, socket_path: PathBuf) -> EventStreamHandle {
                     }
                 }
             }
-            // Sleep with cancellation. If cancelled mid-sleep, exit promptly.
+            // Sleep with cancellation. If canceled mid-sleep, exit promptly.
             tokio::select! {
                 biased;
                 _ = cancel_inner.notified() => return,
@@ -274,7 +274,7 @@ pub fn spawn_remote(app: AppHandle, base: String, session: String) -> EventStrea
                 result = open_and_read_remote(&app, &base, &session) => Some(result),
             };
             match connect_or_cancel {
-                None => return, // cancelled
+                None => return, // canceled
                 Some(Ok(())) => {
                     backoff_ms = 100;
                     consecutive_failures = 0;

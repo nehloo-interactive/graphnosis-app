@@ -183,7 +183,7 @@ fn ensure_runtime_copy(manifest_dir: &std::path::Path, target: &str, source: &st
 /// (dev runtime resolution). Without the second copy, dev mode errors with
 /// "No such file or directory" when spawning the sidecar.
 ///
-/// Generalised over `name` so the same routine serves both the Swift
+/// Generalized over `name` so the same routine serves both the Swift
 /// biometric sidecar and the Bun-compiled Node sidecar.
 fn ensure_runtime_copy_named(
     manifest_dir: &std::path::Path,

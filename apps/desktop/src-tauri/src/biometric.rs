@@ -102,7 +102,7 @@ pub async fn is_available(app: &AppHandle) -> bool {
 }
 
 /// Show the macOS biometric prompt with the given reason string. Returns
-/// Ok(true) if the user authenticated, Ok(false) if they cancelled or
+/// Ok(true) if the user authenticated, Ok(false) if they canceled or
 /// failed, or Err if the sidecar couldn't even be spawned.
 pub async fn prompt(app: &AppHandle, reason: &str) -> Result<bool> {
     let (code, stdout) = run_sidecar(app, &["--prompt", reason]).await?;
@@ -113,7 +113,7 @@ pub async fn prompt(app: &AppHandle, reason: &str) -> Result<bool> {
             // UI can fall back to passphrase entry without a generic toast.
             Err(anyhow!("Touch ID unavailable: {}", stdout))
         }
-        2 => Ok(false), // user cancelled or biometric mismatch
+        2 => Ok(false), // user canceled or biometric mismatch
         other => Err(anyhow!(
             "biometric sidecar returned unexpected exit code {} ({})",
             other,

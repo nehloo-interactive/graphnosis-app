@@ -151,7 +151,7 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&
         None::<&str>,
     )?;
     // Ghampus quick-access. Real kill switch lives inside the Chat tab —
-    // tray entry is navigation only. Greyed out while the cortex is locked.
+    // tray entry is navigation only. Grayed out while the cortex is locked.
     let ghampus_item = MenuItem::with_id(
         app,
         "ghampus",

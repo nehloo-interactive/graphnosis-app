@@ -386,7 +386,7 @@ async fn start_inner(
     // stdout/stderr — only the visible terminal window is suppressed.
     // build.rs ALSO compiles the Bun binary with --windows-hide-console so it
     // declares the Windows GUI subsystem at PE level; this flag is the
-    // defence-in-depth case for older binaries already shipped to users.
+    // defense-in-depth case for older binaries already shipped to users.
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
 
@@ -488,7 +488,7 @@ async fn start_inner(
             break;
         }
         // Emit a generic "still loading" heartbeat every 5s so the UI
-        // knows the sidecar is alive even between recognised stderr lines.
+        // knows the sidecar is alive even between recognized stderr lines.
         let elapsed_s = start.elapsed().as_secs();
         if elapsed_s / 5 > last_tick_s / 5 {
             last_tick_s = elapsed_s;

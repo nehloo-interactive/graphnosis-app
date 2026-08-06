@@ -4,7 +4,7 @@
 //   --check           exit 0 if Windows Hello is available and configured,
 //                     exit 1 otherwise.
 //   --prompt <reason> prompt the user with Windows Hello; exit 0 on success,
-//                     exit 1 if unavailable, exit 2 if the user cancelled or
+//                     exit 1 if unavailable, exit 2 if the user canceled or
 //                     biometric mismatch.
 //
 // Compiled by build.rs on Windows targets into:
