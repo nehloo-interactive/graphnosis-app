@@ -24,7 +24,7 @@ export interface AgentToolDeps {
   /**
    * Optional — when absent, `list_skills` returns an empty array rather
    * than throwing. Lets the agent surface degrade gracefully on cortexes
-   * where the trainer isn't initialised (e.g. during cold-start tests).
+   * where the trainer isn't initialized (e.g. during cold-start tests).
    */
   skillTrainer?: SkillTrainer | null;
 }
@@ -303,7 +303,22 @@ function runStats(deps: AgentToolDeps): StatsToolResult {
 
 function runListSkills(deps: AgentToolDeps, args: ListSkillsToolArgs): ListSkillsToolResult {
   if (!deps.skillTrainer) return { skills: [] };
-  const raw = deps.skillTrainer.listSkills(args.engramId);
+  // AI-FACING ENUMERATION — gate the ROWS, not the scope, because this tool
+  // forwards the model's `engramId` straight through. `listSkills()` applies
+  // its quarantine exclusion to the DEFAULT (all-engrams) scope only, on
+  // purpose: an explicit graphId is how the quarantine-review tooling reaches
+  // in. Ghampus is not that tooling, so an explicit `engramId` here walked
+  // past the exclusion entirely — a pre-existing hole, this tool had no
+  // quarantine guard of any kind. Filtering the returned entries closes both
+  // scopes with one expression, and is where the OFF SWITCH belongs too:
+  //   - QUARANTINE CONTRACT: an imported-but-unpromoted skill must not be
+  //     reachable from the in-app agent, matching MCP `list_skills`.
+  //   - OFF SWITCH (host.skillsDisabled): a disabled agent's skills are inert,
+  //     and inert includes unlistable — a skill the model can see is a skill
+  //     it will try to dispatch.
+  const raw = deps.skillTrainer.listSkills(args.engramId).filter(
+    (s) => !deps.host.isQuarantined(s.graphId) && !deps.host.skillsDisabled(s.graphId),
+  );
   return {
     skills: raw.map((s) => ({
       sourceId: s.sourceId,

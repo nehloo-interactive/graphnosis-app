@@ -182,6 +182,11 @@ export function loadDispatchTriggerLines(
 ): string[] {
   if (!skillTrainer) return [];
   for (const gid of host.listGraphs()) {
+    // AGENT OFF SWITCH: a disabled engram's skill-dispatch trigger table is
+    // what routes an ambiguous chat line to a skill, so reading it would let an
+    // off agent keep steering implicit dispatch. Skip this engram and keep
+    // scanning — one agent being off must not blank the table for the cortex.
+    if (host.skillsDisabled(gid)) continue;
     const sourceId = findSkillDispatchSourceId(host, gid);
     if (!sourceId) continue;
     const detail = skillTrainer.getSkill(gid, sourceId);

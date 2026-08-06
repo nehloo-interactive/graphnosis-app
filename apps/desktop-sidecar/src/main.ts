@@ -379,7 +379,7 @@ async function loadAllGraphsFromDisk(
 
   // Auto-recover quarantined engrams from the op-log. The user previously
   // had to: (1) see a scary "wrong passphrase or corrupted cortex file"
-  // message at startup, (2) realise that was misleading, (3) find the
+  // message at startup, (2) realize that was misleading, (3) find the
   // "Recover from op-log" button buried in settings, (4) click it.
   // Now they see a friendly post-load toast that says "Rebuilt N engram(s)
   // from your op-log after an interrupted shutdown — your memory is intact".
@@ -452,7 +452,7 @@ async function loadAllGraphsFromDisk(
  * they exist on disk and are loaded into memory.
  *
  * Bug class this fixes: cortexes created before the metadata feature
- * shipped, or where the initial `setGraphMetadata` call silently failed,
+ * shipped, or where the initial `replaceGraphMetadata` call silently failed,
  * leave the graph in a "ghost" state visible only via a manual
  * settings.json edit. Backfilling on every startup is idempotent and
  * costs ~one Object.entries pass — cheap insurance against the user
@@ -477,12 +477,16 @@ async function backfillGraphMetadata(host: GraphnosisHost): Promise<void> {
   console.error(
     `[graphnosis-sidecar] backfill: ${missing.length} graph(s) missing metadata: ${missing.join(', ')} — writing defaults`,
   );
-  // Serial loop, not Promise.all — setGraphMetadata reads `this.settings`,
-  // mutates a copy, writes the file, and assigns back. Concurrent calls
-  // would race on read-modify-write and lose intermediate entries.
+  // Serial loop, not Promise.all. This is no longer strictly required —
+  // replaceGraphMetadata now reads the sibling-graph map INSIDE the settings
+  // write queue, so parallel calls can no longer lose each other's entries —
+  // but a boot-time backfill has nothing to gain from concurrency, and keeping
+  // it serial keeps the console output in a readable order.
   for (const id of missing) {
     try {
-      await host.setGraphMetadata(id, {
+      // REPLACE: `missing` contains only ids whose getGraphMetadata() came back
+      // undefined at :472 — an EXISTENCE test. There is no entry to preserve.
+      await host.replaceGraphMetadata(id, {
         template: 'personal',
         displayName: id,
         createdAt: 1,
@@ -886,7 +890,9 @@ async function main(): Promise<void> {
       // Seed default-graph metadata so the new Graphs UI has something to
       // show on first launch (template + display name). Existing cortexes
       // without metadata fall back to defaults in graphsWithMetadata().
-      await host.setGraphMetadata(env.defaultGraph, {
+      // REPLACE: ENOENT means there is no graph file at all — genuinely a first
+      // unlock for this cortex, so this is a create.
+      await host.replaceGraphMetadata(env.defaultGraph, {
         template: 'personal',
         displayName: 'Personal',
         createdAt: Date.now(),
@@ -1030,7 +1036,7 @@ async function main(): Promise<void> {
 
   // License validator — created early so it can gate background loops
   // (the BrainEngine's autonomous edge-prediction) at construction time.
-  // Initialised once (awaits libsodium WASM boot, < 5 ms cold); all
+  // Initialized once (awaits libsodium WASM boot, < 5 ms cold); all
   // per-request checks afterwards are synchronous.
   const licenseValidator = await LicenseValidator.create();
 
@@ -1515,6 +1521,10 @@ async function main(): Promise<void> {
           token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
           allowedOrigins: cfg?.allowedOrigins ?? [],
           sharingTokens: () => host.getSettings().sharing?.tokens ?? [],
+          // Tailnet identity auth. Live getter so ACL edits apply without a
+          // bridge restart; absent/disabled by default, in which case the
+          // bearer token remains the only credential.
+          identity: () => host.getSettings().mobile?.httpBridge?.identity,
         });
         httpBridgeLive = want;
         console.error(`[graphnosis-sidecar] mobile HTTP bridge listening on ${want.host}:${want.port}`);

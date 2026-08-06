@@ -141,6 +141,22 @@ export interface WalkedStep {
    *  Present only when ≥2 — i.e. the step ran because a loop edge re-entered
    *  it. First-pass executions carry no tag. */
   loopIteration?: number;
+  /**
+   * The `@skill:` reference this step named but did NOT dispatch. Same
+   * vocabulary (and type) as `StepNode.unresolvedCall` in skill-trainer.ts and
+   * `WalkerFailureHandler.unresolvedCall` above — "a call reference that no
+   * dispatchable call backs" — reused deliberately instead of opening a
+   * parallel channel for the same fact. Always paired with `skipReason`.
+   */
+  unresolvedCall?: string;
+  /**
+   * Why the call above was not dispatched, on a step that was SKIPPED rather
+   * than run or failed. `'disabled-target'` = the callee's engram has the agent
+   * OFF SWITCH set (`host.skillsDisabled`). Kept distinct from `error` on
+   * purpose: the walk continues and `ok` stays true, so one disabled utility
+   * agent cannot brick every unrelated skill that calls it.
+   */
+  skipReason?: 'disabled-target';
 }
 
 export interface WalkResult {
@@ -307,6 +323,12 @@ function buildPlanForSkill(
   graphId: string,
   sourceId: string,
 ): { plan: SkillWalkPlan; rawSteps: WalkerStepInput[]; executionSteps: WalkerExecutionStep[] } | null {
+  // Agent OFF SWITCH — a disabled engram's skills are inert, so no runnable
+  // plan is ever built from one. `null` is the ALREADY-SUPPORTED failure here
+  // (the sole caller treats it exactly like an infeasible plan), so this needs
+  // no new shape. Routed through the centralized host.skillsDisabled predicate,
+  // never a local metadata peek — same discipline as host.isQuarantined.
+  if (host.skillsDisabled(graphId)) return null;
   const walked = walkSkillSequence(host, graphId, sourceId, { recursive: false });
   if (walked.steps.length === 0) return null;
   const meta = host.getGraphMetadata(graphId);
@@ -410,6 +432,22 @@ async function executeSubSkillWalk(
  * MAX_TOTAL_STEP_EXECUTIONS backstops the whole walk in code.
  */
 export async function walkSkillPlan(deps: WalkerDeps, input: WalkerInput): Promise<WalkResult> {
+  // Agent OFF SWITCH (outer belt) — never execute a single step of a skill that
+  // lives in a disabled engram, however the walk was entered: IPC, MCP, the
+  // unattended executor, or a sub-skill recursion. Those callers gate first and
+  // carry the owner-facing refusal message; this is the backstop that keeps
+  // "skills inert" true even if a future entry point forgets to ask. The shape
+  // is this file's established refusal — ran nothing, ok:false — exactly as the
+  // MAX_SUB_SKILL_DEPTH cap below returns.
+  if (deps.host.skillsDisabled(input.graphId)) {
+    return {
+      sourceId: input.sourceId,
+      steps: [],
+      captures: { ...(input.initialCaptures ?? {}) },
+      ok: false,
+      totalElapsedMs: 0,
+    };
+  }
   const captures: Record<string, string> = { ...(input.initialCaptures ?? {}) };
   const cortexDir = deps.host.getCortexDir();
   const savingsBaseline = resolveSavingsBaseline(deps.host.getSettings());
@@ -466,6 +504,32 @@ export async function walkSkillPlan(deps: WalkerDeps, input: WalkerInput): Promi
     const runOnce = async (): Promise<WalkedStep> => {
       if (execMeta?.calls?.targetSourceId && depth < MAX_SUB_SKILL_DEPTH) {
         const subGraph = execMeta.calls.targetGraphId ?? input.graphId;
+        // Agent OFF SWITCH on the CROSS-ENGRAM HOP. `targetGraphId` is set only
+        // for a `@skill:` call into ANOTHER engram, so gating input.graphId
+        // alone misses precisely this case: an ENABLED agent calling into a
+        // DISABLED one. SKIP the step instead of failing the walk — refusing it
+        // would let one disabled utility agent brick every unrelated skill
+        // across the cortex that happens to call it. The skip is never silent:
+        // it is reported as an unresolved call (the trainer's own vocabulary for
+        // a `@skill:` reference nothing dispatchable backs) plus a distinct
+        // reason, so it can never be read as "the sub-skill ran and returned
+        // nothing". No `error` is set on purpose: a deliberate off switch is not
+        // a step failure, so it must not trip the failure-handler recovery path
+        // or mark the whole run failed.
+        if (deps.host.skillsDisabled(subGraph)) {
+          const target = execMeta.calls.targetSourceId;
+          return {
+            index: step.index,
+            label: planned.label,
+            pickedModelId: null,
+            pickedModelDisplay: null,
+            prompt: '',
+            output: `[Skipped] @skill: ${target} — that agent is disabled (skills off); step not run.`,
+            elapsedMs: 0,
+            unresolvedCall: target,
+            skipReason: 'disabled-target',
+          };
+        }
         const subStarted = Date.now();
         const subArgs = execMeta.calls.args ?? [];
         for (let i = 0; i < subArgs.length; i++) {

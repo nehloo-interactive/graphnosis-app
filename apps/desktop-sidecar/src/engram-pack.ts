@@ -305,7 +305,9 @@ export async function importEngram(
     targetId = `quarantine-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     quarantineEngramId = targetId;
     await host.createGraph(targetId);
-    await host.setGraphMetadata(targetId, {
+    // REPLACE: `targetId` is a random id minted two lines up, so this entry
+    // cannot already exist. Create-or-reset.
+    await host.replaceGraphMetadata(targetId, {
       template: payload.engramTemplate as any,
       // Plain hyphen, not an em-dash — the delete-confirm requires typing the
       // display name verbatim and "—" isn't typeable on a normal keyboard.
@@ -326,10 +328,18 @@ export async function importEngram(
     targetId = opts.targetEngramId ?? payload.engramId;
     if (!host.listGraphs().includes(targetId)) {
       await host.createGraph(targetId);
-      await host.setGraphMetadata(targetId, {
+      // PATCH, not replace. The guard above is RESIDENCY, not existence:
+      // listGraphs() reports what is loaded in memory, so an engram that exists
+      // on disk with a full metadata row — but has been evicted — passes it and
+      // reaches this write. Replacing here flattened that row to three fields,
+      // destroying sensitivityTier / excludedSources / consentIntervalMs /
+      // executionAutonomyLevel / skillAutonomyLevels. Same bug as the promote
+      // target in ipc.ts, which was fixed by capturing prior; patching makes it
+      // structural instead of a spread the next editor can drop.
+      await host.patchGraphMetadata(targetId, {
         template: payload.engramTemplate as any,
         displayName: payload.engramDisplayName,
-        createdAt: Date.now(),
+        createdAt: host.getGraphMetadata(targetId)?.createdAt ?? Date.now(),
       });
     }
   }
@@ -386,8 +396,10 @@ export async function importEngram(
   if (quarantine && quarantineEngramId) {
     const meta = host.getGraphMetadata(quarantineEngramId);
     if (meta?.quarantine) {
-      await host.setGraphMetadata(quarantineEngramId, {
-        ...meta,
+      // PATCH with only the changed key. `meta` was read before the whole ingest
+      // loop above; spreading it back would re-commit every other field from
+      // that pre-loop snapshot and revert anything written meanwhile.
+      await host.patchGraphMetadata(quarantineEngramId, {
         quarantine: { ...meta.quarantine, items: quarantineItems.map((it) => ({ ...it })) },
       });
     }

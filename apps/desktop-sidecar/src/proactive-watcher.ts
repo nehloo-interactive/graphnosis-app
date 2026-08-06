@@ -318,6 +318,11 @@ export class ProactiveWatcher {
       return;
     }
     for (const gid of this.deps.host.listGraphs()) {
+      // A disabled agent's skill-dispatch skill must not steer routing either:
+      // its trigger table is what decides WHICH skill fires, so honouring it
+      // would let an off agent keep driving auto-dispatch from behind. Skip to
+      // the next engram rather than bailing — another agent may own a table.
+      if (this.deps.host.skillsDisabled(gid)) continue;
       const sourceId = findSkillDispatchSourceId(this.deps.host, gid);
       if (!sourceId) continue;
       const detail = this.deps.skillTrainer.getSkill(gid, sourceId);
@@ -405,6 +410,12 @@ export class ProactiveWatcher {
       // here through the centralized host.isQuarantined so a quarantined import
       // can never be auto-proposed even if the enumeration source changes.
       if (this.deps.host.isQuarantined(s.graphId)) return false;
+      // AGENT OFF SWITCH: the owner flipped `skillsDisabled` on this engram, so
+      // its skills are inert. This is the load-bearing one — auto-proposal is
+      // the only path that reaches a skill with NO human in the loop, so if the
+      // off switch doesn't cut here it doesn't mean off at all. Recall and the
+      // engram's memory stay untouched; only the un-ganglia goes quiet.
+      if (this.deps.host.skillsDisabled(s.graphId)) return false;
       return isDispatchSafe(s.sourceId);
     });
 

@@ -47,6 +47,15 @@ export type GhampusSkillRouteRunner = {
   emitTrace: (step: GhampusTraceStep) => void;
   setPendingClarification?: (v: GhampusPendingClarificationState | null) => void;
   isSkillTrainingLicensed?: () => boolean | Promise<boolean>;
+  /**
+   * Truthful refusal text for the skill-training gate — `null` when allowed.
+   * Supplied by the sidecar from `license-gate.checkFeatureGate`, so the chat
+   * surface can state the real cause (no token on this cortex / expired on
+   * <date> / unverifiable / valid token that simply lacks `skill-training`)
+   * instead of the old blanket "Subscribe" line. Optional: when absent the
+   * generic fallback below is used.
+   */
+  skillTrainingDenialMessage?: () => string | null | Promise<string | null>;
   emitSkillPreviewCard?: (card: GhampusSkillPreviewCardPayload) => Promise<void>;
 };
 
@@ -56,8 +65,14 @@ export type GhampusSkillPreviewCardPayload = {
   proPlus: boolean;
 };
 
+/**
+ * Last-resort text, used ONLY when no `skillTrainingDenialMessage` supplier is
+ * wired (tests, standalone runners) — i.e. when we genuinely do not know why
+ * the gate closed. It therefore states nothing about the user's license.
+ * The real sentence comes from `license-gate.checkFeatureGate`.
+ */
 export const SKILL_TRAIN_PRO_UPGRADE_MESSAGE =
-  'Skill training is on **Pro+** — preview is always available. Subscribe at [graphnosis.com/upgrade](https://graphnosis.com/upgrade) or use the Skills page.';
+  'Skill training is not available on this cortex — its license does not currently grant the `skill-training` feature. Previewing and walking skills is unaffected, and the Skills page shows the same skill.';
 
 export function mergeSkillImprovementDelta(skillBody: string, delta: string): string {
   const trimmed = delta.trim();
@@ -183,7 +198,12 @@ export async function ensureSkillTrainingLicensed(runner: GhampusSkillRouteRunne
   if (!runner.isSkillTrainingLicensed) return true;
   const licensed = await runner.isSkillTrainingLicensed();
   if (licensed) return true;
-  await runner.emitGhampusMsg(SKILL_TRAIN_PRO_UPGRADE_MESSAGE);
+  // ALLOW/DENY is unchanged — still `isSkillTrainingLicensed()`. Only the text
+  // differs: prefer the license-gate's cause-specific sentence when wired.
+  const denial = runner.skillTrainingDenialMessage
+    ? await runner.skillTrainingDenialMessage()
+    : null;
+  await runner.emitGhampusMsg(denial ?? SKILL_TRAIN_PRO_UPGRADE_MESSAGE);
   return false;
 }
 

@@ -156,7 +156,7 @@ import {
 import { recallDbg } from './log-redact.js';
 import {
   clearGhampusTurn,
-  isGhampusTurnCancelled,
+  isGhampusTurnCanceled,
   registerGhampusTurn,
 } from './ghampus-turn-cancel.js';
 import { enqueueGhampusSendTurn } from './ghampus-send-queue.js';
@@ -195,6 +195,8 @@ export type GhampusSendDeps = {
   brainEngine?: import('./brain-engine.js').BrainEngine | null;
   skillTrainer?: import('./skill-trainer.js').SkillTrainer | null;
   hasSkillTrainingLicense?: () => boolean | Promise<boolean>;
+  /** Truthful refusal text for the skill-training gate; `null` when allowed. */
+  skillTrainingDenialMessage?: () => string | null | Promise<string | null>;
 };
 
 const INFERRED_LAYER_MARKER = '--- INFERRED LAYER (overlays — NOT attested memory) ---';
@@ -325,6 +327,7 @@ function skillRouteRunner(
     emitTrace,
     setPendingClarification: (v) => state.setPendingClarification(v),
     ...(deps.hasSkillTrainingLicense ? { isSkillTrainingLicensed: deps.hasSkillTrainingLicense } : {}),
+    ...(deps.skillTrainingDenialMessage ? { skillTrainingDenialMessage: deps.skillTrainingDenialMessage } : {}),
     ...(emitSkillPreviewCard ? { emitSkillPreviewCard } : {}),
   };
 }
@@ -437,7 +440,21 @@ async function runGhampusSkillTrain(
     const trained = await runner.ghampusTool('train_skill', trainArgs) as { rawText?: string };
     const out = trained.rawText ?? '';
     if (/upgrade_required|"upgrade_required"\s*:\s*true/i.test(out)) {
-      await runner.emitGhampusMsg(SKILL_TRAIN_PRO_UPGRADE_MESSAGE);
+      // train_skill now carries the license-gate's cause-specific sentence in
+      // its `message` field. Surface THAT rather than a blanket upsell — the
+      // refusal is just as often "your token lacks skill-training" or "the
+      // token on this cortex expired" as it is "you have no subscription".
+      let trainDenial: string | null = null;
+      try {
+        const parsedOut = JSON.parse(out) as { message?: unknown };
+        if (typeof parsedOut.message === 'string' && parsedOut.message.trim()) {
+          trainDenial = parsedOut.message.trim();
+        }
+      } catch { /* not JSON — fall through to the supplier / fallback */ }
+      if (!trainDenial && runner.skillTrainingDenialMessage) {
+        trainDenial = await runner.skillTrainingDenialMessage();
+      }
+      await runner.emitGhampusMsg(trainDenial ?? SKILL_TRAIN_PRO_UPGRADE_MESSAGE);
       runner.emitTrace({
         stepId,
         status: 'error',
@@ -524,8 +541,8 @@ export async function runGhampusSend(
     incrementGhampusBusy();
     const turnSignal = registerGhampusTurn(traceTurnId);
     const turnDeadline = Date.now() + GHAMPUS_TURN_TIMEOUT_MS;
-    const throwIfCancelled = (): void => {
-      if (isGhampusTurnCancelled(traceTurnId, turnSignal)) {
+    const throwIfCanceled = (): void => {
+      if (isGhampusTurnCanceled(traceTurnId, turnSignal)) {
         throw new DOMException('cancelled by user', 'AbortError');
       }
       if (Date.now() > turnDeadline) {
@@ -778,6 +795,22 @@ export async function runGhampusSend(
           case 'walk_skill': {
             const graphId = String(toolArgs.graphId ?? '');
             const sourceId = String(toolArgs.sourceId ?? '');
+            // The agent OFF SWITCH (host.skillsDisabled) — a disabled engram's
+            // skills are inert, and a Ghampus preview is dispatch, not browsing.
+            // The MCP refusal above does NOT cover this branch: `rawText` from
+            // the tool call is discarded here and the SOP is re-walked straight
+            // off the host, so this path would keep rendering a disabled agent's
+            // steps from local state if the MCP gate ever moved or gained a
+            // client exemption.
+            //
+            // Thrown rather than returned as an empty preview, because the two
+            // are handled differently upstream: an empty `rawText` becomes "has
+            // no previewable steps yet — retrain it", which sends the owner to
+            // fix a skill that is fine. A throw takes the same route as an MCP
+            // error and reports "Could not preview X: <cause>".
+            if (deps.host.skillsDisabled(graphId)) {
+              throw new Error('That agent is turned off — its skills stay inert until you re-enable it on the Agents page.');
+            }
             const { walkSkillSequence, formatSkillForGhampusPreview } = await import('./skill-trainer.js');
             const crossLinks = await deps.host.skillCallLinks.getForSource(graphId, sourceId).catch(() => []);
             const walked = walkSkillSequence(deps.host, graphId, sourceId, {
@@ -835,7 +868,7 @@ export async function runGhampusSend(
       };
 
       const histLines = await loadHistLines();
-      throwIfCancelled();
+      throwIfCanceled();
       const histForHints = histLines.filter((t) => t.kind === 'user' || t.kind === 'ghampus');
       recentUserTextsForSuggest = histForHints
         .filter((t) => t.kind === 'user')
@@ -974,7 +1007,7 @@ export async function runGhampusSend(
         const system = buildFragmentReviewSystemPrompt();
         const userPrompt = buildFragmentReviewUserPrompt(fragmentReview, fragmentRecallSnippets);
         let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
-        throwIfCancelled();
+        throwIfCanceled();
         answer = formatFragmentReviewOutput(sanitizeResponse(answer ?? ''), fragmentReview);
         emitTrace({ stepId: reviewStepId, status: 'ok', label: 'Reviewing your comments' });
         await emitGhampusMsg(
@@ -1310,7 +1343,7 @@ export async function runGhampusSend(
         const selectionSynthId = stableTraceStepId('selection-synth');
         emitTrace({ stepId: selectionSynthId, status: 'running', label: 'Synthesizing answer with local LLM' });
         let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
-        throwIfCancelled();
+        throwIfCanceled();
         answer = sanitizeResponse(answer ?? '');
         if (!answer.trim()) answer = "I couldn't answer about that selection — try rephrasing.";
         emitTrace({ stepId: selectionSynthId, status: 'ok', label: 'Synthesizing answer with local LLM' });
@@ -1342,7 +1375,7 @@ export async function runGhampusSend(
                 user: queryText,
                 signal: turnSignal,
               });
-              throwIfCancelled();
+              throwIfCanceled();
               const parsed = parseClassifyIntent(classifyRaw);
               if (parsed) {
                 intent = parsed;
@@ -1534,7 +1567,7 @@ export async function runGhampusSend(
         ...(priorUserQuestion ? { priorUserQuestion } : {}),
         ...(priorGhampusSnippet ? { priorGhampusSnippet } : {}),
       }, turnSignal);
-      throwIfCancelled();
+      throwIfCanceled();
       finishPlanning();
 
       // ── Early routes (skipMemoryTools / formatters) ─────────────────────
@@ -1546,7 +1579,7 @@ export async function runGhampusSend(
           const directStepId = stableTraceStepId('direct');
           emitTrace({ stepId: directStepId, status: 'running', label: 'Checking model status' });
           const status = await fetchGhampusLlmStatus(deps.host);
-          throwIfCancelled();
+          throwIfCanceled();
           emitTrace({ stepId: directStepId, status: 'ok', label: 'Checking model status' });
           await emitGhampusMsg(formatModelStatusDirectAnswer(status));
           return;
@@ -1557,7 +1590,7 @@ export async function runGhampusSend(
           emitTrace({ stepId: directStepId, status: 'running', label: 'Computing vitality' });
           const { buildHealthCheckReportMarkdown } = await import('./ghampus-vitality-health.js');
           const report = await buildHealthCheckReportMarkdown(deps.host, deps.brainEngine, text);
-          throwIfCancelled();
+          throwIfCanceled();
           emitTrace({ stepId: directStepId, status: 'ok', label: 'Computing vitality' });
           await emitGhampusMsg(report);
           return;
@@ -1593,7 +1626,7 @@ export async function runGhampusSend(
           user: userPrompt,
           signal: turnSignal,
         }, kind === 'general_knowledge_offline' || kind === 'chitchat' ? 45_000 : GHAMPUS_LLM_TIMEOUT_MS).catch(() => null);
-        throwIfCancelled();
+        throwIfCanceled();
         answer = sanitizeResponse(answer ?? '');
         if (kind === 'ghampus_identity') {
           answer = rewriteGhampusSelfReferenceFirstPerson(answer);
@@ -1711,7 +1744,7 @@ export async function runGhampusSend(
         const t0 = Date.now();
         emitTrace({ stepId, status: 'running', label, tool: entry.tool });
         try {
-          throwIfCancelled();
+          throwIfCanceled();
           const result = await ghampusTool(entry.tool, entry.args);
           const ms = Date.now() - t0;
           const resultPreview = summarizeGhampusToolResult(entry.tool, result);
@@ -2027,7 +2060,7 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
       const synthStepId = stableTraceStepId('synth');
       emitTrace({ stepId: synthStepId, status: 'running', label: 'Synthesizing answer with local LLM' });
       let draft = await llmCompleteBounded(llm, { system, user: queryText, signal: turnSignal }).catch(() => null);
-      throwIfCancelled();
+      throwIfCanceled();
       draft = sanitizeResponse(draft ?? '');
       emitTrace({ stepId: synthStepId, status: 'ok', label: 'Synthesizing answer with local LLM' });
 
@@ -2099,7 +2132,7 @@ OUTPUT: clean markdown for the user — no node IDs, pipe-separated records, or 
 
       await emitGhampusMsg(honestAnswer.trim() || draft);
     } catch (err) {
-      if (isGhampusTurnCancelled(traceTurnId, turnSignal)
+      if (isGhampusTurnCanceled(traceTurnId, turnSignal)
           || (err instanceof DOMException && err.name === 'AbortError')) {
         finishPlanning('error', 'Stopped');
         finishSearching('error');

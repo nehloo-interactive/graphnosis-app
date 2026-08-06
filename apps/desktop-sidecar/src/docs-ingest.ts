@@ -120,6 +120,14 @@ export async function recreateAndIngestDocsEngram(
     host.isGraphOnDisk(DOCS_ENGRAM_ID) ||
     host.getGraphMetadata(DOCS_ENGRAM_ID) !== undefined
   );
+  // CAPTURE BEFORE THE WIPE. `GraphnosisHost.deleteGraph` removes the settings
+  // row outright, and the recreate below used to write back only three fields
+  // — so sensitivityTier, excludedSources, consentIntervalMs and the autonomy
+  // settings were destroyed. This path runs on every app-version bump (:80-84)
+  // and on boot ghost-repair, with no prompt, so the loss recurred silently on
+  // every update. Nothing excludes system engrams from those setters, so a user
+  // really can have configured all of them here.
+  const priorMeta = host.getGraphMetadata(DOCS_ENGRAM_ID);
   if (needsWipe) {
     onProgress?.({ phase: 'wipe' });
     await host.deleteGraph(DOCS_ENGRAM_ID);
@@ -129,18 +137,29 @@ export async function recreateAndIngestDocsEngram(
       await host.loadGraph(DOCS_ENGRAM_ID);
     } else {
       await host.createGraph(DOCS_ENGRAM_ID);
-      await host.setGraphMetadata(DOCS_ENGRAM_ID, {
+      // REPLACE is correct here: deleteGraph above removed the settings row
+      // outright, so this call OWNS the whole entry and rebuilds it from the
+      // priorMeta captured at :130. Nothing is being merged into.
+      await host.replaceGraphMetadata(DOCS_ENGRAM_ID, {
+        // Only the NODES are the ingest's to rebuild; the engram's settings
+        // are not. A user rename is preserved (this engram resolves by id), and
+        // createdAt keeps its original value rather than resetting each update.
+        ...(priorMeta ?? {}),
         template: 'reading',
-        displayName: 'Graphnosis Docs',
-        createdAt: Date.now(),
+        displayName: priorMeta?.displayName ?? 'Graphnosis Docs',
+        createdAt: priorMeta?.createdAt ?? Date.now(),
       });
     }
   }
   if (host.getGraphMetadata(DOCS_ENGRAM_ID) === undefined) {
-    await host.setGraphMetadata(DOCS_ENGRAM_ID, {
+    // REPLACE: the guard is an EXISTENCE test (getGraphMetadata === undefined),
+    // not a residency test, so there is provably no entry to preserve. The
+    // priorMeta spread restores what the wipe took.
+    await host.replaceGraphMetadata(DOCS_ENGRAM_ID, {
+      ...(priorMeta ?? {}),
       template: 'reading',
-      displayName: 'Graphnosis Docs',
-      createdAt: Date.now(),
+      displayName: priorMeta?.displayName ?? 'Graphnosis Docs',
+      createdAt: priorMeta?.createdAt ?? Date.now(),
     });
   }
   const { ingested, failed } = await ingestGraphnosisDocs(host, DOCS_ENGRAM_ID, onProgress);

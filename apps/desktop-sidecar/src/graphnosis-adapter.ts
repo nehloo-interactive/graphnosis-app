@@ -141,6 +141,40 @@ export interface RichSubgraph {
    * Keeps SDK types inside graphnosis-impl.ts — caller receives plain objects.
    */
   getNodeData(nodeIds: Set<string>): NodeMergeData[];
+  /**
+   * Everything the host-side passage renderer needs to reproduce (and improve
+   * on) the SDK's `serializeSubgraph` node lines: full content plus the tag
+   * fields the serializer reads off `node.source` / `node.metadata`.
+   *
+   * `serialize()` above emits ONE LINE PER NODE, which is exactly the read-path
+   * coherence problem: a >500-char record was split into ~500-char chunks at
+   * every `.`, so its chunks reach the model as separate bullets that begin
+   * mid-token and carry no subject. The host coalesces them instead — see
+   * host/recall-passages.ts. It needs the node fields, not a pre-rendered string.
+   *
+   * OPTIONAL on purpose. A RichSubgraph is also produced by test doubles and
+   * could be produced by an out-of-tree adapter; those predate this method and
+   * must keep working. The recall renderer checks for it and falls back to
+   * `serialize()` — the pre-change render — when it is absent.
+   */
+  getRenderData?(nodeIds: Set<string>): RenderNodeData[];
+}
+
+/** Per-node fields the host passage renderer needs. `content` is the node's
+ *  FULL body (the SDK subgraph carries it untruncated), never a preview. */
+export interface RenderNodeData {
+  id: string;
+  content: string;
+  type: string;
+  score: number;
+  /** `node.source.section`, when the SDK captured one. */
+  section?: string;
+  /** `node.metadata.sessionDate`, when present. */
+  sessionDate?: string;
+  /** `node.metadata.sessionId`, when present (session-summary nodes). */
+  sessionId?: string;
+  /** `node.metadata.claims`, ' || '-separated (session-summary nodes). */
+  claims?: string;
 }
 
 export interface RichQueryResult {
@@ -189,7 +223,7 @@ export interface GraphnosisAdapter {
 
   /**
    * PURE TF-IDF query — no embedding seeds under any circumstances. Scores
-   * are normalised cosines in [0, 1].
+   * are normalized cosines in [0, 1].
    *
    * Distinct from `query()`, which prefers the HYBRID path whenever an
    * embedding index exists. That distinction matters because a stub adapter
@@ -442,7 +476,7 @@ export interface GraphnosisAdapter {
 }
 
 /**
- * The SDK's full edge-type catalogue. Re-exported through the adapter so the
+ * The SDK's full edge-type catalog. Re-exported through the adapter so the
  * App can render legends + filters without re-importing the SDK directly.
  */
 export type DirectedEdgeType =

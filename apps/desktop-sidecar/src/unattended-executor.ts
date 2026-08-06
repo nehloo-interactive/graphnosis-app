@@ -72,6 +72,11 @@ export interface PlanShape {
 export interface AdmissionInput {
   /** Global kill switch: agent.enabled !== false. */
   killSwitchOn: boolean;
+  /** PER-AGENT off switch: host.skillsDisabled(card.skillGraphId). True = the
+   *  owner turned this agent off on the Agents grid and its skills are inert.
+   *  Required, not optional: an unattended run is exactly the case where a
+   *  forgotten `?? false` would let an off agent act unwatched. */
+  skillsDisabled: boolean;
   /** Owner opt-in: agent.unattendedExecutor.enabled === true. */
   optInOn: boolean;
   /** LIVE re-resolved effective level (NOT the card snapshot). Must be 'L3'. */
@@ -95,11 +100,17 @@ export interface AdmissionInput {
 export type AdmissionResult = { run: true } | { run: false; reason: string };
 
 /**
- * THE GATE. Pure, deterministic, no I/O. Requires ALL SEVEN interlocks; any one
+ * THE GATE. Pure, deterministic, no I/O. Requires EVERY interlock; any one
  * failure denies the run. Order is fail-fast from cheapest/most-fundamental
  * (kill switch, opt-in) outward, so the reason names the FIRST binding gate.
  *
+ * The 1..7 numbering is load-bearing — tests, the audit trail and
+ * docs/agempus-state-requirements.md refer to gates by number — so the agent
+ * off switch was inserted as 1b (its natural fail-fast slot, right beside the
+ * global kill switch it mirrors) rather than renumbering the rest.
+ *
  *   1. kill switch on
+ *   1b. this agent's skills not disabled (per-agent kill switch)
  *   2. opt-in on (default OFF)
  *   3. effective level === 'L3' (re-resolved live)
  *   4. no unresolved contradiction on bound memory (and decision stays 'auto')
@@ -111,6 +122,13 @@ export type AdmissionResult = { run: true } | { run: false; reason: string };
 export function admitForUnattended(input: AdmissionInput): AdmissionResult {
   // 1. Kill switch.
   if (!input.killSwitchOn) return { run: false, reason: 'kill switch engaged (agent.enabled === false)' };
+  // 1b. AGENT OFF SWITCH — the per-agent counterpart of the kill switch, so it
+  //     sits beside it: an owner who turned this agent off gets that named as
+  //     the binding reason even if some later gate would also have denied.
+  //     Only the un-ganglia is inert; the engram's memory and recall are not.
+  if (input.skillsDisabled) {
+    return { run: false, reason: 'agent disabled by owner (skillsDisabled) — skills are inert' };
+  }
   // 2. Opt-in (default OFF).
   if (!input.optInOn) return { run: false, reason: 'unattended executor not opted in (default off)' };
   // 3. Live effective level must be exactly L3.
@@ -335,6 +353,10 @@ export class UnattendedExecutor {
 
     const admission = admitForUnattended({
       killSwitchOn: agent?.enabled !== false,
+      // Read LIVE, like every other interlock: the owner may have flipped this
+      // agent off after the card was queued, and the card's snapshot is exactly
+      // what we refuse to trust.
+      skillsDisabled: host.skillsDisabled(card.skillGraphId),
       optInOn: resolveUnattendedExecutorEnabled(agent),
       effectiveLevel,
       dispatchSafe,

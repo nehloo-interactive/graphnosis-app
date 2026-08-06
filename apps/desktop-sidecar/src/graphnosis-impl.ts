@@ -387,7 +387,8 @@ export class GraphnosisImpl implements GraphnosisAdapter {
             console.error(`[graphnosis-sidecar] appendText artifact rewrite refused for ${id}: ${correctionFailureText(res)}`);
             // Report, do not throw: this branch already propagates. Setting
             // `newNodeIds = []` below makes host.insertNodeAt raise "SDK
-            // returned no node ids" (host.ts:5002), so the user is told the
+            // returned no node ids" (the throw in `host.ts` `insertNodeAt`),
+            // so the user is told the
             // insert failed either way. Throwing from inside the loop would
             // only replace that error with a less specific one AND skip the
             // remaining artifact deletes, leaving more junk behind, so the
@@ -460,7 +461,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
           newNodeIds = [liveNodeIdAfterCorrection(res, firstId)];
         } else {
           // The SDK refused the merge. It says so by RETURNING, which the old
-          // `catch` could not observe. Behaviour is otherwise unchanged: keep
+          // `catch` could not observe. Behavior is otherwise unchanged: keep
           // the first fragment rather than splicing N ids in for one step.
           console.error(`[graphnosis-sidecar] skill single-node merge refused for ${firstId}: ${correctionFailureText(res)} — keeping the first chunk only`);
           newNodeIds = [firstId];
@@ -561,7 +562,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
    * the label said were not being used.
    *
    * `instance.query()` is the engine's TF-IDF-only path — `findSeeds` scores
-   * with `cosineSimilarity`, which is normalised and bounded to [0, 1].
+   * with `cosineSimilarity`, which is normalized and bounded to [0, 1].
    */
   queryLexical(handle: GraphHandle, query: string, k: number): QueryResult[] {
     const h = handle as Internal;
@@ -736,6 +737,29 @@ export class GraphnosisImpl implements GraphnosisAdapter {
             entities: n.entities ?? [],
             score: scores.get(n.id) ?? 0,
           }));
+      },
+      getRenderData(nodeIds: Set<string>): import('./graphnosis-adapter.js').RenderNodeData[] {
+        // Same fields serializeSubgraph reads, handed over as plain scalars so
+        // the passage renderer (host/recall-passages.ts) stays SDK-free and
+        // unit-testable with canned strings.
+        return sdkNodes
+          .filter(n => nodeIds.has(n.id))
+          .map(n => {
+            const meta = (n.metadata ?? {}) as Record<string, unknown>;
+            const sessionDate = typeof meta.sessionDate === 'string' ? meta.sessionDate : undefined;
+            const sessionId = typeof meta.sessionId === 'string' ? meta.sessionId : undefined;
+            const claims = typeof meta.claims === 'string' ? meta.claims : undefined;
+            return {
+              id: n.id,
+              content: n.content,
+              type: n.type,
+              score: scores.get(n.id) ?? 0,
+              ...(n.source?.section !== undefined ? { section: n.source.section } : {}),
+              ...(sessionDate !== undefined ? { sessionDate } : {}),
+              ...(sessionId !== undefined ? { sessionId } : {}),
+              ...(claims !== undefined ? { claims } : {}),
+            };
+          });
       },
     };
 
