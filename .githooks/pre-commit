@@ -25,15 +25,31 @@ set -euo pipefail
 # the main working tree, wherever the commit is being made from.
 GIT_COMMON="$(git rev-parse --path-format=absolute --git-common-dir)"
 ROOT="$(cd "$(dirname "$GIT_COMMON")" && pwd)"
-GUARD="$ROOT/scripts/pre-commit-guard.sh"
+CHECKS="$ROOT/scripts/pre-commit-checks.sh"
 
-# Fail closed. A missing or non-executable guard means the check did not run, and
-# that must never be reported by silence — it is the same defect class as running
-# the stale copy above.
-if [ ! -x "$GUARD" ]; then
-  echo "pre-commit: guard not found or not executable at $GUARD" >&2
+# WHAT RUNS HERE
+# --------------
+# This used to exec scripts/pre-commit-guard.sh directly, which meant the guard
+# was the ONLY pre-commit control: check-tests-allowlist.sh and
+# check-disclosure-tags.sh were invoked by nothing at all, despite their headers
+# claiming otherwise. It now execs the composite, which runs all four checks and
+# prints a per-check verdict:
+#
+#   pre-commit-guard.sh        personal names / fixture data / smoketest artifacts
+#   check-nul-bytes.sh         raw NUL bytes that make grep silently skip a file
+#   check-tests-allowlist.sh   tests/ path policy
+#   check-disclosure-tags.sh   (b)/(c) disclosure content policy
+#
+# The composite treats a MISSING member as a refusal, not a skip — see its
+# header for why "did not run" must never look like "found nothing".
+
+# Fail closed. A missing or non-executable composite means the checks did not
+# run, and that must never be reported by silence — it is the same defect class
+# as running the stale copy above.
+if [ ! -x "$CHECKS" ]; then
+  echo "pre-commit: checks not found or not executable at $CHECKS" >&2
   echo "pre-commit: refusing to commit unchecked. Use --no-verify only deliberately." >&2
   exit 1
 fi
 
-exec "$GUARD"
+exec "$CHECKS"

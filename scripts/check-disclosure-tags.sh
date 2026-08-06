@@ -45,7 +45,10 @@
 #   S. SELF-TEST     - both scan engines proven live against controls. exit 2.
 #   H. INTEGRITY     - every held path exists and still carries a (b)/(c) tag.
 #   R. REFUSAL       - nothing tagged (b)/(c) is tracked or staged.
-#   N. UNCLASSIFIED  - no untagged new suite in the two classified lanes.
+#   N. UNCLASSIFIED  - no untagged new file in the classified lanes (LANE_RE).
+#                      "New" = not in HEAD and not on HEAD's copy of the
+#                      tests-allowlist. See the section body for why HEAD alone
+#                      is the wrong marker for the repo-root tests/ lane.
 #   C. CONTRADICTION - held list and tests-allowlist cannot disagree.
 #   E. EXPOSURE      - (b)/(c) files merely VISIBLE to git (one `git add .`).
 #
@@ -60,11 +63,19 @@
 #   4  usage / missing prerequisite.
 #   Precedence when several apply: 2 > 4 > 1 > 3.
 #
-# Run standalone, or from scripts/pre-commit-guard.sh.
-# NOTE for whoever wires it into that guard: scripts/tests/pre-commit-guard.test.sh
-# copies ONLY pre-commit-guard.sh into its throwaway repos, so a bare call to a
-# sibling script will make every case in that suite fail closed. Copy the
-# siblings in `fresh_repo` in the same commit that adds the call.
+# WHERE THIS RUNS
+#   scripts/pre-commit-checks.sh, which .githooks/pre-commit execs on every
+#   commit (core.hooksPath=.githooks). Also runnable standalone.
+#
+#   Until 2026-08-05 this line claimed it ran "from scripts/pre-commit-guard.sh".
+#   It did not: that guard never called any sibling, so this check was invoked
+#   by nothing — not the hook, not any GitHub workflow.
+#
+#   The note that used to sit here warned that wiring it INTO pre-commit-guard.sh
+#   would break scripts/tests/pre-commit-guard.test.sh, which copies ONLY that
+#   guard into its ~20 throwaway repos. That is why the wiring went into a
+#   separate composite instead: the guard keeps its single job and its suite
+#   keeps passing unmodified. Do not move this call back inside the guard.
 
 set -o pipefail
 
@@ -94,12 +105,21 @@ cd "$ROOT" || exit 4
 
 HELD_FILE="$SCRIPT_DIR/disclosure-held.txt"
 ALLOWLIST="$SCRIPT_DIR/tests-allowlist.txt"
+ALLOWLIST_REL="${ALLOWLIST#"$ROOT"/}"
 
 # Lanes whose *.mjs / *.ts files must ALL carry a tag once git can see them.
 # scripts/forensics/ added 2026-08-03: two held files sat OUTSIDE this pattern,
 # so the check reported clean while they were fully committable. A lane the
 # checker cannot see is a lane it does not protect.
-LANE_RE='^(apps/desktop-sidecar/tests/|tests/desktop/|scripts/forensics/)[^/]*\.(mjs|ts)$'
+#
+# 2026-08-05: the same miss again, one directory up. The lane was `tests/desktop/`
+# but NOT `tests/` itself, so a reproduction written at the repo-root tests/ level
+# was asked to declare nothing. Two such files — working reproductions of a
+# consent-revocation bypass live on the shipped build — were one `!` line and one
+# allowlist line from publication with no check objecting. The tests/ arm is now
+# `tests/.*` rather than `tests/[^/]*`: a lane bounded by depth is a lane whose
+# blind spot is one `mkdir` away.
+LANE_RE='^(apps/desktop-sidecar/tests/[^/]*|scripts/forensics/[^/]*|tests/.*)\.(mjs|ts)$'
 
 # A disclosure tag is a HEADER declaration. If it is not in the header it is
 # not a tag - that keeps a prose mention deep inside a fixture from reading as
@@ -185,6 +205,32 @@ PARITY="$( ( cd "$CTL" && git grep -a -I --no-index -l -E -e "$TAG_BC_RE" -- . 2
 [ "$PARITY" = "pos-b.txt pos-c.txt pos-nospace.txt " ] \
   || st_fail "git-grep engine disagrees with awk on the control corpus: got '$PARITY'. The two scanners have drifted."
 
+# LANE_RE gets controls in BOTH directions. Section N is the only thing standing
+# between an unclassified new reproduction and publication, and its whole verdict
+# is "did this path match the lane" - a silently narrowed lane reports clean
+# forever, which is the exact failure this section was widened twice to fix.
+for __needle in \
+  'apps/desktop-sidecar/tests/x.test.mjs' \
+  'scripts/forensics/x.mjs' \
+  'tests/x.ts' \
+  'tests/defect-x-proof.ts' \
+  'tests/desktop/x.test.ts' \
+  'tests/lint/deep/x.mjs'
+do
+  printf '%s\n' "$__needle" | grep -a -q -E "$LANE_RE" \
+    || st_fail "lane regex does not match its control needle '$__needle'. A lane the checker cannot see is a lane it does not protect."
+done
+for __needle in \
+  'tests/x.json' \
+  'apps/desktop-sidecar/tests/sub/x.mjs' \
+  'apps/desktop/src/x.ts' \
+  'testsuite/x.ts'
+do
+  if printf '%s\n' "$__needle" | grep -a -q -E "$LANE_RE"; then
+    st_fail "lane regex matched '$__needle', which is outside every classified lane. It has been widened too far."
+  fi
+done
+
 # The INDEX scanner must be proven live too, and the control is DERIVED rather
 # than hardcoded: pick a tracked file, pull a word out of its own index blob,
 # and require `git grep --cached` to find that word in that file. A hardcoded
@@ -257,12 +303,30 @@ fi
 
 # ===========================================================================
 # N. UNCLASSIFIED - a new suite in a classified lane must declare a class.
-#    Scoped to files NOT already in HEAD: the pre-audit suites tracked before
-#    2.59a were never classified by it, and retro-tagging them is an owner
-#    decision, not this check's.
+#    Scoped to files NOT already ESTABLISHED: the pre-audit suites tracked
+#    before 2.59a were never classified by it, and retro-tagging them is an
+#    owner decision, not this check's.
 # ===========================================================================
+# WHAT "ESTABLISHED" MEANS, AND WHY HEAD ALONE IS THE WRONG MARKER
+# HEAD is the right marker for the sidecar and forensics lanes, whose files are
+# committed. It is the WRONG marker for the repo-root tests/ lane: that lane is
+# `/tests/*`-ignored and un-ignored per file, and NOTHING under it has ever been
+# committed - `git ls-files -- tests/` is empty. Judged by HEAD alone every one
+# of the reviewed class (a) suites there looks brand new, so widening the lane to
+# tests/ with HEAD as the only marker would fail 36 legitimately publishable
+# files. The second marker is the allowlist AS COMMITTED IN HEAD.
+#
+# `git show HEAD:` and not the worktree copy, on purpose: appending a path to the
+# working allowlist must NOT grandfather it. Reading the working copy would make
+# this the tautology the allowlist's own header warns about - the hurried edit
+# would move the goalposts and the check would agree with it. An uncommitted
+# addition is exactly the state a new publication is in, and it is the state this
+# section has to refuse.
+HEAD_ALLOWED="$(git show "HEAD:$ALLOWLIST_REL" 2>/dev/null | grep -a -v -E '^[[:space:]]*(#|$)' | sed 's/[[:space:]]*$//' | sort -u || true)"
+ESTABLISHED="$(printf '%s\n%s\n' "$HEAD_FILES" "$HEAD_ALLOWED" | grep -a . | sort -u)"
+
 LANE_SEEN="$(printf '%s\n%s\n%s\n' "$TRACKED" "$STAGED" "$UNTRACKED_VISIBLE" | grep -a . | sort -u | grep -a -E "$LANE_RE" || true)"
-LANE_NEW="$(comm -23 <(printf '%s\n' "$LANE_SEEN" | grep -a . || true) <(printf '%s\n' "$HEAD_FILES"))"
+LANE_NEW="$(comm -23 <(printf '%s\n' "$LANE_SEEN" | grep -a . || true) <(printf '%s\n' "$ESTABLISHED"))"
 
 n_staged_untagged=""; n_visible_untagged=""
 while IFS= read -r p; do
@@ -347,7 +411,7 @@ fi
 # ===========================================================================
 case "$worst" in
   0) echo "$PROG: OK - ${n_held} held (b)/(c) files, all present and tagged; none tracked, staged or visible;" \
-          "no unclassified suite in the sidecar/desktop lanes; no contradiction with the ${n_allowed}-entry allowlist." ;;
+          "no unclassified file in the sidecar/tests/forensics lanes; no contradiction with the ${n_allowed}-entry allowlist." ;;
   1) echo "" >&2
      echo "$PROG: REFUSED (exit 1). The 2.59a classification is the authority:" >&2
      echo "  Graphnosis/data/audit-archive/findings/PII-DISCLOSURE-TESTTREE-2.59a.md" >&2 ;;

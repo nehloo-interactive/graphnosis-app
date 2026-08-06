@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Assert that licence claims in README.md match the licences they describe.
+ * Assert that license claims in README.md match the licenses they describe.
  *
- * The README summarises licensing in prose, and prose drifts from the files it
+ * The README summarizes licensing in prose, and prose drifts from the files it
  * describes. This repo's README stated that a sibling library was Apache 2.0
  * when it had been FSL-1.1 since the day it was extracted — a public repo
- * advertising more permission than the licence grants. The LICENSE file, the
+ * advertising more permission than the license grants. The LICENSE file, the
  * package manifest, and the Terms of Use were all correct; only the summary was
  * wrong, so nothing contradicted it and it survived five weeks.
  *
@@ -30,17 +30,17 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 function identify(licenseText) {
   const head = licenseText.slice(0, 400).toLowerCase();
   // Order matters: FSL's full title contains "Apache 2.0 Future License", so a
-  // naive Apache test would match it and report the permissive licence.
+  // naive Apache test would match it and report the permissive license.
   if (head.includes('functional source license')) return 'FSL-1.1-Apache-2.0';
   if (head.includes('apache license')) return 'Apache-2.0';
   if (head.includes('mit license')) return 'MIT';
   return null;
 }
 
-/** The licence section of the README — where the summary lives.
+/** The license section of the README — where the summary lives.
  *  Runs to the next heading of the same level, or to end of file when the
  *  section is last (which it usually is). */
-function licenceSection(readme) {
+function licenseSection(readme) {
   const lines = readme.split('\n');
   const start = lines.findIndex((l) => /^##+\s*Licen[cs]e\s*$/i.test(l));
   if (start === -1) return '';
@@ -53,12 +53,12 @@ const failures = [];
 const warnings = [];
 
 const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
-const section = licenceSection(readme);
+const section = licenseSection(readme);
 if (!section.trim()) {
   failures.push('README.md has no "## License" section to check.');
 }
 
-// ── 1. This repo's own licence ───────────────────────────────────────────────
+// ── 1. This repo's own license ───────────────────────────────────────────────
 const own = identify(readFileSync(join(ROOT, 'LICENSE'), 'utf8'));
 if (!own) {
   failures.push('Could not identify this repo\'s LICENSE.');
