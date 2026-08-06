@@ -1,15 +1,26 @@
 /**
  * Machine-local engram catalog subscriptions + install state — not in encrypted cortex.
- * Path: ~/.graphnosis/catalog-subscriptions.json
+ * Path: $GRAPHNOSIS_STATE/catalog-subscriptions.json, default ~/.graphnosis/…
+ *
+ * The directory is resolved PER CALL by `stateDir()` (see state-dir.ts). It used
+ * to be a module-scope `const`, which meant a server deployed with
+ * `GRAPHNOSIS_STATE=/opt/graphnosis` still wrote its subscriptions to
+ * `$HOME/.graphnosis` — and two such servers on one host shared, and
+ * cross-contaminated, a single file. This is exactly the machine-local state
+ * `GRAPHNOSIS_STATE` exists to relocate.
  */
 
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import type { CatalogSubscriptionStore } from '@graphnosis-app/core/settings';
+import { stateFile } from './state-dir.js';
 
-const STORE_DIR = path.join(os.homedir(), '.graphnosis');
-const STORE_FILE = path.join(STORE_DIR, 'catalog-subscriptions.json');
+const storeFile = (): string => stateFile('catalog-subscriptions.json');
+
+/** Absolute path of the subscriptions file. Exported for diagnostics and tests. */
+export function catalogSubscriptionsPath(): string {
+  return storeFile();
+}
 
 function emptyStore(): CatalogSubscriptionStore {
   return { subscribedCatalogIds: [], installedPackageIds: [] };
@@ -17,7 +28,7 @@ function emptyStore(): CatalogSubscriptionStore {
 
 export async function readCatalogSubscriptions(): Promise<CatalogSubscriptionStore> {
   try {
-    const raw = await fs.readFile(STORE_FILE, 'utf8');
+    const raw = await fs.readFile(storeFile(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<CatalogSubscriptionStore>;
     const ids = Array.isArray(parsed.subscribedCatalogIds)
       ? parsed.subscribedCatalogIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
@@ -62,7 +73,10 @@ export async function readCatalogSubscriptions(): Promise<CatalogSubscriptionSto
 }
 
 export async function writeCatalogSubscriptions(store: CatalogSubscriptionStore): Promise<void> {
-  await fs.mkdir(STORE_DIR, { recursive: true, mode: 0o700 });
+  // Resolve ONCE per invocation so mkdir and writeFile cannot disagree about
+  // the root. Fresh on every call — just not twice within one call.
+  const file = storeFile();
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const payload: CatalogSubscriptionStore = {
     subscribedCatalogIds: [...new Set(store.subscribedCatalogIds)],
     installedPackageIds: [...new Set(store.installedPackageIds ?? [])],
@@ -75,7 +89,7 @@ export async function writeCatalogSubscriptions(store: CatalogSubscriptionStore)
       ? { mdmDefaultSubscriptions: [...new Set(store.mdmDefaultSubscriptions)] }
       : {}),
   };
-  await fs.writeFile(STORE_FILE, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
+  await fs.writeFile(file, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
 export async function subscribeCatalogEntry(catalogId: string): Promise<CatalogSubscriptionStore> {

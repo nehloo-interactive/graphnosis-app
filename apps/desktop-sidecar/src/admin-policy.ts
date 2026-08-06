@@ -18,6 +18,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import type { GraphnosisHost } from './host.js';
 
 export interface AdminPolicy {
   disabledConnectorKinds: string[];
@@ -100,39 +101,49 @@ export function isProviderDisabled(providerId: string): boolean {
   return getAdminPolicy().disabledProviders.some((d) => d.toLowerCase() === lower);
 }
 
-/** Apply IT-managed provider blocks + pinned rates into user settings at boot. */
-export async function mergeManagedProviderPolicy(host: {
-  getSettings: () => { models?: import('@graphnosis-app/core/settings').ModelsSettings };
-  setSettings: (partial: Partial<import('@graphnosis-app/core/settings').AppSettings>) => Promise<unknown>;
-}): Promise<void> {
+/** Apply IT-managed provider blocks + pinned rates into user settings at boot.
+ *
+ *  Typed as a `Pick` of the real host rather than a hand-written structural
+ *  shape. The hand-written one declared its own
+ *  `setSettings: (partial: Partial<AppSettings>) => …`, which silently opted
+ *  this module OUT of the settings-provenance guard — it was the one
+ *  whole-tree-spread site in the sidecar that the compile-time check could
+ *  not see. Keep it a `Pick` so the guard follows any future signature change.
+ */
+export async function mergeManagedProviderPolicy(
+  host: Pick<GraphnosisHost, 'getSettings' | 'setSettings'>,
+): Promise<void> {
   const policy = getAdminPolicy();
   if (policy.disabledProviders.length === 0 && policy.pinnedRates.length === 0) return;
 
-  const current = host.getSettings();
-  const models = current.models ?? { strategy: 'adaptive' as const, providers: { ollama: { enabled: true } } };
-  const providers = { ...models.providers };
+  // Everything below is derived INSIDE the write queue: this runs at boot,
+  // concurrently with the brain engine's first background writes, and the
+  // read-to-write gap used to span an await.
+  await host.setSettings((current) => {
+    const models = current.models ?? { strategy: 'adaptive' as const, providers: { ollama: { enabled: true } } };
+    const providers = { ...models.providers };
 
-  for (const pid of policy.disabledProviders) {
-    const prior = providers[pid] ?? { enabled: false };
-    providers[pid] = { ...prior, enabled: false, adminLocked: true };
-  }
+    for (const pid of policy.disabledProviders) {
+      const prior = providers[pid] ?? { enabled: false };
+      providers[pid] = { ...prior, enabled: false, adminLocked: true };
+    }
 
-  const userRates = (models.customRates ?? []).filter((r) => !(r as { adminEnforced?: boolean }).adminEnforced);
-  const pinnedRates = policy.pinnedRates.map((pin) => ({
-    ...(pin.modelId ? { modelId: pin.modelId } : {}),
-    ...(pin.providerId ? { providerId: pin.providerId } : {}),
-    pricing: pin.pricing,
-    ...(pin.note ? { note: pin.note } : {}),
-    adminEnforced: true,
-  }));
+    const userRates = (models.customRates ?? []).filter((r) => !(r as { adminEnforced?: boolean }).adminEnforced);
+    const pinnedRates = policy.pinnedRates.map((pin) => ({
+      ...(pin.modelId ? { modelId: pin.modelId } : {}),
+      ...(pin.providerId ? { providerId: pin.providerId } : {}),
+      pricing: pin.pricing,
+      ...(pin.note ? { note: pin.note } : {}),
+      adminEnforced: true,
+    }));
 
-  await host.setSettings({
-    ...current,
-    models: {
-      ...models,
-      providers,
-      customRates: [...userRates, ...pinnedRates],
-    },
+    return {
+      models: {
+        ...models,
+        providers,
+        customRates: [...userRates, ...pinnedRates],
+      },
+    };
   });
 }
 

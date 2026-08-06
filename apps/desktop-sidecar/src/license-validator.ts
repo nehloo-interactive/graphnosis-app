@@ -117,7 +117,7 @@ export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' 
 // ── LicenseValidator ──────────────────────────────────────────────────────────
 
 /**
- * Verifies Ed25519-signed license tokens. Must be initialised via `create()`
+ * Verifies Ed25519-signed license tokens. Must be initialized via `create()`
  * before first use — `create()` awaits the libsodium WASM boot (one-time cost,
  * typically < 5 ms on first call). All subsequent `verifyToken` / `hasFeature`
  * calls are synchronous and allocation-minimal.
@@ -138,7 +138,7 @@ export class LicenseValidator {
   }
 
   /**
-   * Initialise the validator. Awaits libsodium WASM boot (one-time cost,
+   * Initialize the validator. Awaits libsodium WASM boot (one-time cost,
    * shared across all callers). Safe to call concurrently — all callers
    * share the same WASM instance.
    *

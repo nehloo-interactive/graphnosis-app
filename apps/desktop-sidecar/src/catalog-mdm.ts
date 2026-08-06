@@ -2,13 +2,13 @@
  * MDM engram catalog bundle — import + auto-subscribe on unlock.
  *
  * Bundle shape: `MdmEngramCatalogBundle` (SSO hints + defaultSubscriptions packageIds).
- * Machine-local path: `~/.graphnosis/catalog-subscriptions.json` stores imported path
- * and packageIds. Env override: `GRAPHNOSIS_MDM_CATALOG_BUNDLE=/path/to/bundle.json`.
+ * Machine-local path: `$GRAPHNOSIS_STATE/catalog-subscriptions.json` (default
+ * `~/.graphnosis/…`) stores imported path and packageIds. Env override:
+ * `GRAPHNOSIS_MDM_CATALOG_BUNDLE=/path/to/bundle.json`.
  */
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import type {
   EngramCatalogEntry,
   MdmEngramCatalogBundle,
@@ -22,6 +22,7 @@ import {
 import { sanitizeClassificationSchema } from '@graphnosis-app/core';
 import type { GraphnosisHost } from './host.js';
 import { catalogHasSsoSession } from './catalog-sso-gate.js';
+import { stateFile } from './state-dir.js';
 import {
   readCatalogSubscriptions,
   writeCatalogSubscriptions,
@@ -31,7 +32,21 @@ import {
 
 export const MDM_CATALOG_BUNDLE_ENV = 'GRAPHNOSIS_MDM_CATALOG_BUNDLE';
 
-export const DEFAULT_MDM_BUNDLE_PATH = path.join(os.homedir(), '.graphnosis', 'mdm-catalog-bundle.json');
+/**
+ * Where an MDM bundle lands when no explicit path was given — read here by
+ * `resolveMdmBundlePath` below, and WRITTEN here by the `catalog.mdmImport`
+ * handler in ipc.ts when a bundle arrives inline.
+ *
+ * A FUNCTION, NOT A CONST, AND NEVER MEMOIZED. As a module-scope const this
+ * froze `~/.graphnosis` at import and ignored `GRAPHNOSIS_STATE` — so a server
+ * deployed with `GRAPHNOSIS_STATE=/opt/graphnosis` would neither find a bundle
+ * dropped into its own state dir nor write one there. A lazily-cached getter
+ * would freeze at first use and reproduce the same bug in a different shape.
+ * Same contract as the other machine-local stores; see state-dir.ts.
+ */
+export function defaultMdmBundlePath(): string {
+  return stateFile('mdm-catalog-bundle.json');
+}
 
 export async function readMdmBundleFile(bundlePath: string): Promise<MdmEngramCatalogBundle | null> {
   try {
@@ -77,9 +92,12 @@ export async function resolveMdmBundlePath(): Promise<string | null> {
       return store.mdmBundlePath.trim();
     } catch { /* missing file */ }
   }
+  // One resolution for this call — the access check and the returned path must
+  // name the same file. Fresh on every call; not cached across calls.
+  const fallback = defaultMdmBundlePath();
   try {
-    await fs.access(DEFAULT_MDM_BUNDLE_PATH);
-    return DEFAULT_MDM_BUNDLE_PATH;
+    await fs.access(fallback);
+    return fallback;
   } catch {
     return null;
   }
@@ -228,7 +246,7 @@ export async function mergeMdmSsoHints(
     }
     : {};
   if (!sso?.oidc?.issuer && bundle.sso.issuer) {
-    await host.setSettings({
+    await host.setSettings((current) => ({
       ...current,
       ...compliancePatch,
       ...catalogPatch,
@@ -249,8 +267,8 @@ export async function mergeMdmSsoHints(
             ?? current.engramCatalog
             ?? { entries: [], version: 2 },
         }),
-    });
+    }));
   } else if (schema || mergedCatalogEntries) {
-    await host.setSettings({ ...current, ...compliancePatch, ...catalogPatch });
+    await host.setSettings((current) => ({ ...current, ...compliancePatch, ...catalogPatch }));
   }
 }

@@ -307,7 +307,7 @@ export const RETENTION_SLICE_EXT = '.json.enc';
  * all sealed. Same key, same envelope as those, so it is readable exactly by
  * whoever can already open the cortex.
  *
- * Mode 0600 inside a 0700 directory is kept as defence in depth, not as the
+ * Mode 0600 inside a 0700 directory is kept as defense in depth, not as the
  * protection: file modes do not survive a copy to a backup or a support bundle.
  */
 async function writeRetentionExportSlice(
