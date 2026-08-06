@@ -15,7 +15,7 @@ try {
 ---
 
 <Layout
-  title="MemoryStudio — Graphnosis | Offline Memory Management, Locally"
+  title="Job Memory — Graphnosis | Offline Memory Management, Locally"
   description="Recall, remember, edit, and explore your AI's memory directly inside Graphnosis — no internet, no cloud, no AI client required. Deterministic. Encrypted. Yours."
 >
   <Nav />
@@ -37,7 +37,7 @@ try {
             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#a78bfa] opacity-75"></span>
             <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#a78bfa]"></span>
           </span>
-          MemoryStudio
+          Job Memory
         </div>
 
         <!-- Headline -->
@@ -56,6 +56,32 @@ try {
           No internet. No cloud hop. No third-party model seeing your data.
           Just you, your cortex, and a deterministic graph that never lies.
         </p>
+
+        {/* Mirrors the Agempus block on /skills-goals-trainer: the page used
+            "memory" and "graph" throughout without ever saying what makes this
+            one different, and The Un-Brain was cited nowhere on the site. */}
+        <div class="max-w-2xl mx-auto mb-10 rounded-xl border border-[#2a2a3d] bg-[#15151f] p-6 text-left">
+          <p class="text-sm font-black tracking-widest uppercase text-[#67e8f9] mb-3">Why a graph, and not a pile of notes</p>
+          <p class="text-base text-[#c4c6d6] leading-relaxed mb-4">
+            What you save is kept twice over. Once as the passages you actually wrote, and again as a layer of
+            entities and the relations between them, laid over the same store. That is the
+            <strong class="text-white">dual graph</strong> &mdash; and it is what the
+            <strong class="text-white">Un-Brain</strong> is: a declarative memory substrate that holds what you
+            know, rather than a model that has read it.
+          </p>
+          <ul class="flex flex-col gap-2 text-base text-[#b0b3c6] mb-4">
+            <li class="flex items-start gap-2"><span class="mt-0.5 shrink-0 text-[#5a5a7a]">&ndash;</span><span><strong class="text-white">Two ways in.</strong> A search finds a memory by its wording, or reaches it through an entity it shares with something else. One path routinely finds what the other misses.</span></li>
+            <li class="flex items-start gap-2"><span class="mt-0.5 shrink-0 text-[#5a5a7a]">&ndash;</span><span><strong class="text-white">Connections you never filed.</strong> Entities span collections, so a person or a project links work you deliberately kept apart &mdash; without merging it.</span></li>
+            <li class="flex items-start gap-2"><span class="mt-0.5 shrink-0 text-[#5a5a7a]">&ndash;</span><span><strong class="text-white">The same question, the same answer.</strong> Retrieval is deterministic and auditable: no model decides what you get back, so a result can be reproduced and checked rather than taken on trust.</span></li>
+          </ul>
+          <p class="text-sm text-[#9a9db8] leading-relaxed">
+            The substrate, its invariants and its measurements are set out in
+            <a href="https://doi.org/10.5281/zenodo.20843387" target="_blank" rel="noopener"
+               class="text-[#67e8f9] hover:text-[#a5f3fc] underline underline-offset-2 transition-colors">The Un-Brain</a>
+            <span class="text-[#71717a]">(DOI <a href="https://doi.org/10.5281/zenodo.20843387" target="_blank" rel="noopener"
+               class="text-[#71717a] hover:text-[#a5f3fc] underline underline-offset-2 transition-colors">10.5281/zenodo.20843387</a>)</span>.
+          </p>
+        </div>
 
         <!-- CTA pair. Links to the /download chooser where the visitor
              picks their OS. -->
@@ -137,7 +163,7 @@ try {
             <div class="border-t border-[#2a2a3d] pt-4 mt-auto">
               <p class="text-xs font-mono tracking-widest uppercase text-[#67e8f9] mb-1">Graphnosis</p>
               <p class="text-[#a0a0b8] text-sm">
-                MemoryStudio shows you the full subgraph output — the exact structured context your AI client
+                Job Memory shows you the full subgraph output — the exact structured context your AI client
                 receives, with node types, confidence scores, and source provenance.
               </p>
             </div>
@@ -169,12 +195,12 @@ try {
     </section>
 
     <!-- ═══════════════════════════════════════════
-         FEATURE GRID — what MemoryStudio does
+         FEATURE GRID — what Job Memory does
     ═══════════════════════════════════════════ -->
     <section id="features" class="py-24 px-4 sm:px-6">
       <div class="max-w-7xl mx-auto">
         <div class="text-center mb-16">
-          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">What MemoryStudio does</p>
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">What Job Memory does</p>
           <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
             Every operation your AI runs.<br class="hidden sm:block" />
             Now in your hands.
@@ -407,7 +433,7 @@ try {
             Your cortex doesn&rsquo;t sleep.
           </h2>
           <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
-            MemoryStudio surfaces two background engines that keep your graph healthy and connected.
+            Job Memory surfaces two background engines that keep your graph healthy and connected.
             They don&rsquo;t need a prompt. They don&rsquo;t need internet. They run while you do other things.
           </p>
         </div>
@@ -515,7 +541,7 @@ try {
                 },
                 {
                   title: 'GLL assertion synthesis',
-                  desc: 'The LLM reads co-recalled nodes and proposes atomic facts that follow from them. Always labelled as inference — never silently written as truth.',
+                  desc: 'The LLM reads co-recalled nodes and proposes atomic facts that follow from them. Always labeled as inference — never silently written as truth.',
                 },
                 {
                   title: 'Insights & predictions',
@@ -538,7 +564,7 @@ try {
               <div class="space-y-2">
                 {[
                   { file: '.gnn', color: 'text-[#a78bfa]', desc: 'Neural network edge predictions. Reviewed, not automatic.' },
-                  { file: '.gll', color: 'text-[#f59e0b]', desc: 'LLM assertions and inferred edges. Always labelled, never merged without approval.' },
+                  { file: '.gll', color: 'text-[#f59e0b]', desc: 'LLM assertions and inferred edges. Always labeled, never merged without approval.' },
                 ].map(({ file, color, desc }) => (
                   <div class="flex items-start gap-3">
                     <code class={`text-xs font-mono font-bold ${color} bg-[#1c1c27] px-2 py-1 rounded flex-shrink-0 mt-0.5`}>{file}</code>
@@ -563,7 +589,7 @@ try {
       <div class="max-w-5xl mx-auto">
         <div class="text-center mb-16">
           <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">How it compares</p>
-          <h2 class="text-3xl sm:text-4xl font-black text-white">MemoryStudio vs. cloud memory services</h2>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">Job Memory vs. cloud memory services</h2>
         </div>
 
         <div class="rounded-2xl border border-[#2a2a3d] overflow-hidden">
@@ -571,7 +597,7 @@ try {
             <thead>
               <tr class="bg-[#1c1c27] border-b border-[#2a2a3d]">
                 <th class="text-left px-6 py-4 text-[#555570] font-mono text-xs uppercase tracking-widest w-1/3">Feature</th>
-                <th class="text-left px-6 py-4 text-[#67e8f9] font-bold">MemoryStudio</th>
+                <th class="text-left px-6 py-4 text-[#67e8f9] font-bold">Job Memory</th>
                 <th class="text-left px-6 py-4 text-[#555570] font-medium">Cloud memory services</th>
               </tr>
             </thead>
@@ -611,13 +637,13 @@ try {
               Don&rsquo;t start from a blank cortex.
             </h2>
             <p class="text-[#c4c6d6] text-lg leading-relaxed max-w-2xl mx-auto mb-4">
-              MemoryStudio is most powerful when your engrams already have structure.
+              Job Memory is most powerful when your engrams already have structure.
               Graphnosis Memory Kits are pre-built engram templates for specific jobs &mdash;
               researcher, engineer, clinician, executive &mdash; with the right sensitivity tiers,
               source scaffolding, and node schema pre-configured.
             </p>
             <p class="text-[#c4c6d6] leading-relaxed max-w-2xl mx-auto mb-10">
-              Load a kit, open MemoryStudio, and your first recall will already have something
+              Load a kit, open Job Memory, and your first recall will already have something
               worth exploring. The Deterministic Consolidation engine and GNN have richer material
               to work with from day one.
             </p>
@@ -646,10 +672,10 @@ try {
     <section class="py-24 px-4 sm:px-6">
       <div class="max-w-3xl mx-auto text-center">
         <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
-          MemoryStudio ships with Graphnosis.
+          Job Memory ships with Graphnosis.
         </h2>
         <p class="text-[#c4c6d6] text-lg leading-relaxed mb-10">
-          Download Graphnosis, unlock your cortex, and open the MemoryStudio tab.
+          Download Graphnosis, unlock your cortex, and open the Job Memory tab.
           The Studio subscription unlocks the full feature set &mdash; recall, remember, edit, GNN,
           and both background engines. Your data stays local from the first keystroke.
         </p>

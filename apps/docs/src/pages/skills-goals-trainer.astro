@@ -1,14 +1,14 @@
 ---
 /**
- * /skills-goals-trainer — landing page for Graphnosis Autonomous Skills.
+ * /skills-goals-trainer — landing page for Graphnosis Train Skills.
  *
  * Mirrors the structure and tone of memory-studio.astro: sticky mode bar
  * under nav, hero with headline + stat pills, then 8-10 narrative sections
  * with grids/comparisons/examples, closing with a download CTA.
  *
- * Critical for go-to-market: every industry should land here, recognise
+ * Critical for go-to-market: every industry should land here, recognize
  * their workflow in one of the 100+ packs, download, and try Graphnosis
- * Autonomous Praxis on a real SOP.
+ * Graphnosis Praxis on a real SOP.
  *
  * The 3D Engram section reserves space for a screenshot the user will
  * provide separately — `/3d-engram-skills-preview.png` is the expected
@@ -29,7 +29,7 @@ try {
 ---
 
 <Layout
-  title="Autonomous Skills — Graphnosis Autonomous Praxis"
+  title="Train Skills — Graphnosis Praxis"
   description="Walkable SOPs dispatched each session, self-improving with each run. Turn AI instructions into Standard Operating Procedures your AI can execute. 100+ role-matched .gsk skill kits, all free. Cross-skill orchestration, snapshot-based history, live 3D graph view. Local, encrypted, deterministic."
 >
   <Nav />
@@ -49,7 +49,7 @@ try {
             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#67e8f9] opacity-75"></span>
             <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#67e8f9]"></span>
           </span>
-          Autonomous Skills
+          Train Skills
         </div>
 
         <h1 class="text-5xl sm:text-6xl lg:text-7xl font-black text-white leading-[1.05] mb-6">
@@ -61,11 +61,37 @@ try {
         </h1>
 
         <p class="text-lg sm:text-xl text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed mb-10">
-          Autonomous Skills turn AI instructions into Standard Operating Procedures your AI can actually execute.
+          Trained skills turn AI instructions into Standard Operating Procedures your AI can actually execute.
           Author once &mdash; Graphnosis compiles your source into a typed SOP graph.
           At walk time, recall recipes pull live memory into the right steps;
           any MCP-connected AI gets a deterministic plan to run.
         </p>
+
+        {/* The page used the word "skills" throughout but never said WHERE they
+            live or what owns them, and "Agempus" appeared nowhere on the site
+            despite being the term the product, the app rail and the papers are
+            all built on. Defined here, once, before the page relies on it. */}
+        <div class="max-w-2xl mx-auto mb-10 rounded-xl border border-[#2a2a3d] bg-[#15151f] p-6 text-left">
+          <p class="text-sm font-black tracking-widest uppercase text-[#a78bfa] mb-3">What holds a skill</p>
+          <p class="text-base text-[#c4c6d6] leading-relaxed mb-4">
+            Skills do not sit in a folder next to your memory &mdash; they live <em>inside</em> it. A skills engram
+            is an <strong class="text-white">Agempus</strong>: an agent whose procedures are subgraphs of the very
+            same graph that holds what you remember. Recall and procedure share one store, so a skill can reach
+            your memory at the exact step that needs it. Several of them are <strong class="text-white">Agempi</strong>.
+          </p>
+          <ul class="flex flex-col gap-2 text-base text-[#b0b3c6] mb-4">
+            <li class="flex items-start gap-2"><span class="mt-0.5 shrink-0 text-[#5a5a7a]">&ndash;</span><span>You <strong class="text-white">train</strong> skills into it, and retrain them as the work changes &mdash; every version kept, any retrain revertible.</span></li>
+            <li class="flex items-start gap-2"><span class="mt-0.5 shrink-0 text-[#5a5a7a]">&ndash;</span><span>It <strong class="text-white">walks</strong> them step by step, handing any MCP-connected AI a plan with declared inputs, outputs and failure handlers.</span></li>
+            <li class="flex items-start gap-2"><span class="mt-0.5 shrink-0 text-[#5a5a7a]">&ndash;</span><span>Other Agempi <strong class="text-white">borrow</strong> its skills by name, rather than spawning a second agent to do the same job &mdash; the mechanism, and what it measurably saves, are set out in <a href="https://doi.org/10.5281/zenodo.21205599" target="_blank" rel="noopener" class="text-[#67e8f9] hover:text-[#a5f3fc] underline underline-offset-2 transition-colors">Borrowable Skills as Lean Un-Ganglia Subgraphs</a> <span class="text-[#71717a]">(DOI <a href="https://doi.org/10.5281/zenodo.21205599" target="_blank" rel="noopener" class="text-[#71717a] hover:text-[#a5f3fc] underline underline-offset-2 transition-colors">10.5281/zenodo.21205599</a>)</span>.</span></li>
+          </ul>
+          <p class="text-sm text-[#9a9db8] leading-relaxed">
+            How far one may act on its own is a dial you set, from
+            <strong class="text-white">Handheld</strong> (you run it, every time) through
+            <strong class="text-white">Guided</strong> and <strong class="text-white">Tell&rsquo;n&rsquo;Go</strong> to
+            <strong class="text-white">Unattended</strong> &mdash; and each skill carries its own ceiling, so raising
+            the dial can never lift a skill above the cap its author gave it.
+          </p>
+        </div>
 
         <div class="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
           <a
@@ -188,7 +214,7 @@ try {
           <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
             <div class="text-3xl mb-3" aria-hidden="true">⊙</div>
             <h3 class="text-base font-bold text-white mb-2">On completion</h3>
-            <p class="text-sm text-[#9a9db8] leading-relaxed">What tangible output or behaviour is expected when the skill completes.</p>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">What tangible output or behavior is expected when the skill completes.</p>
             <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">On completion:</p>
           </article>
 
@@ -498,7 +524,7 @@ complete &mdash; invoke the rollback path.</code></pre>
           </h2>
           <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
             A force-directed 3D view of your cortex &mdash; nodes drift instead of snapping,
-            edges colour by category, GNN predictions float in as a dashed overlay you can
+            edges color by category, GNN predictions float in as a dashed overlay you can
             toggle. Watch your skills settle into clusters; drag a node and pin it.
           </p>
         </div>
@@ -540,7 +566,7 @@ complete &mdash; invoke the rollback path.</code></pre>
             <p class="text-sm text-[#9a9db8] leading-relaxed">
               Graphnosis is modelled on the hippocampus &mdash; the brain region that
               binds disparate memories into something coherent. This view is its
-              digital twin. Drag any node to study its neighbourhood; the physics
+              digital twin. Drag any node to study its neighborhood; the physics
               engine pins it where you dropped it. Watch dense clusters loosen,
               isolated nodes drift to the rim, and the shape of your AI&rsquo;s
               memory emerge. The first time you flatten a tangled SOP chain by
@@ -561,9 +587,9 @@ complete &mdash; invoke the rollback path.</code></pre>
           </article>
 
           <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
-            <h3 class="text-lg font-bold text-white mb-2">Source-coloured nodes</h3>
+            <h3 class="text-lg font-bold text-white mb-2">Source-colored nodes</h3>
             <p class="text-sm text-[#9a9db8] leading-relaxed">
-              Each node carries its source colour &mdash; the .gsk pack it came from,
+              Each node carries its source color &mdash; the .gsk pack it came from,
               the document it was ingested from, the skill it&rsquo;s part of.
               Cross-source clusters jump out instantly.
             </p>
@@ -668,7 +694,7 @@ complete &mdash; invoke the rollback path.</code></pre>
         <div class="mt-10 bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 max-w-3xl mx-auto">
           <p class="text-base sm:text-lg font-black tracking-widest uppercase text-[#9a9db8] mb-3">Privacy by design</p>
           <p class="text-sm text-[#b0b3c6] leading-relaxed">
-            Export serialises only the structural payload &mdash; skill text, recipes,
+            Export serializes only the structural payload &mdash; skill text, recipes,
             <code class="font-mono text-[#67e8f9]">graphnosisMd</code>, goals.
             <strong class="text-white">It never sees your personal memory engrams.</strong>
             The direction of personalisation travels; the memories that caused it stay local.
@@ -753,7 +779,7 @@ complete &mdash; invoke the rollback path.</code></pre>
             <p class="text-sm text-[#9a9db8] leading-relaxed">
               A CLAUDE.md, a system prompt, a <code class="font-mono">.cursorrules</code>
               file &mdash; or download one of 100+ free <code class="font-mono">.gsk</code>
-              packs from the Job Memory Kits library.
+              packs from the Skill Packs library.
             </p>
           </article>
 
@@ -810,7 +836,7 @@ complete &mdash; invoke the rollback path.</code></pre>
              text stays. -->
         <div class="inline-flex items-center gap-2 px-7 py-3 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-lg sm:text-xl font-semibold text-[#c4c6d6] mb-8">
           <span class="bg-clip-text text-transparent font-black tracking-wider" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">
-            Graphnosis Autonomous Praxis
+            Graphnosis Praxis
           </span>
         </div>
         <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-5 leading-tight">
@@ -835,10 +861,10 @@ complete &mdash; invoke the rollback path.</code></pre>
     <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
       <div class="max-w-3xl mx-auto text-center">
         <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
-          Autonomous Skills ship with Graphnosis.
+          Trained skills ship with Graphnosis.
         </h2>
         <p class="text-[#c4c6d6] text-lg leading-relaxed mb-10">
-          Download Graphnosis, unlock your cortex, and open the Autonomous Skills tab. The free tier
+          Download Graphnosis, unlock your cortex, and open <strong class="text-white">Agents / Agempi</strong> — each agent there is an <em>Agempus</em>, a skills engram you train into. The free tier
           gives you author / browse / walk / retrain from source with full
           <strong class="text-white">version history and one-click rollback</strong> on every skill,
           so a retrain is never a one-way door. Pro adds the streaming LLM rewrite; live memory arrives at walk time via recall recipes.

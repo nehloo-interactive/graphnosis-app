@@ -122,8 +122,8 @@ None. Your cortex is not rewritten by this release.
 ### Changed
 
 - **Declined actions are now reported.** Approving a correction, resolving a duplicate or contradiction, promoting a skill, or a connector's mirror delete: if the memory engine declines, you are told, instead of the view quietly repainting as though it had succeeded.
-- **Incomplete recalls say so.** When part of your memory could not be read, the answer is labelled incomplete and names the engrams that did not respond.
-- **Similarity scoring states what it is based on.** Where no embedding model is loaded, results fall back to the deterministic lexical ranking and are labelled accordingly, rather than being scored on placeholder values.
+- **Incomplete recalls say so.** When part of your memory could not be read, the answer is labeled incomplete and names the engrams that did not respond.
+- **Similarity scoring states what it is based on.** Where no embedding model is loaded, results fall back to the deterministic lexical ranking and are labeled accordingly, rather than being scored on placeholder values.
 - **Version metadata is consistent** across the app, the sidecar and the native build, and is checked before a release can be built.
 
 ### Migrations
@@ -151,7 +151,7 @@ Moving a trained skill to another Skills engram could replace it with nothing bu
 - **The Skills panel keeps up with the AI.** Retraining a skill through an AI client refreshes the open skill instead of showing the previous version until you click away and back. Selecting a skill also collapses the other skills' history.
 - **`focus_engrams` now says it was ignored** rather than accepting it silently. Training reads no memory at compile time, so there is nothing to restrict.
 - **Skill training reports `source-only`** where it previously reported "memory-augmented · 0 nodes", which described a path that no longer runs.
-- **Op-log integrity warnings are summarised per file** — one line with the count, rather than one line per gap. Large cortexes were producing thousands.
+- **Op-log integrity warnings are summarized per file** — one line with the count, rather than one line per gap. Large cortexes were producing thousands.
 - **Automatic op-log compaction is switched off.** It could only ever rewrite the current device's file, so on a long-lived cortex it reclaimed nothing while still rewriting signed history. Nothing is deleted; the log simply stops being rewritten.
 
 ### Fixed
@@ -205,7 +205,7 @@ Asking about something by name could get you "no matches" from the very engram h
 
 ### Changed
 
-- **Recall points your AI at whole documents more decisively.** When your query matches the *name* of a stored file rather than text inside it, the hint asking the AI to open that document is now explicit, so it stops summarising fragments when the full file is what you wanted.
+- **Recall points your AI at whole documents more decisively.** When your query matches the *name* of a stored file rather than text inside it, the hint asking the AI to open that document is now explicit, so it stops summarizing fragments when the full file is what you wanted.
 
 ---
 
@@ -557,7 +557,7 @@ Major Ghampus upgrade: intent routing and tool planning moved out of a monolithi
 ### Changed
 
 - **MCP consent UX.** Consent modal shows friendly client names (including Ghampus); in-app Ghampus multi-tool recall chains no longer trip external MCP rate/replay guards.
-- **Home vitality bars.** Engram score bars use grade-based colours that render correctly in production WebKit; label column width aligns across rows.
+- **Home vitality bars.** Engram score bars use grade-based colors that render correctly in production WebKit; label column width aligns across rows.
 
 ### Fixed
 
@@ -843,7 +843,7 @@ Patch release fixing local model selection at call time, proactive-card dismiss 
 
 ### Changed
 
-- **Engram Sharing modal layout.** Create form moved out of a `<details>` footer into a proper modal-body section with a labelled heading. Engram picker uses a vertical checklist instead of horizontal chip wrapping so long engram lists stay scannable.
+- **Engram Sharing modal layout.** Create form moved out of a `<details>` footer into a proper modal-body section with a labeled heading. Engram picker uses a vertical checklist instead of horizontal chip wrapping so long engram lists stay scannable.
 
 ---
 
@@ -864,7 +864,7 @@ Ghampus gets a full chat thread with skill-match cards, walk plans, and proactiv
 
 - **Default landing tab.** Your Cortex (atlas) is now first in the rail and the default landing page; Ghampus is second with a sparkle icon. Dashboard panels collapse under a "Dashboard ▸" toggle.
 - **Chat bubble contrast.** User bubbles use dark teal/white in light mode and bright cyan/near-black in dark mode; Ghampus bubbles use `--color-surface-2` so dark mode no longer renders white.
-- **Vitality bars on macOS.** Skill vitality bars set width and colour via CSS custom properties (`--bar-w`, `--bar-color-dark`, `--bar-color-light`) so WebKit production builds render them correctly.
+- **Vitality bars on macOS.** Skill vitality bars set width and color via CSS custom properties (`--bar-w`, `--bar-color-dark`, `--bar-color-light`) so WebKit production builds render them correctly.
 - **Unified Ghampus input placeholder.** "Ask anything — type / to save, recall, or run a skill" across all engram contexts.
 - **Docs site nav.** Ghampus nav item moved before Docs; Upgrade link removed from top menu; Ghampus chip enlarged on `/ghampus` and the landing page.
 
@@ -932,7 +932,7 @@ Also rolled in here: the polish commits between v1.16.0 and v1.17.0 — the `tok
 
 ### Fixed
 
-- **Pro and domain-seat Enterprise users can now create unlimited shares.** The sharing gate was checking `features.includes('skill-training' | 'teams' | 'enterprise')` — but v1.15.6 had updated the validator to accept domain-seat tokens with no explicit features, and the gate was never updated to match. Pro users whose token didn't carry the `skill-training` feature and Enterprise OTP users whose token carried no features at all both fell through and were treated as Free, capped at 1 share with "Free plan includes 1 share. Upgrade to Pro for unlimited shares." The fix recognises any verified license token (personal or domain-seat) as paid.
+- **Pro and domain-seat Enterprise users can now create unlimited shares.** The sharing gate was checking `features.includes('skill-training' | 'teams' | 'enterprise')` — but v1.15.6 had updated the validator to accept domain-seat tokens with no explicit features, and the gate was never updated to match. Pro users whose token didn't carry the `skill-training` feature and Enterprise OTP users whose token carried no features at all both fell through and were treated as Free, capped at 1 share with "Free plan includes 1 share. Upgrade to Pro for unlimited shares." The fix recognizes any verified license token (personal or domain-seat) as paid.
 - **`.gez` Engram Pack export and import gate also fixed.** Both endpoints checked the `'teams'` feature but the error message said "requires Pro" — now both use the same paid-plan helper and the message correctly reads "Pro, Teams, or Enterprise subscription".
 - **Windows download link no longer serves the v1.13.6 binary.** Stale `_redirects` fallbacks were pointing at the previous-previous version for `/download/windows`. Now all platform fallbacks point at the current installer.
 
@@ -1003,7 +1003,7 @@ Also rolled in here: the polish commits between v1.16.0 and v1.17.0 — the `tok
 ### Added
 
 - **Teams & Enterprise subscriptions** — Stripe Checkout now supports `teams-monthly`, `teams-annual`, `enterprise-monthly`, and `enterprise-annual` plans with a `?seats=N` quantity parameter. Purchasing a Teams or Enterprise plan automatically creates a group record that the account owner can manage.
-- **Domain allowlist activation** — Organisations can now grant a Pro/Teams seat to anyone at a given domain (e.g. everyone `@company.com`) up to a configured seat cap. Members activate by entering their work email in **Settings → License → Refresh from server**.
+- **Domain allowlist activation** — Organizations can now grant a Pro/Teams seat to anyone at a given domain (e.g. everyone `@company.com`) up to a configured seat cap. Members activate by entering their work email in **Settings → License → Refresh from server**.
 - **Email OTP for domain seats** — To confirm inbox ownership before issuing a domain seat, the app now prompts for a 6-digit code sent to the work address. Entering the code in the new **Verify your work email** section of the License panel completes activation. Codes expire in 10 minutes; up to 5 attempts per code; a Resend button is available.
 - **Enterprise plan tier** — Enterprise tokens carry the `enterprise` feature flag in addition to all Teams features, ready to gate SSO, audit-API access, and compliance features as they ship.
 - **Admin provisioning API** — A new set of `Authorization: Bearer` protected endpoints lets you comp seats, create groups, manage members, set domain allowlists, issue voucher codes, and view the audit log without touching the Stripe dashboard. See the [Teams & Enterprise guide](/teams) for usage examples.
@@ -1082,7 +1082,7 @@ Also rolled in here: the polish commits between v1.16.0 and v1.17.0 — the `tok
 
 ### Fixed
 
-- **Rotating the VS Code bearer token now takes effect immediately and persists across restarts.** A race condition between `setGraphMetadata` / `deleteGraph` and `setSettings` meant that any engram metadata write (name change, sensitivity tier, etc.) occurring while the rotation was saving could silently overwrite both the in-memory token and the encrypted token on disk with the pre-rotation value. The modal would show the new token (returned directly by the IPC before the overwrite landed), but every subsequent request — including after a restart — was validated against the old token. Fixed by routing all three settings-write paths through the same `settingsWriteQueue` serialisation gate.
+- **Rotating the VS Code bearer token now takes effect immediately and persists across restarts.** A race condition between `setGraphMetadata` / `deleteGraph` and `setSettings` meant that any engram metadata write (name change, sensitivity tier, etc.) occurring while the rotation was saving could silently overwrite both the in-memory token and the encrypted token on disk with the pre-rotation value. The modal would show the new token (returned directly by the IPC before the overwrite landed), but every subsequent request — including after a restart — was validated against the old token. Fixed by routing all three settings-write paths through the same `settingsWriteQueue` serialization gate.
 - **Rotate button now reflects the token that was actually committed.** Previously the IPC handler returned the UUID it generated before confirming the value survived the write. It now re-reads from `getSettings()` after the commit, so the modal always shows exactly what the server accepts.
 
 ---
@@ -1210,7 +1210,7 @@ A release focused on strengthening how your data is protected — at rest, while
 ### Strengthened
 
 - **Sync integrity.** The op-log your devices sync is now cryptographically signed per device and sequence-verified, adding strong protection for synced and backed-up data. (New format; your existing op-log history is still read.)
-- **Per-engram consent.** Access approvals are now scoped to the specific engram an AI client requests — each sensitive engram is authorised individually, and the consent prompt names it.
+- **Per-engram consent.** Access approvals are now scoped to the specific engram an AI client requests — each sensitive engram is authorized individually, and the consent prompt names it.
 - **Encryption of bridge tokens at rest.** The mobile, browser, and VS Code bridge tokens are now encrypted within your settings.
 - **Tighter on-disk isolation.** Your cortex folder, settings, caches, op-log, and the app's local sockets are now created with owner-only permissions.
 - **Sensitive engrams and recall.** Sensitive engrams are kept out of broad "search everything" recall — they're returned only when you explicitly name and approve them, and then only up to the sensitive-tier cap.
@@ -1332,7 +1332,7 @@ Patch release on top of v1.13.0. The headline is **Presentation Mode** — a dem
 - **Per-source redaction.** Presentation Mode can reveal or mask individual sources within an engram: revealing an engram shows all its sources unless you've checked specific ones, in which case only those reveal. Precise across Search, the Inspector, Activity, MemoryStudio, and the 3D atlas.
 - **Activity "who made it" filter.** The Activity page now filters by actor — Claude Code, the Autonomous brain, You, the App, or System — via a dropdown and per-row badges.
 - **Manage your subscription via Stripe's portal.** **Manage subscription** opens Stripe's hosted billing portal (update card, cancel, view invoices) — Graphnosis keeps no billing account of its own.
-- **"Renews" vs "Expires" on your license.** The license panel shows *Renews \<date\>* for an active subscription and *Expires \<date\>* once you've cancelled.
+- **"Renews" vs "Expires" on your license.** The license panel shows *Renews \<date\>* for an active subscription and *Expires \<date\>* once you've canceled.
 - **Goal delete.** Goal cards get a confirm-gated delete button.
 
 ### Changed
@@ -1427,7 +1427,7 @@ The big shift in this release: **Skills are now first-class, executable Standard
   - **Collapsible left sidebar.** Chevron toggle in the top-right collapses everything to icon-only (56px wide); state persists across sessions. Memory Trace, AI-clients / Data-sources groups, and bottom-row labels hide; tooltips keep navigation discoverable.
   - **New rail icons** — MemoryStudio (brain/cognition), Sources (document with corner), Status (EKG pulse). Inline line-art SVGs that tint with the existing fg-dim/fg palette.
   - **Tab strip polish** — font 14px → 12px, padding 14px → 9px per side (~30px saved across the strip). Each tab gets a thin turquoise left border at 28% opacity as a visual separator; the active tab raises it to 55%; the first tab has no left border.
-  - **GAP status-bar pill** sits left of GLL — pulses green while the trainer is busy, greys when idle, and is clickable to jump straight to the Skills chip.
+  - **GAP status-bar pill** sits left of GLL — pulses green while the trainer is busy, grays when idle, and is clickable to jump straight to the Skills chip.
 - **Loopback verification — privacy as a visible signal.** Tauri `verify_local_llm` command: `pgrep` by process name → `lsof` by port fallback → `lsof -i -P -n -p PID` to enumerate the local LLM daemon's open sockets, classifying each as loopback (`127.0.0.1`, `::1`, `localhost`) or external. The result feeds an inline badge so you can prove at a glance that Ollama is not phoning home.
 - **Ghampus on the dashboard.** The duplicate "Graphnosis · your second cortex" headline is replaced with a Ghampus block: *"Ghampus / your memory seahorse."* with a faint, bobbing seahorse mark behind the text in the top-right of the title.
 - **Meet Ghampus modal.** Clicking the Ghampus title block opens a *"Hi again. I'm Ghampus."* modal with origin story, what-I-do bullets, where-you'll-bump-into-me list, what-I-will-never-do trust spine, and a closing *"Pleased to be your hippocampus."* Backdrop click / Got it / Esc close. Keyboard-accessible (role=button, tabindex, Enter/Space). See [The story of Ghampus](/reference/ghampus/).
@@ -1476,8 +1476,8 @@ Patch release fixing issues found in installed v1.11.0 builds.
 
 ### Fixed
 
-- **All engrams are fully loaded before any background process starts.** Connectors (RSS, GitHub, Slack, etc.) and the brain engine now wait for the complete cortex to be in memory before they begin. Previously, connectors could fire ingest jobs on engrams that hadn't finished decrypting yet, causing partial writes and the greyed-out engrams visible in the picker until the load caught up.
-- **Update notification "OK" now opens the in-app install modal.** Clicking OK on the macOS system notification did nothing if Graphnosis was minimised or hidden — the event was delivered to a hidden webview and the listener never fired. The click handler now brings the window forward and re-emits the event so the Install modal appears reliably.
+- **All engrams are fully loaded before any background process starts.** Connectors (RSS, GitHub, Slack, etc.) and the brain engine now wait for the complete cortex to be in memory before they begin. Previously, connectors could fire ingest jobs on engrams that hadn't finished decrypting yet, causing partial writes and the grayed-out engrams visible in the picker until the load caught up.
+- **Update notification "OK" now opens the in-app install modal.** Clicking OK on the macOS system notification did nothing if Graphnosis was minimized or hidden — the event was delivered to a hidden webview and the listener never fired. The click handler now brings the window forward and re-emits the event so the Install modal appears reliably.
 - **CI release: DMG located dynamically instead of by hardcoded filename.** The release workflow now finds whatever DMG Tauri produces (arch suffix varies by runner) rather than assuming `_aarch64.dmg`. Fixes the v1.11.1 CI failure where the build produced the DMG at the correct path but the step couldn't find it because the package version was mismatched.
 - **Status bar items right-aligned reliably.** Version, Vitality, GLL, GNN, and the MCP client indicator are now wrapped in a single flex container with `margin-left:auto`, replacing a fragile empty-span spacer approach that left the items drifting at intermediate positions on some window widths.
 - **Offline source categories added to landing page.** The "Auto-ingest from the tools you already use" section on graphnosis.com now lists the full range of off-the-grid sources — smart home, IoT sensors, local networks, research instruments, personal agents, robotics, agriculture — with a link to the step-by-step recipes guide.
@@ -1491,7 +1491,7 @@ Patch release fixing issues found in installed v1.11.0 builds.
 ### Added
 
 - **`dig_deeper` MCP tool.** New escalation tool for queries that `recall` can't fully answer — it searches harder, crosses engram boundaries, and tells your AI which strategy found each result. AI clients should call it before reporting "nothing found." See [MCP Tools](/reference/mcp-tools/#dig_deeper).
-- **Inferred layer in recall responses.** When overlay engines are running, recall results now include a clearly-labelled inferred section — predictions from the neural network and the local LLM, kept visually separate from your attested memory so you always know what's real versus what's suggested.
+- **Inferred layer in recall responses.** When overlay engines are running, recall results now include a clearly-labeled inferred section — predictions from the neural network and the local LLM, kept visually separate from your attested memory so you always know what's real versus what's suggested.
 - **AI now flags thin or lopsided recalls.** Eight core tools surface a heads-up when a recall looks suspiciously narrow — too few results for what was asked, or one engram drowning out all the others — so you know to prompt your AI to look harder.
 - **Source-filename hint in recall.** When a query matches a source filename but not the nodes inside it, `recall` names the source so your AI can follow up instead of stopping at "nothing found."
 - **LLM capability split.** The Foresight panel now has five independently-toggleable switches instead of a single on/off: **Recall enrichment**, **Correction parsing**, **Distillation**, **Insights & predictions**, and **Edge prediction**. All off by default, all on-device.
@@ -1519,7 +1519,7 @@ Patch release fixing issues found in installed v1.11.0 builds.
 - **Status bar layout.** Overlay engine pills and the MCP client indicator are now pushed to the far right, leaving the left side clear for the theme toggle and cortex path. The ⌘K search chip is gone — ⌘F handles it.
 - **Clicking the MCP indicator opens the Status page.**
 - **Predicted edges hidden by default in the 3D atlas.** The overlay edges no longer appear unless you turn them on — the canonical view stays clean.
-- **Recall audit footer no longer lists every engram.** Only engrams that contributed results appear in the footer; the rest are summarised as a count. Previously all engram names — including sensitive ones — were listed on every recall.
+- **Recall audit footer no longer lists every engram.** Only engrams that contributed results appear in the footer; the rest are summarized as a count. Previously all engram names — including sensitive ones — were listed on every recall.
 - **Engram scoping in recall now works regardless of how your AI formats the parameter.** `only_engrams` and `except_engrams` accept a list, a JSON-encoded string, or a bare name — all three were previously handled inconsistently.
 
 ### Fixed
@@ -1571,12 +1571,12 @@ Patch release fixing issues found in installed v0.10.0 DMGs.
 - **First-connect AI client modal.** When a new AI client connects for the first time, Graphnosis asks whether it's a chat assistant or an autonomous agent. Agent mode overrides the consent interval to "every recall" — extra friction for unattended automation.
 - **34 MCP tools across 9 categories.** The toolset expanded from the original 11 to 34: full Engram discovery (`list_engrams`, `suggest_engram`, `browse_engram`, `recent`, `get_engram_schema`); structured recall variants (`recall_structured`, `recall_with_citations`, `compare_engrams`, `cross_search`); source operations (`find_source`, `recall_source`, `transfer_source`); engram operations (`ingest_batch`, `engram_summary`); brain maintenance (`duplicate_pairs`, `healing_journal`, `gnn_status`); approximate similarity (`audit_memory`, `check_duplicate`); and Local-LLM-backed (`gnn_neighbors`, `llm_query`, `llm_distill`). Full reference: [MCP Tools](/reference/mcp-tools/).
 - **Activity Log in Status pane — full upgrade.** The Status tab's activity feed now loads 20 entries at a time and adds more on scroll (IntersectionObserver sentinel). Each row shows: a short content preview (first ~120 chars of the memory), a **triggeredBy badge** indicating who initiated the action (`user · ingest`, `user · forget`, `mcp · remember`, `brain · consolidation`, `connector · <kind>`, etc.), and an **Open in Sources ↗** button for source-linked events. Historical entries without attribution show no badge — no backfill.
-- **Actor attribution on all write paths (`triggeredBy`).** Every op-log event written by the sidecar now carries a `triggeredBy` field identifying the actor — `mcp:remember`, `mcp:forget`, `mcp:correct`, `user:ingest`, `user:forget`, `user:correct`, `brain:reinforcement`, `brain:consolidation`, `connector:<kind>`. The Activity Log surfaces this as a colour-coded badge. New cortexes and all events going forward are attributed automatically; no migration of historical events.
+- **Actor attribution on all write paths (`triggeredBy`).** Every op-log event written by the sidecar now carries a `triggeredBy` field identifying the actor — `mcp:remember`, `mcp:forget`, `mcp:correct`, `user:ingest`, `user:forget`, `user:correct`, `brain:reinforcement`, `brain:consolidation`, `connector:<kind>`. The Activity Log surfaces this as a color-coded badge. New cortexes and all events going forward are attributed automatically; no migration of historical events.
 - **3D Engram edge hard-lock.** Any edge category with more than 10,000 edges is permanently hard-locked: it is never rendered, never toggled by the legend, and never triggered by hover — regardless of any setting. The legend row for a locked category is shown at 25% opacity with a "not-allowed" cursor and no interactivity. This prevents THREE.js geometry-allocation freezes on large cortexes (the trigger was a 65K-edge semantic graph). Categories between 5,000 and 10,000 remain in the existing auto-hide tier (off by default, re-enableable); categories below 5,000 are always interactive.
 - **In-app MCP Tools browser.** New **MCP Tools** button in the left sidebar (next to Settings) opens a dedicated page listing every tool grouped by category, with a short description, determinism class, and 1–3 example prompts you can paste straight into your AI client.
 - **Boot loads your last-active engram first.** Graphnosis now remembers which engram you had selected and loads it as the default on next unlock — the lock screen reveals with the correct engram already showing. See [Boot & engram loading](/guides/boot-and-engram-loading/).
 - **Sequential background engram loading.** Secondary engrams load one at a time with event-loop yields between each, so the desktop app's first `list_nodes` call doesn't sit queued behind 12 concurrent decryption jobs. Reveals in ~3 seconds instead of 25–30 seconds on cortexes with many engrams. Status bar shows a live "Loading N more engrams…" countdown while the rest stream in.
-- **Engram picker shows pending engrams.** The active-engram dropdown lists every engram immediately on unlock — the ones still loading appear greyed out and aren't clickable until they finish. Positions stay alphabetical with no reshuffling.
+- **Engram picker shows pending engrams.** The active-engram dropdown lists every engram immediately on unlock — the ones still loading appear grayed out and aren't clickable until they finish. Positions stay alphabetical with no reshuffling.
 - **Local LLM-assisted search.** Two checkboxes inline with the search box (only enabled when the local LLM is reachable): "🤖 Synthesize answer" writes a 1-paragraph answer with citations, "Enhanced ranking" re-orders results by LLM-judged relevance. Settings → AI → "Use Local LLM only for search" restricts the LLM to in-app search and disables `develop`/`predict`/`insights`/`llm_query` MCP tools.
 - **Local LLM checkbox toggle.** The Go Non-Deterministic tab's Local LLM master switch is now a labeled checkbox instead of separate Enable/Turn off buttons.
 - **"Local LLM…" button replaces the static search-row hint.** The previous "Requires a local AI model — enable in Go Non-Deterministic" cluttering the search row is now a small "Local LLM…" button that takes you directly to the toggle.
@@ -1633,7 +1633,7 @@ Theme: **a memory that strengthens, never weakens.** The third tab is reborn as 
 - **Cross-engram connections.** Graphnosis now links memories *across* engrams — via shared named entities or high semantic similarity — so a query in one engram can surface what you know in another. Stored encrypted alongside your cortex.
 - **Consolidation.** A daily deep pass: transitive inference (if A→B and B→C, infer A→C), community detection, and redundancy cleanup (dead edges left dangling to already-deleted memories). All additive or tidying — a connection between two live memories is never removed.
 - **Memory health.** The tab's headline is now a retrieval-quality report — connectivity, integration, confidence, coherence, reinforcement activity, and a saturation guard — instead of a raw size-and-density score.
-- **Graphnosis Neural Network (opt-in).** A new **Go Non-Deterministic** tab adds an optional, off-by-default neural network that predicts likely-missing connections between your memories. Predictions live in a separate encrypted overlay (`neural-network.gnn`) — never mixed into your deterministic graph — and surface only as clearly-labelled, one-click-removable suggestions. That tab is also the new home for the optional local-LLM setup and AI-generated insights.
+- **Graphnosis Neural Network (opt-in).** A new **Go Non-Deterministic** tab adds an optional, off-by-default neural network that predicts likely-missing connections between your memories. Predictions live in a separate encrypted overlay (`neural-network.gnn`) — never mixed into your deterministic graph — and surface only as clearly-labeled, one-click-removable suggestions. That tab is also the new home for the optional local-LLM setup and AI-generated insights.
 - **Add the Graphnosis docs to your cortex.** On unlock, Graphnosis offers to load its own documentation into a dedicated `graphnosis-docs` engram, so your AI can answer questions about Graphnosis itself. The docs are bundled inside the app — adding them is fully offline, with no network access — and refresh when you update the app.
 
 ### Changed
