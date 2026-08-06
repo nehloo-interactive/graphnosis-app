@@ -78,7 +78,7 @@ pub struct RemoteConn {
 
 impl RemoteConn {
     pub fn new(base: String) -> Self {
-        // Normalise: strip a trailing slash so `{base}/api/...` never doubles.
+        // Normalize: strip a trailing slash so `{base}/api/...` never doubles.
         let base = base.trim_end_matches('/').to_string();
         Self { base, session: None }
     }
@@ -243,11 +243,32 @@ pub async fn rpc(
         ));
     }
     if !res.status().is_success() {
-        return Err(anyhow!(
-            "remote IPC `{}` failed with HTTP {}",
-            method,
-            res.status()
-        ));
+        // The bridge answers EVERY dispatch failure with 400 + `{"error": "<msg>"}`
+        // (see the `/api/rpc` catch in `http-ui-server.ts`), so the status alone
+        // says nothing: an unknown method — the server is older than this client
+        // and does not have the handler at all — looks exactly like a handler that
+        // ran and threw. The message is the only thing that tells them apart, and
+        // throwing the body away reduced both to a bare "HTTP 400 Bad Request".
+        //
+        // That also silently defeated every version-skew fallback in the app:
+        // they match on `Unknown IPC method` in the error text, which over this
+        // transport never survived to reach them. Reading the body restores it.
+        let status = res.status();
+        let detail = res
+            .text()
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_str::<Value>(&b).ok())
+            .and_then(|v| v.get("error").and_then(Value::as_str).map(String::from));
+        return Err(match detail {
+            // Same prefix the success-path error branch below and the local
+            // Unix-socket client (`ipc_client.rs`) use, so a caller classifies a
+            // remote failure and a local one with one rule instead of two.
+            Some(msg) => anyhow!("sidecar error: {}", msg),
+            // No parseable body — a proxy, a gateway, or a non-Graphnosis server.
+            // The status is genuinely all we know, so it is all we claim.
+            None => anyhow!("remote IPC `{}` failed with HTTP {}", method, status),
+        });
     }
     let body: Value = res
         .json()

@@ -7,6 +7,12 @@ import { mcpRegistry } from './mcp-registry.js';
 import type { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
 import type { SharingToken, SharingScope, SharingRole } from '@graphnosis-app/core/settings';
 import { SHARING_TOKEN_ROLES } from '@graphnosis-app/core/settings';
+import {
+  authorizeTailnetIdentity,
+  createTailscaleVerifier,
+  type TailnetIdentitySettings,
+  type TailnetVerifier,
+} from './tailnet-identity.js';
 
 export interface HttpBridgeOptions {
   deps: McpDeps;
@@ -22,6 +28,26 @@ export interface HttpBridgeOptions {
    * the server. Absent = no sharing tokens (only the master token accepted).
    */
   sharingTokens?: () => SharingToken[];
+  /**
+   * Tailnet identity authorization — ADDITIVE, never the only path.
+   *
+   * When absent or `enabled: false` (the default) the bridge behaves exactly as
+   * before: the pre-shared bearer is the only credential. When enabled, a
+   * request that satisfies all six conditions in tailnet-identity.ts may
+   * authenticate as the tailnet user instead of presenting the bearer. The
+   * bearer check below is untouched and remains the fallback for everyone not
+   * on a tailnet.
+   *
+   * A live getter so ACL edits take effect without restarting the bridge —
+   * same reasoning as `token` and `sharingTokens`.
+   */
+  identity?: () => TailnetIdentitySettings | undefined;
+  /**
+   * How the bridge asks tailscaled for out-of-band facts (`serve status`,
+   * `whois`). Injected so the security tests can drive every branch without a
+   * live tailnet. Defaults to the real CLI-backed verifier.
+   */
+  identityVerifier?: TailnetVerifier;
 }
 
 interface Session {
@@ -166,6 +192,13 @@ function pollForClientInfo(connId: string, mcpServer: McpServer): void {
  */
 export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.Server> {
   const sessions = new Map<string, Session>();
+
+  // Tailnet identity config + verifier. Both resolved once here; the config is
+  // read through a live getter on every request so ACL edits apply immediately.
+  // The verifier is constructed even when identity is disabled — it is inert
+  // until called, and `authorizeTailnetIdentity` short-circuits on check 1.
+  const identityCfg = (): TailnetIdentitySettings | undefined => opts.identity?.();
+  const identityVerifier: TailnetVerifier = opts.identityVerifier ?? createTailscaleVerifier();
 
   // Short-lived authorization codes for the OAuth Authorization Code flow.
   // Each entry is created by GET /oauth/authorize and consumed by POST /oauth/token.
@@ -444,16 +477,47 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     const sentToken = authHeader.toLowerCase().startsWith('bearer ')
       ? authHeader.slice(7).trim()
       : '';
-    if (!sentToken) {
-      oauthLog(`auth rejected — no bearer in request ${req.method} ${urlPath} (ua: ${ua})`);
-      rejectUnauthorized(res);
-      return;
-    }
+
     // Identify whether this is the master token (owner, no scope restriction)
     // or a sharing token (scoped to specific engrams + role).
     let matchedSharingScope: SharingScope | null = null;
     let matchedSharingTokenId: string | null = null;
-    if (masterToken && constantTimeEqual(sentToken, masterToken)) {
+
+    // ── Tailnet identity (additive) ──────────────────────────────────────────
+    // Tried only when no bearer was presented, so the bearer path below is
+    // reached byte-for-byte as before for every existing client. A rejection
+    // here NEVER authorizes — it falls through to the bearer check, which then
+    // 401s a request with no credential at all. See tailnet-identity.ts for the
+    // six conditions and the forgery they defeat.
+    let identityLogin: string | null = null;
+    if (!sentToken && identityCfg()?.enabled) {
+      const decision = await authorizeTailnetIdentity(
+        { headers: req.headers, remoteAddress: req.socket.remoteAddress ?? undefined },
+        identityCfg(),
+        opts.port,
+        identityVerifier,
+      );
+      if (decision.ok) {
+        identityLogin = decision.login;
+        matchedSharingScope = decision.scope;
+        oauthLog(
+          `auth OK — tailnet identity "${decision.login}" (role: ${decision.scope.role}) ${req.method} ${urlPath}`,
+        );
+      } else {
+        oauthLog(
+          `identity auth declined (${decision.reason}) ${req.method} ${urlPath} (ua: ${ua})`,
+        );
+      }
+    }
+
+    if (!identityLogin && !sentToken) {
+      oauthLog(`auth rejected — no bearer in request ${req.method} ${urlPath} (ua: ${ua})`);
+      rejectUnauthorized(res);
+      return;
+    }
+    if (identityLogin) {
+      // Authorized by identity — skip the bearer comparison entirely.
+    } else if (masterToken && constantTimeEqual(sentToken, masterToken)) {
       // Owner access — no scope restriction.
     } else {
       const sharingTokens = opts.sharingTokens?.() ?? [];
@@ -656,10 +720,10 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       };
       if (expiresAt !== undefined) newToken.expiresAt = expiresAt;
 
-      await opts.deps.host.setSettings({
+      await opts.deps.host.setSettings((current) => ({
         ...current,
         sharing: { tokens: [...existing, newToken] },
-      });
+      }));
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
