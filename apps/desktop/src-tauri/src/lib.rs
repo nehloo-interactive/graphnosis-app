@@ -44,7 +44,7 @@ struct AppInner {
     cortex_dir: Option<PathBuf>,
     sidecar: Option<sidecar::SidecarHandle>,
     /// Long-lived task reading push-events from `<cortex>/events.sock`.
-    /// Spawned on unlock; dropped/cancelled on lock or sidecar replacement.
+    /// Spawned on unlock; dropped/canceled on lock or sidecar replacement.
     event_stream: Option<event_stream::EventStreamHandle>,
     /// True when the current session was unlocked via the 24-word recovery
     /// phrase (not the passphrase). This drives the post-recovery flow that
@@ -1308,7 +1308,7 @@ async fn pick_and_ingest_file(
         .blocking_pick_file();
     let path = match picked.and_then(|f| f.into_path().ok()) {
         Some(p) => p.to_string_lossy().into_owned(),
-        None => return Ok(None), // user cancelled
+        None => return Ok(None), // user canceled
     };
     let result = ingest_file(state, None, path).await?;
     Ok(Some(result))
@@ -1343,7 +1343,7 @@ async fn pick_gsk_file(app: AppHandle) -> Result<Option<String>, String> {
         .blocking_pick_file();
     let path = match picked.and_then(|f| f.into_path().ok()) {
         Some(p) => p,
-        None => return Ok(None), // user cancelled
+        None => return Ok(None), // user canceled
     };
     let bytes = fs::read(&path)
         .map_err(|e| format!("could not read {}: {e}", path.display()))?;
@@ -1356,7 +1356,7 @@ async fn pick_gsk_file(app: AppHandle) -> Result<Option<String>, String> {
 /// progress feedback, which requires the round-trip to happen in JS
 /// (sequential `ingest_file` invokes, each with its own toast).
 ///
-/// Empty result = user cancelled (or selected nothing).
+/// Empty result = user canceled (or selected nothing).
 /// Recursively collect files with supported ingest extensions under `dir`.
 /// Hidden directories (names starting with '.') are skipped.
 fn collect_files_recursive(dir: &std::path::Path, out: &mut Vec<String>) {
@@ -1384,7 +1384,7 @@ fn collect_files_recursive(dir: &std::path::Path, out: &mut Vec<String>) {
 }
 
 /// Let the user pick one or more folders via the native OS dialog.
-/// Empty result = user cancelled.
+/// Empty result = user canceled.
 #[tauri::command]
 async fn pick_folders(app: AppHandle) -> Result<Vec<String>, String> {
     // Tauri v2 blocking_pick_folders opens a multi-select folder dialog.
@@ -1425,7 +1425,7 @@ async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
 
 /// Pick one or more folders for ingest. Returns a flat list of all supported
 /// files found recursively inside the selected folder(s). Hidden directories
-/// (e.g. .git) are skipped. Empty result = user cancelled or no supported files.
+/// (e.g. .git) are skipped. Empty result = user canceled or no supported files.
 #[tauri::command]
 async fn pick_folder_for_ingest(app: AppHandle) -> Result<Vec<String>, String> {
     let picked = app
@@ -1480,6 +1480,148 @@ struct ClaudeConfigResult {
     created_file: bool,
     /// Other MCP servers we preserved untouched (key names only — not values).
     preserved_servers: Vec<String>,
+    /// Non-fatal advisory shown under the result — e.g. "the config we replaced
+    /// had your token on the command line; rotate it." The frontend already
+    /// declares and renders this field (apps/desktop/src/main.ts:260-267,
+    /// :6510-6512); it was simply never emitted here.
+    warning: Option<String>,
+}
+
+/// Canonical key for a remote MCP endpoint. MUST match `normalizeEndpoint` in
+/// apps/desktop-sidecar/src/mcp-relay.ts — the relay looks the credential up by
+/// this exact string, so a disagreement here reads to the user as "no
+/// credential found" with a file that plainly contains one.
+///
+/// Lowercase scheme + host, keep port and path, drop trailing slashes.
+fn normalize_mcp_endpoint(raw: &str) -> String {
+    let s = raw.trim();
+    let (scheme, rest) = match s.find("://") {
+        Some(i) => (s[..i].to_ascii_lowercase(), &s[i + 3..]),
+        None => return s.trim_end_matches('/').to_string(),
+    };
+    // Split authority from path at the first '/'.
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    // Lowercase host, preserve an explicit port verbatim.
+    let authority = authority.to_ascii_lowercase();
+    let path = path.trim_end_matches('/');
+    format!("{}://{}{}", scheme, authority, path)
+}
+
+/// Write the bearer for `endpoint` into `~/.graphnosis/remote-mcp-credentials.json`
+/// with mode 0600, tmp-then-rename.
+///
+/// THIS IS THE POINT OF THE WHOLE CHANGE. The token used to be interpolated into
+/// the client config, which the client then passed to a spawned process as an
+/// argument — readable by every process on the machine via `ps` (CWE-214).
+/// Writing it to an owner-only file instead is strictly less exposure than
+/// writing it into JSON that becomes argv.
+///
+/// Why the app writes it (rather than the relay fetching it on first auth): the
+/// relay cannot self-provision. Every auto-approving OAuth endpoint on the
+/// bridge is local-direct gated (mcp-http-server.ts rejects proxied and remote
+/// callers), and a relay on a DIFFERENT machine is by definition not loopback to
+/// that bridge. "Relay writes on first successful auth" would require a
+/// remote-consented OAuth flow that does not exist. The app, by contrast,
+/// already holds the token at this moment — it just asked the server for it.
+fn write_remote_mcp_credential(endpoint: &str, bearer: &str) -> Result<std::path::PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "could not resolve the home directory".to_string())?;
+    write_remote_mcp_credential_in(&home.join(".graphnosis"), endpoint, bearer)
+}
+
+/// Directory-parameterised body of `write_remote_mcp_credential`, so the 0600
+/// guarantee can be asserted in a test without writing into the real
+/// `~/.graphnosis`.
+fn write_remote_mcp_credential_in(
+    dir: &std::path::Path,
+    endpoint: &str,
+    bearer: &str,
+) -> Result<std::path::PathBuf, String> {
+    let file = dir.join("remote-mcp-credentials.json");
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Could not create {}: {}", dir.display(), e))?;
+
+    // Merge into any existing map — one machine legitimately holds credentials
+    // for several bridges, and clobbering the file would silently break the
+    // others the next time the user connected to this one.
+    let mut root: serde_json::Value = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .filter(|v: &serde_json::Value| v.get("credentials").map_or(false, |c| c.is_object()))
+        .unwrap_or_else(|| serde_json::json!({ "v": 1, "credentials": {} }));
+
+    let key = normalize_mcp_endpoint(endpoint);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    root["credentials"][key] = serde_json::json!({ "bearer": bearer, "updatedAt": now_ms });
+
+    let body = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("Could not serialize the credential file: {}", e))?;
+    let tmp = dir.join(format!("remote-mcp-credentials.json.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, body)
+        .map_err(|e| format!("Could not write {}: {}", tmp.display(), e))?;
+
+    // 0600 BEFORE the rename, so the token is never briefly group/world-readable
+    // — same ordering and reasoning as license-seed-cache.ts:119-125. On Windows
+    // there is no 0600; the caller surfaces that as a warning rather than
+    // pretending the check happened.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Could not set 0600 on {}: {}", tmp.display(), e))?;
+    }
+    std::fs::rename(&tmp, &file)
+        .map_err(|e| format!("Could not finalize {}: {}", file.display(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Rename preserves the tmp file's mode, but a pre-existing destination
+        // with looser bits would have been replaced, not widened — chmod anyway
+        // so the end state is asserted rather than assumed.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Could not set 0600 on {}: {}", file.display(), e))?;
+    }
+    Ok(file)
+}
+
+/// True when an existing `mcpServers.Graphnosis` entry carries a bearer token in
+/// its argv — the `mcp-remote … --header "Authorization: Bearer …"` shape this
+/// app used to generate, and that the docs used to prescribe.
+///
+/// Detected so re-applying can TELL the user their old token was exposed. The
+/// value itself is never read, logged, or echoed.
+/// The `mcpServers.Graphnosis` entry for a LOCAL cortex: the relay binary with
+/// the Unix socket path as its only argument. Unchanged by this work — it never
+/// carried a secret, because a Unix socket is authorized by filesystem
+/// permissions rather than a token.
+fn local_relay_entry(relay: &str, socket_path: &str) -> serde_json::Value {
+    serde_json::json!({ "command": relay, "args": [ socket_path ] })
+}
+
+/// The `mcpServers.Graphnosis` entry for a REMOTE cortex: the relay binary with
+/// the bridge URL as its only argument.
+///
+/// The invariant this function exists to make testable: **the returned value
+/// contains no credential.** The bearer lives in
+/// `~/.graphnosis/remote-mcp-credentials.json` (0600) and is read by the relay
+/// itself. See `write_remote_mcp_credential`.
+fn remote_relay_entry(relay: &str, endpoint: &str) -> serde_json::Value {
+    serde_json::json!({ "command": relay, "args": [ endpoint ] })
+}
+
+fn entry_has_token_in_argv(entry: Option<&serde_json::Value>) -> bool {
+    let Some(args) = entry.and_then(|e| e.get("args")).and_then(|a| a.as_array()) else {
+        return false;
+    };
+    args.iter().filter_map(|a| a.as_str()).any(|a| {
+        let lower = a.to_ascii_lowercase();
+        lower.starts_with("authorization:") && lower.contains("bearer ")
+    })
 }
 
 /// Write (or update) Claude Desktop's MCP config so its Graphnosis tools
@@ -1629,11 +1771,12 @@ async fn configure_mcp_client(
         .map(|(base, _session)| base)
         .or_else(remote::configured_base);
 
+    // Set by the remote branch when it writes the 0600 credential file, so the
+    // result (and the warning) can name the exact path.
+    let mut credential_file: Option<String> = None;
+
     let desired_entry = match remote_base.as_deref() {
-        None => serde_json::json!({
-            "command": relay.to_string_lossy(),
-            "args": [ socket_path.to_string_lossy() ],
-        }),
+        None => local_relay_entry(&relay.to_string_lossy(), &socket_path.to_string_lossy()),
         Some(base) => {
             // The MCP bridge is NOT the endpoint this thin client talks to.
             // The app connects to the browser/RPC server (mobile.httpUi); MCP
@@ -1696,16 +1839,36 @@ async fn configure_mcp_client(
                 client.display_name(),
             ))?;
 
-            serde_json::json!({
-                "command": "npx",
-                "args": [
-                    "-y", "mcp-remote",
-                    format!("{}/mcp", public_url.trim_end_matches('/')),
-                    "--header", format!("Authorization: Bearer {token}"),
-                ],
-            })
+            // ── NO SECRET IN ARGV ────────────────────────────────────────────
+            // This used to emit
+            //     npx -y mcp-remote <url> --header "Authorization: Bearer <t>"
+            // which made the token an argument of a process the CLIENT spawns,
+            // and therefore readable by every process on the machine via `ps`
+            // (CWE-214). Protecting the config file does not help: the client
+            // reads the config and then spawns, so the escape happens at spawn
+            // time, not at rest.
+            //
+            // The relay now speaks HTTPS itself and reads the bearer from
+            // ~/.graphnosis/remote-mcp-credentials.json (mode 0600), written
+            // just below. The emitted config carries the URL and nothing else.
+            let endpoint = format!("{}/mcp", public_url.trim_end_matches('/'));
+            let cred_file = write_remote_mcp_credential(&endpoint, &token).map_err(|e| {
+                format!(
+                    "Could not store the MCP access token securely, so {} was NOT configured: {e}. \
+                     Nothing was written — the token is deliberately not placed in the client \
+                     config, because a client config becomes a process argument and would expose \
+                     it to every process on this machine.",
+                    client.display_name(),
+                )
+            })?;
+            credential_file = Some(cred_file.to_string_lossy().into_owned());
+
+            remote_relay_entry(&relay.to_string_lossy(), &endpoint)
         }
     };
+    // Detect the pre-fix shape BEFORE we overwrite it, so we can tell the user
+    // their old token spent time on a command line.
+    let replaced_argv_token = entry_has_token_in_argv(servers.get("Graphnosis"));
     let already_configured = servers.get("Graphnosis") == Some(&desired_entry);
 
     let preserved_servers: Vec<String> = servers
@@ -1729,6 +1892,28 @@ async fn configure_mcp_client(
     std::fs::rename(&tmp, &config_path)
         .map_err(|e| format!("Could not finalize {}: {}", config_path.display(), e))?;
 
+    let warning = if replaced_argv_token {
+        Some(format!(
+            "The previous {} config passed your MCP token as a command-line argument, where any \
+             process on this machine could read it with `ps`. The new config contains no token — \
+             it is stored owner-only (0600) in {}. Treat the old token as exposed and rotate it in \
+             Settings → Mobile & Remote → MCP access.",
+            client.display_name(),
+            credential_file
+                .clone()
+                .unwrap_or_else(|| "~/.graphnosis/remote-mcp-credentials.json".to_string()),
+        ))
+    } else if credential_file.is_some() && cfg!(windows) {
+        Some(
+            "Your MCP token was written to ~/.graphnosis/remote-mcp-credentials.json. Windows has \
+             no 0600 file mode, so this build could NOT restrict it to your account — check the \
+             file's permissions yourself if other users share this machine."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
     Ok(ClaudeConfigResult {
         client_name: client.display_name().to_string(),
         restart_hint: client.restart_hint().to_string(),
@@ -1740,6 +1925,7 @@ async fn configure_mcp_client(
         already_configured,
         created_file,
         preserved_servers,
+        warning,
     })
 }
 
@@ -3471,7 +3657,7 @@ async fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
 }
 
 /// Show a native Save dialog, then write `content` to the chosen path.
-/// Returns `Ok(true)` if the file was saved, `Ok(false)` if the user cancelled.
+/// Returns `Ok(true)` if the file was saved, `Ok(false)` if the user canceled.
 #[tauri::command]
 async fn save_json_file(
     app: AppHandle,
@@ -3496,7 +3682,7 @@ async fn save_json_file(
                 .map_err(|e| format!("could not write file: {e}"))?;
             Ok(true)
         }
-        None => Ok(false), // user cancelled
+        None => Ok(false), // user canceled
     }
 }
 
@@ -3543,7 +3729,7 @@ async fn save_skill_file(
             }
             Ok(true)
         }
-        None => Ok(false), // user cancelled
+        None => Ok(false), // user canceled
     }
 }
 
@@ -4585,3 +4771,136 @@ pub fn run() {
         });
 }
 
+
+#[cfg(test)]
+mod mcp_client_config_tests {
+    use super::*;
+
+    /// Obviously fake. NEVER put a real token in a fixture.
+    const FAKE_TOKEN: &str = "FAKE-EXAMPLE-NOT-A-REAL-TOKEN";
+    const RELAY: &str = "/Applications/Graphnosis.app/Contents/MacOS/graphnosis-mcp-relay";
+    const ENDPOINT: &str = "https://example-host.tailnet-example.ts.net:8443/mcp";
+
+    /// THE REGRESSION THIS WHOLE CHANGE EXISTS FOR.
+    /// Every string in the emitted entry is searched for the token; the config
+    /// is what becomes a spawned process's argv, so a hit here is CWE-214.
+    #[test]
+    fn emitted_remote_entry_contains_no_credential() {
+        let entry = remote_relay_entry(RELAY, ENDPOINT);
+        let serialized = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !serialized.contains(FAKE_TOKEN),
+            "the emitted config must not contain the token: {serialized}"
+        );
+        let lower = serialized.to_ascii_lowercase();
+        assert!(!lower.contains("bearer"), "no bearer header may be emitted: {serialized}");
+        assert!(!lower.contains("--header"), "no --header flag may be emitted: {serialized}");
+        assert!(!lower.contains("authorization"), "no authorization value may be emitted: {serialized}");
+        // The URL is the ONLY argument.
+        assert_eq!(entry["args"].as_array().unwrap().len(), 1);
+        assert_eq!(entry["args"][0], ENDPOINT);
+    }
+
+    #[test]
+    fn emitted_local_entry_is_unchanged_socket_shape() {
+        let entry = local_relay_entry(RELAY, "/Users/example/.graphnosis/mcp.sock");
+        assert_eq!(entry["command"], RELAY);
+        assert_eq!(entry["args"].as_array().unwrap().len(), 1);
+        assert_eq!(entry["args"][0], "/Users/example/.graphnosis/mcp.sock");
+    }
+
+    #[test]
+    fn detects_the_old_argv_token_shape_for_the_rotate_warning() {
+        let old = serde_json::json!({
+            "command": "npx",
+            "args": ["-y", "mcp-remote", ENDPOINT, "--header",
+                     format!("Authorization: Bearer {FAKE_TOKEN}")],
+        });
+        assert!(entry_has_token_in_argv(Some(&old)));
+        assert!(!entry_has_token_in_argv(Some(&remote_relay_entry(RELAY, ENDPOINT))));
+        assert!(!entry_has_token_in_argv(None));
+    }
+
+    /// Must agree with `normalizeEndpoint` in mcp-relay.ts, or the relay looks
+    /// up a key the app never wrote.
+    #[test]
+    fn endpoint_normalization_matches_the_relay() {
+        assert_eq!(
+            normalize_mcp_endpoint("HTTPS://Example-Host.Tailnet.ts.net:8443/mcp/"),
+            "https://example-host.tailnet.ts.net:8443/mcp"
+        );
+        assert_eq!(
+            normalize_mcp_endpoint("https://host.ts.net:8443/mcp"),
+            "https://host.ts.net:8443/mcp"
+        );
+        assert_eq!(normalize_mcp_endpoint("https://host.ts.net/"), "https://host.ts.net");
+    }
+
+
+    /// Renders the exact bytes `configure_mcp_client` writes, for two clients,
+    /// with an unrelated third-party MCP server present so the preserve path is
+    /// exercised too. Run with `--nocapture` to read the configs verbatim.
+    #[test]
+    fn prints_generated_configs_for_two_clients() {
+        for (client, relay_path, entry) in [
+            (
+                "Claude Desktop  (~/Library/Application Support/Claude/claude_desktop_config.json)",
+                RELAY,
+                remote_relay_entry(RELAY, ENDPOINT),
+            ),
+            (
+                "Cursor          (~/.cursor/mcp.json)",
+                RELAY,
+                remote_relay_entry(RELAY, ENDPOINT),
+            ),
+        ] {
+            let _ = relay_path;
+            // Same starting point the real code has: an existing config with
+            // another MCP server the user set up, which must survive untouched.
+            let mut root = serde_json::json!({
+                "mcpServers": {
+                    "some-other-server": { "command": "npx", "args": ["-y", "some-other-mcp"] }
+                }
+            });
+            root["mcpServers"]["Graphnosis"] = entry;
+            let pretty = serde_json::to_string_pretty(&root).unwrap();
+            println!("\n───── {client} ─────\n{pretty}");
+            assert!(!pretty.to_ascii_lowercase().contains("bearer"));
+            assert!(!pretty.contains(FAKE_TOKEN));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_file_is_written_0600_and_merges() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gx-cred-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let file = write_remote_mcp_credential_in(&dir, ENDPOINT, FAKE_TOKEN).unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "credential file must be owner-only, got {mode:o}");
+
+        // A second endpoint must not clobber the first.
+        let other = "https://second-host.tailnet-example.ts.net:8443/mcp";
+        write_remote_mcp_credential_in(&dir, other, "FAKE-SECOND-TOKEN").unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(parsed["credentials"][ENDPOINT]["bearer"], FAKE_TOKEN);
+        assert_eq!(parsed["credentials"][other]["bearer"], "FAKE-SECOND-TOKEN");
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the merge write must not widen the mode"
+        );
+        // No stray tmp file left behind.
+        let strays: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "tmp file left behind");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

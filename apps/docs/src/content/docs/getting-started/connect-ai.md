@@ -245,27 +245,44 @@ If the client machine reports that the server *"has not published an address for
 
 To configure a client by hand — because Graphnosis is not installed on that machine, or you would rather see the wiring:
 
+**Step 1 — store the token once, on the client machine.** Install the relay (`npm i -g @graphnosis/mcp-relay`) and run:
+
+```bash
+graphnosis-mcp-relay --set-credential "https://<your-server>.<tailnet>.ts.net:8443/mcp"
+```
+
+Paste the token from **Settings → Mobile & Remote → MCP access** on the server, then press `Ctrl-D`. It is read from standard input and written to `~/.graphnosis/remote-mcp-credentials.json` with mode `0600`.
+
+:::caution[Do not put the token on a command line]
+Earlier versions of this page told you to pass the token as `--header "Authorization: Bearer …"`. **Don't.** A command-line argument is visible to every process on the machine — anyone with a shell on it can read your token with `ps aux`, and no permission on the config file prevents that, because the client reads the config and then *spawns a process* with the value in its arguments. If you used the old shape, treat that token as exposed and rotate it under **Settings → Mobile & Remote → MCP access**.
+
+The relay still accepts `--header`/`--bearer` so existing setups keep working. It warns loudly, and saves the token into the `0600` file so you can drop the flag.
+:::
+
+**Step 2 — point the client at the relay.** No token appears in either config.
+
 - **Claude Code** — one command:
 
   ```bash
-  claude mcp add --transport http graphnosis "https://<your-server>.<tailnet>.ts.net:8443/mcp" --header "Authorization: Bearer <your-token>"
+  claude mcp add graphnosis -- graphnosis-mcp-relay "https://<your-server>.<tailnet>.ts.net:8443/mcp"
   ```
 
-- **Claude Desktop** — its custom-connector flow registers from Anthropic's cloud, which can't reach your tailnet, so use a local [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) proxy in `claude_desktop_config.json`:
+- **Claude Desktop** — its custom-connector flow registers from Anthropic's cloud, which can't reach your tailnet, so run the relay as a local stdio proxy in `claude_desktop_config.json`:
 
   ```json
   {
     "mcpServers": {
       "graphnosis": {
-        "command": "npx",
-        "args": ["-y", "mcp-remote", "https://<your-server>.<tailnet>.ts.net:8443/mcp",
-                 "--header", "Authorization: Bearer <your-token>"]
+        "command": "graphnosis-mcp-relay",
+        "args": ["https://<your-server>.<tailnet>.ts.net:8443/mcp"]
       }
     }
   }
   ```
 
-Copy `<your-token>` from **Settings → Mobile & Remote → MCP access**. Remote clients **must** send it as an `Authorization: Bearer` header — the bridge's one-tap OAuth approval is loopback-only, so over the network the pre-shared token is the gate.
+  (Use the absolute path to the relay if your MCP client doesn't inherit your `PATH`.)
+
+The relay reads the bearer from the `0600` file and sends it as an `Authorization: Bearer` header on your behalf — the bridge's one-tap OAuth approval is loopback-only, so over the network that token is still the gate. It refuses to start, with a specific error, if the file is missing or if its permissions are looser than `0600`. It never falls back to connecting unauthenticated.
 
 Two operational notes: the cortex must be **unlocked on the server**, and a `sensitive`-engram recall raises its consent modal on the **server's** screen (use the headless consent-phrase flow if you can't see it).
 
