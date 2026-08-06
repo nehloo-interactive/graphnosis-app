@@ -1,4 +1,36 @@
 import type { LocalLlm } from './correction.js';
+import { LocalLlmHttpError } from './correction.js';
+
+/** Best-effort read of an error response body. Ollama answers non-2xx with
+ *  `{"error":"..."}`; we surface that text because the status alone is
+ *  ambiguous (404 = unknown endpoint OR uninstalled model). Never throws. */
+async function readErrorBody(res: Response): Promise<string> {
+  try {
+    const raw = (await res.text()).trim();
+    if (!raw) return '';
+    try {
+      const parsed = JSON.parse(raw) as { error?: unknown };
+      if (typeof parsed.error === 'string' && parsed.error) return parsed.error;
+    } catch { /* not JSON — fall through to the raw text */ }
+    return raw.slice(0, 400);
+  } catch {
+    return '';
+  }
+}
+
+/** Re-throw a network-level fetch failure with the URL that failed. Bare
+ *  `fetch failed` names neither the host nor the port, so it reads as an
+ *  unexplained internal error instead of "your LLM backend is not running".
+ *  Aborts pass through untouched — callers key off the AbortError name. */
+function rethrowUnreachable(e: unknown, url: string, model: string): never {
+  if (e instanceof Error && (e.name === 'AbortError' || e.name === 'TimeoutError')) throw e;
+  const detail = e instanceof Error ? e.message : String(e);
+  throw new Error(
+    `Local LLM (${model}) unreachable — POST ${url} could not be completed: ${detail}.`
+    + ' Check that the local LLM backend is running and listening on that address.',
+    { cause: e },
+  );
+}
 
 // Curated list of supported local LLM runtimes. The desktop UI shows this as a picker
 // with "Recommended (auto-install)" pre-selected. We never surface the runtime name to
@@ -146,31 +178,58 @@ export class OllamaLlm implements LocalLlm {
     return this.getDefaultTemperature();
   }
 
-  async complete(input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; maxTokens?: number; signal?: AbortSignal }): Promise<string> {
+  async complete(input: { system: string; user: string; jsonSchema?: unknown; enforceSchema?: boolean; temperature?: number; maxTokens?: number; signal?: AbortSignal }): Promise<string> {
     if (input.signal?.aborted) {
       throw new DOMException('LLM request aborted', 'AbortError');
     }
-    const res = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      ...(input.signal ? { signal: input.signal } : {}),
-      body: JSON.stringify({
-        model: this.model,
-        stream: false,
-        format: input.jsonSchema ? 'json' : undefined,
-        options: {
-          temperature: this.ollamaTemperature(input),
-          // Cap generation length when the caller sized it (e.g. the correction
-          // diff) so a long object isn't truncated mid-value by Ollama's default.
-          ...(input.maxTokens ? { num_predict: input.maxTokens } : {}),
-        },
-        messages: [
-          { role: 'system', content: input.system },
-          { role: 'user', content: input.user },
-        ],
-      }),
-    });
-    if (!res.ok) throw new Error(`Local LLM (${this.model}) failed: ${res.status}`);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        ...(input.signal ? { signal: input.signal } : {}),
+        body: JSON.stringify({
+          model: this.model,
+          stream: false,
+          // Ollama distinguishes two constrained-output modes on this field:
+          //   'json'            — only guarantees the output PARSES as JSON.
+          //   <schema object>   — compiles the JSON Schema into a sampling
+          //                       grammar, so required keys and their types are
+          //                       actually ENFORCED during generation.
+          // Sending 'json' while holding a real schema throws the schema away:
+          // the model stays free to omit a required key or emit `null` where a
+          // string was demanded, and the caller's Zod parse then rejects the
+          // whole response — surfacing as a silently empty correction diff.
+          //
+          // Enforcement is OPT-IN (`enforceSchema`) rather than "whenever
+          // jsonSchema is an object", because several existing callers pass a
+          // PLACEHOLDER schema (`{type:'object'}`, `{type:'array'}`) purely as a
+          // "give me JSON" flag. Promoting those to grammars would silently
+          // constrain outputs they were never written to satisfy. Callers that
+          // mean their schema literally say so.
+          format: input.enforceSchema
+              && typeof input.jsonSchema === 'object'
+              && input.jsonSchema !== null
+            ? input.jsonSchema
+            : input.jsonSchema ? 'json' : undefined,
+          options: {
+            temperature: this.ollamaTemperature(input),
+            // Cap generation length when the caller sized it (e.g. the correction
+            // diff) so a long object isn't truncated mid-value by Ollama's default.
+            ...(input.maxTokens ? { num_predict: input.maxTokens } : {}),
+          },
+          messages: [
+            { role: 'system', content: input.system },
+            { role: 'user', content: input.user },
+          ],
+        }),
+      });
+    } catch (e) {
+      rethrowUnreachable(e, `${this.baseUrl}/api/chat`, this.model);
+    }
+    if (!res.ok) {
+      throw new LocalLlmHttpError(res.status, `${this.baseUrl}/api/chat`, this.model, await readErrorBody(res));
+    }
     const json = (await res.json()) as { message?: { content?: string } };
     return json.message?.content ?? '';
   }
@@ -192,21 +251,29 @@ export class OllamaLlm implements LocalLlm {
     // constraint when streaming. Caller's responsibility to use
     // complete() for those. (Skill training is free-form text, so this
     // restriction doesn't bite the trainer.)
-    const res = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      ...(input.signal ? { signal: input.signal } : {}),
-      body: JSON.stringify({
-        model: this.model,
-        stream: true,
-        options: { temperature: this.ollamaTemperature(input) },
-        messages: [
-          { role: 'system', content: input.system },
-          { role: 'user', content: input.user },
-        ],
-      }),
-    });
-    if (!res.ok || !res.body) throw new Error(`Local LLM (${this.model}) stream failed: ${res.status}`);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        ...(input.signal ? { signal: input.signal } : {}),
+        body: JSON.stringify({
+          model: this.model,
+          stream: true,
+          options: { temperature: this.ollamaTemperature(input) },
+          messages: [
+            { role: 'system', content: input.system },
+            { role: 'user', content: input.user },
+          ],
+        }),
+      });
+    } catch (e) {
+      rethrowUnreachable(e, `${this.baseUrl}/api/chat`, this.model);
+    }
+    if (!res.ok || !res.body) {
+      const body = res.ok ? 'the backend returned no response stream' : await readErrorBody(res);
+      throw new LocalLlmHttpError(res.status, `${this.baseUrl}/api/chat`, this.model, body, true);
+    }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -301,7 +368,7 @@ export class DynamicOllamaLlm implements LocalLlm {
     return new OllamaLlm(`Ollama/${tag}`, tag, this.baseUrl, this.getDefaultTemperature);
   }
 
-  complete(input: { system: string; user: string; jsonSchema?: unknown; temperature?: number; signal?: AbortSignal }): Promise<string> {
+  complete(input: { system: string; user: string; jsonSchema?: unknown; enforceSchema?: boolean; temperature?: number; maxTokens?: number; signal?: AbortSignal }): Promise<string> {
     return this.client().complete(input);
   }
 

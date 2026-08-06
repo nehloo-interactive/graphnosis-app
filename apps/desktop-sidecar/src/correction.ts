@@ -72,6 +72,15 @@ export type LlmCompleteInput = {
    *  fences, no trailing prose. The value may be a real JSON Schema for
    *  backends that support structured outputs. */
   jsonSchema?: unknown;
+  /** Opt in to real structured output: send `jsonSchema` to the backend as a
+   *  SCHEMA (Ollama compiles it to a sampling grammar) instead of the bare
+   *  `format:'json'` flag, so required keys and their types are enforced during
+   *  generation rather than merely requested in the prompt.
+   *
+   *  Only set this when `jsonSchema` is the real, complete shape you require —
+   *  the model becomes unable to emit anything else. Callers that pass a
+   *  placeholder like `{type:'object'}` just to force JSON must leave it unset. */
+  enforceSchema?: boolean;
   /** Explicit override — rare; normally preset comes from settings. */
   temperature?: number;
   /** Hard cap on generated tokens (Ollama `num_predict`). Sized to fit the
@@ -84,7 +93,24 @@ export type LlmCompleteInput = {
 /** JSON Schema for the correction diff — passed to the local model to enable
  *  constrained-JSON output (the root fix for "malformed JSON": without it the
  *  model runs free-form and wraps the object in ```json fences / trailing
- *  prose that small models often mangle). */
+ *  prose that small models often mangle).
+ *
+ *  This schema is ENFORCED, not advisory: `OllamaLlm.complete` forwards it to
+ *  Ollama's structured-output mode, which compiles it into a sampling grammar.
+ *  That is what makes the `required` lists below load-bearing — the model
+ *  cannot omit a listed key or emit `null` in place of a `string`.
+ *
+ *  Because of that, every field the Zod parse demands MUST be listed as
+ *  required here, or the grammar will happily authorize output that the parse
+ *  then rejects — which surfaces to the user as a correction that silently did
+ *  nothing. `content` and `reason` are required for exactly that reason: with
+ *  only `kind`/`nodeId` required, small models (measured on phi4-mini) omit
+ *  `content` and the whole diff is thrown away.
+ *
+ *  `content` is required even though a `delete` op has no content field in the
+ *  Zod union: JSON Schema cannot express the per-`kind` variance without
+ *  `anyOf` (which Ollama's grammar compiler handles poorly), and the delete
+ *  branch is a non-strict `z.object`, so it simply strips the extra key. */
 const DIFF_JSON_SCHEMA = {
   type: 'object',
   properties: {
@@ -98,7 +124,7 @@ const DIFF_JSON_SCHEMA = {
           content: { type: 'string' },
           reason: { type: 'string' },
         },
-        required: ['kind', 'nodeId'],
+        required: ['kind', 'nodeId', 'content', 'reason'],
       },
     },
     adds: {
@@ -130,6 +156,92 @@ export interface LocalLlm {
   ) => Promise<string>;
   /** Human-readable identifier shown in the LLM picker UI. */
   name: string;
+}
+
+/**
+ * A non-2xx response from the local LLM backend. Lives here (next to the
+ * `LocalLlm` contract) rather than in `local-llm.ts` so callers can import it
+ * without a runtime cycle — `local-llm.ts` already imports from this module.
+ *
+ * Carries the backend's own response body, because the bare status code is
+ * ambiguous: Ollama answers 404 BOTH for "that endpoint does not exist" and
+ * for "that model is not installed", and only the body tells them apart.
+ */
+export class LocalLlmHttpError extends Error {
+  override readonly name = 'LocalLlmHttpError';
+  constructor(
+    readonly status: number,
+    readonly url: string,
+    readonly model: string,
+    readonly bodyText: string,
+    /** Set when the failure came from a streaming call. */
+    readonly streaming = false,
+  ) {
+    super(
+      `Local LLM (${model}) ${streaming ? 'stream ' : ''}failed: ${status}`
+      + ` — POST ${url}`
+      + (bodyText ? ` responded: ${bodyText}` : ' returned an empty body')
+      + ` — ${localLlmHttpHint(status, bodyText)}`,
+    );
+  }
+}
+
+/** Actionable next step for a given backend status + body. */
+function localLlmHttpHint(status: number, bodyText: string): string {
+  const body = bodyText.toLowerCase();
+  // Ollama's model miss reads `model 'x' not found`; its unknown-route 404
+  // reads `404 page not found`. Both contain "not found", so the word "model"
+  // is what actually separates them — require it, or the hint sends the user
+  // to install a model they already have.
+  if (status === 404 && body.includes('model') && /not found|pull|no such/.test(body)) {
+    return 'the configured model is not installed in the local LLM backend'
+      + ' — install it (e.g. `ollama pull <model>`) or pick an installed model in Settings → Local LLM.';
+  }
+  if (status === 404) {
+    return 'the backend is running but does not serve that endpoint'
+      + ' — check the Local LLM base URL / runtime in Settings → Local LLM.';
+  }
+  if (status === 401 || status === 403) {
+    return 'the backend rejected the request as unauthorized — check the Local LLM credentials in Settings → Local LLM.';
+  }
+  if (status >= 500) {
+    return 'the local LLM backend errored — check that it is healthy and has enough free memory to load the model.';
+  }
+  return 'check that the local LLM backend is running and the configured model is installed.';
+}
+
+/**
+ * True when the failure is transport-level — the model never produced output.
+ * Distinct from "the model answered but we could not use the answer", which is
+ * a legitimate empty diff. Covers HTTP non-2xx, connection refused/reset, DNS
+ * failures, aborts and timeouts.
+ */
+export function isLlmTransportFailure(e: unknown): boolean {
+  if (e instanceof LocalLlmHttpError) return true;
+  if (!(e instanceof Error) && !(e instanceof DOMException)) return false;
+  const err = e as Error;
+  if (err.name === 'AbortError' || err.name === 'TimeoutError') return true;
+  const cause = (err as { cause?: unknown }).cause;
+  const code = cause && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined;
+  if (typeof code === 'string' && /^(ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|EPIPE|UND_ERR)/i.test(code)) {
+    return true;
+  }
+  return /fetch failed|socket hang up|network error|other side closed/i.test(err.message);
+}
+
+/**
+ * Wrap a transport failure so the caller can never read it as "your memory
+ * needed no correction". An empty diff and a dead backend are the same shape
+ * on the wire otherwise — this is the false-clean case, so it must throw.
+ */
+export function llmUnavailableError(e: unknown): Error {
+  const detail = e instanceof Error ? e.message : String(e);
+  return new Error(
+    `Local LLM unreachable — NO edit was produced and nothing in memory was examined or changed. ${detail} `
+    + 'This is a transport failure, not a "nothing to change" result. '
+    + 'Start the local LLM backend and confirm the configured model is installed, then run `edit` again — '
+    + 'or turn the Local LLM off in Settings → Local LLM to use the deterministic supersede path, which needs no model.',
+  );
 }
 
 /** Max recall-ranked candidates kept for edit targeting (LLM + deterministic). */
@@ -265,7 +377,7 @@ export function scopeLlmCorrectionDiff(
     // Deliberately DO NOT force the edit onto candidates[0]. The recall top-match
     // is ranked by similarity, and a shared entity (a person's name) can rank an
     // UNRELATED node #1 — so the model's choice of a different IN-POOL candidate
-    // is the right target and is honoured here. The maxEdits cap below still
+    // is the right target and is honored here. The maxEdits cap below still
     // bounds how many nodes a single correction may touch.
     if (validEdits.length >= maxEdits) {
       warnings.push(`Dropped edit on ${nodeId}: capped at ${maxEdits} operation(s).`);
@@ -301,7 +413,7 @@ export interface CorrectionCandidate {
   viaGnn: boolean;
 }
 
-/** Expands the recall candidate set with GNN-predicted neighbours. The caller
+/** Expands the recall candidate set with GNN-predicted neighbors. The caller
  *  supplies this only when the user has enabled the Neural Network — without
  *  it, `correct` runs purely on deterministic recall. */
 export type GnnCandidateExpander = (
@@ -390,7 +502,7 @@ export async function proposeCorrection(opts: {
   graphIdHint?: string;
   candidateK?: number;
   /** Supplied only when the Neural Network is enabled — expands the candidate
-   *  set with GNN-predicted neighbours of the recall hits. */
+   *  set with GNN-predicted neighbors of the recall hits. */
   expandWithGnn?: GnnCandidateExpander;
 }): Promise<{
   diff: CorrectionDiff;
@@ -478,27 +590,39 @@ export async function proposeCorrection(opts: {
       `- nodeId=${c.nodeId} (graph: ${c.graphId})${c.viaGnn ? ' [neural-network-predicted]' : ''}: ${c.text}`),
   ].join('\n');
 
-  // Constrained-JSON mode (jsonSchema → Ollama format:'json') so the model can
-  // only emit a valid JSON object — no ```json fences or trailing prose for the
-  // parser to choke on. maxTokens is sized for reasoning + edits + superseding
-  // content so the object isn't truncated mid-value. Retry once with a stricter
-  // instruction if the first response still won't parse; then surface a CLEAR
-  // empty diff instead of a silent one.
+  // Structured-output mode: `enforceSchema` sends DIFF_JSON_SCHEMA to the
+  // backend as a real schema, so the model is grammar-constrained to emit every
+  // required key with the right type — no ```json fences, no trailing prose, and
+  // (the reason this is enforced rather than merely prompted) no missing
+  // `content` or `null` `nodeId`, both of which failed the Zod parse below and
+  // turned a correction the user asked for into a silent no-op.
+  // maxTokens is sized for reasoning + edits + superseding content so the object
+  // isn't truncated mid-value. Retry once with a stricter instruction if the
+  // first response still won't parse; then surface a CLEAR empty diff instead of
+  // a silent one.
   const complete = (extra = ''): Promise<string> => opts.llm!.complete({
     system: SYSTEM_PROMPT,
     user: extra ? `${user}\n\n${extra}` : user,
     jsonSchema: DIFF_JSON_SCHEMA,
+    enforceSchema: true,
     maxTokens: 1024,
   });
   let parsedDiff: CorrectionDiff;
   try {
     parsedDiff = DiffSchema.parse(extractJson(await complete()));
-  } catch {
+  } catch (firstErr) {
+    // A transport failure (backend down, wrong endpoint, model not installed,
+    // non-2xx) means the model NEVER RAN. Retrying is pointless and — worse —
+    // falling through to the empty-diff return below would report it in the
+    // exact same shape as "the model looked and found nothing to change".
+    // Those two must never be indistinguishable, so throw instead.
+    if (isLlmTransportFailure(firstErr)) throw llmUnavailableError(firstErr);
     try {
       parsedDiff = DiffSchema.parse(extractJson(
         await complete('Respond with ONLY the JSON object described above — no code fences, no commentary.'),
       ));
     } catch (e) {
+      if (isLlmTransportFailure(e)) throw llmUnavailableError(e);
       return {
         diff: {
           edits: [],
