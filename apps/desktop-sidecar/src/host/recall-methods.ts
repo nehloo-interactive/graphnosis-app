@@ -30,6 +30,7 @@ import {
   GNN_EXPANSION_PER_SEED,
   GNN_EXPANSION_SCORE,
   GNN_RECALL_THRESHOLD,
+  EXPANSION_BUDGET_FRACTION,
   buildGnnRecallAdjacency,
   buildOverlaySection,
   buildRichRecallPrompt,
@@ -37,9 +38,13 @@ import {
   enrichRecallQuery,
   expandViaGnn,
   foldDiacritics,
+  newPassageStats,
+  passageOptionsFromEnv,
   selectAnchorNodes,
   type GnnRecallAdjacency,
+  type PassageRenderContext,
 } from './recall.js';
+import { buildChunkIndex, type ChunkIndex } from './recall-passages.js';
 
 /** Host surface required by federated recall / dig_deeper. */
 export interface RecallHost {
@@ -55,6 +60,11 @@ export interface RecallHost {
   /** Centralized import-quarantine check — the SINGLE source of truth for the
    *  visibility-exclusion contract. See host.isQuarantined. */
   isQuarantined(graphId: GraphId): boolean;
+  /** Centralized agent OFF SWITCH check — the SINGLE source of truth for the
+   *  skills-inert contract. See host.skillsDisabled. Declared here so every
+   *  consumer of the host surface sees it; recall itself must NOT gate on it,
+   *  the flag covers the un-ganglia only and leaves memory readable. */
+  skillsDisabled(graphId: GraphId): boolean;
   ensureLoaded(id: GraphId): Promise<void>;
   activeNodeIds(graphId: GraphId): Set<string>;
   recallNodeSnapshot(graphId: GraphId): {
@@ -67,6 +77,10 @@ export interface RecallHost {
   loadConnectionStore(): Promise<import('../connection-store.js').CrossEngramConnection[]>;
   getGraphMetadata(graphId: GraphId): { displayName?: string } | undefined;
   listSources(graphId: GraphId): import('@graphnosis-app/core').SourceRecord[];
+  /** Untruncated node body, O(1) store read. Needed by the passage renderer
+   *  for gap-fill and seam-repair NEIGHBORS — nodes that are deliberately
+   *  NOT in the selected set, so their text is not in the subgraph. */
+  getFullNodeContent(graphId: GraphId, nodeId: string): string | null;
   zeroResultHint(): string;
   recall(
     query: string,
@@ -469,11 +483,57 @@ export async function hostRecall(
       console.error(`[host] recall rescue pass failed (non-fatal): ${(err as Error).message}`);
     }
 
+    // ── Passage render context (A coalesce · B header · C boundary repair) ──
+    //
+    // Records over ~500 chars are stored as ~500-char chunks split after EVERY
+    // `.`, so a chunk can begin mid-token ("4 chunker. js:57 …"). No text was
+    // lost — this is a READ-path coherence fix, and it needs no reingest.
+    //
+    // The expansion allowance is taken from the HEADROOM the caller's own
+    // budget left unspent, capped at EXPANSION_BUDGET_FRACTION. If the
+    // federation used the whole budget, expansion is ZERO and the 8000-token
+    // / 50-node caps hold exactly as before. Expansion is additive-only: it
+    // never de-selects a node, so a coalesced passage cannot push out another
+    // source's only hit — when the allowance runs out the EXPANSION is
+    // dropped, never the selected content.
+    const passageOptions = passageOptionsFromEnv();
+    let passageCtx: PassageRenderContext | undefined;
+    if (passageOptions) {
+      const budgetTokens = opts?.budget?.maxTokens ?? 2000;
+      const budgetNodes = opts?.budget?.maxNodes ?? 20;
+      const headroomTokens = Math.max(0, budgetTokens - sub.tokensUsed);
+      const headroomNodes = Math.max(0, budgetNodes - sub.nodesIncluded);
+      const chunkIndexCache = new Map<string, ChunkIndex>();
+      passageCtx = {
+        options: passageOptions,
+        remainingExpansionTokens: Math.min(
+          headroomTokens,
+          Math.round(budgetTokens * EXPANSION_BUDGET_FRACTION),
+        ),
+        remainingGapFills: headroomNodes,
+        chunkIndexFor: (graphId) => {
+          let idx = chunkIndexCache.get(graphId);
+          if (!idx) {
+            // SourceRecord.nodeIds preserves chunk sequence — the same fact
+            // recall_source relies on to return chunks in ingestion order.
+            try { idx = buildChunkIndex(host.listSources(graphId)); }
+            catch { idx = new Map(); }
+            chunkIndexCache.set(graphId, idx);
+          }
+          return idx;
+        },
+        getFullContent: (graphId, nodeId) => {
+          try { return host.getFullNodeContent(graphId, nodeId); }
+          catch { return null; }
+        },
+        stats: newPassageStats(),
+      };
+    }
     // Replace the federation module's flat bullet-point renderPrompt with the
     // SDK's rich === KNOWLEDGE SUBGRAPH === format. We re-serialize per graph
     // using only the budget-selected node IDs so the prompt stays within the
     // token budget and edge references point only to nodes the AI can see.
-    let richPrompt = buildRichRecallPrompt(sub.byGraph, perGraphRich, (graphId) => host.getGraphMetadata(graphId)?.displayName ?? graphId);
+    let richPrompt = buildRichRecallPrompt(sub.byGraph, perGraphRich, (graphId) => host.getGraphMetadata(graphId)?.displayName ?? graphId, passageCtx);
     // ── Overlay merge (GLL + GNN) ───────────────────────────────────────────
     // Load both overlays once and surface any entries that touch the
     // budget-selected node set. Entries are badged [gll] / [gnn] so the AI
@@ -557,6 +617,62 @@ export async function hostRecall(
           `ACTION: call \`recall_source(sourceId)\` on the strongest match above BEFORE composing your answer — ` +
           `the full document usually holds what content-recall missed. \`find_source(content:"…")\` locates more._`;
       }
+    }
+    // Passage audit trail: the render layer coalesced same-source chunks
+    // and/or pulled seam fragments. Named explicitly so neither the AI nor the
+    // user mistakes a repaired passage for a single stored node — and so the
+    // token cost of the expansion is visible rather than folded into the
+    // efficiency numbers silently. Refusals are reported too: a budget-starved
+    // gap is a passage that stayed split, not a silent join.
+    // Kept TERSE on purpose. This line is paid on every recall that coalesces
+    // anything, so a chatty version would show up in the very token numbers it
+    // exists to disclose. The one-clause explanation is appended only when text
+    // the ranker did NOT select is actually present in the prompt.
+    if (passageCtx) {
+      const s = passageCtx.stats;
+      const parts: string[] = [];
+      if (s.coalescedRuns > 0) parts.push(`${s.nodesCoalesced} chunks → ${s.coalescedRuns} passage(s)`);
+      if (s.headersEmitted > 0) parts.push(`${s.headersEmitted} header(s)`);
+      if (s.gapsFilled > 0) parts.push(`${s.gapsFilled} gap(s) filled`);
+      if (s.seamsRepaired > 0) parts.push(`${s.seamsRepaired} seam(s) repaired`);
+      if (s.gapsRefusedForBudget > 0) parts.push(`${s.gapsRefusedForBudget} gap(s) left split (budget)`);
+      // Named apart from the budget reason: a capped gap is a POLICY refusal
+      // with the allowance possibly untouched, and an unreadable neighbor is a
+      // missing node. Both used to be reported as "(budget)", which sent anyone
+      // reading the footer to raise a ceiling that was never the constraint.
+      if (s.gapsRefusedForCap > 0) parts.push(`${s.gapsRefusedForCap} gap(s) left split (per-passage cap)`);
+      if (s.gapsRefusedUnreadable > 0) parts.push(`${s.gapsRefusedUnreadable} gap(s) left split (unreadable)`);
+      if (s.repairsRefusedForBudget > 0) parts.push(`${s.repairsRefusedForBudget} seam(s) left broken (budget)`);
+      // Printed whenever the render layer DID anything — including the case
+      // where all it did was emit headers. Headers contribute no coalesce/gap/
+      // seam counter, so gating on those alone hid the single most common cost
+      // this footer exists to disclose (measured: +174 tok of headers on a
+      // 2375-tok cross-engram recall, footer silent, "+0 tok pulled").
+      if (parts.length > 0) {
+        const pulled = s.gapsFilled + s.seamsRepaired > 0
+          ? ` Passages include adjoining text closing ingest-time chunk splits.`
+          : '';
+        const cost = [
+          `+${s.expansionTokens} tok pulled`,
+          ...(s.headerTokens > 0 ? [`+${s.headerTokens} tok headers`] : []),
+        ].join(', ');
+        richPrompt = (richPrompt ? richPrompt + '\n\n' : '')
+          + `_render: ${parts.join('; ')}; ${cost}.${pulled}_`;
+      }
+      // ── C — the render layer's cost lands in the served-token figure ───────
+      // `sub.tokensUsed` is what enforceSessionBudget() and
+      // recordMcpRecallSavings() consume. It was written only by the rescue
+      // pass above, so every token this layer added was invisible to both:
+      // measured 823 reported against a 1733-token delivered prompt.
+      //
+      // PRE-EXISTING and deliberately NOT addressed here: tokensUsed never
+      // equalled prompt size even before any of this (823 vs a 1242-token
+      // baseline prompt). The difference is framing the federation does not
+      // count — section headers, the cross-graph block, the audit lines,
+      // including this footer. This fix adds the RENDER LAYER's own cost
+      // (expansion + headers) and nothing else, so the figure moves by exactly
+      // what this layer spent and the older gap stays exactly as it was.
+      (sub as { tokensUsed: number }).tokensUsed += s.expansionTokens + s.headerTokens;
     }
     // GNN-recall audit trail (Batch 11): surfaces when the neural network's
     // predicted edges actively brought in additional nodes (graph expansion

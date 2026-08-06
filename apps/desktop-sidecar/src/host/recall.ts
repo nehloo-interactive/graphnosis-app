@@ -1,6 +1,104 @@
 import * as gllOverlayMod from '../gll-overlay.js';
 import * as gnnStoreMod from '../gnn-store.js';
 import type { GraphnosisAdapter } from '../graphnosis-adapter.js';
+import {
+  buildPassages,
+  serializePassages,
+  type ChunkIndex,
+  type ExpansionBudget,
+} from './recall-passages.js';
+
+// ── Passage rendering switches (A / B / C) ──────────────────────────────────
+//
+// Default ON. The env overrides exist so the token-delta harness can run the
+// SAME query with each option off and on — the papers publish a token-
+// efficiency claim and any expansion erodes it, so the per-option number has
+// to be measurable, not asserted.
+//
+//   GRAPHNOSIS_RECALL_COALESCE=0  → A off (one bullet per chunk, as before)
+//   GRAPHNOSIS_RECALL_HEADER=0    → B off (no source label / position header)
+//   GRAPHNOSIS_RECALL_REPAIR=0    → C off (no seam fragments pulled)
+//   GRAPHNOSIS_RECALL_PASSAGES=0  → all three off; falls back to the SDK's
+//                                    own rich.serialize(), byte-identical to
+//                                    the pre-change render.
+const envOn = (name: string): boolean => process.env[name] !== '0';
+
+export interface PassageRenderOptions {
+  coalesce: boolean;
+  header: boolean;
+  repair: boolean;
+}
+
+export function passageOptionsFromEnv(): PassageRenderOptions | null {
+  if (!envOn('GRAPHNOSIS_RECALL_PASSAGES')) return null;
+  return {
+    coalesce: envOn('GRAPHNOSIS_RECALL_COALESCE'),
+    header: envOn('GRAPHNOSIS_RECALL_HEADER'),
+    repair: envOn('GRAPHNOSIS_RECALL_REPAIR'),
+  };
+}
+
+/**
+ * Fraction of the recall's OWN token budget the render layer may spend on
+ * expansion (gap-fill + seam repair). 8% of an 8000-token recall is 640
+ * tokens — enough for ~10 gap-fills or ~40 seam repairs, and small enough
+ * that the published efficiency numbers do not move materially.
+ */
+export const EXPANSION_BUDGET_FRACTION = 0.08;
+/** Per-source ceiling, so one 400-chunk document cannot eat the whole
+ *  allowance before a 3-chunk note gets its first repair. */
+export const EXPANSION_TOKENS_PER_SOURCE = 200;
+
+/** Everything the render layer needs to coalesce/annotate/repair. Supplied by
+ *  hostRecall; absent in callers that have no host (falls back to the SDK
+ *  serializer). */
+export interface PassageRenderContext {
+  options: PassageRenderOptions;
+  /** nodeId → position within its source, per graph. Built from
+   *  SourceRecord.nodeIds, which preserves chunk sequence. */
+  chunkIndexFor(graphId: string): ChunkIndex;
+  /** O(1) untruncated node read for gap-fill / repair neighbors. */
+  getFullContent(graphId: string, nodeId: string): string | null;
+  /** Remaining expansion allowance in tokens — mutated as graphs consume it. */
+  remainingExpansionTokens: number;
+  /** Remaining gap-fills allowed, so the recall's node cap keeps meaning
+   *  something. Mutated as graphs consume it. */
+  remainingGapFills: number;
+  stats: {
+    coalescedRuns: number;
+    nodesCoalesced: number;
+    gapsFilled: number;
+    gapsRefusedForBudget: number;
+    /** Gaps left split by MAX_GAP_FILLS_PER_PASSAGE, not by the allowance. */
+    gapsRefusedForCap: number;
+    /** Gaps left split because the neighbor node could not be read. */
+    gapsRefusedUnreadable: number;
+    seamsRepaired: number;
+    repairsRefusedForBudget: number;
+    expansionTokens: number;
+    /** Cost of the headers (B). Reported, not refusable — see
+     *  PassageBuildResult.headerTokens for why it is tracked apart from
+     *  expansionTokens and why it was previously unaccounted entirely. */
+    headerTokens: number;
+    headersEmitted: number;
+  };
+}
+
+export function newPassageStats(): PassageRenderContext['stats'] {
+  return {
+    coalescedRuns: 0,
+    nodesCoalesced: 0,
+    gapsFilled: 0,
+    gapsRefusedForBudget: 0,
+    gapsRefusedForCap: 0,
+    gapsRefusedUnreadable: 0,
+    seamsRepaired: 0,
+    repairsRefusedForBudget: 0,
+    expansionTokens: 0,
+    headerTokens: 0,
+    headersEmitted: 0,
+  };
+}
 
 // ── Rich recall prompt builder ───────────────────────────────────────────────
 //
@@ -20,6 +118,7 @@ export function buildRichRecallPrompt(
   byGraph: Map<string, Array<{ nodeId: string; text: string }>>,
   perGraphRich: Map<string, import('../graphnosis-adapter.js').RichSubgraph>,
   displayName: (graphId: string) => string,
+  passageCtx?: PassageRenderContext,
 ): string {
   type NodeMergeData = import('../graphnosis-adapter.js').NodeMergeData;
 
@@ -27,6 +126,12 @@ export function buildRichRecallPrompt(
     '# Graphnosis context',
     'The following memories from the user\'s personal knowledge graphs may be relevant.',
   ];
+
+  // Fair-share the expansion allowance across the graphs that contributed
+  // nodes, letting an unspent share roll over to the graphs after it. Without
+  // this the first graph iterated could absorb the whole allowance.
+  let graphsLeft = 0;
+  for (const nodes of byGraph.values()) if (nodes.length > 0) graphsLeft += 1;
 
   // ── Per-graph rich sections ──────────────────────────────────────────────
   // Collect node data for cross-graph analysis while we're iterating.
@@ -37,7 +142,57 @@ export function buildRichRecallPrompt(
     const rich = perGraphRich.get(graphId);
     if (rich) {
       const selectedIds = new Set(nodes.map(n => n.nodeId));
-      sections.push(rich.serialize(selectedIds));
+      // getRenderData is optional on RichSubgraph — test doubles and any
+      // out-of-tree adapter predate it. Without it there is nothing to
+      // coalesce from, so fall back to the SDK's own serializer (the
+      // pre-change render) rather than throwing on the recall path.
+      if (passageCtx && typeof rich.getRenderData === 'function') {
+        const share = graphsLeft > 0
+          ? Math.ceil(passageCtx.remainingExpansionTokens / graphsLeft)
+          : 0;
+        graphsLeft -= 1;
+        const budget: ExpansionBudget = {
+          maxExpansionTokens: Math.max(0, share),
+          maxExpansionTokensPerSource: EXPANSION_TOKENS_PER_SOURCE,
+          maxGapFills: Math.max(0, passageCtx.remainingGapFills),
+        };
+        const built = buildPassages(
+          rich.getRenderData(selectedIds),
+          passageCtx.chunkIndexFor(graphId),
+          {
+            coalesce: passageCtx.options.coalesce,
+            header: passageCtx.options.header,
+            repair: passageCtx.options.repair,
+            budget,
+            getFullContent: (nodeId) => passageCtx.getFullContent(graphId, nodeId),
+          },
+        );
+        // Only the REFUSABLE expansion is deducted from the allowance. Header
+        // cost is accumulated for disclosure (and for sub.tokensUsed) but does
+        // not shrink the budget: a header is emitted for every passage that
+        // gets rendered, so spending it down would starve repairs on later
+        // graphs to pay for a cost that is incurred either way.
+        passageCtx.remainingExpansionTokens -= built.expansionTokens;
+        passageCtx.remainingGapFills -= built.stats.gapsFilled;
+        passageCtx.stats.expansionTokens += built.expansionTokens;
+        passageCtx.stats.headerTokens += built.headerTokens;
+        passageCtx.stats.headersEmitted += built.headersEmitted;
+        passageCtx.stats.coalescedRuns += built.stats.coalescedRuns;
+        passageCtx.stats.nodesCoalesced += built.stats.nodesCoalesced;
+        passageCtx.stats.gapsFilled += built.stats.gapsFilled;
+        passageCtx.stats.gapsRefusedForBudget += built.stats.gapsRefusedForBudget;
+        passageCtx.stats.gapsRefusedForCap += built.stats.gapsRefusedForCap;
+        passageCtx.stats.gapsRefusedUnreadable += built.stats.gapsRefusedUnreadable;
+        passageCtx.stats.seamsRepaired += built.stats.seamsRepaired;
+        passageCtx.stats.repairsRefusedForBudget += built.stats.repairsRefusedForBudget;
+        sections.push(serializePassages(built.passages, {
+          header: passageCtx.options.header,
+          directedEdges: rich.directedEdges,
+          undirectedEdges: rich.undirectedEdges,
+        }));
+      } else {
+        sections.push(rich.serialize(selectedIds));
+      }
       perGraphNodes.set(graphId, rich.getNodeData(selectedIds));
     } else {
       for (const n of nodes) sections.push(`- ${n.text}`);

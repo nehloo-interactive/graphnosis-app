@@ -14,7 +14,11 @@ import {
   recreateAndIngestDocsEngram,
 } from './docs-ingest.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
-import { ingestBundledSkillDemos } from './skill-demos-ingest.js';
+import {
+  ingestBundledSkillDemos,
+  findForeignSkillDemoSources,
+  type IngestBundledSkillDemosResult,
+} from './skill-demos-ingest.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { broadcastOplogCompacted } from './sidecar-idle-maintenance.js';
@@ -35,6 +39,7 @@ import { actorOf } from './activity-actors.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { skillRunToListItem, deriveSkillRunStatus } from './skill-runs.js';
 import { loadCatalogDrift } from './catalog-drift.js';
+import { writeLicenseSeed, clearLicenseSeed } from './license-seed-cache.js';
 import { applyCorrection as runApplyCorrection, proposeCorrection } from './correction.js';
 import {
   linkSkillSequence,
@@ -57,6 +62,7 @@ import type { CorrectionOutcome } from './graphnosis-impl.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
 import { isDegenerateDuplicateCandidate } from './memory-hygiene.js';
+import { checkFeatureGate, checkAnyFeatureGate } from './license-gate.js';
 import type { ConnectorManager } from './connectors/manager.js';
 import { getAdminPolicy, isProviderDisabled, setAdminPolicy } from './admin-policy.js';
 import { getConsentPhraseForTier, type McpCallTool } from './mcp-server.js';
@@ -80,6 +86,8 @@ import {
   type EnterpriseSsoSettings,
   type IdpGroupRoleMapping,
   type EngramCatalogEntry,
+  type AiSettings,
+  type AppSettings,
 } from '@graphnosis-app/core/settings';
 import {
   readCatalogSubscriptions,
@@ -94,6 +102,7 @@ import {
 } from './catalog-sso-gate.js';
 import { readSsoUnlockOffer, discoverSsoUnlock, idpUiHints, probeIdpReachability } from '@graphnosis-app/core/sso';
 import { resolveClassificationPolicy, sanitizeClassificationSchema } from '@graphnosis-app/core';
+import { checkClassificationSchemaWrite, classificationLabelAssignments, classificationSchemaVersion, danglingClassificationAssignments, droppedClassificationLabelIds } from './compliance-schema-guard.js';
 import type { GraphMetadata } from '@graphnosis-app/core/settings';
 import {
   isCortexSessionBusy,
@@ -112,11 +121,45 @@ const Request = z.object({
   params: z.unknown().optional(),
 });
 
-/** Fixed slug for the bundled skill demos engram. Stays in sync with the
- * displayName 'Skill Demos' via setGraphMetadata at ingest time. The id is
- * what every IPC + sidecar code path looks up (rename-safe); the display
- * name is purely user-facing. */
-const SKILL_DEMOS_ENGRAM_ID = 'graphnosis-skill-demos';
+/**
+ * The default Agempi, installed into every new cortex.
+ *
+ * This replaced a single `SKILL_DEMOS_ENGRAM_ID = 'graphnosis-skill-demos'`
+ * constant: the bundle is no longer one engram of demos but three Agempi, each
+ * with its own engram, its own pack, and its own install posture.
+ *
+ * `installsDisabled` is the posture decision (roadmap AG.39): Onboarding is
+ * live on arrival because it teaches the app, while Ghampus Hush and Coach
+ * install PRESENT-BUT-OFF — visible on the Agents grid with their power
+ * toggle, contributing nothing to dispatch until the owner turns them on.
+ * Shipping them hot would hand a first-run user 24 skills they never asked
+ * for; shipping them absent would hide what they bought.
+ *
+ * Ids are slugs and never change: every lookup goes through the id, the
+ * displayName is purely user-facing and an owner may rename it freely.
+ * `pack` must match a filename in BUNDLED_SKILL_DEMOS or the ingest reports a
+ * packError for that engram (and leaves the others alone).
+ */
+const DEFAULT_AGEMPI = [
+  {
+    id: 'graphnosis-onboarding',
+    displayName: 'Onboarding',
+    pack: 'onboarding-graphnosis-agempus.gsk',
+    installsDisabled: false,
+  },
+  {
+    id: 'graphnosis-ghampus-hush',
+    displayName: 'Ghampus Hush',
+    pack: 'ghampus-hush-graphnosis-agempus.gsk',
+    installsDisabled: true,
+  },
+  {
+    id: 'graphnosis-coach',
+    displayName: 'Coach',
+    pack: 'coach-graphnosis-agempus.gsk',
+    installsDisabled: true,
+  },
+] as const;
 
 // Cooperative cancellation handles for long-running operations. Each is a
 // module-scope `AbortController | null` because only one of each operation
@@ -135,7 +178,7 @@ let ghampusPendingClarification: import('./ghampus-clarification.js').GhampusPen
 // Cleared when the engram is created (auto-saves) or user sends a new unrelated message.
 let ghampusPendingEngram: {
   content: string;        // the content to save once the engram is created
-  engramHint: string;     // the name the user intended (slug-normalised on use)
+  engramHint: string;     // the name the user intended (slug-normalized on use)
 } | null = null;
 
 /**
@@ -915,10 +958,10 @@ async function provisionCatalogDefaultRoleToken(
     },
     createdAt: Date.now(),
   };
-  await deps.host.setSettings({
+  await deps.host.setSettings((current) => ({
     ...current,
     sharing: { tokens: [...existing, newToken] },
-  });
+  }));
   return { tokenId: newToken.id, created: true };
 }
 
@@ -951,7 +994,12 @@ async function installCatalogPackage(
     if (entry.requireSsoSession === true) {
       meta.requireSsoSession = true;
     }
-    await deps.host.setGraphMetadata(engramId, meta);
+    // PATCH, not replace: the guard at :937 is `graphs.includes(engramId)` with
+    // graphs = listGraphs() — RESIDENCY, not existence. A catalog package whose
+    // id matches an evicted-but-on-disk engram reaches this write, and replacing
+    // would flatten that engram's row.
+    meta.createdAt = deps.host.getGraphMetadata(engramId)?.createdAt ?? meta.createdAt;
+    await deps.host.patchGraphMetadata(engramId, meta);
   }
 
   if (entry.installMode === 'merge-copy' && entry.sourceEngramId?.trim()) {
@@ -980,8 +1028,10 @@ async function installCatalogPackage(
 
   if (entry.kind === 'hub-slice' && entry.hubRef?.trim()) {
     const meta = deps.host.getGraphMetadata(engramId);
-    await deps.host.setGraphMetadata(engramId, {
-      ...(meta ?? {}),
+    // PATCH with just the changed keys — the `...(meta ?? {})` spread existed
+    // only to stop a replace from destroying the rest of the entry, and a patch
+    // makes that structural instead of a spread a later edit can quietly drop.
+    await deps.host.patchGraphMetadata(engramId, {
       template: entry.itControlled ? 'compliance' : 'team',
       displayName: entry.displayName,
       createdAt: meta?.createdAt ?? Date.now(),
@@ -1135,17 +1185,20 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         personalTier: policyChoice,
         sensitiveTier: policyChoice,
       }).parse(params ?? {});
-      const current = deps.host.getSettings();
-      const nextPolicies = {
-        ...(current.ai.clientPolicies ?? {}),
-        [args.clientName]: {
-          personalTier: args.personalTier,
-          sensitiveTier: args.sensitiveTier,
-          firstSeenAt:
-            current.ai.clientPolicies?.[args.clientName]?.firstSeenAt ?? Date.now(),
+      await deps.host.setSettings((current) => ({
+        ai: {
+          ...current.ai,
+          clientPolicies: {
+            ...(current.ai.clientPolicies ?? {}),
+            [args.clientName]: {
+              personalTier: args.personalTier,
+              sensitiveTier: args.sensitiveTier,
+              firstSeenAt:
+                current.ai.clientPolicies?.[args.clientName]?.firstSeenAt ?? Date.now(),
+            },
+          },
         },
-      };
-      await deps.host.setSettings({ ai: { ...current.ai, clientPolicies: nextPolicies } });
+      }));
       return { ok: true };
     }
     case 'ai.getClientPolicies': {
@@ -1165,18 +1218,22 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // EXISTING denylist regardless of tier — only WRITES are gated here, so a
       // downgrade never silently re-exposes a tool.
       const licenseToken = await getEffectiveLicenseToken(deps);
-      const isProSubscriber =
-        (deps.licenseValidator?.hasFeature(licenseToken, 'mcp-tool-control') ?? false) ||
-        (deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false);
-      if (!isProSubscriber) {
+      const denial = checkAnyFeatureGate(
+        licenseToken,
+        ['mcp-tool-control', 'skill-training'],
+        deps.licenseValidator,
+        { subject: 'Choosing which MCP tools are exposed to AI clients' },
+      );
+      if (denial) {
         return {
           ok: false,
           upgrade_required: true,
-          message: 'Choosing which MCP tools are exposed to AI clients is a Pro/Teams/Enterprise feature.',
+          license_state: denial.reason,
+          granted_features: denial.grantedFeatures,
+          message: denial.message,
         };
       }
-      const current = deps.host.getSettings();
-      await deps.host.setSettings({ ai: { ...current.ai, disabledMcpTools: args.tools } });
+      await deps.host.setSettings((current) => ({ ai: { ...current.ai, disabledMcpTools: args.tools } }));
       return { ok: true };
     }
     case 'ai.getDisabledTools': {
@@ -1223,12 +1280,338 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         displayName: z.string().min(1),
         createdAt: z.number().int().nonnegative().optional(),
       }).parse(params);
-      await deps.host.setGraphMetadata(args.graphId, {
+      // PATCH, not replace — this is the worst site in the codebase for a
+      // replace. `graphs.setMetadata` is a raw IPC entry point: it takes an
+      // arbitrary graphId with NO existence check, NO residency check and no
+      // read of the stored entry at all, then writes three fields. Every other
+      // GraphMetadata field on that engram — sensitivityTier, excludedSources,
+      // consentIntervalMs, executionAutonomyLevel, skillAutonomyLevels,
+      // quarantine, archived, requireSsoSession, legalHold*, retention* — was
+      // destroyed by any caller that reached it, and the App calls this to
+      // change a template or a display name. createdAt keeps the stored value
+      // unless the caller explicitly supplies one.
+      await deps.host.patchGraphMetadata(args.graphId, {
         template: args.template,
         displayName: args.displayName,
-        createdAt: args.createdAt ?? Date.now(),
+        createdAt: args.createdAt
+          ?? deps.host.getGraphMetadata(args.graphId)?.createdAt
+          ?? Date.now(),
       });
       return { ok: true };
+    }
+    /** Read the agent roster. Agents are keyed by agentId; the UI indexes by
+     *  engramId to pair each roster entry with its engram. */
+    case 'agents.list': {
+      return { agents: Object.values(deps.host.getSettings().agents ?? {}) };
+    }
+    /**
+     * Per-agent activity roll-up for the Agents grid: when each engram's skills
+     * last RAN, how many runs there were, and how many finished.
+     *
+     * Aggregated here rather than in the renderer because the run store is the
+     * whole cortex's runs — shipping all of them to the UI to count by engram
+     * would grow with history forever. This returns one small row per engram.
+     *
+     * Deliberately NOT an "acceptance rate": nothing in SkillRunRecord records
+     * whether a human accepted a run's output. Reporting completion as approval
+     * would be inventing a metric the system does not measure.
+     */
+    case 'agents.activity': {
+      const runs = await deps.host.skillRuns.list();
+      const byEngram = new Map<string, { lastRunAt: number; runCount: number; completeCount: number; activeCount: number }>();
+      for (const r of runs) {
+        const gid = r.skillGraphId;
+        if (!gid) continue;
+        const row = byEngram.get(gid) ?? { lastRunAt: 0, runCount: 0, completeCount: 0, activeCount: 0 };
+        const status = r.status ?? deriveSkillRunStatus(r);
+        row.runCount += 1;
+        if (status === 'complete') row.completeCount += 1;
+        if (status === 'running' || status === 'paused' || status === 'blocked-on-human') row.activeCount += 1;
+        const ts = Math.max(r.updatedAt ?? 0, r.createdAt ?? 0);
+        if (ts > row.lastRunAt) row.lastRunAt = ts;
+        byEngram.set(gid, row);
+      }
+      // Fold in skill USE, which is NOT the same as an executor run.
+      //
+      // An engram can have zero runs and constant use — every walk_skill,
+      // get_skill and train_skill is real activity by this agent. Reporting only
+      // `skillRuns` is what made the grid say "never run" about skills being
+      // walked all day: it reported the absence of one KIND of record as the
+      // absence of the event.
+      //
+      // The source is the MCP audit log, which already records every tool call
+      // with its timestamp and the engrams it touched (mcp-audit.ts:25, appended
+      // at mcp-server.ts:6990). Nothing new is written for this — the data was
+      // always there; only the grid was not reading it.
+      const SKILL_TOOLS = new Set([
+        'walk_skill', 'walk_skill_structured', 'get_skill', 'train_skill',
+        'export_skill', 'skill_lint', 'skill_vitality', 'save_skill_run',
+        'resume_skill_run', 'rollback_skill', 'skill_history',
+      ]);
+      const lastUse = new Map<string, number>();
+      try {
+        for (const ev of await deps.host.listMcpAuditEvents()) {
+          if (!SKILL_TOOLS.has(ev.tool)) continue;
+          for (const gid of ev.engramIds ?? []) {
+            if ((lastUse.get(gid) ?? 0) < ev.ts) lastUse.set(gid, ev.ts);
+          }
+        }
+      } catch (e) {
+        // An unreadable audit log must not blank the grid — the caption falls
+        // back to run data and training time.
+        dbg('[agents.activity] audit log unavailable', e);
+      }
+      const engramIds = new Set<string>([...byEngram.keys(), ...lastUse.keys()]);
+      return {
+        activity: [...engramIds].map((engramId) => {
+          const v = byEngram.get(engramId) ?? { lastRunAt: 0, runCount: 0, completeCount: 0, activeCount: 0 };
+          return { engramId, ...v, lastUsedAt: lastUse.get(engramId) ?? 0 };
+        }),
+      };
+    }
+    /**
+     * Create-or-patch ONE agent record (hat shape, colorway, display alias,
+     * drag-to-group category).
+     *
+     * This writes to `settings.agents`, a SIBLING of `graphMetadata`, not into
+     * the engram's own entry. An agent is un-ganglia plus a hippocampus — the
+     * engram is a part of the agent, not its owner — and keeping the record
+     * outside `graphMetadata` also puts it beyond the reach of
+     * `replaceGraphMetadata`, which replaces a graph's whole entry outright.
+     * (Callers that only mean to change some fields now use
+     * `patchGraphMetadata`, so the blast radius is much smaller than it was —
+     * but a sibling key is structurally out of it either way.)
+     *
+     * Returns the STORED record, re-read after the write, so the caller can
+     * verify the round-trip rather than trusting `ok: true`. A field missing
+     * from a schema is dropped in silence — that is how three separate settings
+     * fields in this codebase became unsaveable while every save looked fine.
+     */
+    case 'agents.upsert': {
+      const args = z.object({
+        engramId: z.string().min(1),
+        // null clears a field, undefined leaves it alone. Load-bearing: without
+        // the distinction there is no way to ungroup an agent, or to drop an
+        // alias back to the engram's real display name.
+        shape:  z.string().max(64).nullable().optional(),
+        color:  z.string().max(64).nullable().optional(),
+        alias:  z.string().max(120).nullable().optional(),
+        group:  z.string().max(120).nullable().optional(),
+        // PRESENTATION. Hiding a tile does not touch what the agent can do —
+        // its skills stay dispatchable and stay in the library. The functional
+        // off switch is `GraphMetadata.skillsDisabled`, set by
+        // `agents.setDisabled` below, and the two are deliberately independent.
+        //
+        // Boolean, and it follows the same three-way convention as the strings:
+        // `false` and `null` both clear the field (absent → shown), `undefined`
+        // leaves it alone. `false` is stored as ABSENCE rather than as a stored
+        // `false`, so the roster never accumulates a key per agent the user
+        // merely un-hid once.
+        hidden: z.boolean().nullable().optional(),
+      }).parse(params);
+      // FUNCTION FORM: this is a read-modify-write on the `agents` map, so the
+      // roster has to be read AFTER the settings write queue admits this write.
+      // Reading it at the call site snapshots before `await prev`, and the UI
+      // fires these back-to-back on purpose (the appearance picker stays open
+      // so hat and color can be chosen in a row, apps/desktop/src/ui/
+      // agents-grid.ts:249 does not serialize them) — so the second upsert's
+      // snapshot predates the first's commit and silently reverts it.
+      //
+      // The provenance brand does NOT cover this: it sits on the settings
+      // object, not on the nested `agents` map, so a spread of `settings.agents`
+      // is an unbranded plain Record that typechecks and skips
+      // `rebaseAgainstProvenance`.
+      let agentId = '';
+      await deps.host.setSettings((committed) => {
+        const roster = { ...(committed.agents ?? {}) };
+        // One agent per engram today. Look up by engramId rather than assuming the
+        // key IS the engram id, so a future agent spanning two engrams needs no
+        // migration of anything written now.
+        const found = Object.values(roster).find((a) => a.engramId === args.engramId);
+        const record = found
+          ? { ...found }
+          : { agentId: `agent:${args.engramId}:${Date.now()}`, engramId: args.engramId, createdAt: Date.now() };
+        const apply = (key: 'shape' | 'color' | 'alias' | 'group',
+                       value: string | null | undefined): void => {
+          if (value === undefined) return;
+          const trimmed = value === null ? '' : value.trim();
+          if (trimmed === '') delete record[key];
+          else record[key] = trimmed;
+        };
+        apply('shape', args.shape);
+        apply('color', args.color);
+        apply('alias', args.alias);
+        apply('group', args.group);
+        // Same three-way contract, boolean shape. Kept separate from `apply`
+        // rather than folded into it: `apply` trims and stores strings, and a
+        // boolean run through it would store the string "true".
+        if (args.hidden !== undefined) {
+          if (args.hidden === true) record.hidden = true;
+          else delete record.hidden;
+        }
+        roster[record.agentId] = record;
+        agentId = record.agentId;
+        return { agents: roster };
+      });
+      const stored = deps.host.getSettings().agents?.[agentId] ?? null;
+      return { ok: true, agent: stored };
+    }
+    /**
+     * The agent OFF SWITCH — turn one agent's un-ganglia inert, or back on.
+     *
+     * Writes `GraphMetadata.skillsDisabled` on the ENGRAM, not onto the agent
+     * record. The roster is presentation (hat, colorway, alias, crew, tile
+     * visibility) and deleting it must not change behavior; an off switch kept
+     * there would silently re-enable every agent the owner had turned off. See
+     * the field's own note in graphnosis-app-core settings.
+     *
+     * patchGraphMetadata, NOT replaceGraphMetadata: this touches ONE field, and
+     * a replace here would take quarantine state, per-skill autonomy overrides,
+     * legal hold and the rest of the entry with it. `false` is stored as a real
+     * `false` rather than by deleting the key, precisely because a merge cannot
+     * express absence — routing "re-enable" through a replace to delete the key
+     * would put the whole entry back in the blast radius for no gain.
+     *
+     * Refuses an unknown engram instead of creating one: patchGraphMetadata
+     * synthesises a metadata row when none exists, so a typo'd graphId would
+     * otherwise mint a phantom engram entry that shows up in the picker.
+     *
+     * Returns the STORED value, re-read after the write — same contract as
+     * `agents.upsert`. A flag that silently failed to persist would render as a
+     * tile that snaps back with no reason given.
+     *
+     * ENFORCEMENT IS NOT HERE. This persists the flag; dispatch, the walker,
+     * `@skill:` resolution, the library listing and the MCP tools each still
+     * have to consult it before "inert" is true rather than merely displayed.
+     */
+    case 'agents.setDisabled': {
+      const args = z.object({
+        graphId: z.string().min(1),
+        disabled: z.boolean(),
+      }).parse(params);
+      if (deps.host.getGraphMetadata(args.graphId) === undefined) {
+        return { error: { code: 'ENGRAM_NOT_FOUND', message: `No engram “${args.graphId}”.` } };
+      }
+      await deps.host.patchGraphMetadata(args.graphId, { skillsDisabled: args.disabled });
+      return {
+        ok: true,
+        graphId: args.graphId,
+        disabled: deps.host.getGraphMetadata(args.graphId)?.skillsDisabled === true,
+      };
+    }
+    /** List crews. Self-healing: any agent whose `group` is not a known crewId
+     *  is treated as carrying a crew NAME (the pre-crews shape) and gets a crew
+     *  minted for it, so grouping done before crews existed is not orphaned. */
+    case 'crews.list': {
+      const settings = deps.host.getSettings();
+      const crews = { ...(settings.crews ?? {}) };
+      const agents = { ...(settings.agents ?? {}) };
+      let migrated = false;
+      for (const a of Object.values(agents)) {
+        if (!a.group || crews[a.group]) continue;
+        const legacyName = a.group;
+        const existing = Object.values(crews).find((c) => c.name === legacyName);
+        const crewId = existing?.crewId ?? `crew:${Date.now()}:${Object.keys(crews).length}`;
+        if (!existing) crews[crewId] = { crewId, name: legacyName, createdAt: Date.now() };
+        agents[a.agentId] = { ...a, group: crewId };
+        migrated = true;
+      }
+      if (migrated) await deps.host.setSettings({ crews, agents });
+      return { crews: Object.values(crews), agents: Object.values(agents) };
+    }
+    /** Create or patch a crew (name, brief). Autonomy has its own case below,
+     *  because applying it has an effect beyond this record. */
+    case 'crews.upsert': {
+      const args = z.object({
+        crewId: z.string().optional(),
+        name: z.string().min(1).max(120).optional(),
+        brief: z.string().max(4000).nullable().optional(),
+      }).parse(params);
+      const crews = { ...(deps.host.getSettings().crews ?? {}) };
+      const id = args.crewId ?? `crew:${Date.now()}:${Object.keys(crews).length}`;
+      const prior = crews[id];
+      const next = {
+        ...(prior ?? { crewId: id, name: args.name ?? 'New crew', createdAt: Date.now() }),
+      };
+      if (args.name !== undefined) next.name = args.name.trim() || next.name;
+      if (args.brief !== undefined) {
+        const b = args.brief === null ? '' : args.brief.trim();
+        if (b === '') delete next.brief; else next.brief = b;
+      }
+      crews[id] = next;
+      await deps.host.setSettings({ crews });
+      return { ok: true, crew: deps.host.getSettings().crews?.[id] ?? null };
+    }
+    /**
+     * Apply one autonomy level across a crew.
+     *
+     * This WRITES `executionAutonomyLevel` onto each member ENGRAM — it does not
+     * create a second authority. The executor consults the engram (and the
+     * per-skill authored `[dispatch-safe:]` cap, which still wins), so a crew can
+     * never grant more than a skill already permits; it can only move every
+     * member at once.
+     *
+     * Uses patchGraphMetadata, so the write merges. Under the old replace-only
+     * API this would have destroyed each member's quarantine state and per-skill
+     * overrides as a side effect of changing one field.
+     *
+     * Reports per-engram results rather than a bare ok, so a member that failed
+     * is visible instead of being averaged into an overall success.
+     */
+    case 'crews.setAutonomy': {
+      const args = z.object({
+        crewId: z.string().min(1),
+        level: z.enum(['L0', 'L1', 'L2', 'L3']),
+      }).parse(params);
+      const settings = deps.host.getSettings();
+      const members = Object.values(settings.agents ?? {}).filter((a) => a.group === args.crewId);
+      const applied: Array<{ engramId: string; ok: boolean; error?: string }> = [];
+      for (const m of members) {
+        try {
+          await deps.host.patchGraphMetadata(m.engramId, { executionAutonomyLevel: args.level });
+          applied.push({ engramId: m.engramId, ok: true });
+        } catch (e) {
+          applied.push({ engramId: m.engramId, ok: false, error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      const crews = { ...(settings.crews ?? {}) };
+      const crew = crews[args.crewId];
+      if (crew) {
+        crews[args.crewId] = { ...crew, autonomy: args.level };
+        await deps.host.setSettings({ crews });
+      }
+      return { ok: applied.every((a) => a.ok), applied, level: args.level };
+    }
+    /** Delete a crew and unlink its members. Members keep everything else. */
+    case 'crews.forget': {
+      const args = z.object({ crewId: z.string().min(1) }).parse(params);
+      const settings = deps.host.getSettings();
+      const crews = { ...(settings.crews ?? {}) };
+      delete crews[args.crewId];
+      const agents = { ...(settings.agents ?? {}) };
+      for (const a of Object.values(agents)) {
+        if (a.group === args.crewId) {
+          const { group: _drop, ...rest } = a;
+          agents[a.agentId] = rest;
+        }
+      }
+      await deps.host.setSettings({ crews, agents });
+      return { ok: true };
+    }
+    /** Remove an agent record. The engram is untouched — this drops only the
+     *  presentation layer, and the agent reappears with deterministic defaults. */
+    case 'agents.forget': {
+      const args = z.object({ agentId: z.string().min(1) }).parse(params);
+      // FUNCTION FORM — same reason as agents.upsert above. A forget built from
+      // a call-site snapshot resurrects any agent upserted while it queued.
+      let remaining = 0;
+      await deps.host.setSettings((committed) => {
+        const roster = { ...(committed.agents ?? {}) };
+        delete roster[args.agentId];
+        remaining = Object.keys(roster).length;
+        return { agents: roster };
+      });
+      return { ok: true, remaining };
     }
     case 'graphs.createWithTemplate': {
       const args = z.object({
@@ -1246,7 +1629,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const licenseToken = await getEffectiveLicenseToken(deps);
         const hasPaidPlan = (deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null) !== null;
         if (!hasPaidPlan) {
-          const SYSTEM_ENGRAMS = new Set([DOCS_ENGRAM_ID, SKILL_DEMOS_ENGRAM_ID]);
+          // Every default Agempus is a system engram, not one of the user's
+          // three. Listing only one of them (as this did when there was a
+          // single demo engram) would charge a free user two engrams they
+          // never created and lock them out at zero of their own.
+          const SYSTEM_ENGRAMS = new Set<string>([DOCS_ENGRAM_ID, ...DEFAULT_AGEMPI.map((a) => a.id)]);
           const userEngrams = deps.host.listGraphs().filter(id => !SYSTEM_ENGRAMS.has(id));
           if (userEngrams.length >= 3) {
             return { error: { code: 'ENGRAM_LIMIT_REACHED', message: 'Free plan is limited to 3 engrams. Upgrade to Pro for unlimited engrams.', limit: 3, upgradeUrl: 'https://graphnosis.com/upgrade' } };
@@ -1254,10 +1641,14 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         }
       }
       await deps.host.createGraph(args.graphId);
-      await deps.host.setGraphMetadata(args.graphId, {
+      // PATCH, not replace: `graphs.createWithTemplate` runs no existence check
+      // on the metadata row at all — the free-tier gate above counts engrams,
+      // it does not reject a colliding id. A create against an id that already
+      // has a row would otherwise flatten it.
+      await deps.host.patchGraphMetadata(args.graphId, {
         template: args.template,
         displayName: args.displayName,
-        createdAt: Date.now(),
+        createdAt: deps.host.getGraphMetadata(args.graphId)?.createdAt ?? Date.now(),
       });
       return { ok: true, graphId: args.graphId };
     }
@@ -1292,17 +1683,25 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const licenseToken = await getEffectiveLicenseToken(deps);
         const hasPaidPlan = (deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null) !== null;
         if (!hasPaidPlan) {
-          const SYSTEM_ENGRAMS = new Set([DOCS_ENGRAM_ID, SKILL_DEMOS_ENGRAM_ID]);
+          // Every default Agempus is a system engram, not one of the user's
+          // three. Listing only one of them (as this did when there was a
+          // single demo engram) would charge a free user two engrams they
+          // never created and lock them out at zero of their own.
+          const SYSTEM_ENGRAMS = new Set<string>([DOCS_ENGRAM_ID, ...DEFAULT_AGEMPI.map((a) => a.id)]);
           const userEngrams = deps.host.listGraphs().filter(id => !SYSTEM_ENGRAMS.has(id));
           if (userEngrams.length >= 3) {
             return { error: { code: 'ENGRAM_LIMIT_REACHED', message: 'Free plan is limited to 3 engrams. Upgrade to Pro for unlimited engrams.', limit: 3, upgradeUrl: 'https://graphnosis.com/upgrade' } };
           }
         }
         await deps.host.createGraph(args.graphId);
-        await deps.host.setGraphMetadata(args.graphId, {
+        // PATCH, not replace: `existed` is `listGraphs().includes(...)` —
+        // RESIDENCY. The comment above says every engram is loaded at startup,
+        // but that is the same assumption that made the promote-target and
+        // import-target writes destructive, so do not depend on it here.
+        await deps.host.patchGraphMetadata(args.graphId, {
           template: args.template,
           displayName: args.displayName,
-          createdAt: Date.now(),
+          createdAt: deps.host.getGraphMetadata(args.graphId)?.createdAt ?? Date.now(),
         });
       }
       const rec = await withEmbedding(() =>
@@ -1432,7 +1831,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // any resolved promise as success: on a soft `{ ok: false }` it would
         // rewrite the node's cached confidence to 0, drop it from recents,
         // re-push the Atlas without it and return `true`, at which point the
-        // deck shows the "forgotten" acknowledgement. The node would vanish
+        // deck shows the "forgotten" acknowledgment. The node would vanish
         // from the UI while remaining live in the cortex — and reappear on the
         // next real refresh. Only the `invoke` rejection reaches `showError`.
         throw new Error(
@@ -2197,14 +2596,18 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         clientName: z.string().optional(),
         tier: z.enum(['personal', 'sensitive']).optional(),
       }).parse(params ?? {});
-      const current = deps.host.getSettings();
-      const revoked = revokeConsent(
-        current.ai.dataAccessConsents,
-        args.clientName,
-        args.tier,
-      );
-      await deps.host.setSettings({ ai: { ...current.ai, dataAccessConsents: revoked } });
-      return { revoked: true, count: (current.ai.dataAccessConsents?.length ?? 0) - revoked.filter(r => !r.withdrawnAt).length };
+      // FUNCTION FORM. Revocation is a security control: a grant that commits
+      // between a call-site read and this write would be replayed back in by
+      // the stale `ai` subtree, silently un-revoking it. Compute inside the
+      // write queue so the revoke covers whatever is actually committed.
+      let before = 0;
+      let revoked: ReturnType<typeof revokeConsent> = [];
+      await deps.host.setSettings((current) => {
+        before = current.ai.dataAccessConsents?.length ?? 0;
+        revoked = revokeConsent(current.ai.dataAccessConsents, args.clientName, args.tier);
+        return { ai: { ...current.ai, dataAccessConsents: revoked } };
+      });
+      return { revoked: true, count: before - revoked.filter(r => !r.withdrawnAt).length };
     }
     case 'ai.getConsentHistory': {
       // Returns all consent records (including revoked) for the consent history modal.
@@ -2312,7 +2715,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }).parse(params);
       const existing = deps.host.getGraphMetadata(args.graphId);
       if (!existing) throw new Error(`graph ${args.graphId} not found`);
-      await deps.host.setGraphMetadata(args.graphId, { ...existing, displayName: args.displayName });
+      // Rename changes ONE field and removes nothing — patch.
+      await deps.host.patchGraphMetadata(args.graphId, { displayName: args.displayName });
       return { ok: true };
     }
     case 'graphs.delete': {
@@ -2484,7 +2888,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // calls, so the push-event channel emits two mutation ticks; the
       // App's pollGraphMutations will pick up the second one and refresh.
       const cleared = await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:ingest' });
-      // A refused forget is NOT a licence to re-ingest. `forgetSource` returns
+      // A refused forget is NOT a license to re-ingest. `forgetSource` returns
       // `refusedNodeIds` rather than throwing, so the old bare `await` fell
       // through into `ingestFile` below and appended a SECOND full copy of the
       // file's chunks on top of the ones that were never removed — the exact
@@ -2898,100 +3302,147 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (parsed.contentCache) patch.contentCache = parsed.contentCache;
       if (parsed.forget) patch.forget = parsed.forget;
       if (parsed.mcpRelay) patch.mcpRelay = parsed.mcpRelay;
-      if (parsed.ui) {
-        // UiSettings on the host requires all fields; the wire payload
-        // accepts partials so the theme toggle can post just `{ ui: { theme } }`
-        // without touching inspectorDetail. Backfill missing fields from
-        // current settings so partial updates don't silently revert anything.
-        const currentUi = deps.host.getSettings().ui;
-        patch.ui = {
-          inspectorDetail: parsed.ui.inspectorDetail ?? currentUi.inspectorDetail,
-          theme: parsed.ui.theme ?? currentUi.theme,
-        };
-      }
-      if (parsed.ai) {
-        // AiSettings requires all fields, but the wire payload allows
-        // older clients to omit newer ones. Fill from current settings so
-        // we never silently revert any to the default.
-        const currentAi = deps.host.getSettings().ai;
-        patch.ai = {
-          useAsDefaultMemory: parsed.ai.useAsDefaultMemory,
-          autoRelinkMaxNodes: parsed.ai.autoRelinkMaxNodes ?? currentAi.autoRelinkMaxNodes,
-          autoReingestOnFileChange: parsed.ai.autoReingestOnFileChange ?? currentAi.autoReingestOnFileChange,
-          reingestQuietMs: parsed.ai.reingestQuietMs ?? currentAi.reingestQuietMs,
-          chunkSize: parsed.ai.chunkSize ?? currentAi.chunkSize,
-          embedBatch: parsed.ai.embedBatch ?? currentAi.embedBatch,
-          ...(parsed.ai.embedWorkers !== undefined ? { embedWorkers: parsed.ai.embedWorkers } : currentAi.embedWorkers !== undefined ? { embedWorkers: currentAi.embedWorkers } : {}),
-          // The local-LLM master switch is owned by the dedicated
-          // `llm:setEnabled` IPC — preserve it across a generic settings update.
-          llmEnabled: currentAi.llmEnabled,
-          ...(parsed.ai.sessionTokenCap !== undefined ? { sessionTokenCap: parsed.ai.sessionTokenCap } : currentAi.sessionTokenCap !== undefined ? { sessionTokenCap: currentAi.sessionTokenCap } : {}),
-          ...(parsed.ai.sessionNodeCap !== undefined ? { sessionNodeCap: parsed.ai.sessionNodeCap } : currentAi.sessionNodeCap !== undefined ? { sessionNodeCap: currentAi.sessionNodeCap } : {}),
-          // Consent interval settings — UI-writable, never overwritable via MCP.
-          ...(parsed.ai.consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs: parsed.ai.consentIntervalSensitiveMs } : currentAi.consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs: currentAi.consentIntervalSensitiveMs } : {}),
-          ...(parsed.ai.consentIntervalPersonalMs !== undefined ? { consentIntervalPersonalMs: parsed.ai.consentIntervalPersonalMs } : currentAi.consentIntervalPersonalMs !== undefined ? { consentIntervalPersonalMs: currentAi.consentIntervalPersonalMs } : {}),
-          ...(parsed.ai.clientTypes !== undefined ? { clientTypes: parsed.ai.clientTypes } : currentAi.clientTypes !== undefined ? { clientTypes: currentAi.clientTypes } : {}),
-          // dataAccessConsents — NEVER written via generic settings patch.
-          // Only writable via dedicated ai.revokeConsents and confirm_data_access MCP tool.
-          ...(currentAi.dataAccessConsents !== undefined ? { dataAccessConsents: currentAi.dataAccessConsents } : {}),
-          // disabledMcpTools — written ONLY via the dedicated, Pro-gated
-          // ai.setDisabledTools IPC. Preserve here so an unrelated settings
-          // patch (which rebuilds `ai` field-by-field) can't silently drop it.
-          ...(currentAi.disabledMcpTools !== undefined ? { disabledMcpTools: currentAi.disabledMcpTools } : {}),
-        };
-      }
-      if (parsed.mobile) {
-        // Fill from current settings so partial updates don't lose fields.
-        const currentMobile = deps.host.getSettings().mobile;
-        const currentBridge = currentMobile?.httpBridge;
-        const currentUi = currentMobile?.httpUi;
-        const inBridge = parsed.mobile.httpBridge;
-        const inUi = parsed.mobile.httpUi;
+      // `ui` is the same READ-MODIFY-WRITE shape as `ai` below — it backfills
+      // whichever field the caller omitted from a call-site `getSettings()`
+      // read. Two shipped callers write this subtree independently (the
+      // status-bar theme toggle posts `{ ui: { theme } }`; Preferences posts
+      // `{ ui: { inspectorDetail } }`), and the merge is SHALLOW per top-level
+      // key, so a T0 backfill replaces the whole committed `ui` — a theme
+      // toggle that commits during this handler's awaits is silently reverted.
+      // Not a security control, which is why FIX.19 took `ai` first; same
+      // treatment, called inside the write queue at the bottom of this case.
+      const parsedUi = parsed.ui;
+      const buildUi = parsedUi
+        ? (currentUi: AppSettings['ui']) => ({
+            // UiSettings on the host requires all fields; the wire payload
+            // accepts partials so the theme toggle can post just `{ ui: { theme } }`
+            // without touching inspectorDetail. Backfill missing fields from
+            // current settings so partial updates don't silently revert anything.
+            inspectorDetail: parsedUi.inspectorDetail ?? currentUi.inspectorDetail,
+            theme: parsedUi.theme ?? currentUi.theme,
+          })
+        : null;
+      // `ai` is a READ-MODIFY-WRITE: it rebuilds the whole subtree field by
+      // field and carries `dataAccessConsents`, `llmEnabled` and
+      // `disabledMcpTools` forward from committed state. Building it HERE
+      // snapshots at T0 and then writes that snapshot back after this handler's
+      // awaits (the license lookup and the connector-manager write below, plus
+      // the settings queue's own `await prev`) — and `setSettings` merges
+      // SHALLOW per top-level key, so the whole committed `ai` subtree is
+      // replaced by the T0 one. On `dataAccessConsents` that is a security
+      // control reverting itself: a REVOKE that commits during the await is
+      // silently replayed away and the client keeps its grant.
+      //
+      // FUNCTION FORM, same as the five other `dataAccessConsents` writers
+      // (`ai.revokeConsents` above; four in mcp-server.ts). The builder is
+      // defined here so it stays next to the other `parsed.*` branches, but it
+      // is CALLED inside the write queue at the bottom of this case, where
+      // `current` is the latest committed state.
+      const parsedAi = parsed.ai;
+      const buildAi = parsedAi
+        ? (currentAi: AiSettings) => ({
+            // AiSettings requires all fields, but the wire payload allows
+            // older clients to omit newer ones. Fill from current settings so
+            // we never silently revert any to the default.
+            useAsDefaultMemory: parsedAi.useAsDefaultMemory,
+            autoRelinkMaxNodes: parsedAi.autoRelinkMaxNodes ?? currentAi.autoRelinkMaxNodes,
+            autoReingestOnFileChange: parsedAi.autoReingestOnFileChange ?? currentAi.autoReingestOnFileChange,
+            reingestQuietMs: parsedAi.reingestQuietMs ?? currentAi.reingestQuietMs,
+            chunkSize: parsedAi.chunkSize ?? currentAi.chunkSize,
+            embedBatch: parsedAi.embedBatch ?? currentAi.embedBatch,
+            ...(parsedAi.embedWorkers !== undefined ? { embedWorkers: parsedAi.embedWorkers } : currentAi.embedWorkers !== undefined ? { embedWorkers: currentAi.embedWorkers } : {}),
+            // The local-LLM master switch is owned by the dedicated
+            // `llm:setEnabled` IPC — preserve it across a generic settings update.
+            llmEnabled: currentAi.llmEnabled,
+            ...(parsedAi.sessionTokenCap !== undefined ? { sessionTokenCap: parsedAi.sessionTokenCap } : currentAi.sessionTokenCap !== undefined ? { sessionTokenCap: currentAi.sessionTokenCap } : {}),
+            ...(parsedAi.sessionNodeCap !== undefined ? { sessionNodeCap: parsedAi.sessionNodeCap } : currentAi.sessionNodeCap !== undefined ? { sessionNodeCap: currentAi.sessionNodeCap } : {}),
+            // Consent interval settings — UI-writable, never overwritable via MCP.
+            ...(parsedAi.consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs: parsedAi.consentIntervalSensitiveMs } : currentAi.consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs: currentAi.consentIntervalSensitiveMs } : {}),
+            ...(parsedAi.consentIntervalPersonalMs !== undefined ? { consentIntervalPersonalMs: parsedAi.consentIntervalPersonalMs } : currentAi.consentIntervalPersonalMs !== undefined ? { consentIntervalPersonalMs: currentAi.consentIntervalPersonalMs } : {}),
+            ...(parsedAi.clientTypes !== undefined ? { clientTypes: parsedAi.clientTypes } : currentAi.clientTypes !== undefined ? { clientTypes: currentAi.clientTypes } : {}),
+            // dataAccessConsents — NEVER written via generic settings patch.
+            // Only writable via dedicated ai.revokeConsents and confirm_data_access MCP tool.
+            // Read from `currentAi` INSIDE the queue: see the note above.
+            ...(currentAi.dataAccessConsents !== undefined ? { dataAccessConsents: currentAi.dataAccessConsents } : {}),
+            // disabledMcpTools — written ONLY via the dedicated, Pro-gated
+            // ai.setDisabledTools IPC. Preserve here so an unrelated settings
+            // patch (which rebuilds `ai` field-by-field) can't silently drop it.
+            ...(currentAi.disabledMcpTools !== undefined ? { disabledMcpTools: currentAi.disabledMcpTools } : {}),
+          })
+        : null;
+      // `mobile` holds TWO independently-toggled servers (the MCP bridge and
+      // the browser UI) under one top-level key, and this branch rebuilds the
+      // whole subtree — including the `else if (currentUi)` carry-forward — from
+      // a call-site read. A save that touches only the bridge therefore replays
+      // a T0 `httpUi` over a browser-UI enable that committed in between.
+      // Queue-resolved, same as `buildAi`.
+      const parsedMobile = parsed.mobile;
+      const buildMobile = parsedMobile
+        ? (currentMobile: AppSettings['mobile']): NonNullable<AppSettings['mobile']> => {
+            // Fill from current settings so partial updates don't lose fields.
+            const currentBridge = currentMobile?.httpBridge;
+            const currentUi = currentMobile?.httpUi;
+            const inBridge = parsedMobile.httpBridge;
+            const inUi = parsedMobile.httpUi;
 
-        // httpBridge is required on the stored shape. Update it if the caller
-        // passed it; otherwise preserve the current value (or a disabled default).
-        const httpBridge = inBridge
-          ? {
-              enabled: inBridge.enabled,
-              port: inBridge.port ?? currentBridge?.port ?? 3457,
-              host: inBridge.host ?? currentBridge?.host ?? '127.0.0.1',
-              // Auto-generate a token on first enable; UI shows it once.
-              token: inBridge.token || currentBridge?.token || (inBridge.enabled ? randomUUID() : ''),
-              allowedOrigins: inBridge.allowedOrigins ?? currentBridge?.allowedOrigins ?? [],
+            // httpBridge is required on the stored shape. Update it if the caller
+            // passed it; otherwise preserve the current value (or a disabled default).
+            const httpBridge = inBridge
+              ? {
+                  enabled: inBridge.enabled,
+                  port: inBridge.port ?? currentBridge?.port ?? 3457,
+                  host: inBridge.host ?? currentBridge?.host ?? '127.0.0.1',
+                  // Auto-generate a token on first enable; UI shows it once.
+                  token: inBridge.token || currentBridge?.token || (inBridge.enabled ? randomUUID() : ''),
+                  allowedOrigins: inBridge.allowedOrigins ?? currentBridge?.allowedOrigins ?? [],
+                }
+              : (currentBridge ?? { enabled: false, port: 3457, host: '127.0.0.1', token: '', allowedOrigins: [] });
+
+            const mobile: NonNullable<AppSettings['mobile']> = { httpBridge };
+
+            // httpUi is the parallel browser-UI server block. Same token lifecycle.
+            if (inUi) {
+              mobile.httpUi = {
+                enabled: inUi.enabled,
+                port: inUi.port ?? currentUi?.port ?? 3456,
+                host: inUi.host ?? currentUi?.host ?? '127.0.0.1',
+                token: inUi.token || currentUi?.token || (inUi.enabled ? randomUUID() : ''),
+              };
+            } else if (currentUi) {
+              mobile.httpUi = currentUi;
             }
-          : (currentBridge ?? { enabled: false, port: 3457, host: '127.0.0.1', token: '', allowedOrigins: [] });
-
-        patch.mobile = { httpBridge };
-
-        // httpUi is the parallel browser-UI server block. Same token lifecycle.
-        if (inUi) {
-          patch.mobile.httpUi = {
-            enabled: inUi.enabled,
-            port: inUi.port ?? currentUi?.port ?? 3456,
-            host: inUi.host ?? currentUi?.host ?? '127.0.0.1',
-            token: inUi.token || currentUi?.token || (inUi.enabled ? randomUUID() : ''),
-          };
-        } else if (currentUi) {
-          patch.mobile.httpUi = currentUi;
-        }
-      }
-      if (parsed.brain) {
-        const currentBrain = deps.host.getSettings().brain ?? {};
-        patch.brain = {
-          ...currentBrain,
-          ...(parsed.brain.clipboardCapture !== undefined
-            ? { clipboardCapture: parsed.brain.clipboardCapture }
-            : {}),
-          // Low-power toggle — must be threaded here too, or this handler drops
-          // the incoming value (same trap as clipboardCapture above).
-          ...(parsed.brain.lowPowerMode !== undefined
-            ? { lowPowerMode: parsed.brain.lowPowerMode }
-            : {}),
-          ...(parsed.brain.backgroundActivity !== undefined
-            ? { backgroundActivity: parsed.brain.backgroundActivity }
-            : {}),
-        };
-      }
+            return mobile;
+          }
+        : null;
+      // `brain` is the LEAST severe of the three and the most frequently raced:
+      // BrainEngine's `persistLastRun` fires `{ brain: { …current.brain, lastRun } }`
+      // every few seconds, so a T0 spread here un-records a background pass that
+      // completed during this handler's awaits and it re-runs. Queue-resolved.
+      //
+      // This does NOT change who counts as user-initiated: the `setSettings`
+      // call below still passes `{ userInitiated: true }`, so the
+      // `!opts?.userInitiated` protection for lowPowerMode / clipboardCapture
+      // (host.ts) keeps applying to background writers and only to them.
+      const parsedBrain = parsed.brain;
+      const buildBrain = parsedBrain
+        ? (committedBrain: AppSettings['brain']) => {
+            const currentBrain = committedBrain ?? {};
+            return {
+              ...currentBrain,
+              ...(parsedBrain.clipboardCapture !== undefined
+                ? { clipboardCapture: parsedBrain.clipboardCapture }
+                : {}),
+              // Low-power toggle — must be threaded here too, or this handler drops
+              // the incoming value (same trap as clipboardCapture above).
+              ...(parsedBrain.lowPowerMode !== undefined
+                ? { lowPowerMode: parsedBrain.lowPowerMode }
+                : {}),
+              ...(parsedBrain.backgroundActivity !== undefined
+                ? { backgroundActivity: parsedBrain.backgroundActivity }
+                : {}),
+            };
+          }
+        : null;
       // Connector poll interval is owned by the ConnectorManager (it persists
       // the connectors blob and swaps live timers). Apply it through the
       // manager instead of the generic patch so the two don't race.
@@ -3006,7 +3457,22 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         if (!hasCadence) intervalMs = Math.max(86_400_000, intervalMs);
         await deps.connectorManager.setPullInterval(intervalMs);
       }
-      const settingsResult = await deps.host.setSettings(patch, { userInitiated: true });
+      // FUNCTION FORM: every builder above runs HERE, inside the settings write
+      // queue, against the LATEST COMMITTED state — the only point where
+      // "current" is actually current. Everything left in `patch`
+      // (`contentCache`, `forget`, `mcpRelay`) is caller-supplied and carries no
+      // stale read, so it is passed through unchanged. `userInitiated` is
+      // unchanged too: this is still the user's own settings save.
+      const settingsResult = await deps.host.setSettings(
+        (current) => ({
+          ...patch,
+          ...(buildUi ? { ui: buildUi(current.ui) } : {}),
+          ...(buildAi ? { ai: buildAi(current.ai) } : {}),
+          ...(buildMobile ? { mobile: buildMobile(current.mobile) } : {}),
+          ...(buildBrain ? { brain: buildBrain(current.brain) } : {}),
+        }),
+        { userInitiated: true },
+      );
       // Hot-apply mobile HTTP servers so Browser access / MCP bridge toggles
       // take effect immediately instead of "on next unlock".
       if (parsed.mobile) await deps.applyMobileServers?.();
@@ -3719,8 +4185,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     case 'llm:setModel': {
       const { model } = z.object({ model: z.string().min(1) }).parse(params);
-      const current = deps.host.getSettings();
-      await deps.host.setSettings({ ai: { ...current.ai, llmModel: model } });
+      await deps.host.setSettings((current) => ({ ai: { ...current.ai, llmModel: model } }));
       return { ok: true };
     }
 
@@ -3728,8 +4193,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { preset } = z.object({
         preset: z.enum(['precise', 'balanced', 'creative']),
       }).parse(params);
-      const current = deps.host.getSettings();
-      await deps.host.setSettings({ ai: { ...current.ai, llmTemperaturePreset: preset } });
+      await deps.host.setSettings((current) => ({ ai: { ...current.ai, llmTemperaturePreset: preset } }));
       return { ok: true, preset };
     }
 
@@ -3739,8 +4203,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // ready. Every LLM-backed feature gates on this — see pingLlm() and
       // the mcpDeps.llm getter in the sidecar.
       const { enabled } = z.object({ enabled: z.boolean() }).parse(params);
-      const current = deps.host.getSettings();
-      await deps.host.setSettings({ ai: { ...current.ai, llmEnabled: enabled } });
+      await deps.host.setSettings((current) => ({ ai: { ...current.ai, llmEnabled: enabled } }));
       return { ok: true };
     }
 
@@ -3754,14 +4217,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         capability: z.enum(['recallEnrichment', 'correctionParsing', 'distillation', 'insights', 'edgePrediction']),
         enabled: z.boolean(),
       }).parse(params);
-      const current = deps.host.getSettings();
-      const existing = current.ai.llmCapabilities ?? {};
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ai: {
           ...current.ai,
-          llmCapabilities: { ...existing, [capability]: enabled },
+          llmCapabilities: { ...(current.ai.llmCapabilities ?? {}), [capability]: enabled },
         },
-      });
+      }));
       return { ok: true };
     }
 
@@ -3817,8 +4278,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (before.model === model) {
         // No-op switch — just persist the choice (covers re-applying the same
         // value, e.g. on first explicit user selection of the default).
-        const current = deps.host.getSettings();
-        await deps.host.setSettings({ ai: { ...current.ai, embeddingModel: model } });
+        await deps.host.setSettings((current) => ({ ai: { ...current.ai, embeddingModel: model } }));
         return { ok: true, switched: false };
       }
 
@@ -3848,7 +4308,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Install a fresh abort controller for this switch. The cancel IPC
       // handler aborts it; the host loop polls signal.aborted between
       // engrams and bails. The controller is cleared after the switch
-      // returns (either normally or cancelled) so the next switch starts
+      // returns (either normally or canceled) so the next switch starts
       // with a clean slate.
       currentEmbeddingSwitchAbort = new AbortController();
       const result = await deps.host.reembedAllGraphs((evt) => {
@@ -3860,8 +4320,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }, currentEmbeddingSwitchAbort.signal);
       currentEmbeddingSwitchAbort = null;
 
-      const current = deps.host.getSettings();
-      await deps.host.setSettings({ ai: { ...current.ai, embeddingModel: model } });
+      await deps.host.setSettings((current) => ({ ai: { ...current.ai, embeddingModel: model } }));
 
       deps.broadcastRaw({
         kind: 'embedding.switch-progress',
@@ -4194,75 +4653,322 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     case 'skillDemos:checkOffer': {
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
       const settings = deps.host.getSettings();
-      const exists = deps.host.listGraphs().includes(SKILL_DEMOS_ENGRAM_ID);
+      const graphs = deps.host.listGraphs();
       const sdState = settings.skillDemosEngram;
-      let decision: 'offer' | 'reingest' | 'none';
-      if (exists) {
-        const sourceCount = deps.host.listSources(SKILL_DEMOS_ENGRAM_ID)
-          .filter((s) => s.kind === 'skill').length;
-        const versionMismatch = sdState?.ingestedAppVersion !== appVersion;
-        // Single-language install: each bundled .gsk pack contributes exactly
-        // one skill (the chosen-language variant). Expected source count is
-        // therefore one per pack. (Users who installed both languages under an
-        // older build have 2× and read as complete — >= passes.)
-        const expectedSources = BUNDLED_SKILL_DEMOS.length;
-        const sourcesIncomplete = sourceCount < expectedSources;
-        decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
-      } else if (sdState?.declined === true) {
-        decision = 'none';
-      } else if (typeof sdState?.ingestedAppVersion === 'string' && sdState.ingestedAppVersion.length > 0) {
-        // User had it, then deleted the engram. Respect that.
+      // 'offer' is gone from this decision: the three default Agempi install
+      // unconditionally on a new cortex (roadmap AG.39), so there is nothing to
+      // ask. 'install' replaces it and the caller acts on it with no banner.
+      let decision: 'install' | 'reingest' | 'none';
+      /** Set when a refresh is due but the reingest below would refuse it. */
+      let blocked: { foreignSourceCount: number; foreignSourceRefs: string[] } | undefined;
+      // Any Agempus missing from the cortex means the install is incomplete.
+      const missing = DEFAULT_AGEMPI.filter((a) => !graphs.includes(a.id));
+      if (missing.length === DEFAULT_AGEMPI.length) {
+        // None present. Either a brand-new cortex, or the owner deleted every
+        // one of them — a version stamp tells the two apart, and a deliberate
+        // deletion is respected rather than undone on the next unlock.
+        decision = typeof sdState?.ingestedAppVersion === 'string' && sdState.ingestedAppVersion.length > 0
+          ? 'none'
+          : 'install';
+      } else if (missing.length > 0) {
+        // Some present, some not — the owner removed those specific ones.
+        // Same rule: never resurrect an engram someone deleted on purpose.
         decision = 'none';
       } else {
-        decision = 'offer';
+        // All three present: the only question left is whether their CONTENT is
+        // current. A per-engram source-count shortfall means a partial ingest.
+        // Per-engram, not the old single global stamp: a version match on ONE
+        // Agempus says nothing about the other two once each can be refused
+        // independently. `some(...)` is correct here — checkOffer only decides
+        // whether a reingest round is worth firing at all; `skillDemos:ingest`
+        // re-derives the same per-engram need and only touches the ones that
+        // actually require it.
+        const byEngram = sdState?.ingestedAppVersionByEngram ?? {};
+        const versionMismatch = DEFAULT_AGEMPI.some((a) => byEngram[a.id] !== appVersion);
+        const sourcesIncomplete = DEFAULT_AGEMPI.some((a) => {
+          const pack = BUNDLED_SKILL_DEMOS.find((p) => p.filename === a.pack);
+          if (!pack) return false; // a missing pack is a build problem, not a reingest trigger
+          return deps.host.listSources(a.id).filter((s) => s.kind === 'skill').length === 0;
+        });
+        decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
+        // Don't send the caller off to do something we already know the ingest
+        // will refuse. `decision: 'reingest'` is acted on with NO prompt (see
+        // the "refresh silently" arm in apps/desktop/src/main.ts), so on an
+        // engram that now holds owner work the app would fire an ingest, get
+        // the refusal result back, and — until its toast reads `refused` —
+        // announce "Skill Demos updated · 0 skill(s)". Answering 'none' here
+        // makes the refusal quiet instead of falsely triumphant, and carries
+        // the count so a UI can say what is actually going on.
+        //
+        // The guard in `skillDemos:ingest` is still the one that PROTECTS the
+        // data; this is only the pre-check that stops a pointless round trip.
+        // The two share `findForeignSkillDemoSources` so they can't disagree
+        // about what "foreign" means.
+        // Foreign sources in ANY of the three block the whole refresh — the
+        // ingest below refuses per engram, and announcing a refresh that will
+        // be partially refused is the same false-triumph this pre-check exists
+        // to prevent. Counts are summed across engrams so the message can say
+        // how much owner work is in the way.
+        if (decision === 'reingest') {
+          const foreign = DEFAULT_AGEMPI.flatMap((a) =>
+            findForeignSkillDemoSources(deps.host.listSources(a.id)));
+          if (foreign.length > 0) {
+            decision = 'none';
+            blocked = {
+              foreignSourceCount: foreign.length,
+              foreignSourceRefs: foreign.slice(0, 10).map((s) => s.ref),
+            };
+          }
+        }
       }
-      return { decision, packsAvailable: BUNDLED_SKILL_DEMOS.length };
+      // `blockedByForeignSources` is present ONLY on the suppressed-refresh
+      // path above; existing callers destructure `decision` and are unaffected.
+      return {
+        decision,
+        packsAvailable: DEFAULT_AGEMPI.length,
+        ...(blocked ? { blockedByForeignSources: blocked } : {}),
+      };
     }
 
     case 'skillDemos:ingest': {
-      const { appVersion, language: reqLanguage } = z.object({
-        appVersion: z.string(),
-        language: z.enum(['en', 'ro']).optional(),
-      }).parse(params ?? {});
-      // Resolve the language: explicit choice (fresh install) wins; otherwise
-      // reuse the stored choice (silent re-ingest on app-version bump);
-      // default to English for the legacy/no-choice path.
-      const language: 'en' | 'ro' =
-        reqLanguage ?? deps.host.getSettings().skillDemosEngram?.language ?? 'en';
-      const exists = deps.host.listGraphs().includes(SKILL_DEMOS_ENGRAM_ID);
+      const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
+      // The `language` parameter is gone with the English/Română picker: the
+      // Agempus packs are English-only, so a language choice had nothing left
+      // to select. Accepting it and ignoring it would have been worse than
+      // dropping it — a caller could keep passing 'ro' and keep getting English.
+
+      // Per-Agempus install. Each gets its own engram, so each gets its own
+      // foreign-source guard, its own wipe decision and its own metadata write:
+      // owner work inside Coach must not block Onboarding from refreshing, and
+      // a refusal on one must not silently become a success for all three.
+      const results: Array<{
+        engramId: string;
+        displayName: string;
+        result: IngestBundledSkillDemosResult;
+      }> = [];
+      let anyIngested = false;
+      const byEngram = { ...(deps.host.getSettings().skillDemosEngram?.ingestedAppVersionByEngram ?? {}) };
+
+      for (const agempus of DEFAULT_AGEMPI) {
+      const exists = deps.host.listGraphs().includes(agempus.id);
+      // Skip an Agempus that is already current — this is what makes the
+      // per-engram version stamp worth having. Without it, a refusal on Coach
+      // would mean Onboarding and Ghampus Hush get wiped and rebuilt on every
+      // single unlock for as long as the owner's work sits in Coach, since a
+      // reingest call has no other way to know only one engram is stale.
+      if (exists && byEngram[agempus.id] === appVersion
+        && deps.host.listSources(agempus.id).filter((s) => s.kind === 'skill').length > 0) {
+        results.push({
+          engramId: agempus.id,
+          displayName: deps.host.getGraphMetadata(agempus.id)?.displayName ?? agempus.displayName,
+          result: {
+            packsAttempted: 0,
+            skillsIngested: 0,
+            skillsSkippedEmpty: [],
+            packErrors: [],
+            verified: [],
+          },
+        });
+        continue;
+      }
+      // CAPTURE BEFORE THE WIPE. `GraphnosisHost.deleteGraph` removes the
+      // settings row outright, and the recreate below used to write back only three
+      // fields — so sensitivityTier, excludedSources, consentIntervalMs,
+      // executionAutonomyLevel and skillAutonomyLevels were destroyed every time.
+      //
+      // This path is not user-initiated: `skillDemos:checkOffer` above returns
+      // 'reingest' on its `versionMismatch` branch, and the desktop fires it
+      // with no prompt (the `decision === 'reingest'` arm of the
+      // `skillDemos:checkOffer` caller in apps/desktop/src/main.ts, commented
+      // "refresh silently"). So the loss
+      // recurred on EVERY app-version bump, with nothing on screen to notice it
+      // by. This is a template:'skill' engram, which is exactly the kind that
+      // carries autonomy overrides.
+      const priorMeta = deps.host.getGraphMetadata(agempus.id);
       if (exists) {
+        // ── The wipe is conditional on the engram still being OURS ──────────
+        //
         // Wipe and recreate — same rationale as docs:ingest. Partial prior
         // ingests can leave orphan nodes whose content hashes block fresh
-        // inserts; the cleanest fix is to start with a blank engram.
-        await deps.host.deleteGraph(SKILL_DEMOS_ENGRAM_ID);
+        // inserts (the SDK's dedup table means `host.ingest` and
+        // `host.insertNodeAt` come back with zero new node ids and THROW —
+        // host.ts:5739 and host.ts:7636); the cleanest fix is to start with a
+        // blank engram. That rationale holds for a pack nobody has touched.
+        //
+        // It stops holding the moment an owner works in here, and per AG.30
+        // this engram ships as the "Onboarding" Agempus — trained and edited on
+        // purpose. Every addition an owner makes lands as its own source
+        // record: a trained skill (`graphnosis-skill-trainer`, :7756), an MCP
+        // client's memory (the client name), a dragged-in file (no `addedBy`),
+        // a correction's add (host.ts:7338). None of them carry the
+        // bundled-demo stamp this ingest writes, so the stamp answers exactly
+        // the question the wipe needs answered — and answers it from state the
+        // ingest already maintains, not from a second ledger that could drift.
+        //
+        // REFUSE, rather than deleting only the stamped sources and rebuilding
+        // those. Selective delete looks like the option that keeps the feature
+        // alive, but it cannot do the one job the wipe was here for: orphan
+        // nodes are by definition claimed by NO source record, and
+        // `forgetSource` walks `sourceIndex` (host.ts:6722) and only releases
+        // the dedup hashes of nodes a record claims (its tombstone pass,
+        // host.ts:6752-6784). An orphan's hash therefore survives a selective
+        // delete, and the next insert of that same demo text throws partway
+        // through the rebuild — on the one engram we just established holds
+        // work worth protecting, leaving it half-demo, half-nothing. Only
+        // `deleteGraph` drops the SDK graph (and its dedup table) outright.
+        // Swapping a silent deletion for a wedged half-rebuild is not a fix,
+        // so we stop and hand the decision back with the count.
+        //
+        // KNOWN GAP, stated rather than papered over: an owner who edits a
+        // bundled demo IN PLACE (Trained Output editor → node edit) mutates
+        // nodes inside a stamped source without creating a new one, so the
+        // stamp still reads "ours" and the wipe still takes those edits.
+        // Closing that needs an owner-touched mark maintained by every editor
+        // path — a second source of truth that can fall out of step, unlike
+        // this one. What this guard covers is the case that loses whole skills.
+        //
+        // PER ENGRAM, not once for the batch: `continue` skips only this
+        // Agempus. A refusal on Coach used to be spelled `return`, which — now
+        // that three engrams share this loop — would have abandoned the other
+        // two mid-run and reported the whole install as refused.
+        const foreign = findForeignSkillDemoSources(deps.host.listSources(agempus.id));
+        if (foreign.length > 0) {
+          // Nothing has been touched at this point: no delete, no metadata
+          // write — and deliberately no `skillDemosEngram.ingestedAppVersion`
+          // write either (that happens after a real ingest, below). Recording
+          // the version here would make `skillDemos:checkOffer` answer 'none'
+          // from then on and bury the refusal permanently; leaving it unwritten
+          // means the offer re-evaluates on the next unlock, and the moment the
+          // owner moves their work elsewhere the refresh proceeds on its own.
+          // Re-evaluating costs one `listSources` scan.
+          results.push({
+            engramId: agempus.id,
+            displayName: agempus.displayName,
+            result: {
+              // Zero, not 1: no pack was opened. A caller summing these must
+              // not be told we tried and got nothing.
+              packsAttempted: 0,
+              skillsIngested: 0,
+              skillsSkippedEmpty: [],
+              packErrors: [],
+              verified: [],
+              refused: {
+                reason: 'foreign-sources',
+                foreignSourceCount: foreign.length,
+                foreignSourceRefs: foreign.slice(0, 10).map((s) => s.ref),
+              },
+            } satisfies IngestBundledSkillDemosResult,
+          });
+          continue;
+        }
+        // Every source in here was written by this ingest (or there are none at
+        // all — the partial-ingest case, where the wipe is the recovery), so
+        // the rebuild destroys nothing an owner made.
+        await deps.host.deleteGraph(agempus.id);
       }
-      await deps.host.createGraph(SKILL_DEMOS_ENGRAM_ID);
-      await deps.host.setGraphMetadata(SKILL_DEMOS_ENGRAM_ID, {
+      await deps.host.createGraph(agempus.id);
+      // REPLACE is correct: the deleteGraph above removed the settings row, so
+      // this call owns the whole entry and rebuilds it from the priorMeta
+      // captured above (before the wipe).
+      await deps.host.replaceGraphMetadata(agempus.id, {
+        // Everything the user or the app had configured survives the reingest.
+        // Only the NODES are meant to be rebuilt; the engram's settings are not
+        // the ingest's to own.
+        ...(priorMeta ?? {}),
         template: 'skill',
-        displayName: 'Skill Demos',
-        createdAt: Date.now(),
+        // A rename the user made is theirs to keep — this engram is resolved by
+        // id, never by name, so preserving it costs nothing.
+        displayName: priorMeta?.displayName ?? agempus.displayName,
+        // Same engram, so keep its original age rather than reporting it as new
+        // after every update.
+        createdAt: priorMeta?.createdAt ?? Date.now(),
+        // The power switch. Only set on a FIRST install (`!exists`): on a
+        // refresh the owner's own on/off choice is in priorMeta and the spread
+        // above already carried it, so re-asserting the default here would
+        // switch an Agempus the owner had enabled back off on every app
+        // version bump — silently, since the refresh path shows no prompt.
+        ...(exists ? {} : { skillsDisabled: agempus.installsDisabled }),
       });
       const result = await withEmbedding(() =>
-        ingestBundledSkillDemos(deps.host, SKILL_DEMOS_ENGRAM_ID, deps.licenseValidator ?? undefined, { language }),
+        ingestBundledSkillDemos(deps.host, agempus.id, deps.licenseValidator ?? undefined, {
+          packFilename: agempus.pack,
+        }),
       );
-      await deps.host.setSettings({
-        skillDemosEngram: { declined: false, ingestedAppVersion: appVersion, language },
-      });
-      return result;
+      // Stamp THIS engram only if it actually took skills. Stamping after a
+      // refusal or a failed run would make checkOffer's per-engram check
+      // answer "current" forever for the one Agempus that never actually
+      // installed — the same false-clean shape the top-level `refused` field
+      // exists to avoid, just one engram at a time instead of for the batch.
+      if (result.skillsIngested > 0) {
+        anyIngested = true;
+        byEngram[agempus.id] = appVersion;
+      }
+      results.push({ engramId: agempus.id, displayName: agempus.displayName, result });
+      }
+
+      // Persist the per-engram map every run (even if nothing changed, this is
+      // cheap and idempotent) so a partial success is remembered exactly as
+      // partial: the two that landed stop being reingested every unlock, and
+      // the one that was refused keeps trying until the owner clears the way.
+      // The legacy global `ingestedAppVersion` is written only when ALL three
+      // are current — it exists purely for an older build reading this same
+      // settings row, which has no concept of per-engram state.
+      if (anyIngested) {
+        const allCurrent = DEFAULT_AGEMPI.every((a) => byEngram[a.id] === appVersion);
+        await deps.host.setSettings({
+          skillDemosEngram: {
+            declined: false,
+            ingestedAppVersionByEngram: byEngram,
+            ...(allCurrent ? { ingestedAppVersion: appVersion } : {}),
+          },
+        });
+      }
+
+      // Flattened totals keep existing callers (which read `skillsIngested`
+      // and `packErrors`) working; `perAgempus` is what a UI should show, since
+      // "2 of 3 installed" is the state that actually needs reporting.
+      //
+      // TOP-LEVEL `refused` IS NOT OPTIONAL POLISH. Before this loop existed a
+      // refusal was the whole result, and every consumer discriminates on
+      // `result.refused`. Reporting it ONLY inside `perAgempus` would leave
+      // that field undefined on a refused run — indistinguishable from a clean
+      // one — so a caller would announce success over an install that refused
+      // to touch the owner's work. It is summed across engrams and present
+      // whenever ANY Agempus refused.
+      const refusals = results.filter((r) => r.result.refused);
+      const refusedRefs = refusals.flatMap((r) => r.result.refused?.foreignSourceRefs ?? []);
+      return {
+        packsAttempted: results.reduce((n, r) => n + r.result.packsAttempted, 0),
+        skillsIngested: results.reduce((n, r) => n + r.result.skillsIngested, 0),
+        skillsSkippedEmpty: results.flatMap((r) => r.result.skillsSkippedEmpty),
+        packErrors: results.flatMap((r) => r.result.packErrors),
+        verified: results.flatMap((r) => r.result.verified),
+        ...(refusals.length
+          ? {
+            refused: {
+              reason: 'foreign-sources' as const,
+              foreignSourceCount: refusals.reduce(
+                (n, r) => n + (r.result.refused?.foreignSourceCount ?? 0), 0),
+              foreignSourceRefs: refusedRefs.slice(0, 10),
+            },
+          }
+          : {}),
+        perAgempus: results.map((r) => ({
+          engramId: r.engramId,
+          displayName: r.displayName,
+          skillsIngested: r.result.skillsIngested,
+          ...(r.result.refused ? { refused: r.result.refused } : {}),
+        })),
+      };
     }
 
-    case 'skillDemos:decline': {
-      const current = deps.host.getSettings().skillDemosEngram;
-      await deps.host.setSettings({
-        skillDemosEngram: {
-          declined: true,
-          ...(typeof current?.ingestedAppVersion === 'string' && current.ingestedAppVersion.length > 0
-            ? { ingestedAppVersion: current.ingestedAppVersion }
-            : {}),
-        },
-      });
-      return { ok: true };
-    }
+    // `skillDemos:decline` removed 2026-08-06 along with the offer banner that
+    // was its only caller. There is no decline any more: the default Agempi
+    // install unconditionally, and the owner's "no" is the per-Agempus power
+    // switch, which is reversible. The `declined` settings FIELD is left
+    // declared and is still written false by the ingest — an existing cortex
+    // may have `declined: true` persisted from an older build, and dropping
+    // the field would make that row fail to parse rather than be ignored.
 
     // ── MemoryStudio IPC ────────────────────────────────────────────────────
     // All studio.* methods are gated behind the Studio subscription.
@@ -4391,10 +5097,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         type: z.enum(['recall', 'digDeeper']),
         delta: z.number().min(0).max(1.0),
       }).parse(params ?? {});
-      const current = deps.host.getSettings();
       const key = args.type === 'recall' ? 'recallThresholdDelta' : 'digDeeperThresholdDelta';
+      // Function form. The `as any` below is for the missing AiSettings field,
+      // NOT a license to spread a snapshot — a cast launders the patch past the
+      // subtree-provenance type guard, so this call site has to be right by
+      // construction rather than by typecheck.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await deps.host.setSettings({ ai: { ...current.ai, [key]: args.delta } as any });
+      await deps.host.setSettings((current) => ({ ai: { ...current.ai, [key]: args.delta } as any }));
       return { ok: true };
     }
 
@@ -4512,13 +5221,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // pop the existing license card instead of guessing at the error.
       {
         const licenseToken = await getEffectiveLicenseToken(deps);
-        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
-        if (!licensed) {
+        const denial = checkFeatureGate(licenseToken, 'gnn-exploration', deps.licenseValidator, {
+          subject: 'GNN Exploration',
+        });
+        if (denial) {
           return {
             neighbors: [],
             upgrade_required: true,
             upgrade_url: 'https://graphnosis.com/upgrade',
-            error: 'GNN Exploration requires a Graphnosis Pro subscription.',
+            license_state: denial.reason,
+            granted_features: denial.grantedFeatures,
+            error: denial.message,
           };
         }
       }
@@ -4544,7 +5257,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // gate as `studio.checkDuplicate` and the MCP `check_duplicate` twin:
       // with a placeholder adapter behind the vectors these were the SAME
       // out-of-range hits (measured 15.605 on a token-disjoint probe), fed to
-      // the GNN-neighbour panel as "semantically close seeds".
+      // the GNN-neighbor panel as "semantically close seeds".
       const semanticSeeds = deps.host.semanticSimilarityAvailable();
       for (const graphId of graphIds) {
         const seeds = semanticSeeds
@@ -4640,10 +5353,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // TODO: in production, this should be called from the subscription-check
       // flow in main.ts after verifying with https://graphnosis.com/api/subscription/token
       const { enabled } = z.object({ enabled: z.boolean() }).parse(params ?? {});
-      const current = deps.host.getSettings();
-      // studioEnabled not yet in AiSettings type — cast until core adds it
+      // studioEnabled not yet in AiSettings type — cast until core adds it.
+      // Function form: the cast hides this patch from the subtree-provenance
+      // type guard, so the call site must not spread a snapshot on its own.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await deps.host.setSettings({ ai: { ...current.ai, studioEnabled: enabled } as any });
+      await deps.host.setSettings((current) => ({ ai: { ...current.ai, studioEnabled: enabled } as any }));
       return { ok: true };
     }
 
@@ -4673,10 +5387,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { enabled } = z.object({ enabled: z.boolean() }).parse(params ?? {});
       const current = deps.host.getSettings();
       const prior = current.agent ?? { enabled: true };
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: { ...prior, enabled },
-      });
+      }));
       return { ok: true };
     }
     case 'agent:setSkillMaintenance': {
@@ -4688,7 +5402,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const prior = current.agent ?? { enabled: true };
       const { resolveGhampusSkillMaintenance } = await import('@graphnosis-app/core/settings');
       const sm = resolveGhampusSkillMaintenance(prior);
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: {
           ...prior,
@@ -4698,7 +5412,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             ...(args.idleOnly !== undefined ? { idleOnly: args.idleOnly } : {}),
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'agent:setProactive': {
@@ -4709,7 +5423,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const prior = current.agent ?? { enabled: true };
       const { resolveGhampusProactiveSettings } = await import('@graphnosis-app/core/settings');
       const pr = resolveGhampusProactiveSettings(prior);
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: {
           ...prior,
@@ -4718,7 +5432,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'agent:setReminders': {
@@ -4731,7 +5445,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const prior = current.agent ?? { enabled: true };
       const { resolveGhampusRemindersSettings } = await import('@graphnosis-app/core/settings');
       const rm = resolveGhampusRemindersSettings(prior);
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: {
           ...prior,
@@ -4742,7 +5456,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             ...(args.nativeNotifications !== undefined ? { nativeNotifications: args.nativeNotifications } : {}),
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'agent:setTips': {
@@ -4754,7 +5468,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const prior = current.agent ?? { enabled: true };
       const { resolveGhampusTipsSettings } = await import('@graphnosis-app/core/settings');
       const tp = resolveGhampusTipsSettings(prior);
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: {
           ...prior,
@@ -4764,7 +5478,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'agent:setMemorySuggestions': {
@@ -4775,7 +5489,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const prior = current.agent ?? { enabled: true };
       const { resolveGhampusMemorySuggestionsSettings } = await import('@graphnosis-app/core/settings');
       const ms = resolveGhampusMemorySuggestionsSettings(prior);
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: {
           ...prior,
@@ -4784,7 +5498,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'agent:setVitalityNudges': {
@@ -4796,7 +5510,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const prior = current.agent ?? { enabled: true };
       const { resolveGhampusVitalityNudgesSettings } = await import('@graphnosis-app/core/settings');
       const vn = resolveGhampusVitalityNudgesSettings(prior);
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: {
           ...prior,
@@ -4806,7 +5520,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'agent:acceptMemorySuggestion': {
@@ -5095,6 +5809,30 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return { ok: true as const, ...result, ...(remembered ? { remembered } : {}) };
     }
 
+    case 'ghampus:chats:list': {
+      // Every chat thread on disk, newest first, for the Chats list in the rail.
+      const { listGhampusChats } = await import('./ghampus-chat-list.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { chats: [], activeSessionId: '' };
+      // The LLM is optional here: without it every title falls back to the
+      // truncated opening message, which is a real title, not a placeholder.
+      const llm = deps.llm?.() ?? null;
+      return listGhampusChats(cortexDir, llm);
+    }
+
+    case 'ghampus:chats:open': {
+      const args = z.object({ sessionId: z.string().min(1) }).parse(params ?? {});
+      const { openGhampusChat } = await import('./ghampus-chat-list.js');
+      const { invalidateGhampusHistoryCache } = await import('./ghampus-history-cache.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { ok: false as const, activeSessionId: '' };
+      const result = await openGhampusChat(cortexDir, args.sessionId);
+      // The cache holds the thread we just left — drop it so ghampus:history
+      // re-reads the newly active session rather than serving the old one.
+      if (result.ok) invalidateGhampusHistoryCache();
+      return result;
+    }
+
     case 'ghampus:inbox:list': {
       const watcher = deps.proactiveWatcher;
       return { cards: watcher ? watcher.listCards() : [] };
@@ -5271,6 +6009,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           const token = await getEffectiveLicenseToken(deps);
           return deps.licenseValidator?.hasFeature(token, 'skill-training') ?? false;
         },
+        // Message-only companion to the predicate above — same token, same
+        // feature, so it can never disagree with the ALLOW/DENY decision.
+        skillTrainingDenialMessage: async () => {
+          const token = await getEffectiveLicenseToken(deps);
+          return checkFeatureGate(token, 'skill-training', deps.licenseValidator, {
+            subject: 'Skill training',
+            guidance: 'Previewing and walking skills is unaffected.',
+          })?.message ?? null;
+        },
       }, params, {
         getPendingClarification: () => ghampusPendingClarification,
         setPendingClarification: (v) => { ghampusPendingClarification = v; },
@@ -5411,10 +6158,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const settings = deps.host.getSettings();
       const priorStrategy = settings.models?.strategy ?? 'adaptive';
       if (args.routing === 'local-only' && priorStrategy !== 'local-only') {
-        await deps.host.setSettings({
+        await deps.host.setSettings((settings) => ({
           ...settings,
           models: { ...(settings.models ?? { providers: {} }), strategy: 'local-only' },
-        });
+        }));
       }
       const { incrementGhampusBusy, decrementGhampusBusy } = await import('./ghampus-busy.js');
       incrementGhampusBusy();
@@ -5426,11 +6173,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       } finally {
         decrementGhampusBusy();
         if (args.routing === 'local-only' && priorStrategy !== 'local-only') {
-          const cur = deps.host.getSettings();
-          await deps.host.setSettings({
+          await deps.host.setSettings((cur) => ({
             ...cur,
             models: { ...(cur.models ?? { providers: {} }), strategy: priorStrategy },
-          });
+          }));
         }
       }
     }
@@ -5498,11 +6244,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { strategy } = z.object({
         strategy: z.enum(['adaptive', 'local-only', 'always-best']),
       }).parse(params ?? {});
-      const current = deps.host.getSettings();
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         models: { ...(current.models ?? { providers: {}, strategy: 'adaptive' }), strategy },
-      });
+      }));
       return { ok: true };
     }
     case 'models:setProviderKey': {
@@ -5521,7 +6266,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         return { ok: false, reason: 'admin-locked', message: 'This provider is locked by your organization admin.' };
       }
       const trimmed = apiKey.trim();
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         models: {
           ...models,
@@ -5536,7 +6281,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             },
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'models:clearProviderKey': {
@@ -5549,7 +6294,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         return { ok: false, reason: 'admin-locked', message: 'This provider is locked by your organization admin.' };
       }
       const { apiKey: _k, apiKeyEnc: _e, keyTail: _t, hasKey: _h, ...rest } = providerState;
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         models: {
           ...models,
@@ -5558,7 +6303,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             [providerId]: { ...rest, enabled: false, hasKey: false },
           },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'models:setProviderEnabled': {
@@ -5573,13 +6318,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (providerState.adminLocked) {
         return { ok: false, reason: 'admin-locked', message: 'This provider is locked by your organization admin.' };
       }
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         models: {
           ...models,
           providers: { ...models.providers, [providerId]: { ...providerState, enabled } },
         },
-      });
+      }));
       return { ok: true };
     }
     case 'models:setBudget': {
@@ -5595,7 +6340,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       } else {
         delete next.monthlyBudgetUsd;
       }
-      await deps.host.setSettings({ ...current, models: next });
+      await deps.host.setSettings((current) => ({ ...current, models: next }));
       return { ok: true };
     }
     case 'models:setSavingsBaseline': {
@@ -5608,10 +6353,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }).parse(params ?? {});
       const current = deps.host.getSettings();
       const models = current.models ?? { providers: {}, strategy: 'adaptive' as const };
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         models: { ...models, savingsBaseline },
-      });
+      }));
       return { ok: true };
     }
     case 'models:setCustomRate': {
@@ -5640,7 +6385,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         ...(args.note !== undefined ? { note: args.note } : {}),
       };
       const nextRates = idx >= 0 ? [...existing.slice(0, idx), entry, ...existing.slice(idx + 1)] : [...existing, entry];
-      await deps.host.setSettings({ ...current, models: { ...models, customRates: nextRates } });
+      await deps.host.setSettings((current) => ({ ...current, models: { ...models, customRates: nextRates } }));
       return { ok: true };
     }
     case 'agent:planSkillWalk': {
@@ -5721,10 +6466,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Aggregate the savings log into the Ghampus / Settings dashboard
       // numbers. Defaults to a 30-day window so the panel speaks in
       // monthly terms.
-      const { summariseSavings, resolveSavingsBaseline } = await import('./savings-tracker.js');
+      const { summarizeSavings, resolveSavingsBaseline } = await import('./savings-tracker.js');
       const args = z.object({ windowDays: z.number().int().positive().max(365).optional() }).parse(params ?? {});
       const baseline = resolveSavingsBaseline(deps.host.getSettings());
-      return summariseSavings(deps.host.getCortexDir(), args.windowDays ?? 30, baseline);
+      return summarizeSavings(deps.host.getCortexDir(), args.windowDays ?? 30, baseline);
     }
     case 'agent:walkSkill': {
       // Execute a planned skill walk step-by-step against the chosen
@@ -5740,6 +6485,21 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         initialCaptures: z.record(z.string(), z.string()).optional(),
         runId: z.string().min(1).optional(),
       }).parse(params ?? {});
+
+      // The agent OFF SWITCH (`agents.setDisabled` → `GraphMetadata.skillsDisabled`)
+      // makes this engram's un-ganglia inert, and running a skill by hand is
+      // exactly what this handler does — for the Run button and for
+      // `ghampus:confirmWalk`, which dispatches straight back into this case.
+      //
+      // Refused HERE rather than left to walkSkillPlan's own gate: this handler
+      // ends in an unconditional `{ ok: true, plan, result }`, so a refusal
+      // raised inside the walker would reach the UI as a SUCCESSFUL call
+      // carrying an empty result and no cause. Same `{ ok: false, reason }`
+      // shape as 'empty-skill' / 'plan-infeasible' below, so the caller that
+      // already reads `reason` needs no new branch to name this one.
+      if (deps.host.skillsDisabled(args.graphId)) {
+        return { ok: false, reason: 'skills-disabled', graphId: args.graphId };
+      }
 
       // Re-derive the steps + plan inline so callers don't have to ship
       // both. Mirrors the agent:planSkillWalk path.
@@ -5884,13 +6644,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const args = z.object({ enabled: z.boolean() }).parse(params ?? {});
       const current = deps.host.getSettings();
       const prior = current.agent ?? { enabled: true };
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         agent: {
           ...prior,
           unattendedExecutor: { ...(prior.unattendedExecutor ?? { enabled: false }), enabled: args.enabled },
         },
-      });
+      }));
       return { ok: true, enabled: args.enabled };
     }
     case 'unattended:status': {
@@ -6251,12 +7011,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }).parse(params ?? {});
       if (!deps.skillTrainer) return null;
       const licenseToken = await getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
-      if (!licensed) {
+      const denial = checkFeatureGate(licenseToken, 'skill-training', deps.licenseValidator, {
+        subject: 'Skill training',
+      });
+      if (denial) {
         return {
           upgrade_required: true,
           upgrade_url: 'https://graphnosis.com/upgrade',
-          message: 'Skill training requires a Graphnosis Pro subscription.',
+          license_state: denial.reason,
+          granted_features: denial.grantedFeatures,
+          message: denial.message,
         };
       }
       // Stream the LLM rewrite token-by-token to the desktop so it can
@@ -6349,12 +7113,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // users can still ship skills into their own AI tools.
       if (args.format === 'gsk') {
         const licenseToken = await getEffectiveLicenseToken(deps);
-        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
-        if (!licensed) {
+        const denial = checkFeatureGate(licenseToken, 'skill-training', deps.licenseValidator, {
+          subject: 'GSK skill-pack export',
+          guidance: 'Every other export format (claude-md, cursorrules, system-prompt, openai, raw) is ungated.',
+        });
+        if (denial) {
           return {
             upgrade_required: true,
             upgrade_url: 'https://graphnosis.com/upgrade',
-            message: 'GSK skill-pack export requires a Graphnosis Pro subscription. Use any other format (claude-md, cursorrules, system-prompt, openai, raw) to share this skill for free.',
+            license_state: denial.reason,
+            granted_features: denial.grantedFeatures,
+            message: denial.message,
           };
         }
       }
@@ -6524,9 +7293,20 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // we re-check defensively.
       const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
       const licenseToken = await getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
-      if (!licensed) {
-        return { ok: false, reason: 'upgrade_required' };
+      const denial = checkFeatureGate(licenseToken, 'skill-training', deps.licenseValidator, {
+        subject: 'Accepting a retrain proposal',
+      });
+      if (denial) {
+        // `reason` kept as 'upgrade_required' — the desktop switches on it.
+        // The message is additive: this path previously refused with no words
+        // at all, so the UI had nothing truthful to show.
+        return {
+          ok: false,
+          reason: 'upgrade_required',
+          license_state: denial.reason,
+          granted_features: denial.grantedFeatures,
+          message: denial.message,
+        };
       }
       const settings = deps.host.getSettings();
       const pending = settings.skillRetrainPending ?? {};
@@ -6606,12 +7386,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }).parse(params ?? {});
 
       const licenseToken = await getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
-      if (!licensed) {
+      const denial = checkFeatureGate(licenseToken, 'skill-training', deps.licenseValidator, {
+        subject: 'Autonomous skill retraining (scheduled and trigger-based)',
+      });
+      if (denial) {
         return {
           upgrade_required: true,
           upgrade_url: 'https://graphnosis.com/upgrade',
-          message: 'Autonomous skill retraining requires a Graphnosis Pro subscription. Subscribe to unlock scheduled and trigger-based retraining.',
+          license_state: denial.reason,
+          granted_features: denial.grantedFeatures,
+          message: denial.message,
         };
       }
 
@@ -6727,6 +7511,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Quarantined engrams (host.isQuarantined) are EXCLUDED from the roster,
       // from the edges, AND from cross-engram resolution: a quarantined engram
       // is not a promoted Agempus. Strictly deterministic — no LLM.
+      //
+      // Engrams whose OFF SWITCH is on (host.skillsDisabled) are excluded by the
+      // same three filters, for the same reason in a different key: this graph
+      // is a map of what dispatch can actually reach, and a disabled agent's
+      // skills reach nothing. The exclusion has to cover the edge ENDPOINTS too,
+      // not just the family list — drop it there and a still-enabled caller
+      // draws a `skill:calls` edge into a node the roster no longer renders.
+      // The agent's own TILE stays visible (it comes from `agents.list`, which
+      // marks disabled rows rather than dropping them) — an agent you cannot see
+      // is an agent you cannot turn back on.
       const args = z.object({
         graphId: z.string().min(1).optional(),
       }).parse(params ?? {});
@@ -6735,16 +7529,21 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { extractDispatchTriggerLines, findSkillDispatchSourceId } =
         await import('./skill-dispatch-sync.js');
 
-      // Family set: skill-template engrams, minus quarantined. When a specific
-      // graphId is requested, honour it but still drop it if quarantined.
+      // Family set: skill-template engrams, minus quarantined and minus
+      // disabled. When a specific graphId is requested, honour it but still drop
+      // it if either applies — an explicit ask is not an override.
       const familyIds = (args.graphId
         ? [args.graphId]
         : skillEngramIds(deps.host)
-      ).filter((gid) => !deps.host.isQuarantined(gid));
+      ).filter((gid) => !deps.host.isQuarantined(gid) && !deps.host.skillsDisabled(gid));
 
-      // Non-quarantined skill-template engrams — the only valid edge endpoints.
-      const nonQuarantinedSkillEngrams = new Set(
-        skillEngramIds(deps.host).filter((gid) => !deps.host.isQuarantined(gid)),
+      // Dispatchable skill-template engrams — the only valid edge endpoints.
+      // Named for the property that matters rather than for one of its two
+      // causes, so the next exclusion added here does not make the name lie.
+      const dispatchableSkillEngrams = new Set(
+        skillEngramIds(deps.host).filter(
+          (gid) => !deps.host.isQuarantined(gid) && !deps.host.skillsDisabled(gid),
+        ),
       );
 
       type CallEdge = {
@@ -6760,8 +7559,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const edges: CallEdge[] = [];
       const seen = new Set<string>();
       const pushEdge = (e: CallEdge): void => {
-        // Drop any edge whose target lands in a quarantined / non-skill engram.
-        if (!nonQuarantinedSkillEngrams.has(e.targetGraphId)) return;
+        // Drop any edge whose target lands in a quarantined, disabled, or
+        // non-skill engram — the target would not be drawn, and would not run.
+        if (!dispatchableSkillEngrams.has(e.targetGraphId)) return;
         const key = `${e.callerGraphId}|${e.callerSourceId}|${e.targetGraphId}|${e.targetSourceId}|${e.kind}`;
         if (seen.has(key)) return;
         seen.add(key);
@@ -7264,7 +8064,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         ingestGraphId = `quarantine-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         quarantineEngramId = ingestGraphId;
         await deps.host.createGraph(ingestGraphId);
-        await deps.host.setGraphMetadata(ingestGraphId, {
+        // REPLACE: `ingestGraphId` is a random id minted three lines up, so no
+        // entry can exist. Create-or-reset.
+        await deps.host.replaceGraphMetadata(ingestGraphId, {
           template: 'skill',
           // Use a plain hyphen, NOT an em-dash: the engram delete-confirm makes
           // the user type the display name verbatim, and "—" isn't typeable on a
@@ -7303,7 +8105,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // SOP steps (@needs / @loop / @branch / @skill); trainedTextFallback is a
         // short human-readable summary. Pick the LONGER of the two — a delta pack
         // renders its full body into the fallback, a full pack keeps it in
-        // baseText — so the step sequence is never dropped in favour of a summary
+        // baseText — so the step sequence is never dropped in favor of a summary
         // (which left imported skills with goals but no walkable steps).
         const baseBody = skill.baseText?.trim() ?? '';
         const fallbackBody = skill.trainedTextFallback?.trim() ?? '';
@@ -7531,8 +8333,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (quarantine && quarantineEngramId) {
         const qMeta = deps.host.getGraphMetadata(quarantineEngramId);
         if (qMeta?.quarantine) {
-          await deps.host.setGraphMetadata(quarantineEngramId, {
-            ...qMeta,
+          // PATCH with only the changed key — `qMeta` predates the whole ingest
+          // loop above, so spreading it back re-commits a stale entry.
+          await deps.host.patchGraphMetadata(quarantineEngramId, {
             quarantine: { ...qMeta.quarantine, items: quarantineItems.map((it) => ({ ...it })) },
           });
         }
@@ -7613,8 +8416,24 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (!fromGid) return { ok: false, reason: 'not_found', message: 'No matching quarantined items.' };
       let targetGid = args.targetEngramId;
       if (!deps.host.listGraphs().includes(targetGid)) {
+        // The guard above is RESIDENCY, not existence: listGraphs() reports what
+        // is loaded in memory. The promote dropdown is built with
+        // includeUnloaded:true, so an engram that exists on disk with full
+        // metadata — but has been evicted — passes this check, and the write
+        // below used to replace its entire settings row with three fields.
+        // Target is filtered to template:'skill', i.e. precisely the engrams
+        // that carry executionAutonomyLevel and skillAutonomyLevels.
+        // PATCH, not replace. The `...(prior ?? {})` spread that fixed this
+        // today did the right thing by hand; patching makes it structural, so a
+        // later edit that touches these three fields cannot silently reintroduce
+        // the flattening by dropping the spread.
+        const prior = deps.host.getGraphMetadata(targetGid);
         await deps.host.createGraph(targetGid);
-        await deps.host.setGraphMetadata(targetGid, { template: 'skill', displayName: targetGid, createdAt: Date.now() });
+        await deps.host.patchGraphMetadata(targetGid, {
+          template: 'skill',
+          displayName: prior?.displayName ?? targetGid,
+          createdAt: prior?.createdAt ?? Date.now(),
+        });
       }
       const qm = deps.host.getGraphMetadata(fromGid)!;
       const promoted: string[] = [];
@@ -7648,8 +8467,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const anyLeft = qm.quarantine!.items.some((it) => it.state === 'quarantined');
       let quarantineDeleted = false;
       if (anyLeft) {
-        await deps.host.setGraphMetadata(fromGid, {
-          ...qm,
+        // PATCH with only `quarantine`. `qm` was read before the adjudication
+        // loop, which awaits once per item; spreading it back re-committed every
+        // other field of the entry from that pre-loop snapshot.
+        await deps.host.patchGraphMetadata(fromGid, {
           quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
         });
       } else {
@@ -7660,8 +8481,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         } catch {
           // Deletion failed — persist the drained state so the batch at least
           // reflects that nothing is left to review.
-          await deps.host.setGraphMetadata(fromGid, {
-            ...qm,
+          // PATCH with only `quarantine` — same stale-`qm` reason as above.
+          await deps.host.patchGraphMetadata(fromGid, {
             quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
           });
         }
@@ -7727,8 +8548,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const anyLeft = qm.quarantine!.items.some((it) => it.state === 'quarantined');
       let quarantineDeleted = false;
       if (anyLeft) {
-        await deps.host.setGraphMetadata(fromGid, {
-          ...qm,
+        // PATCH with only `quarantine`. `qm` was read before the adjudication
+        // loop, which awaits once per item; spreading it back re-committed every
+        // other field of the entry from that pre-loop snapshot.
+        await deps.host.patchGraphMetadata(fromGid, {
           quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
         });
       } else {
@@ -7737,8 +8560,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           deps.brainEngine?.purgeDeletedGraph(fromGid);
           quarantineDeleted = true;
         } catch {
-          await deps.host.setGraphMetadata(fromGid, {
-            ...qm,
+          // PATCH with only `quarantine` — same stale-`qm` reason as above.
+          await deps.host.patchGraphMetadata(fromGid, {
             quarantine: { ...qm.quarantine!, items: qm.quarantine!.items.map((it) => ({ ...it })) },
           });
         }
@@ -7793,6 +8616,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         return { ok: false, reason: 'invalid_or_expired' };
       }
       await deps.host.setLicenseToken(trimmed);
+      // Write-through to the device seed cache so a cortex created later on
+      // this machine can be seeded with it. Best-effort: the cortex-side
+      // persist above is authoritative and has already succeeded.
+      await writeLicenseSeed(trimmed);
       return {
         ok: true,
         plan: payload.plan,
@@ -7850,6 +8677,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         return { ok: false, reason: 'invalid_or_expired' };
       }
       await deps.host.setLicenseToken(trimmed);
+      // Write-through — see license:setToken above.
+      await writeLicenseSeed(trimmed);
       return { ok: true, plan: payload.plan, features: payload.features, sub: payload.sub, expiresAt: payload.exp * 1000 };
     }
 
@@ -7897,11 +8726,14 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (args.target === 'primary') {
         // Stripe recovery — store in the primary encrypted slot.
         await deps.host.setLicenseToken(trimmed);
+        // Write-through — PRIMARY SLOT ONLY. The domain-seat branch below is
+        // deliberately not cached: a domain seat is a per-seat grant, and
+        // seeding it into a new cortex's personal slot would misattribute it.
+        await writeLicenseSeed(trimmed);
       } else {
         // Domain seat activation — store in the domain slot so a personal Pro
         // subscription in the primary slot is not overwritten.
-        const currentSettings = deps.host.getSettings();
-        await deps.host.setSettings({ ...currentSettings, domainSeatLicenseToken: trimmed });
+        await deps.host.setSettings((currentSettings) => ({ ...currentSettings, domainSeatLicenseToken: trimmed }));
       }
       return { ok: true, plan: payload.plan, features: payload.features, sub: payload.sub, expiresAt: payload.exp * 1000, pollSecret };
     }
@@ -7971,6 +8803,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         licenseEnc: undefined as unknown as string,
         domainSeatLicenseToken: undefined as unknown as string,
       });
+      // Also drop the device seed cache. Without this, "Reset verification"
+      // would be undone the moment the user created another cortex — the
+      // seed-on-create path would reinstall the token they just cleared.
+      await clearLicenseSeed();
       return { ok: true };
     }
 
@@ -8187,10 +9023,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }
 
       const sanitized = sanitizeEnterpriseSsoSettings(next);
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         sso: sanitized ?? next,
-      });
+      }));
 
       let keychainSync: { federatedUnlockKey: string; clientSecret?: string } | undefined;
       const saved = deps.host.getSettings().sso;
@@ -8323,11 +9159,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const nextEntries = idx >= 0
         ? prev.map((e, i) => (i === idx ? sanitized : e))
         : [...prev, sanitized];
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         engramCatalog: sanitizeEngramCatalogSettings({ entries: nextEntries, version: 2 })
           ?? { entries: nextEntries, version: 2 },
-      });
+      }));
       return { ok: true, entry: engramCatalogPublicEntry(sanitized) };
     }
 
@@ -8346,10 +9182,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (nextEntries.length === prev.length) {
         return { ok: false, reason: 'not_found', message: 'Catalog entry not found.' };
       }
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         engramCatalog: { entries: nextEntries, version: 2 },
-      });
+      }));
       return { ok: true };
     }
 
@@ -8632,22 +9468,22 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           lastSyncError: sync.message ?? sync.reason ?? 'Sync failed',
         };
       if (sync.ok) {
-        await deps.host.setSettings({
+        await deps.host.setSettings((current) => ({
           ...current,
           engramCatalog: sanitizeEngramCatalogSettings({
             entries: sync.entries,
             version: 2,
             sharePoint: nextSharePoint,
           }) ?? { entries: sync.entries, version: 2, sharePoint: nextSharePoint },
-        });
+        }));
       } else {
-        await deps.host.setSettings({
+        await deps.host.setSettings((current) => ({
           ...current,
           engramCatalog: sanitizeEngramCatalogSettings({
             ...prevCatalog,
             sharePoint: nextSharePoint,
           }) ?? { ...prevCatalog, sharePoint: nextSharePoint },
-        });
+        }));
       }
       return {
         ok: sync.ok,
@@ -8675,7 +9511,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         }).optional(),
         mergeSsoHints: z.boolean().optional(),
       }).parse(params ?? {});
-      const { readMdmBundleFile, importMdmCatalogBundle, mergeMdmSsoHints, DEFAULT_MDM_BUNDLE_PATH } = await import('./catalog-mdm.js');
+      const { readMdmBundleFile, importMdmCatalogBundle, mergeMdmSsoHints, defaultMdmBundlePath } = await import('./catalog-mdm.js');
       let bundlePath = args.bundlePath?.trim();
       let bundle = bundlePath ? await readMdmBundleFile(bundlePath) : null;
       if (!bundle && args.bundle) {
@@ -8691,9 +9527,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           defaultSubscriptions: args.bundle.defaultSubscriptions.map((p) => p.trim()).filter(Boolean),
           ...(inlineSchema ? { compliance: { classificationSchema: inlineSchema } } : {}),
         };
-        await fs.mkdir(path.dirname(DEFAULT_MDM_BUNDLE_PATH), { recursive: true, mode: 0o700 });
-        await fs.writeFile(DEFAULT_MDM_BUNDLE_PATH, JSON.stringify(bundle, null, 2), { encoding: 'utf8', mode: 0o600 });
-        bundlePath = DEFAULT_MDM_BUNDLE_PATH;
+        // Resolve ONCE for this write so mkdir, writeFile and the recorded
+        // bundlePath cannot disagree about the state root. Fresh on every
+        // invocation — just not three times within one.
+        const target = defaultMdmBundlePath();
+        await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+        await fs.writeFile(target, JSON.stringify(bundle, null, 2), { encoding: 'utf8', mode: 0o600 });
+        bundlePath = target;
       }
       if (!bundle || !bundlePath) {
         return {
@@ -8703,15 +9543,73 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         };
       }
       await importMdmCatalogBundle(bundlePath, bundle);
+
+      // A bundle REPLACES the classification palette outright. That is allowed
+      // on purpose — see THE MDM EXCEPTION in compliance-schema-guard.ts for
+      // why this path reports rather than taking the `baseVersion` refusal the
+      // settings panel takes. What it must not do is delete labels in silence,
+      // so the loss is measured HERE, before the write, against the same
+      // definition the refusing sibling uses.
+      const incomingSchema = bundle.compliance?.classificationSchema
+        ? sanitizeClassificationSchema(bundle.compliance.classificationSchema)
+        : undefined;
+      const storedBefore = deps.host.complianceSchema();
+      const droppedLabelIds = incomingSchema
+        ? droppedClassificationLabelIds(storedBefore, incomingSchema.labels.map((l) => l.id))
+        : [];
+      // A removed label does not just vanish from a picker — every engram still
+      // tagged with it is left pointing at a label that no longer resolves. The
+      // ids are what make the report actionable rather than trivia.
+      //
+      // Read from graphMetadata, NOT `listGraphs()`: the latter returns only
+      // engrams currently loaded into memory, and an unloaded engram wearing a
+      // deleted label is precisely the one nobody would notice. That read now
+      // lives in `classificationLabelAssignments` so this path and the
+      // on-demand `compliance.getClassificationOrphans` read cannot drift.
+      // The FILTER stays here on purpose: this report is scoped to what THIS
+      // push destroyed, which is not the same question as "what is dangling
+      // right now" (an engram may already have been orphaned by an earlier
+      // change, and naming it here would blame this bundle for it).
+      const orphanedEngramIds = droppedLabelIds.length > 0
+        ? classificationLabelAssignments(deps.host.getSettings().graphMetadata)
+          .filter((a) => droppedLabelIds.includes(a.labelId))
+          .map((a) => a.graphId)
+        : [];
+
       if (args.mergeSsoHints === true || bundle.compliance?.classificationSchema
         || bundle.catalogEntries?.length || bundle.catalogOverrides) {
         await mergeMdmSsoHints(deps.host, bundle);
       }
+
+      // Folded into `message` as well as the structured field: a report that
+      // only exists in a JSON key nothing renders is not a report.
+      const droppedNote = droppedLabelIds.length > 0
+        ? ` This bundle's classification palette REMOVED ${droppedLabelIds.length} existing `
+          + `label${droppedLabelIds.length === 1 ? '' : 's'} (${droppedLabelIds.join(', ')})`
+          + (orphanedEngramIds.length > 0
+            ? `; ${orphanedEngramIds.length} engram${orphanedEngramIds.length === 1 ? '' : 's'} `
+              + `still carr${orphanedEngramIds.length === 1 ? 'ies' : 'y'} a removed label `
+              + `(${orphanedEngramIds.join(', ')})`
+            : '')
+          + '.'
+        : '';
       return {
         ok: true,
         defaultSubscriptions: bundle.defaultSubscriptions,
         bundlePath,
-        message: `Imported MDM bundle with ${bundle.defaultSubscriptions.length} default subscription${bundle.defaultSubscriptions.length === 1 ? '' : 's'}.`,
+        ...(incomingSchema
+          ? {
+            classificationSchema: {
+              applied: true,
+              labelCount: incomingSchema.labels.length,
+              previousLabelCount: storedBefore?.labels.length ?? 0,
+              droppedLabelIds,
+              orphanedEngramIds,
+              version: classificationSchemaVersion(deps.host.complianceSchema()),
+            },
+          }
+          : {}),
+        message: `Imported MDM bundle with ${bundle.defaultSubscriptions.length} default subscription${bundle.defaultSubscriptions.length === 1 ? '' : 's'}.${droppedNote}`,
       };
     }
 
@@ -8815,10 +9713,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         ...(args.expiresAt !== undefined ? { expiresAt: args.expiresAt } : {}),
       };
 
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         sharing: { tokens: [...existing, newToken] },
-      });
+      }));
 
       return {
         ok: true,
@@ -8884,10 +9782,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const before = current.sharing?.tokens ?? [];
       const after = before.filter((t) => t.id !== args.id);
       if (after.length === before.length) return { ok: false, reason: 'not_found' };
-      await deps.host.setSettings({
+      await deps.host.setSettings((current) => ({
         ...current,
         sharing: { tokens: after },
-      });
+      }));
       return { ok: true };
     }
 
@@ -9112,7 +10010,58 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const licenseToken = await getEffectiveLicenseToken(deps);
       const enterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
       const schema = deps.host.complianceSchema();
-      return { ok: true, enterprise, schema: schema ?? { enabled: false, labels: [] } };
+      // `version` is the caller's proof it read this palette. A write that
+      // removes any of these labels must echo it back — see
+      // compliance-schema-guard.ts.
+      return {
+        ok: true,
+        enterprise,
+        schema: schema ?? { enabled: false, labels: [] },
+        version: classificationSchemaVersion(schema),
+      };
+    }
+
+    /**
+     * READ-ONLY. Engrams whose `classificationLabelId` no longer resolves to a
+     * label in the stored palette.
+     *
+     * WHY THIS EXISTS AS A SEPARATE READ
+     * ----------------------------------
+     * `catalog:importMdmBundle` already reports the orphans a push CREATES, but
+     * that report exists only in the response to the import — a transient
+     * statement, gone as soon as the toast is dismissed. The admin who imports
+     * a bundle on Monday has nothing to look at on Friday, and the settings
+     * panel's own Save path removes labels too. So the state has to be
+     * computable on demand, from stored data, with no write in the neighborhood.
+     *
+     * NOT REPAIR. This handler observes and returns; it does not re-tag, does
+     * not default, does not touch settings. Silently changing a document's
+     * classification is a worse hazard in a compliance feature than leaving it
+     * visibly broken — so the missing thing here is disclosure, and disclosure
+     * is all this does. It is deliberately not license-gated either: the
+     * engrams are already in this state whatever the seat says, and hiding the
+     * disclosure behind a lapsed license is how it stops being a disclosure.
+     */
+    case 'compliance.getClassificationOrphans': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const enterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      const schema = deps.host.complianceSchema();
+      const orphans = danglingClassificationAssignments(
+        deps.host.getSettings().graphMetadata,
+        (schema?.labels ?? []).map((l) => l.id),
+      );
+      return {
+        ok: true,
+        enterprise,
+        /** Every dangling assignment — engram id, display name, and the id that no longer resolves. */
+        orphans,
+        /** The distinct label ids nothing in the palette answers to any more. */
+        missingLabelIds: [...new Set(orphans.map((o) => o.labelId))],
+        orphanCount: orphans.length,
+        /** Fingerprint of the palette these were judged against. */
+        version: classificationSchemaVersion(schema),
+        checkedAt: Date.now(),
+      };
     }
 
     case 'compliance.setClassificationSchema': {
@@ -9136,7 +10085,31 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           }).optional(),
         })).max(32),
         defaultEngramLabel: z.string().max(64).nullable().optional(),
+        /** Fingerprint of the palette the caller loaded, from
+         *  `compliance.getClassificationSchema`. Required to remove labels. */
+        baseVersion: z.string().max(128).optional(),
       }).parse(params ?? {});
+
+      // Runs BEFORE sanitizeClassificationSchema on purpose. That function
+      // returns `undefined` for `{enabled:false, labels:[]}`, which has been
+      // bouncing one destructive payload as `invalid_schema` — a side effect of
+      // a shape check, not a guard. Nothing may depend on it, so the decision
+      // is made here on the ids the caller actually asked for.
+      const writeRefusal = checkClassificationSchemaWrite({
+        current: deps.host.complianceSchema(),
+        nextLabelIds: args.labels.map((l) => l.id),
+        baseVersion: args.baseVersion,
+      });
+      if (writeRefusal) {
+        return {
+          ok: false,
+          reason: writeRefusal.reason,
+          message: writeRefusal.message,
+          expectedBaseVersion: writeRefusal.expectedBaseVersion,
+          ...(writeRefusal.droppedLabelIds ? { droppedLabelIds: writeRefusal.droppedLabelIds } : {}),
+        };
+      }
+
       const schema = sanitizeClassificationSchema({
         enabled: args.enabled,
         labels: args.labels,
@@ -9155,7 +10128,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           classificationSchema: schema,
         },
       });
-      return { ok: true, schema: deps.host.complianceSchema() };
+      // The palette moved, so the fingerprint did too. Returning it lets a
+      // client save twice in a row without a round trip through the getter.
+      const savedSchema = deps.host.complianceSchema();
+      return { ok: true, schema: savedSchema, version: classificationSchemaVersion(savedSchema) };
     }
 
     case 'graphs.updateCompliance': {

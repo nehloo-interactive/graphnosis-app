@@ -165,10 +165,10 @@ export interface ConsentRecord {
   withdrawnAt?: number;
   /** AI client name, e.g. "claude-code", "cursor". */
   clientName: string;
-  /** Data tier that was authorised. */
+  /** Data tier that was authorized. */
   tier: 'personal' | 'sensitive';
   /**
-   * The specific engram (graph) this grant authorises. Consent is scoped
+   * The specific engram (graph) this grant authorizes. Consent is scoped
    * per-engram: granting access to one sensitive engram does NOT unlock the
    * others. Absent on legacy (pre-scoping) records, which the graphId-aware
    * checks treat as non-matching — so an old tier-wide grant no longer applies
@@ -526,6 +526,95 @@ export type GraphTemplate =
   | 'compliance'
   | 'onboarding';
 
+/**
+ * An AGENT — un-ganglia plus a hippocampus.
+ *
+ * The un-ganglia is the agent's skills subgraph; the hippocampus is the memory it
+ * works from. Today both live in one skill-template engram, so `engramId` is a
+ * single value — but the agent is the entity and the engram is a PART of it, not
+ * the other way round. Keying this record by `agentId` rather than by graphId is
+ * what keeps that true: an agent that later spans two engrams, or that keeps its
+ * identity while its engram is rebuilt, needs no migration.
+ *
+ * This record holds ONLY presentation and grouping. Nothing here is read by
+ * recall scoping, MCP `target_engram` resolution, skill routing, autonomy, or
+ * consent — an agent record can be deleted wholesale and the cortex behaves
+ * exactly as it did before the Agents page existed.
+ */
+export interface AgentRecord {
+  /** Stable id, generated once. Never derived from the engram, so renaming or
+   *  rebuilding the engram does not orphan the agent. */
+  agentId: string;
+  /** The engram carrying this agent's un-ganglia and hippocampus. */
+  engramId: string;
+  /** Hat shape id (ui/agempus-avatars.ts). Absent → deterministic default. */
+  shape?: string;
+  /** Colorway id. Absent → deterministic default. */
+  color?: string;
+  /**
+   * Display alias. Deliberately NOT the engram's `displayName`: that string
+   * resolves engrams across recall, `target_engram` and skill routing, so
+   * renaming an agent through it would quietly change what those calls hit.
+   * Absent → show the engram's display name.
+   */
+  alias?: string;
+  /**
+   * User-chosen category, created by dragging one agent onto another. The
+   * category IS this string — there is no separate registry — so a group is the
+   * set of agents sharing a value. No orphaned groups, no membership index to
+   * keep in sync, and ungrouping is a one-field delete. Absent → ungrouped.
+   */
+  group?: string;
+  /**
+   * Hide this agent's TILE from the Agents / Agempi grid. Presentation only,
+   * and the invariant above still holds: a hidden agent's skills stay fully
+   * dispatchable, stay in the skills library, and stay reachable by
+   * `@skill:` — the only thing that changes is whether a tile is drawn.
+   *
+   * That is exactly why this belongs here and the OFF SWITCH does not: delete
+   * the roster and every tile comes back, which is a presentation reset, not a
+   * behavior change. `GraphMetadata.skillsDisabled` is the functional flag.
+   *
+   * Absent → shown. Stored rather than session-only so the choice survives a
+   * restart; the grid always offers a route back (see the reveal control in
+   * apps/desktop/src/ui/agents-grid.ts) so this can never strand an agent.
+   */
+  hidden?: boolean;
+  createdAt: number;
+}
+
+/**
+ * A CREW — a user-made grouping of agents, with a shared brief and one dial.
+ *
+ * Crews exist because a category that is only a string cannot hold anything.
+ * Once agents are grouped, the useful questions are "what do all of these have
+ * in common?" (the brief) and "how much rope do they get?" (the autonomy dial),
+ * and neither has anywhere to live on a bare label.
+ *
+ * AUTHORITY NOTE, important: `autonomy` here is a CONVENIENCE, not a second
+ * source of truth. Setting it FANS OUT to each member engram's
+ * `executionAutonomyLevel` via patchGraphMetadata; the engram remains the only
+ * thing the executor consults, and the per-skill authored `[dispatch-safe:]`
+ * cap still wins over both. A crew can therefore never grant an agent more than
+ * its skills already permit — it can only move every member at once. Stored
+ * here purely so the UI can show what was last applied to the whole crew.
+ */
+export interface CrewRecord {
+  /** Stable id. Membership points at this, so renaming is a one-field write. */
+  crewId: string;
+  name: string;
+  /**
+   * Standing instruction shown to the user for every member. Deliberately NOT
+   * injected into skill bodies or prompts by this record alone — a brief that
+   * silently altered execution would be an invisible behavior change. It
+   * becomes operative only where a caller explicitly reads it.
+   */
+  brief?: string;
+  /** Last level applied across the crew. See the authority note above. */
+  autonomy?: ExecutionAutonomyLevel;
+  createdAt: number;
+}
+
 export interface GraphMetadata {
   /** Template the user picked on creation. Hints downstream UX (badges, sorting, default queries). */
   template: GraphTemplate;
@@ -659,6 +748,49 @@ export interface GraphMetadata {
   skillAutonomyLevels?: { [sourceId: string]: ExecutionAutonomyLevel };
 
   /**
+   * AGENT OFF SWITCH — when true, this engram's un-ganglia is INERT: none of
+   * its skills may be dispatched by any route (automatic dispatch, a manual
+   * run, or an `@skill:` call from another engram's skill), and none of them
+   * appear in a skills listing.
+   *
+   * FUNCTIONAL, NOT PRESENTATION — and that is why it lives HERE rather than on
+   * `AgentRecord`. `settings.agents` is decoration: hat, colorway, alias, crew.
+   * Deleting the whole roster must leave behavior unchanged (see the invariant
+   * in apps/desktop/src/ui/agents-grid.ts). An off switch stored there would
+   * break that — losing the roster would silently re-enable every agent the
+   * owner had turned off. The engram is the functional truth, so the off switch
+   * is on the engram.
+   *
+   * DELIBERATELY NOT `archived`: archiving hides an engram from the picker and
+   * from all in-app navigation, which is a different and much heavier promise —
+   * an archived engram's memory is gone from view too. A disabled agent keeps
+   * its tile on the Agents grid (greyed, sorted last), because the owner has to
+   * be able to find it and turn it back on.
+   *
+   * THAT TILE IS A CONSTRAINT ON THE LISTING GATE, not a contradiction of it.
+   * The roster is derived from the skills library, so a listing gate that DROPS
+   * a disabled engram's rows outright also deletes its tile — and an agent you
+   * cannot see is an agent you cannot re-enable. The listing gate must therefore
+   * mark rows rather than delete them on the OWNER-facing path (`skill:list`),
+   * and drop them on the AI-facing paths (MCP `list_skills`, the agent-tools
+   * `list_skills`, the proactive watcher's candidate set). Same split quarantine
+   * already makes.
+   *
+   * DELIBERATELY NOT `executionAutonomyLevel: 'L0'`: L0 is "Handheld — you run
+   * it yourself", i.e. explicitly still runnable by hand. Inert is the opposite
+   * claim, and collapsing the two would make L0 unusable for what it means.
+   *
+   * SCOPE: the un-ganglia only. Recall, `target_engram` resolution and the
+   * engram's memory are untouched — hence `skillsDisabled` and not `disabled`.
+   * Absent (default) = enabled, so every existing engram behaves as before.
+   *
+   * ENFORCEMENT IS NOT IN THIS FILE. This declares the flag; the dispatch,
+   * walk, `@skill:` resolution, library-listing and MCP boundaries each have to
+   * consult it. Until they do, this is a UI state and nothing more.
+   */
+  skillsDisabled?: boolean;
+
+  /**
    * Quarantine marker for engrams created by an untrusted IMPORT (a received
    * `.gez` / `.gsk` pack). A fresh quarantine engram is created per import batch.
    *
@@ -769,6 +901,37 @@ export interface HttpBridgeSettings {
    * don't send an Origin header so they are unaffected by this list).
    */
   allowedOrigins: string[];
+  /**
+   * Tailnet identity authorization — let named Tailscale users authenticate as
+   * themselves instead of sharing one pre-shared bearer token.
+   *
+   * OFF unless explicitly enabled, and ADDITIVE when on: the bearer path is
+   * unchanged and remains the only option for anyone not on a tailnet. The
+   * bridge accepts an identity header only when it can independently verify,
+   * out of band, that the request really did arrive through Tailscale Serve —
+   * see apps/desktop-sidecar/src/tailnet-identity.ts for the six conditions and
+   * the header-forgery attack they exist to defeat.
+   */
+  identity?: TailnetIdentitySettings;
+}
+
+/** One tailnet login and the engram scope it is granted. */
+export interface TailnetIdentityGrant {
+  /** Tailnet login as tailscaled reports it, e.g. "alice@example.com". */
+  login: string;
+  /**
+   * Engram scope + role. `role: 'owner'` is REFUSED at the gate — `owner` is
+   * deliberately not in SHARING_TOKEN_ROLES, and identity must not become a
+   * second, quieter way to reach it.
+   */
+  scope: SharingScope;
+}
+
+export interface TailnetIdentitySettings {
+  /** Master switch. Default false. */
+  enabled: boolean;
+  /** Logins allowed to authenticate by tailnet identity. Empty = feature inert. */
+  allowedLogins: TailnetIdentityGrant[];
 }
 
 /**
@@ -1103,6 +1266,30 @@ export interface AppSettings {
   /** Per-graph metadata keyed by graphId. Older cortexes may have no entry for an existing graph. */
   graphMetadata: Record<string, GraphMetadata>;
   /**
+   * Agent roster, keyed by a stable agentId. See `AgentRecord`.
+   *
+   * Deliberately a SIBLING of graphMetadata rather than fields inside it. Two
+   * reasons, one conceptual and one structural:
+   *
+   *   - An agent is un-ganglia (its skills subgraph) plus a hippocampus (its
+   *     memory). The engram is something the agent HAS, not something the agent
+   *     IS, so agent identity does not belong on the engram's record.
+   *   - `replaceGraphMetadata` REPLACES a graph's whole entry outright, so
+   *     anything stored inside that entry is in the blast radius of every
+   *     caller that means "create or reset". Callers that only mean to change
+   *     some fields now go through `patchGraphMetadata` instead, but a sibling
+   *     key is structurally out of reach of both.
+   *
+   * Absent on every cortex that predates the Agents page — read it as `{}`.
+   */
+  agents?: Record<string, AgentRecord>;
+  /**
+   * Crews, keyed by crewId. `AgentRecord.group` holds the crewId of its crew.
+   * Sibling of graphMetadata for the same reason `agents` is — see that note.
+   * Absent on every cortex that predates crews; read it as `{}`.
+   */
+  crews?: Record<string, CrewRecord>;
+  /**
    * Mobile & remote-client settings. Absent (undefined) means the HTTP bridge
    * is disabled — old cortexes that have never touched this section behave
    * identically to bridge.enabled = false.
@@ -1211,14 +1398,33 @@ export interface AppSettings {
    *  current app version as "re-import on next unlock" (so updated demos
    *  reach existing users automatically on app upgrade). */
   skillDemosEngram?: {
-    /** true once the user clicked "Not now" on the bundled-demos offer. */
+    /** Was: true once the user clicked "Not now" on the bundled-demos offer.
+     *  That banner is gone (the default Agempi install unconditionally), so
+     *  nothing sets this true any more. Kept declared so a cortex written by
+     *  an older build still parses rather than dropping the whole block. */
     declined?: boolean;
-    /** App version at the last successful bundled-demos ingest. */
+    /** App version at the last ingest in which EVERY default Agempus
+     *  succeeded. Left unwritten while any of them is being refused, so the
+     *  refusal keeps re-surfacing instead of being buried. */
     ingestedAppVersion?: string;
-    /** Language the user chose at install. Each bundled pack carries an
-     *  English + Romanian variant of the same SOP; only the chosen-language
-     *  variant is ingested (3 skills, not 6). Reused on silent re-ingest at
-     *  app-version bumps so the refresh keeps the same language. */
+    /**
+     * App version at the last successful ingest, PER Agempus engram id.
+     *
+     * The single global `ingestedAppVersion` above cannot express a partial
+     * install, and once there were three engrams that gap became a real
+     * choice between two bad outcomes: stamp it when only some succeeded and
+     * the refused one is buried forever; don't stamp it and the two healthy
+     * Agempi get wiped and rebuilt on every single unlock for as long as the
+     * owner keeps their own work in the third.
+     *
+     * Per-engram stamps avoid both — each Agempus is refreshed exactly when
+     * ITS content is out of date. Absent on an older cortex, which reads as
+     * "never ingested" and costs one extra refresh.
+     */
+    ingestedAppVersionByEngram?: Record<string, string>;
+    /** Was: the English/Română choice at install. The Agempus packs are
+     *  English-only, so nothing reads this. Kept declared for old cortexes,
+     *  same reason as `declined`. */
     language?: 'en' | 'ro';
   };
   /**
@@ -1272,7 +1478,7 @@ export interface AppSettings {
        * Outcome:
        *   - 'ok'           — completed normally; `count` new insights added.
        *   - 'no-llm'       — local LLM disabled or unreachable.
-       *   - 'no-data'      — every engram had fewer than 5 top nodes; nothing to summarise.
+       *   - 'no-data'      — every engram had fewer than 5 top nodes; nothing to summarize.
        *   - 'timeout'      — bailed after consecutive LLM timeouts on a slow model.
        *   - 'parse-error'  — the LLM responded but the output couldn't be parsed as JSON.
        *   - 'error'        — any other unexpected failure (see `message`).
@@ -1798,7 +2004,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     autoReingestOnFileChange: false,
     // 15 min quiet period: file must be stable this long before re-chunk fires.
     reingestQuietMs: 15 * 60 * 1000,
-    // Conservative defaults — match the SDK's pre-preset behaviour so
+    // Conservative defaults — match the SDK's pre-preset behavior so
     // existing cortexes don't change shape under users on upgrade.
     chunkSize: 'balanced',
     // 'auto' picks per-machine on first use without the user having to
@@ -2078,6 +2284,24 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ? partial.graphMetadata
     : { ...DEFAULT_SETTINGS.graphMetadata };
 
+  // Agent roster. Passed through WHOLESALE, exactly like graphMetadata above —
+  // never rebuilt field-by-field. That distinction is the whole reason
+  // `mobile.httpBridge.identity` became unsaveable: this function reconstructs
+  // that block key-by-key, so a field nobody added to the list is dropped on
+  // load AND on save, while every write still reports success. Records here are
+  // opaque to the merge on purpose, so adding a field to AgentRecord later needs
+  // no change in this file.
+  const agents = (partial?.agents && typeof partial.agents === 'object')
+    ? partial.agents
+    : {};
+
+  // Same wholesale passthrough as `agents` above, and for the same reason: a
+  // key-by-key rebuild here is exactly what made mobile.httpBridge.identity
+  // unsaveable. Adding a field to CrewRecord must need no change in this file.
+  const crews = (partial?.crews && typeof partial.crews === 'object')
+    ? partial.crews
+    : {};
+
   // Mobile / HTTP bridge — entirely optional. Absent = bridge disabled.
   // Pass through as-is if present; validate individual fields with fallbacks.
   let mobile: AppSettings['mobile'] | undefined;
@@ -2168,6 +2392,15 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(typeof sd.declined === 'boolean' ? { declined: sd.declined } : {}),
       ...(typeof sd.ingestedAppVersion === 'string' && sd.ingestedAppVersion.length > 0
         ? { ingestedAppVersion: sd.ingestedAppVersion }
+        : {}),
+      ...(sd.ingestedAppVersionByEngram && typeof sd.ingestedAppVersionByEngram === 'object'
+        ? {
+          ingestedAppVersionByEngram: Object.fromEntries(
+            Object.entries(sd.ingestedAppVersionByEngram)
+              .filter(([k, v]) => typeof k === 'string' && k.length > 0
+                && typeof v === 'string' && v.length > 0),
+          ),
+        }
         : {}),
       ...(sd.language === 'en' || sd.language === 'ro' ? { language: sd.language } : {}),
     };
@@ -2437,6 +2670,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(typeof ai.extraPrecautionMode === 'boolean' ? { extraPrecautionMode: ai.extraPrecautionMode } : {}),
     },
     graphMetadata,
+    agents,
+    crews,
     ...(partial?.cortex && typeof partial.cortex === 'object'
       ? {
           cortex: {

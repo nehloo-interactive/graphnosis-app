@@ -46,6 +46,7 @@ import {
   decryptModelProviderKeysInSettings,
 } from './model-provider-keys.js';
 import { DeviceIdentity } from './device-identity.js';
+import { readLicenseSeed, licenseSeedPath } from './license-seed-cache.js';
 import { FEDERATED_MASTER_FILE, federatedMasterPath, generateFederatedUnlockKey } from '@graphnosis-app/core/sso';
 import type { WorkPriority } from './work-priority.js';
 import {
@@ -83,6 +84,123 @@ const { federatedQuery } = federation;
 const { SourceIndex, makeSourceId, hashContent } = sources;
 
 export { extractQueryEntities } from './host/recall.js';
+
+// ── Settings provenance brand (DEFECT B) ──────────────────────────────────
+//
+// The lost update this prevents:
+//
+//     const current = host.getSettings();   // snapshot at T0
+//     await somethingSlow();                // another write commits at T1
+//     await host.setSettings({ ...current, myField: v });   // T2
+//
+// `setSettings` shallow-merges per top-level key, so the T0 snapshot's keys
+// WIN over everything committed at T1 — the T2 write silently reverts the T1
+// write, and because `graphMetadata` is one top-level key, a single stale
+// spread can revert the metadata of EVERY engram at once.
+//
+// The defense is provenance, enforced twice:
+//
+//   1. COMPILE TIME. `getSettings()` returns a value branded with
+//      SETTINGS_PROVENANCE. Object spread and rest-destructuring both
+//      propagate that brand into the resulting TYPE, and `SettingsPatch`
+//      declares the brand `?: never`. So `{ ...current, x }` — and
+//      `const { a, ...rest } = current` — are not assignable to the patch
+//      parameter. The mistake stops being a thing you can write.
+//
+//   2. RUN TIME. The brand is a real enumerable symbol-keyed property on the
+//      committed settings object, so a spread carries it at runtime too, and
+//      its value is the exact snapshot it was spread from. `setSettings`
+//      rebases any patch that carries it (see `rebaseAgainstProvenance`).
+//      This covers callers `tsc` never sees: plain JS, `tsx`-run tests, and
+//      `smoketest.ts` (excluded from tsconfig).
+//
+// The symbol is deliberately NOT `Symbol.for(...)`-shared beyond this module
+// and is invisible to persistence: `JSON.stringify` and `structuredClone`
+// both ignore symbol-keyed properties, so the brand never reaches disk and
+// the self-reference it holds can never be walked by them.
+const SETTINGS_PROVENANCE: unique symbol = Symbol('graphnosis.settingsProvenance');
+
+// ── Settings SUBTREE provenance (DEFECT B, one level down) ────────────────
+//
+// The root brand above only sees whole-tree spreads. It does nothing for the
+// shape that actually dominates this codebase:
+//
+//     const settings = host.getSettings();          // snapshot at T0
+//     const next = recordConsent(settings.ai.dataAccessConsents, …);
+//     await somethingSlow();                        // a REVOKE commits at T1
+//     await host.setSettings({ ai: { ...settings.ai, dataAccessConsents: next } });
+//
+// `{ ai: … }` is a narrow, honest-looking top-level patch, so the root brand
+// is absent and `rebaseAgainstProvenance` passes it straight through. But the
+// merge is shallow PER TOP-LEVEL KEY, so the whole committed `ai` subtree is
+// replaced by one built from the T0 snapshot — the T1 revoke is silently
+// undone. On `ai.dataAccessConsents` that is a security control reverting
+// itself: a revoked client keeps its grant.
+//
+// One level down the defense is COMPILE TIME ONLY:
+//
+//   `CommittedSettings['ai']` carries SETTINGS_SUBTREE_PROVENANCE, and
+//   `SettingsPatch['ai']` declares it `?: never`. So `{ ai: { ...snapshot.ai,
+//   x } }` is a type error, exactly like the whole-tree spread is. The
+//   function form stays legal: its callback parameter is an UNBRANDED
+//   `AppSettings`, so `{ ...committed.ai, x }` inside the queue still compiles.
+//
+// There is NO runtime counterpart. A runtime subtree brand existed until
+// 2026-08-05 and was deliberately removed — the removal note in
+// `brandCommitted` records why, and the compile-time cases it left standing are
+// apps/desktop-sidecar/typeguard/defect-b.reject.ts:48–:66. So the shapes the
+// type system cannot reach (`tsx` tests, plain JS, the `as any` call sites) are
+// NOT caught one level down: for those, the protection is that every
+// `ai.dataAccessConsents` writer resolves its patch INSIDE the settings write
+// queue (mcp-server.ts and ipc.ts), which is what actually fixes the consent
+// race. See tests/defect-b-settings-update-proof.ts.
+const SETTINGS_SUBTREE_PROVENANCE: unique symbol = Symbol('graphnosis.settingsSubtreeProvenance');
+
+/** A committed settings subtree: readable as `T`, not writable back as a patch. */
+type BrandedSubtree<T> = T & { readonly [SETTINGS_SUBTREE_PROVENANCE]: T };
+
+/** A subtree a caller may put in a patch: anything that is NOT a committed snapshot. */
+type UnbrandedSubtree<T> = T & { readonly [SETTINGS_SUBTREE_PROVENANCE]?: never };
+
+/**
+ * Settings as returned by `getSettings()` — a committed snapshot.
+ *
+ * Structurally an `AppSettings` (assignable to it, readable the same way),
+ * plus a brand that makes spreading it into a `setSettings` patch a compile
+ * error. To base a write on current settings, use the function form of
+ * `setSettings`, which hands you an UNBRANDED `AppSettings` read inside the
+ * write queue — the only place where "current" is actually current.
+ *
+ * `ai` is branded SEPARATELY so that spreading the SUBTREE is a compile error
+ * too — see SETTINGS_SUBTREE_PROVENANCE above.
+ */
+export type CommittedSettings =
+  & Omit<settingsMod.AppSettings, 'ai'>
+  & { readonly ai: BrandedSubtree<settingsMod.AiSettings> }
+  & { readonly [SETTINGS_PROVENANCE]: settingsMod.AppSettings };
+
+/**
+ * The only shape `setSettings` accepts: a patch naming ONLY the top-level
+ * keys the caller intends to change.
+ *
+ * `[SETTINGS_PROVENANCE]?: never` is what rejects a whole-tree snapshot. If
+ * you get "Type 'AppSettings' is not assignable to type 'undefined'" here,
+ * you spread `getSettings()` into a patch — switch to the function form:
+ *
+ *     await host.setSettings((current) => ({ ...current, myField: v }));
+ *
+ * `ai?: UnbrandedSubtree<…>` rejects the same mistake one level down. If you
+ * get "Type 'AiSettings' is not assignable to type 'undefined'" on the `ai`
+ * key, you spread `getSettings().ai` — switch to the function form and build
+ * the subtree from the committed read:
+ *
+ *     await host.setSettings((current) => ({ ai: { ...current.ai, myField: v } }));
+ */
+export type SettingsPatch =
+  & Omit<Partial<settingsMod.AppSettings>, 'ai'>
+  & { ai?: UnbrandedSubtree<settingsMod.AiSettings> }
+  & { readonly [SETTINGS_PROVENANCE]?: never };
+
 export interface HostOptions {
   cortexDir: string;
   deviceId: DeviceId;
@@ -208,7 +326,7 @@ const SDK_FAILURE_CLASSES: ReadonlySet<string> = new Set([
  *       has zero occurrences anywhere in 0.7.4's `dist/`. The claim held on
  *       0.8.0 and holds a fortiori on the older release.)
  *   (b) Some of these errors reach a consumer only as text — the sidecar
- *       serialises a load failure across its IPC socket, and `loadGraph`
+ *       serializes a load failure across its IPC socket, and `loadGraph`
  *       re-throws a synthesized `Error` whose only surviving evidence is the
  *       message it wrapped.
  * The fallback mirrors `ERROR_CLASS` as closely as text allows, and in
@@ -422,7 +540,7 @@ export function describeEngramLoadFailure(err: NodeJS.ErrnoException): {
       return {
         cause,
         headline: 'This engram was indexed by a NEWER version of Graphnosis and this build '
-          + 'does not recognise the text analyzer it used.',
+          + 'does not recognize the text analyzer it used.',
         remedy: 'Your memories are intact and nothing needs recovering — this is an index '
           + 'question, not a damaged file. Update Graphnosis to open it. The engram has '
           + 'deliberately been left untouched.',
@@ -1124,7 +1242,7 @@ export class GraphnosisHost {
   /** Engrams that have successfully loaded at least once this session. An
    *  LRU-EVICTED engram stays in this set — it's still available (reloads
    *  transparently on access), so graphsWithMetadata reports it as loaded
-   *  rather than "pending", and the UI doesn't grey/disable it in the picker.
+   *  rather than "pending", and the UI doesn't gray/disable it in the picker.
    *  Only a genuine delete removes it. */
   private readonly everLoaded = new Set<GraphId>();
   /** Sink for per-source live-ingest deltas (wired by main.ts to the events
@@ -1184,7 +1302,7 @@ export class GraphnosisHost {
    * preventing a stale in-flight read from overwriting fresh post-write data.
    */
   private _oplogReadGeneration = 0;
-  /** True while loadAllGraphsFromDisk is running — serialises cold-cache
+  /** True while loadAllGraphsFromDisk is running — serializes cold-cache
    *  buildEmbeddings so N engrams don't all contend on the background worker. */
   private bootSweepActive = false;
   private bootEmbBuildInFlight = 0;
@@ -1260,7 +1378,7 @@ export class GraphnosisHost {
    *  so consumers (the file-watcher) always see the canonical new value. */
   private readonly settingsListeners = new Set<(s: settingsMod.AppSettings) => void>();
   /**
-   * Serialises concurrent setSettings() calls.
+   * Serializes concurrent setSettings() calls.
    *
    * Problem: the brain engine fires frequent background writes
    * (`{ brain: { lastVitality, lastRun, … } }`) that read this.settings
@@ -1345,7 +1463,9 @@ export class GraphnosisHost {
     this.embedBackground = opts.embedBackground ?? this.embed;
     this.embedAdapterId = opts.embedAdapterId ?? 'graphnosis-app:stub@384';
     this.embedDimensions = opts.embedDimensions ?? 384;
-    this.settings = settings;
+    // Brand the boot snapshot too — a stale spread taken before the FIRST
+    // write must be caught the same way as one taken after it.
+    this.settings = GraphnosisHost.brandCommitted(settings);
     // Seed policy from settings-persisted tiers. Env-supplied policy entries win
     // (power-user / admin override path); settings fill in the rest.
     const base = opts.policy ?? { defaultBudget: policy.DEFAULT_BUDGET, graphs: [] };
@@ -1401,6 +1521,11 @@ export class GraphnosisHost {
     let dataKey: Uint8Array;
     let derivedSalt: Uint8Array;
     let recoveryPhrase: string | undefined;
+    // True only on the brand-new-cortex branch below (no salt.bin on disk).
+    // Drives seed-on-create for the license token. Deliberately NOT "cortex has
+    // no licenseEnc": that would resurrect a token the user had just wiped with
+    // license:clear on every subsequent unlock.
+    let createdFresh = false;
 
     if (opts.recoveryPhrase) {
       // ── Recovery path ──────────────────────────────────────────────────
@@ -1423,6 +1548,7 @@ export class GraphnosisHost {
       derivedSalt = salt;
     } else if (!salt) {
       // ── First run: brand-new cortex ───────────────────────────────────
+      createdFresh = true;
       // Derive the passphrase wrap key (this also generates the salt).
       const wrap = await deriveKey(opts.passphrase);
       derivedSalt = wrap.salt;
@@ -1575,6 +1701,50 @@ export class GraphnosisHost {
     // the op-log sequence counter, and the TOFU registry of peer device keys.
     const deviceIdentity = await DeviceIdentity.loadOrCreate(opts.cortexDir, dataKey);
     const host = new GraphnosisHost(opts, derived, withModelKeys, deviceIdentity);
+
+    // ── Seed-on-create: carry the device's license into a brand-new cortex ──
+    //
+    // `licenseEnc` is encrypted with THIS cortex's data key, so it can never be
+    // copied byte-wise from another cortex. Without this, a paying subscriber
+    // who creates a second cortex lands on Free tier with no local way back.
+    //
+    // Strictly gated:
+    //   • only on the brand-new-cortex branch (`createdFresh`), never on reopen
+    //   • only when the cortex genuinely has no token yet
+    //   • only if the cached token still VERIFIES — `verifyToken` returns null
+    //     for a bad signature, a malformed token, AND for `exp` in the past, so
+    //     an EXPIRED token is never installed. The re-check action in the
+    //     License panel is the path to a fresh one.
+    // A failure here must never block opening the cortex.
+    if (createdFresh && !withModelKeys.licenseEnc) {
+      try {
+        const seeded = await readLicenseSeed();
+        if (seeded) {
+          const { LicenseValidator } = await import('./license-validator.js');
+          const validator = await LicenseValidator.create();
+          const payload = validator.verifyToken(seeded);
+          if (payload) {
+            await host.setLicenseToken(seeded);
+            console.error(
+              `[graphnosis-host] seeded license into new cortex from device cache ` +
+              `(${licenseSeedPath()}) — plan=${payload.plan}, ` +
+              `expires=${new Date(payload.exp * 1000).toISOString()}.`,
+            );
+          } else {
+            // Expired / unparseable / bad signature — all land here. Skip
+            // silently (a console note only); do NOT install.
+            console.error(
+              '[graphnosis-host] device license seed present but not valid ' +
+              '(expired or unverifiable) — new cortex left unlicensed. ' +
+              'Use Settings → License → "Re-check subscription" to fetch a current token.',
+            );
+          }
+        }
+      } catch (e) {
+        console.error(`[graphnosis-host] license seed-on-create skipped: ${(e as Error).message}`);
+      }
+    }
+
     return recoveryPhrase ? { host, recoveryPhrase } : { host };
   }
 
@@ -1685,7 +1855,7 @@ export class GraphnosisHost {
       } catch {
         throw new Error('Old passphrase is incorrect.');
       }
-      // Defence-in-depth: the unwrapped dataKey must match the host's
+      // Defense-in-depth: the unwrapped dataKey must match the host's
       // in-memory key. If it doesn't, something is very wrong — refuse to
       // proceed rather than silently corrupt the cortex.
       if (!buffersEqual(oldDataKey, this.key)) {
@@ -1713,9 +1883,124 @@ export class GraphnosisHost {
 
   // ── Settings ────────────────────────────────────────────────────────────
 
-  getSettings(): settingsMod.AppSettings {
-    return this.settings;
+  /**
+   * The latest COMMITTED settings.
+   *
+   * Returned by reference (unchanged — `connectors/manager.ts` and the
+   * quarantine handlers rely on it, see `getGraphMetadata`), but BRANDED:
+   * the value cannot be spread into a `setSettings` patch. That is deliberate
+   * and is the fix for DEFECT B — the returned object is a snapshot of one
+   * instant, and by the time an `await` has passed it may describe settings
+   * that no longer exist. Read from it freely; never write it back.
+   */
+  getSettings(): CommittedSettings {
+    return this.settings as CommittedSettings;
   }
+
+  /**
+   * Install the provenance brand on a committed settings object.
+   *
+   * Enumerable so object spread copies it (that is the whole point — a
+   * spread must be self-identifying at runtime). Non-writable and
+   * self-referential: the value IS the object it is stamped on, which is what
+   * lets `rebaseAgainstProvenance` tell "this key is an unchanged carry-over
+   * from the caller's stale snapshot" apart from "the caller means to set
+   * this key". Invisible to `JSON.stringify` / `structuredClone` (both skip
+   * symbol keys), so neither the brand nor its cycle can reach disk.
+   */
+  private static brandCommitted(s: settingsMod.AppSettings): settingsMod.AppSettings {
+    Object.defineProperty(s, SETTINGS_PROVENANCE, {
+      value: s, enumerable: true, configurable: true, writable: false,
+    });
+    // SUBTREE BRANDING REMOVED 2026-08-05, deliberately. It marked every
+    // top-level plain-object value the same way so `{ ...committed.ai, x }`
+    // would be self-identifying at runtime. Three problems, and the third is
+    // decisive:
+    //
+    //   1. The brand must be ENUMERABLE to survive a spread — that is the whole
+    //      mechanism — which means it is also visible to `assert.deepEqual`,
+    //      to symbol-aware serialisation, and to property iteration. Every
+    //      subtree returned by getSettings() carried a phantom key. It broke
+    //      tests/skill-cited-rebind.test.mjs on a plain
+    //      `deepEqual(getSettings().skillRetrainQueue, {})`, and that test was
+    //      only the first consumer to notice.
+    //   2. The compile-time half it paired with is porous anyway: an
+    //      `: AiSettings` annotation strips the brand, and two call sites
+    //      launder past it with `as any`.
+    //   3. It did not cover the shape it was built for. The consent sites are
+    //      READ-MODIFY-WRITE, and rebaseSubtrees keeps any field that DIFFERS
+    //      from the snapshot as caller intent — so a value recomputed from a
+    //      stale read replays over a concurrent revoke while logging that it
+    //      rebased. It reported protection it did not provide.
+    //
+    // What actually fixes the consent race is moving those five sites INSIDE
+    // the settings write queue (mcp-server.ts and ipc.ts), which is done and
+    // stands on its own. The ROOT brand is kept: it is proven, it catches the
+    // whole-tree spread, and it does not contaminate subtree reads.
+    return s;
+  }
+
+  /** Non-null, non-array object — the only shape a subtree brand goes on. */
+  private static isPlainObject(v: unknown): v is Record<string, unknown> {
+    return typeof v === 'object' && v !== null && !Array.isArray(v);
+  }
+
+  /**
+   * Reduce a patch that was spread from a settings snapshot to the keys the
+   * caller actually MEANT to change, dropping the stale carry-overs.
+   *
+   * A patch reaches here branded only if it was built by spreading a
+   * `getSettings()` result — the compile-time guard rejects that shape, so in
+   * typechecked code this is a no-op safety net for un-typechecked callers
+   * (`tsx` tests, `smoketest.ts`, plain JS).
+   *
+   * The rule: a key whose value is IDENTICAL (`Object.is`) to the value in
+   * the snapshot it was spread from was not set by the caller — it was
+   * carried along by the spread. Writing it back is what reverts a concurrent
+   * write, so it is dropped and the committed value survives. A key whose
+   * value differs is the caller's actual intent and is kept.
+   *
+   * Keys ABSENT from the patch keep the existing shallow-merge meaning
+   * ("don't touch"), not "remove" — identical to today's behavior, so this
+   * cannot resurrect or destroy anything on its own.
+   */
+  private rebaseAgainstProvenance(patch: SettingsPatch): Partial<settingsMod.AppSettings> {
+    const bag = patch as unknown as Record<string | symbol, unknown>;
+    const snapshot = bag[SETTINGS_PROVENANCE] as settingsMod.AppSettings | undefined;
+    if (!snapshot) {
+      // An honest narrow patch at the TOP level — but its values may still be
+      // stale subtree spreads, which is the far more common shape.
+      return { ...(patch as Record<string, unknown>) } as Partial<settingsMod.AppSettings>;
+    }
+    const base = snapshot as unknown as Record<string, unknown>;
+
+    const intended: Record<string, unknown> = {};
+    const carriedOver: string[] = [];
+    for (const key of Object.keys(patch)) {
+      if (Object.is(bag[key], base[key])) {
+        carriedOver.push(key);
+        continue;
+      }
+      intended[key] = bag[key];
+    }
+    if (snapshot !== this.settings) {
+      console.warn(
+        `[graphnosis-host] setSettings: patch was spread from a STALE settings ` +
+        `snapshot; rebased onto committed state. Wrote [${Object.keys(intended).join(', ') || 'nothing'}], ` +
+        `dropped ${carriedOver.length} carried-over key(s) that would have reverted ` +
+        `a concurrent write. Use the function form: setSettings((cur) => ({ ...cur, … })).`,
+      );
+    }
+    return intended as Partial<settingsMod.AppSettings>;
+  }
+
+  // The doc block for `rebaseSubtrees` used to sit here, describing a method
+  // that had no body and no callers. Removed 2026-08-05 with the runtime
+  // subtree brand it documented — see the removal note in `brandCommitted`
+  // above. The defect it described is still real and is documented in the
+  // SETTINGS SUBTREE PROVENANCE header at the top of this file; what mitigates
+  // it now is the compile-time subtree brand plus the six consent writers
+  // living inside the settings write queue.
 
   /** Absolute path to the cortex root. Exposed for IPC handlers that need
    *  to enumerate or operate on files outside the host's encrypted graph
@@ -1977,8 +2262,8 @@ export class GraphnosisHost {
    *
    *   1. `rg --text -no "'[a-z0-9][a-z0-9._-]*\.(json|jsonl|enc|gnn|gll|idx|bin|db|log)'" \
    *        apps/desktop-sidecar/src packages/graphnosis-app-core`
-   *      → every on-disk artefact name in the sidecar and app-core (40 at time
-   *      of writing). Add the per-engram artefacts, which are path-built rather
+   *      → every on-disk artifact name in the sidecar and app-core (40 at time
+   *      of writing). Add the per-engram artifacts, which are path-built rather
    *      than named by a literal: `<graphId>.gai`, its op-log, `<graphId>.gll`,
    *      and the skill-snapshot directory.
    *   2. For each, open the PERSISTED record type and look for a field that
@@ -2494,13 +2779,13 @@ export class GraphnosisHost {
   async reembedAllGraphs(
     onProgress?: (event: { graphId: string; index: number; total: number; nodesInGraph: number }) => void,
     signal?: AbortSignal,
-  ): Promise<{ graphsRebuilt: number; cancelled: boolean; errors: Array<{ graphId: string; error: string }> }> {
+  ): Promise<{ graphsRebuilt: number; canceled: boolean; errors: Array<{ graphId: string; error: string }> }> {
     const graphIds = this.listGraphs();
     const errors: Array<{ graphId: string; error: string }> = [];
     let rebuilt = 0;
-    let cancelled = false;
+    let canceled = false;
     for (let i = 0; i < graphIds.length; i++) {
-      if (signal?.aborted) { cancelled = true; break; }
+      if (signal?.aborted) { canceled = true; break; }
       const graphId = graphIds[i]!;
       const g = this.graphs.get(graphId);
       if (!g) continue;
@@ -2530,7 +2815,7 @@ export class GraphnosisHost {
     }
     // Final progress event so the UI can flip from "embedding…" to "done".
     onProgress?.({ graphId: '', index: graphIds.length, total: graphIds.length, nodesInGraph: 0 });
-    return { graphsRebuilt: rebuilt, cancelled, errors };
+    return { graphsRebuilt: rebuilt, canceled, errors };
   }
 
   // ── Search ──────────────────────────────────────────────────────────────
@@ -2561,13 +2846,13 @@ export class GraphnosisHost {
   }
 
   /**
-   * PURE TF-IDF search — the honest keyword path. Scores are normalised
+   * PURE TF-IDF search — the honest keyword path. Scores are normalized
    * cosines in [0, 1], and no embedding vector is consulted no matter what
    * the index contains.
    *
    * `searchNodes` is NOT this: it routes through the hybrid query whenever an
    * embedding index exists, which a placeholder adapter always provides. Use
-   * this one wherever the result is going to be LABELLED a keyword match.
+   * this one wherever the result is going to be LABELED a keyword match.
    */
   async searchNodesLexical(graphId: GraphId, query: string, k = 30): Promise<Array<{ nodeId: string; score: number; text: string; type?: string }>> {
     const g = this.must(graphId);
@@ -2696,7 +2981,7 @@ export class GraphnosisHost {
    *
    * Note it is deliberately NOT consulted by `getNodeEmbeddings` or
    * `searchNodesDirect`: those report what the INDEX contains, which is a
-   * different (and still true) question. The judgement belongs to the
+   * different (and still true) question. The judgment belongs to the
    * consumer that is about to state a conclusion.
    */
   semanticSimilarityAvailable(): boolean {
@@ -2776,7 +3061,10 @@ export class GraphnosisHost {
     }
     const { tier } = resolveClassificationPolicy(updated.classificationLabelId, schema, updated);
     updated.sensitivityTier = tier;
-    await this.setGraphMetadata(graphId, updated);
+    // REPLACE, not patch: `updated` is a copy of the FULL existing entry and this
+    // method REMOVES classificationLabelId (the `delete updated.classificationLabelId`
+    // in the null/empty branch above) — a merge would resurrect it.
+    await this.replaceGraphMetadata(graphId, updated);
     this.patchPolicyTier(graphId, updated);
   }
 
@@ -2866,7 +3154,10 @@ export class GraphnosisHost {
       if (normalized?.length) updated.industryTags = normalized;
       else delete updated.industryTags;
     }
-    await this.setGraphMetadata(graphId, updated);
+    // REPLACE, not patch: `updated` is a copy of the FULL existing entry and this
+    // method REMOVES retentionTtlMs / industryTags (the three `delete updated.…`
+    // statements above: the null branch of each, plus the empty-after-normalize case).
+    await this.replaceGraphMetadata(graphId, updated);
     this.patchPolicyTier(graphId, updated);
   }
 
@@ -2964,16 +3255,101 @@ export class GraphnosisHost {
     return this.settings.graphMetadata[graphId];
   }
 
-  async setGraphMetadata(graphId: GraphId, metadata: settingsMod.GraphMetadata): Promise<void> {
-    // Route through setSettings so this write is serialised with concurrent
+  /**
+   * REPLACE a graph's whole metadata entry. THIS DESTROYS UNNAMED FIELDS.
+   *
+   * The object you pass BECOMES the entry. Every `GraphMetadata` field it does
+   * not name is gone: `sensitivityTier`, `excludedSources`, `consentIntervalMs`,
+   * `executionAutonomyLevel`, `skillAutonomyLevels`, `quarantine`,
+   * `classificationLabelId`, `archived`, `requireSsoSession`, `legalHold*`,
+   * `retention*`, `industryTags`, `correctionsCountBaseline`,
+   * `oplogReconcileCheckpoint`. Nothing warns you — a three-field write over a
+   * fully-configured engram type-checks and silently drops the rest, and that
+   * loss is invisible until the user notices a setting reverted.
+   *
+   * Replacing is legitimate in exactly two cases:
+   *
+   *   1. CREATE-OR-RESET — there is no entry yet, or you are deliberately
+   *      rebuilding the whole entry from a value you captured yourself (the
+   *      wipe-and-recreate paths spread a `priorMeta` snapshot back in). You
+   *      own the entire entry, so replacing it loses nothing.
+   *
+   *   2. INTENTIONAL REMOVAL — you are dropping a field. `delete` applied to a
+   *      copy of the FULL existing entry, or a destructure-with-omit, only
+   *      takes effect BECAUSE this call replaces. Route those through
+   *      `patchGraphMetadata` and the field you just removed comes straight
+   *      back: a merge cannot express absence.
+   *
+   * Anything else — "I just want to change these fields" — is
+   * `patchGraphMetadata`.
+   *
+   * TRAP: `listGraphs().includes(id)` is a RESIDENCY test, not an existence
+   * test. An engram that is evicted from memory but present on disk has a full
+   * metadata row and fails that check, so a "the graph doesn't exist, create
+   * it" branch guarded that way lands here and flattens a populated entry.
+   * Guard on `getGraphMetadata(id) === undefined` if you mean existence, or use
+   * `patchGraphMetadata`.
+   */
+  async replaceGraphMetadata(graphId: GraphId, metadata: settingsMod.GraphMetadata): Promise<void> {
+    // Route through setSettings so this write is serialized with concurrent
     // writes via settingsWriteQueue. A direct persistSettings() call bypasses
     // the queue and can race with setSettings() — the loser reads a stale
     // this.settings snapshot and overwrites fields the winner just committed.
-    await this.setSettings({
+    //
+    // Function form (not a materialised object): the sibling-graph map has to
+    // be read AFTER the queue admits this write. Building it at the call site
+    // snapshots before `await prev`, so two concurrent writes for DIFFERENT
+    // graphs both spread the same pre-write map and the second commit drops the
+    // first graph's entry.
+    await this.setSettings((committed) => ({
       graphMetadata: {
-        ...this.settings.graphMetadata,
+        ...committed.graphMetadata,
         [graphId]: metadata,
       },
+    }));
+  }
+
+  /**
+   * MERGE fields into a graph's metadata entry, leaving every field you do not
+   * name exactly as it was. The safe default: use this unless you are creating
+   * the entry outright or deliberately removing a field.
+   *
+   * Semantics:
+   *   - Keys present in `partial` overwrite; all other stored keys survive.
+   *   - A key whose value is `undefined` is IGNORED, not written. There is no
+   *     way to delete a field through this method — removal is a replace, and
+   *     making it look possible here is how a merge API silently resurrects
+   *     fields callers meant to clear. Use `replaceGraphMetadata` to remove.
+   *   - If there is no entry yet, one is synthesised from the same defaults the
+   *     rest of this class uses (`template: 'personal'`, `displayName: graphId`,
+   *     `createdAt: 0`) and `partial` is applied on top, so a caller that
+   *     supplies the three required fields still gets a correct fresh entry.
+   *
+   * The read of the existing entry happens INSIDE the settings write queue —
+   * see the note in `replaceGraphMetadata` — so the merge is against committed
+   * state, not a snapshot taken before the write was admitted.
+   */
+  async patchGraphMetadata(
+    graphId: GraphId,
+    partial: Partial<settingsMod.GraphMetadata>,
+  ): Promise<void> {
+    await this.setSettings((committed) => {
+      const existing: settingsMod.GraphMetadata = committed.graphMetadata[graphId] ?? {
+        template: 'personal' as settingsMod.GraphTemplate,
+        displayName: graphId,
+        createdAt: 0,
+      };
+      const merged = { ...existing } as unknown as Record<string, unknown>;
+      for (const [k, v] of Object.entries(partial)) {
+        if (v === undefined) continue; // absent means "leave alone", never "delete"
+        merged[k] = v;
+      }
+      return {
+        graphMetadata: {
+          ...committed.graphMetadata,
+          [graphId]: merged as unknown as settingsMod.GraphMetadata,
+        },
+      };
     });
   }
 
@@ -3007,6 +3383,32 @@ export class GraphnosisHost {
   }
 
   /**
+   * True when an engram's SKILLS are inert — `GraphMetadata.skillsDisabled`,
+   * the agent OFF SWITCH the owner flips on the Agents grid.
+   *
+   * This is the SINGLE centralized boundary check for the disabled-agent
+   * contract, and it is deliberately the exact counterpart of `isQuarantined`:
+   * wherever a quarantine check already makes skills inert — auto-dispatch,
+   * running a skill by hand, cross-engram `@skill:` resolution, the AI-facing
+   * skill listings (MCP `list_skills`, the agent tools, the proactive
+   * watcher's candidate set) — this check belongs in the same expression with
+   * the same failure shape. Owner-facing listings MARK disabled rows instead
+   * of dropping them; an agent you cannot see is an agent you cannot re-enable.
+   *
+   * SCOPE IS THE UN-GANGLIA ONLY. Recall, `target_engram` resolution and the
+   * engram's memory are untouched — that is why the flag is `skillsDisabled`
+   * and not `disabled`.
+   *
+   * TOTAL BY DESIGN — an unknown graphId is `false`. An engram we cannot see
+   * is ABSENT, not disabled; conflating the two would make every gate fail
+   * closed on a lookup miss (an evicted engram, a stale id) and silently kill
+   * skills across the whole cortex.
+   */
+  skillsDisabled(graphId: GraphId): boolean {
+    return this.getGraphMetadata(graphId)?.skillsDisabled === true;
+  }
+
+  /**
    * Combined view: every loaded graph + its metadata (or sensible defaults).
    *
    * With `includeUnloaded: true`, also include engrams that have a metadata
@@ -3037,9 +3439,9 @@ export class GraphnosisHost {
       .map(([graphId, metadata]) => {
         const onDisk = this.graphOnDisk(graphId);
         // An LRU-evicted engram (everLoaded) is still available — report it as
-        // loaded so the picker doesn't grey/disable it. Metadata-only rows
+        // loaded so the picker doesn't gray/disable it. Metadata-only rows
         // with no .gai (e.g. never-created system engrams) aren't part of the
-        // boot sweep — don't grey them as "still loading from disk".
+        // boot sweep — don't gray them as "still loading from disk".
         const loaded = !onDisk || this.everLoaded.has(graphId);
         return { graphId, metadata, loaded };
       });
@@ -3052,12 +3454,11 @@ export class GraphnosisHost {
    * must already exist (be loaded) — archiving a nonexistent graph is a no-op.
    */
   async setGraphArchived(graphId: GraphId, archived: boolean): Promise<void> {
-    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
-      template: 'personal' as settingsMod.GraphTemplate,
-      displayName: graphId,
-      createdAt: 0,
-    };
-    await this.setGraphMetadata(graphId, { ...existing, archived });
+    // Changes ONE field and removes nothing — so patch, not replace. The
+    // read-spread-write of the full entry it used to do was a lost-update
+    // hazard for no benefit: `existing` was snapshotted outside the write
+    // queue, so a concurrent write to any other field could be reverted here.
+    await this.patchGraphMetadata(graphId, { archived });
   }
 
   /**
@@ -3082,7 +3483,10 @@ export class GraphnosisHost {
     const updated: settingsMod.GraphMetadata = { ...existing };
     if (level === null) delete updated.executionAutonomyLevel;
     else updated.executionAutonomyLevel = level;
-    await this.setGraphMetadata(graphId, updated);
+    // REPLACE, not patch: `updated` is a copy of the FULL existing entry and this
+    // method REMOVES executionAutonomyLevel when level === null (the `delete
+    // updated.executionAutonomyLevel` on the line above).
+    await this.replaceGraphMetadata(graphId, updated);
   }
 
   /**
@@ -3116,7 +3520,10 @@ export class GraphnosisHost {
     else map[sourceId] = level;
     if (Object.keys(map).length === 0) delete updated.skillAutonomyLevels;
     else updated.skillAutonomyLevels = map;
-    await this.setGraphMetadata(graphId, updated);
+    // REPLACE, not patch: `updated` is a copy of the FULL existing entry and this
+    // method REMOVES skillAutonomyLevels / one entry of it (the `delete map[sourceId]`
+    // and the `delete updated.skillAutonomyLevels` empty-map case above).
+    await this.replaceGraphMetadata(graphId, updated);
   }
 
   /**
@@ -3211,16 +3618,13 @@ export class GraphnosisHost {
    * on the next recall (no re-index needed).
    */
   async setSourceExcluded(graphId: GraphId, sourceId: string, excluded: boolean): Promise<void> {
-    // Same fallback as setGraphArchived — an engram created without explicit
-    // metadata (e.g. via createGraph) still gets a record so the flag persists.
-    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
-      template: 'personal' as settingsMod.GraphTemplate,
-      displayName: graphId,
-      createdAt: 0,
-    };
-    const set = new Set(existing.excludedSources ?? []);
+    // Removing a sourceId from the LIST is not removing the FIELD — the field is
+    // always written, so this is a patch. (An engram created without explicit
+    // metadata still gets a record: patchGraphMetadata synthesises the same
+    // default entry setGraphArchived used to build by hand.)
+    const set = new Set(this.settings.graphMetadata[graphId]?.excludedSources ?? []);
     if (excluded) set.add(sourceId); else set.delete(sourceId);
-    await this.setGraphMetadata(graphId, { ...existing, excludedSources: [...set] });
+    await this.patchGraphMetadata(graphId, { excludedSources: [...set] });
   }
 
   async setGraphTier(graphId: GraphId, tier: 'public' | 'personal' | 'sensitive'): Promise<void> {
@@ -3233,7 +3637,10 @@ export class GraphnosisHost {
     if (this.complianceSchema()?.enabled) {
       delete updated.classificationLabelId;
     }
-    await this.setGraphMetadata(graphId, updated);
+    // REPLACE, not patch: `updated` is a copy of the FULL existing entry and this
+    // method REMOVES classificationLabelId under compliance (the `delete
+    // updated.classificationLabelId` in the complianceSchema branch above).
+    await this.replaceGraphMetadata(graphId, updated);
     this.patchPolicyTier(graphId, updated);
   }
 
@@ -3263,7 +3670,10 @@ export class GraphnosisHost {
     if (config.tier !== undefined && this.complianceSchema()?.enabled) {
       delete updated.classificationLabelId;
     }
-    await this.setGraphMetadata(graphId, updated);
+    // REPLACE, not patch: `updated` is a copy of the FULL existing entry and this
+    // method REMOVES consentIntervalMs / classificationLabelId (the `delete` in the
+    // clearConsentInterval branch and the one in the complianceSchema branch above).
+    await this.replaceGraphMetadata(graphId, updated);
     if (config.tier !== undefined) {
       this.patchPolicyTier(graphId, updated);
     }
@@ -3321,7 +3731,7 @@ export class GraphnosisHost {
     try { await this.loadGraph(graphId); }
     catch (e) {
       // Swallowing the reload is deliberate — the caller's must() reports
-      // "Graph not loaded" and that stays the user-facing behaviour. What is
+      // "Graph not loaded" and that stays the user-facing behavior. What is
       // NOT acceptable is swallowing it SILENTLY: a bare `catch {}` here turned
       // every reason an engram could fail to come back (corrupt bytes, a file
       // from a newer writer, a permissions change) into the same contentless
@@ -3441,9 +3851,24 @@ export class GraphnosisHost {
     }
 
     // Strip metadata from settings so the graph can't reappear on next boot.
-    // Route through setSettings (same serialisation fix as setGraphMetadata).
-    const { [graphId]: _removed, ...rest } = this.settings.graphMetadata;
-    await this.setSettings({ graphMetadata: rest });
+    // Route through setSettings (same serialisation fix as replaceGraphMetadata).
+    //
+    // FUNCTION FORM, and the rest-destructure must happen INSIDE it. This is a
+    // read-modify-write on `graphMetadata`: building `rest` at the call site
+    // snapshots the whole sibling map before `await prev`, so every write still
+    // in flight commits during that await and is then overwritten by the stale
+    // map — reverting concurrent patches to OTHER engrams and, for an engram
+    // created while the delete was queued, dropping its metadata row outright
+    // (it isn't in the snapshot at all, so it silently ceases to exist).
+    //
+    // The provenance brand does NOT catch this: it lives on the settings object,
+    // not on the nested `graphMetadata` map, so a rest-destructure of
+    // `this.settings.graphMetadata` yields an unbranded plain Record that
+    // typechecks and skips `rebaseAgainstProvenance`.
+    await this.setSettings((committed) => {
+      const { [graphId]: _removed, ...rest } = committed.graphMetadata;
+      return { graphMetadata: rest };
+    });
 
     // Purge stale cross-engram connections that referenced this graph.
     try {
@@ -3488,9 +3913,32 @@ export class GraphnosisHost {
     }
   }
 
-  /** Update settings, persist to <cortex>/settings.json, return the merged result. */
-  async setSettings(partial: Partial<settingsMod.AppSettings>, opts?: { userInitiated?: boolean }): Promise<settingsMod.AppSettings> {
-    // Serialise through settingsWriteQueue so concurrent callers (the brain
+  /**
+   * Update settings, persist to <cortex>/settings.json, return the merged result.
+   *
+   * `partial` names ONLY the top-level keys this write intends to change.
+   * Spreading a `getSettings()` snapshot into it is a compile error
+   * (`SettingsPatch` rejects the provenance brand) — that shape is DEFECT B:
+   * the snapshot's keys win the shallow merge and revert whatever committed
+   * in between, `graphMetadata` for every engram included.
+   *
+   * `partial` may instead be a function. It is called with the LATEST
+   * COMMITTED settings, after this write has been admitted to the queue and
+   * before the merge — the only point where "current" is actually current, and
+   * therefore the only place a whole-tree spread is safe. Any patch that has
+   * to READ existing state to build itself (read-modify-write on a nested map
+   * like `graphMetadata`) must use the function form; building the object at
+   * the call site snapshots before `await prev` and races.
+   *
+   *     await host.setSettings((current) => ({ ...current, myField: v }));
+   */
+  async setSettings(
+    partial:
+      | SettingsPatch
+      | ((committed: settingsMod.AppSettings) => SettingsPatch),
+    opts?: { userInitiated?: boolean },
+  ): Promise<settingsMod.AppSettings> {
+    // Serialize through settingsWriteQueue so concurrent callers (the brain
     // engine fires background writes every few seconds) always merge from the
     // latest committed this.settings, never from a stale snapshot captured
     // before a concurrent write committed. Without this, a brain-engine write
@@ -3505,10 +3953,21 @@ export class GraphnosisHost {
     let next!: settingsMod.AppSettings;
     try {
       await prev; // wait for any concurrent write to finish and commit
+      // Resolve the function form HERE, inside the critical section, so a
+      // read-modify-write patch sees committed state rather than a snapshot
+      // taken before the queue admitted this write.
+      // The function form receives committed state, so its `{ ...current, … }`
+      // is by definition not stale; the rebase below reduces it to the changed
+      // keys anyway, which makes both forms write the same minimal patch.
+      const raw = typeof partial === 'function' ? partial(this.settings) : partial;
+      // Strip any keys that were merely carried along by a spread of a settings
+      // snapshot. This is what stops a stale whole-tree patch from reverting a
+      // concurrent write at runtime (the type system stops it at compile time).
+      const resolved = this.rebaseAgainstProvenance(raw);
       // Merge now — this.settings reflects the latest committed state.
       // Shallow merge per top-level key — keeps contentCache fully replaced if
       // the caller passes one, while leaving room for future top-level keys.
-      const mergedTop = { ...this.settings, ...partial };
+      const mergedTop = { ...this.settings, ...resolved };
       // User-owned brain toggles must survive concurrent BACKGROUND writes. The
       // brain fires `{ brain: { ...current.brain, lastRun } }` every few seconds;
       // if its `current` snapshot predates a user's Low-power toggle, that stale
@@ -3516,9 +3975,9 @@ export class GraphnosisHost {
       // Low-power OFF reverted to ON). Background writes (no userInitiated flag)
       // therefore can't change lowPowerMode / clipboardCapture — those keep the
       // committed value; only an explicit user settings save changes them.
-      if (partial.brain && !opts?.userInitiated && this.settings.brain) {
+      if (resolved.brain && !opts?.userInitiated && this.settings.brain) {
         mergedTop.brain = {
-          ...partial.brain,
+          ...resolved.brain,
           ...(this.settings.brain.lowPowerMode !== undefined ? { lowPowerMode: this.settings.brain.lowPowerMode } : {}),
           ...(this.settings.brain.clipboardCapture !== undefined ? { clipboardCapture: this.settings.brain.clipboardCapture } : {}),
         };
@@ -3543,10 +4002,11 @@ export class GraphnosisHost {
    * with the cortex data key before writing to disk, then swaps the
    * in-memory copy (with decrypted credentials) and notifies listeners.
    *
-   * All three saveSettings paths in this file (setGraphMetadata,
-   * deleteGraph, setSettings) route through here so credentials never
-   * leak to settings.json in plaintext — including when an unrelated
-   * write piggybacks on a settings save and would otherwise re-serialise
+   * All saveSettings paths in this file (replaceGraphMetadata,
+   * patchGraphMetadata, deleteGraph, setSettings) route through here so
+   * credentials never leak to settings.json in plaintext — including when an
+   * unrelated
+   * write piggybacks on a settings save and would otherwise re-serialize
    * the in-memory plaintext credentials by accident.
    */
   private async persistSettings(next: settingsMod.AppSettings): Promise<void> {
@@ -3555,7 +4015,10 @@ export class GraphnosisHost {
     const withEncModelKeys = await encryptModelProviderKeysInSettings(withEncBridges, this.key);
     const onDiskNext = await encryptSsoSecretsInSettings(withEncModelKeys, this.key);
     await settingsMod.saveSettings(this.opts.cortexDir, onDiskNext);
-    this.settings = next;
+    // Brand only AFTER the encrypt pipeline and the disk write: those helpers
+    // spread `next`, so stamping earlier would copy the brand into the object
+    // handed to saveSettings. Stamping here keeps the on-disk value clean.
+    this.settings = GraphnosisHost.brandCommitted(next);
   }
 
   /** Subscribe to settings updates. Returns an unsubscribe function.
@@ -3901,7 +4364,7 @@ export class GraphnosisHost {
     this.bootDeferredFlushPromise = null;
   }
 
-  /** Tail of the serialised reconcile chain — see scheduleReconcile. */
+  /** Tail of the serialized reconcile chain — see scheduleReconcile. */
   private reconcileChain: Promise<void> = Promise.resolve();
 
   private scheduleReconcile(graphId: GraphId, entry: LoadedGraph): void {
@@ -3911,7 +4374,7 @@ export class GraphnosisHost {
       }
       return;
     }
-    // Serialise reconciles across engrams.
+    // Serialize reconciles across engrams.
     //
     // Each one is now streaming and cheap, but this is unbounded fan-out by
     // construction: scheduleReconcile is fire-and-forget, so anything that
@@ -5088,7 +5551,7 @@ export class GraphnosisHost {
     try {
       const plain = await decrypt(new Uint8Array(bytes), this.key);
       // Throwaway graphId so the verify load can't clobber the live instance.
-      await this.opts.adapter.loadFromBuffer(`${graphId} verify`, plain, this.key);
+      await this.opts.adapter.loadFromBuffer(`${graphId}\u0000verify`, plain, this.key);
       return null;
     } catch (e) {
       return { kind: 'parse', message: (e as Error).message ?? 'unknown error' };
@@ -5692,7 +6155,7 @@ export class GraphnosisHost {
    * when the engine declines a delete — it honours the refusal by RESTORING the
    * source record around the survivors and returning `refusedNodeIds`. This
    * method used to drop that return value on the floor, and the consequence was
-   * not "a duplicate copy" (the description that got this under-prioritised for
+   * not "a duplicate copy" (the description that got this under-prioritized for
    * three rounds) — it was total, silent loss of the live content:
    *
    *   forgetSource deletes the 3 real nodes, the engine declines the 4th, the
@@ -6083,17 +6546,17 @@ export class GraphnosisHost {
     graphId: GraphId,
     onProgress?: (event: { graphId: string; sourceId: string; ref: string; index: number; total: number }) => void,
     signal?: AbortSignal,
-  ): Promise<{ reingested: number; cancelled: boolean; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> {
+  ): Promise<{ reingested: number; canceled: boolean; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> {
     const g = this.must(graphId);
     // Snapshot the source list NOW — reingest mutates sourceIndex (forget +
     // re-add with the same sourceId), so iterating live would be brittle.
     const sourcesToProcess = g.sourceIndex.list().slice();
     let reingested = 0;
-    let cancelled = false;
+    let canceled = false;
     const skipped: Array<{ sourceId: string; reason: string }> = [];
     const failed: Array<{ sourceId: string; ref: string; error: string }> = [];
     for (let i = 0; i < sourcesToProcess.length; i++) {
-      if (signal?.aborted) { cancelled = true; break; }
+      if (signal?.aborted) { canceled = true; break; }
       const src = sourcesToProcess[i]!;
       onProgress?.({ graphId, sourceId: src.sourceId, ref: src.ref, index: i, total: sourcesToProcess.length });
       try {
@@ -6117,7 +6580,7 @@ export class GraphnosisHost {
       }
     }
     onProgress?.({ graphId, sourceId: '', ref: '', index: sourcesToProcess.length, total: sourcesToProcess.length });
-    return { reingested, cancelled, skipped, failed };
+    return { reingested, canceled, skipped, failed };
   }
 
   /** Reingest every source across every loaded engram. Sequential — keeps
@@ -6125,15 +6588,15 @@ export class GraphnosisHost {
   async reingestAllGraphs(
     onProgress?: (event: { graphId: string; graphIndex: number; graphsTotal: number; sourceId: string; ref: string; index: number; total: number }) => void,
     signal?: AbortSignal,
-  ): Promise<{ reingested: number; cancelled: boolean; skipped: number; failed: number; perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> }> {
+  ): Promise<{ reingested: number; canceled: boolean; skipped: number; failed: number; perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> }> {
     const graphIds = this.listGraphs();
     let totalReingested = 0;
     let totalSkipped = 0;
     let totalFailed = 0;
-    let cancelled = false;
+    let canceled = false;
     const perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> = [];
     for (let gi = 0; gi < graphIds.length; gi++) {
-      if (signal?.aborted) { cancelled = true; break; }
+      if (signal?.aborted) { canceled = true; break; }
       const graphId = graphIds[gi]!;
       const result = await this.reingestAllSources(graphId, (evt) => {
         onProgress?.({ graphIndex: gi, graphsTotal: graphIds.length, ...evt });
@@ -6142,9 +6605,9 @@ export class GraphnosisHost {
       totalSkipped += result.skipped.length;
       totalFailed += result.failed.length;
       perGraph.push({ graphId, ...result });
-      if (result.cancelled) { cancelled = true; break; }
+      if (result.canceled) { canceled = true; break; }
     }
-    return { reingested: totalReingested, cancelled, skipped: totalSkipped, failed: totalFailed, perGraph };
+    return { reingested: totalReingested, canceled, skipped: totalSkipped, failed: totalFailed, perGraph };
   }
 
   /** Block forget / edit / transfer when engram or source is under legal hold. */
@@ -6191,7 +6654,11 @@ export class GraphnosisHost {
       delete updated.legalHoldAt;
       delete updated.legalHoldMatter;
     }
-    await this.setGraphMetadata(graphId, updated);
+    // REPLACE, not patch: `updated` is a copy of the FULL existing entry and this
+    // method REMOVES legalHold / legalHoldAt / legalHoldMatter (the three `delete
+    // updated.legalHold*` statements in the `else` branch above, plus the
+    // `delete updated.legalHoldMatter` in the no-matter case).
+    await this.replaceGraphMetadata(graphId, updated);
     this.oplogWriter.emit({
       graphId,
       op: 'merge',
@@ -6354,13 +6821,14 @@ export class GraphnosisHost {
         // It used to carry `contentPreview`, which `graphnosis-impl.ts:954`
         // caps at `slice(0, 497) + '…'`. So every forgotten node over 500
         // characters came back from Recover permanently short — and
-        // `skill-recover.ts:38` documented that as expected behaviour
+        // `skill-recover.ts:38` documented that as expected behavior
         // ("faithful for any node under 500 characters … and TRUNCATED
         // beyond that") rather than as the defect it is. Same shape as the
         // moveSource incident: a preview standing in for a durable write.
         //
-        // `originalContent` is the full text, already in scope from :6270
-        // where it was captured for the rollback path — no extra read. The
+        // `originalContent` is the full text, already in scope from the
+        // `getFullNodeContent` capture at the top of this loop, where it was
+        // taken for the rollback path — no extra read. The
         // cost is bytes on the >500-char tail of a deliberately narrow event
         // class (node-level forget emits no preview at all and is not
         // retained), and it buys back the entire point of pinning them: a
@@ -6958,7 +7426,7 @@ export class GraphnosisHost {
     //
     // Best-effort: a correction that landed must not be reported as failed
     // because the index could not be topped up. The worst case on failure is
-    // the pre-existing behaviour — stale until the next rebuild.
+    // the pre-existing behavior — stale until the next rebuild.
     const reembedIds = [...new Set(
       appliedEdits
         .filter(({ edit }) => edit.kind !== 'delete')
@@ -6996,7 +7464,7 @@ export class GraphnosisHost {
     // BOTH ids, when the graph minted a replacement. `enqueueSkillsForNodeChange`
     // matches against `settings.skillCitedNodes`, which was populated AT TRAIN
     // TIME and therefore holds the PRE-correction id — so dropping `edit.nodeId`
-    // in favour of `resultNodeId` would silently stop marking skills stale.
+    // in favor of `resultNodeId` would silently stop marking skills stale.
     // Conversely `resultNodeId` alone is what a skill trained AFTER an earlier
     // rebind cites, so neither id is sufficient on its own. Union, de-duped.
     const changedNodeIds = [...new Set(
@@ -7480,7 +7948,7 @@ export class GraphnosisHost {
     // partial clear followed by a full insert is how a skill ends up holding
     // TWO generations of steps and walking them both while the UI reports a
     // clean TRAINED result. The state on disk is consistent (saved above) —
-    // what is refused is the caller's licence to treat the source as empty.
+    // what is refused is the caller's license to treat the source as empty.
     if (refused.length > 0) {
       throw new Error(
         `Could not clear source ${sourceId} for retrain: the memory engine declined to delete ` +
@@ -8024,7 +8492,7 @@ export class GraphnosisHost {
    *
    * Before any compaction has run: baseline = 0, baselineAsOf = 0, so every
    * event passes the `e.ts >= 0` filter and the result is identical to the
-   * previous full-scan behaviour.
+   * previous full-scan behavior.
    */
   private _correctionsCountForGraph(
     graphId: GraphId,
@@ -8223,8 +8691,10 @@ export class GraphnosisHost {
         const existing = this.settings.graphMetadata[graphId];
         if (!existing) continue;
         const prevBaseline = existing.correctionsCountBaseline ?? 0;
-        await this.setGraphMetadata(graphId, {
-          ...existing,
+        // Two fields, no removal — patch. This loop awaits once per engram, so
+        // the full-entry spread it used to do re-committed an increasingly stale
+        // `existing` on every iteration after the first.
+        await this.patchGraphMetadata(graphId, {
           correctionsCountBaseline: prevBaseline + prunedCount2,
           correctionsBaselineAsOf: cutoff,
         });
@@ -9281,12 +9751,10 @@ export class GraphnosisHost {
       watermark,
     );
     if (!next) return;
-    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
-      template: 'personal' as settingsMod.GraphTemplate,
-      displayName: graphId,
-      createdAt: 0,
-    };
-    await this.setGraphMetadata(graphId, { ...existing, oplogReconcileCheckpoint: next });
+    // One field, no removal — patch. This runs on the reconcile path, i.e.
+    // concurrently with ordinary user writes, so replacing the whole entry from
+    // a snapshot was the worst possible shape for it.
+    await this.patchGraphMetadata(graphId, { oplogReconcileCheckpoint: next });
   }
 
   private mergeOplogReconcileCheckpoint(
@@ -9325,7 +9793,11 @@ export class GraphnosisHost {
     const existing = this.settings.graphMetadata[graphId];
     if (!existing?.oplogReconcileCheckpoint) return;
     const { oplogReconcileCheckpoint: _removed, ...rest } = existing;
-    await this.setGraphMetadata(graphId, rest);
+    // REPLACE, not patch: `rest` is the full entry with ONE key omitted, and the
+    // omission is the entire point of this method. patchGraphMetadata cannot
+    // express absence — merging `rest` would leave the stale checkpoint in place
+    // and the recovery would keep replaying a tail it has already rebuilt.
+    await this.replaceGraphMetadata(graphId, rest);
   }
 
   /** Walk op-log source events chronologically — ingestSource wins over reorderSource partials. */
