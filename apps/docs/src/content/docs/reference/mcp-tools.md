@@ -50,7 +50,7 @@ Graphnosis sorts its tools into four determinism tiers. Each tool states its own
 | **Conditional** | Deterministic by default — `edit` supersedes the single closest-matching memory, and `train_skill` builds the skill from recall alone. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff for `edit`, or an LLM-rewritten body with attribution for `train_skill`) makes them non-deterministic. The result's `mode` field reports which path ran. | `edit`, `train_skill` |
 | **Non-deterministic** | Needs the optional Local LLM (or Neural Network). Retrieval is exact and auditable; the synthesised output varies between runs. Degrades to raw context when the LLM is off. | `develop`, `predict`, `insights`, `gnn_neighbors`, `llm_query`, `llm_distill` |
 
-One nuance for the deterministic tier: when the user has overlay engines enabled, `recall` and `remind` may append a clearly-labelled `--- INFERRED LAYER ---` block containing `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the neural network. The inferred layer is never mixed into the deterministic subgraph — treat it as predictions, not attested memory. The canonical `.gai` subgraph is always the authoritative answer.
+One nuance for the deterministic tier: when the user has overlay engines enabled, `recall` and `remind` may append a clearly-labeled `--- INFERRED LAYER ---` block containing `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the neural network. The inferred layer is never mixed into the deterministic subgraph — treat it as predictions, not attested memory. The canonical `.gai` subgraph is always the authoritative answer.
 
 ---
 
@@ -137,7 +137,7 @@ Treat `[gll·*]` and `[gnn·*]` rows as predictions, not facts. Never cite them 
 - The server enforces hard caps (50 nodes / 8000 tokens) regardless of what is requested.
 - Sensitive engrams: when shared, recall applies a tighter cap (5 nodes / 500 tokens); when not shared, excluded entirely.
 - Every recall is auditable via the footer + a structured audit line on the sidecar's stderr.
-- **Diacritic matching:** entity extraction normalises diacritic variants, so "Stefan" matches "Ștefan", "Ştefan", etc.
+- **Diacritic matching:** entity extraction normalizes diacritic variants, so "Stefan" matches "Ștefan", "Ştefan", etc.
 - **Escalation policy:** if `recall` returns 0–3 nodes, or nodes that don't answer the question, call [`dig_deeper`](#dig_deeper) with the same query before telling the user nothing was found.
 
 ### Example
@@ -155,7 +155,7 @@ Treat `[gll·*]` and `[gnn·*]` rows as predictions, not facts. Never cite them 
 
 ### Examples in practice
 
-- **Everyday —** Last month you told your AI which paint colour you picked for the spare room. Today you ask "what was that paint colour again?" — it calls `recall`, finds the note, and gives you the exact name without you digging through old chats.
+- **Everyday —** Last month you told your AI which paint color you picked for the spare room. Today you ask "what was that paint color again?" — it calls `recall`, finds the note, and gives you the exact name without you digging through old chats.
 - **Technical —** Mid-refactor you ask "why did we drop the Redis cache layer?" — `recall` surfaces the decision note from a past session, so the AI reasons from the actual rationale instead of guessing.
 
 ---
@@ -195,7 +195,7 @@ Escalation tool for when `recall` returns thin results (0–3 nodes, or nodes th
 
 ### Return
 
-Plain text — standard subgraph format for stage 1 (same shape as `recall`), then clearly labelled Markdown sections for stages 2 and 3, then italic provenance bullets:
+Plain text — standard subgraph format for stage 1 (same shape as `recall`), then clearly labeled Markdown sections for stages 2 and 3, then italic provenance bullets:
 
 ```text
 [Stage 1 — standard recall subgraph, same format as `recall`]
@@ -278,7 +278,7 @@ When `target_engram` (or an unknown `graphId`) is set, the sidecar runs a three-
 | Resolver result | What happens |
 |---|---|
 | **Exact match** (normalized graphId or displayName) | Writes immediately. |
-| **Close matches** (≥1 candidate above similarity threshold) | The tool returns an actionable error to the AI listing the closest matches by name. The app shows a banner top-center with ranked candidates (each labelled with the match reason — `contains your text`, `same words`, `close spelling`) plus a "Create new" option. The user picks one or creates a new engram. |
+| **Close matches** (≥1 candidate above similarity threshold) | The tool returns an actionable error to the AI listing the closest matches by name. The app shows a banner top-center with ranked candidates (each labeled with the match reason — `contains your text`, `same words`, `close spelling`) plus a "Create new" option. The user picks one or creates a new engram. |
 | **No match** | The tool returns an error listing all existing engrams. The banner offers "Create new" only. |
 
 **The AI never auto-creates an engram or silently disambiguates** — every new engram is a human-confirmed decision. The error returned to the AI is structured so a well-instructed client can relay the situation to the user without retrying the call.
@@ -793,7 +793,7 @@ Runs the same query against two engrams and returns the results side-by-side und
 
 ### `cross_search`
 
-Federated recall over a hand-picked subset of engrams (not all), with results grouped and labelled per engram. Use when the user names multiple collections in a query.
+Federated recall over a hand-picked subset of engrams (not all), with results grouped and labeled per engram. Use when the user names multiple collections in a query.
 
 - **Parameters:** `query` · `engrams` (array, at least one) · `maxNodes` (default 20 total).
 - **Try saying:** *"Search my Book Notes and Work engrams for distributed systems."*
@@ -939,7 +939,7 @@ Near-duplicate node pairs the brain engine has already flagged for review — hi
 
 **Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
-Contradicting memory pairs the periodic reflection scan has flagged — two memories that share the same entities but assert conflicting content (e.g. one says a project ships in March, another says it was cancelled). The mirror image of `duplicate_pairs`: those are near-*identical*, these are near-*opposite*. The scan runs in the background every few hours and only queues high-confidence conflicts, so the list stays short and meaningful.
+Contradicting memory pairs the periodic reflection scan has flagged — two memories that share the same entities but assert conflicting content (e.g. one says a project ships in March, another says it was canceled). The mirror image of `duplicate_pairs`: those are near-*identical*, these are near-*opposite*. The scan runs in the background every few hours and only queues high-confidence conflicts, so the list stays short and meaningful.
 
 Resolve by superseding the outdated side via `edit` — the supersede keeps the old memory recoverable while the current one wins recall. Never resolve a contradiction by adding a third note. If both sides are genuinely true (context-dependent), dismiss the pair in the app's **Needs you** review.
 

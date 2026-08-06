@@ -4,7 +4,7 @@
  * Owner self-service endpoint. Protected by the group's adminSecret
  * (passed as ?secret=… query param), NOT the admin API key.
  *
- * GET ?secret=…  — return sanitised group info (member list, seat usage)
+ * GET ?secret=…  — return sanitized group info (member list, seat usage)
  * POST ?secret=… body: { add?: string[], remove?: string[], sendEmail? }
  *                — add/remove members (enforces seat cap)
  */

@@ -59,7 +59,7 @@ export function registerRememberFlow(
       prompt: 'Short label for this memory (optional, press Enter to skip)',
       placeHolder: 'e.g. "auth flow decision"',
     });
-    // undefined = user cancelled the input box
+    // undefined = user canceled the input box
     if (label === undefined) return;
 
     try {

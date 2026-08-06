@@ -21,7 +21,7 @@ Here is the problem with how AI "memory" has worked until now.
 
 When people want an AI to know something, they paste files into the chat window, attach documents, or use retrieval tools that dump raw text into the AI's context. The AI reads the document fresh — every single time, for every conversation. It is the cognitive equivalent of handing someone a textbook and asking them to read it before every question, then closing it and forgetting everything afterward.
 
-The human brain doesn't work this way. The brain has a division of labour:
+The human brain doesn't work this way. The brain has a division of labor:
 
 - The **hippocampus** converts raw experience into compact, indexed memory traces — **engrams**. It handles encoding (turning new information into memory), storage (maintaining those memory traces over time), and retrieval (surfacing the right memory when the brain needs it).
 - The **prefrontal cortex** handles reasoning, planning, and language. When it needs to draw on something you've learned, it doesn't re-read the original source — the hippocampus retrieves the relevant engram and delivers it as context.
@@ -53,7 +53,7 @@ When you see the seahorse, think: *this is the part of the AI stack that remembe
 | Synapse (signal pathway) | **Graphnosis synapse** (the local background process) | The bridge between your AI client and your cortex; only fires when the app is running and the cortex is unlocked |
 | Prefrontal cortex (reasoning) | Your **AI client** | Receives only the retrieved engrams it needs; reasons from there |
 
-Graphnosis borrows that division of labour — then **inverts the constraints** that make biological memory lossy. We call the result the *un-brain*:
+Graphnosis borrows that division of labor — then **inverts the constraints** that make biological memory lossy. We call the result the *un-brain*:
 
 ![The Un-Brain Map — brain region, Graphnosis analog, and the inversion](/unbrain-map.svg)
 
@@ -119,7 +119,7 @@ A memory is only as useful as what it is connected to. Graphnosis links memories
 
 2. **Across engrams — multi-graph federation.** Your engrams are separated by topic, but they are not islands. Every `recall` is **federated**: it searches all accessible engrams at once and returns the best memories wherever they live. The background passes also weave **cross-engram connections** — links between related memories in *different* engrams — so a question grounded in your `work` engram can surface what you know in `research`. Federation is deterministic; the cross-engram links are stored encrypted alongside your cortex.
 
-3. **An optional third layer — the Neural Network overlay.** If you choose to enable it, the [Graphnosis Neural Network](/guides/indelibility-and-determinism/) adds a *third* set of connections: edges it *predicts* are likely real but not yet recorded. These are deliberately kept out of the deterministic `.gai` graph — they live in a separate `neural-network.gnn` overlay, are always clearly labelled, and can be discarded in one click. Layers 1 and 2 are deterministic and always on; layer 3 is non-deterministic and entirely opt-in.
+3. **An optional third layer — the Neural Network overlay.** If you choose to enable it, the [Graphnosis Neural Network](/guides/indelibility-and-determinism/) adds a *third* set of connections: edges it *predicts* are likely real but not yet recorded. These are deliberately kept out of the deterministic `.gai` graph — they live in a separate `neural-network.gnn` overlay, are always clearly labeled, and can be discarded in one click. Layers 1 and 2 are deterministic and always on; layer 3 is non-deterministic and entirely opt-in.
 
 ### Sources and chunks
 
@@ -156,7 +156,7 @@ A cortex you never tend slowly fills with clutter — the same fact saved twice,
 
 ### Going non-deterministic (optional)
 
-Everything above is **deterministic** — the same input always produces the same result, with no AI guessing in the loop. Graphnosis also offers an opt-in **Go Non-Deterministic** tab for two probabilistic layers: a local **Graphnosis Neural Network** that predicts likely-missing connections (kept in a separate overlay, never mixed into your graph), and a **local LLM** that powers insights and richer synthesis. Both are off by default and clearly labelled. See [Indelibility & Determinism](/guides/indelibility-and-determinism/).
+Everything above is **deterministic** — the same input always produces the same result, with no AI guessing in the loop. Graphnosis also offers an opt-in **Go Non-Deterministic** tab for two probabilistic layers: a local **Graphnosis Neural Network** that predicts likely-missing connections (kept in a separate overlay, never mixed into your graph), and a **local LLM** that powers insights and richer synthesis. Both are off by default and clearly labeled. See [Indelibility & Determinism](/guides/indelibility-and-determinism/).
 
 ## What AI clients work with Graphnosis
 

@@ -44,7 +44,7 @@ See [Enterprise RBAC — Compliance operations](/docs/guides/enterprise-rbac#com
 
 ---
 
-## The six layers, summarised
+## The six layers, summarized
 
 | # | Layer | What it stops | Default |
 |---|------|---------------|---------|
@@ -57,13 +57,13 @@ See [Enterprise RBAC — Compliance operations](/docs/guides/enterprise-rbac#com
 
 Layers compose. A query has to pass every relevant layer before any memory data is returned. Layer 6 sits *outside* the others: it decides whether a tool exists for the client to call at all.
 
-> **What's new in v0.10 (later in the cycle):** the consent gate moved from forced phrase-typing to a **one-click in-app prompt** for sensitive-tier access, with **`personal` tier silent by default** (your decision to install Graphnosis + add it to your AI client's config already counts as informed consent for personal data). Phrase typing is preserved as a headless fallback for SSH/CI sessions. Power users who want the old behaviour can flip **"Extra precaution mode"** in Settings → AI to gate `personal` recalls behind the same prompt. See [Layer 2](#2-the-consent-gate) below for the full flow.
+> **What's new in v0.10 (later in the cycle):** the consent gate moved from forced phrase-typing to a **one-click in-app prompt** for sensitive-tier access, with **`personal` tier silent by default** (your decision to install Graphnosis + add it to your AI client's config already counts as informed consent for personal data). Phrase typing is preserved as a headless fallback for SSH/CI sessions. Power users who want the old behavior can flip **"Extra precaution mode"** in Settings → AI to gate `personal` recalls behind the same prompt. See [Layer 2](#2-the-consent-gate) below for the full flow.
 
 ---
 
 ## 1. Sensitivity tiers (recap)
 
-Each engram has a tier: `public`, `personal`, or `sensitive`. The sidecar enforces tier-specific behaviour before any recall result leaves your device:
+Each engram has a tier: `public`, `personal`, or `sensitive`. The sidecar enforces tier-specific behavior before any recall result leaves your device:
 
 - **`public`** — no consent prompt, no gate. Best for documentation, reference material, public notes.
 - **`personal`** — consent gate fires before first access from each AI client; rate limit and replay blocker apply. Best for journals, work notes, personal correspondence.
@@ -77,7 +77,7 @@ See [Graphs & Sensitivity Tiers](/guides/graphs-and-tiers) for the full setup wa
 
 Before an AI client can read memories from a `sensitive` engram, Graphnosis requires you — not the AI — to authorize the access. By default, `personal` tier flows through with no extra friction: installing Graphnosis and adding it to your AI client's MCP config is already informed consent for that tier. Sensitive data (health, financial, biometric — Article 9 special category) is held to a higher standard.
 
-### Default behaviour, by tier
+### Default behavior, by tier
 
 | Tier | Default | Override (Settings → AI) |
 |---|---|---|
@@ -103,7 +103,7 @@ One click resolves it. The recall proceeds (or errors cleanly with "denied"). Th
 
 The first time a never-before-seen AI client connects and would trigger the consent flow, the app pops a one-time **policy chooser** so you can set defaults per tier:
 
-| Choice | Behaviour after first save |
+| Choice | Behavior after first save |
 |---|---|
 | **Ask, then allow for 1 hour** *(default for personal in extra-precaution mode)* | Prompt fires, Allow grants for 1h, then silent until window expires |
 | **Ask, then allow for today** | Same, 24h window |
@@ -138,7 +138,7 @@ A single checkbox in **Settings → AI**: *"Require an in-app consent click for 
 - Personal tier joins sensitive tier in the gated set
 - The in-app prompt fires for personal recalls (with the same policy + first-connect chooser flow)
 - The phrase fallback is available for personal grants too
-- Sensitive tier behaviour is unchanged (it's always gated)
+- Sensitive tier behavior is unchanged (it's always gated)
 
 This is for users who want every AI access logged behind an explicit click, even for routine notes — e.g. shared machines, security audits, compliance reviews. Off by default.
 
@@ -222,7 +222,7 @@ A guardrail that rejects a recall when the same query is repeated **3 or more ti
 
 **Default**: Jaccard token-set similarity ≥ 0.85, allowed repeats = 2, window = 60 seconds. The first two identical queries pass (natural retries — the AI rewording slightly, you asking again because the answer was incomplete); the 3rd identical query in 60 seconds blocks.
 
-The blocker normalises both queries to lowercase, strips punctuation, drops short words, and compares the resulting word sets. Jaccard similarity is the size of the intersection over the size of the union.
+The blocker normalizes both queries to lowercase, strips punctuation, drops short words, and compares the resulting word sets. Jaccard similarity is the size of the intersection over the size of the union.
 
 When it fires:
 - The sidecar throws: "Session replay detected — this is the Nth identical query in 60 seconds. Modify your query meaningfully or wait 60s."

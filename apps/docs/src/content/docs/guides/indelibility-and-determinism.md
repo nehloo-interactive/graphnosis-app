@@ -1,11 +1,11 @@
 ---
 title: Indelibility & Determinism
-description: The two principles behind Graphnosis — memories that strengthen and never weaken, and a deterministic-first design where AI guessing is always opt-in and clearly labelled.
+description: The two principles behind Graphnosis — memories that strengthen and never weaken, and a deterministic-first design where AI guessing is always opt-in and clearly labeled.
 sidebar:
   order: 3
 ---
 
-Two principles shape how Graphnosis treats your memory: **indelibility** (a memory you add only ever gets stronger) and **determinism** (the same input always produces the same result, with any AI guessing kept opt-in and clearly labelled). This page explains both, and the one tab where you can deliberately step outside them.
+Two principles shape how Graphnosis treats your memory: **indelibility** (a memory you add only ever gets stronger) and **determinism** (the same input always produces the same result, with any AI guessing kept opt-in and clearly labeled). This page explains both, and the one tab where you can deliberately step outside them.
 
 ## Indelibility — your memory only ever gets stronger
 
@@ -48,7 +48,7 @@ Not every useful feature can be deterministic, so Graphnosis sorts its capabilit
 | **Mixed** | Memory retrieval is deterministic and auditable; a local LLM then synthesises the prose, so wording varies. Degrades to a deterministic context dump with no LLM. | `develop`, `predict` |
 | **Non-deterministic** | A local LLM is in the loop and results vary between runs. | `insights`, `gnn_neighbors`, `llm_query`, `llm_distill` |
 
-One nuance for `recall` and `remind`: when overlay engines are enabled, their response may append a clearly-labelled `--- INFERRED LAYER ---` block containing `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the Neural Network. This block is separate from and never mixed into the deterministic attested subgraph — treat its contents as predictions, not facts. The canonical `.gai` subgraph remains the authoritative answer regardless.
+One nuance for `recall` and `remind`: when overlay engines are enabled, their response may append a clearly-labeled `--- INFERRED LAYER ---` block containing `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the Neural Network. This block is separate from and never mixed into the deterministic attested subgraph — treat its contents as predictions, not facts. The canonical `.gai` subgraph remains the authoritative answer regardless.
 
 `edit` is the conditional case worth understanding. It covers three flavors — correction ("actually it was X"), update ("my plans changed"), and append ("add these items") — but all three share the same diff-and-approve flow. With **neither** the Neural Network nor the Local LLM enabled, it deterministically supersedes the single closest-matching memory — reproducible, no guessing. The **Neural Network**, when on, expands the candidate set with GNN-predicted related memories and can re-rank which memory is targeted. The **Local LLM**, when on, instead authors a multi-edit diff across several memories. The tool's response carries a `mode` field — `deterministic`, `gnn-expanded`, or `llm-assisted` — naming which path ran. Either way the diff is only a preview you approve before anything is written.
 
@@ -60,7 +60,7 @@ The **Foresight** tab is the one place you deliberately step outside the determi
 
 ### Graphnosis Neural Network (.GNN)
 
-A small link-predictor that trains locally on your engrams and proposes connections it judges *likely real but not yet recorded*. Its predictions are kept in a **separate encrypted overlay file** (`neural-network.gnn`) — never written into the deterministic `.gai` graph. They surface only where they are clearly labelled: a "Neural-network predictions" block in recall enrichment, toggleable dashed edges in the 3D Engram, and the widened candidate set the `edit` tool considers when the GNN is on. Removing them is one click — the overlay is simply discarded, and the deterministic graph is untouched. See [File Formats](/reference/file-formats/) for the `.gnn` format.
+A small link-predictor that trains locally on your engrams and proposes connections it judges *likely real but not yet recorded*. Its predictions are kept in a **separate encrypted overlay file** (`neural-network.gnn`) — never written into the deterministic `.gai` graph. They surface only where they are clearly labeled: a "Neural-network predictions" block in recall enrichment, toggleable dashed edges in the 3D Engram, and the widened candidate set the `edit` tool considers when the GNN is on. Removing them is one click — the overlay is simply discarded, and the deterministic graph is untouched. See [File Formats](/reference/file-formats/) for the `.gnn` format.
 
 ### Graphnosis Local Layer (.GLL)
 
@@ -78,7 +78,7 @@ This section exposes **five independent capability toggles** you can enable or d
 
 **Edge prediction** runs roughly once an hour, finds semantically similar node pairs without existing connections, and asks the local LLM whether they are related. Confirmed pairs are written to the `local-layer.gll` overlay (never to `.gai`) and appear in recall responses as `[gll·edge N%]` rows in the inferred layer. You review them in the app; accept promotes the edge to your review-approved list, reject permanently discards it from the overlay.
 
-Both layers are reversible and clearly marked. Neither ever touches **core recall** — an identical query returns identical memories whether or not they are on. What they *do* affect is opt-in and labelled: the GNN adds a separate predictions block to recall enrichment and widens the `edit` candidate set; the Local LLM capabilities operate independently on whichever toggles you have on. Even then nothing escapes review — `edit` always returns a diff you approve — and turning either layer off restores the fully deterministic behaviour.
+Both layers are reversible and clearly marked. Neither ever touches **core recall** — an identical query returns identical memories whether or not they are on. What they *do* affect is opt-in and labeled: the GNN adds a separate predictions block to recall enrichment and widens the `edit` candidate set; the Local LLM capabilities operate independently on whichever toggles you have on. Even then nothing escapes review — `edit` always returns a diff you approve — and turning either layer off restores the fully deterministic behavior.
 
 ## Related
 

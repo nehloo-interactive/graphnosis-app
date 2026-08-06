@@ -26,7 +26,7 @@ Both edge kinds live in the same encrypted `.gai` file, and both are computed de
 
 Graphnosis blends three signals on every search — none of them on their own would be enough.
 
-1. **Lexical (TF-IDF).** The classic "rare words win" trick. Common words like *the*, *project*, *meeting* count for little; distinctive words like *hippocampus*, *Postgres*, or your colleague's name count for a lot. Fast, deterministic, and excellent at proper nouns and technical terms. Diacritic-normalised, so *Stefan* and *Ștefan* match each other.
+1. **Lexical (TF-IDF).** The classic "rare words win" trick. Common words like *the*, *project*, *meeting* count for little; distinctive words like *hippocampus*, *Postgres*, or your colleague's name count for a lot. Fast, deterministic, and excellent at proper nouns and technical terms. Diacritic-normalized, so *Stefan* and *Ștefan* match each other.
 2. **Semantic (embeddings).** Your query is embedded into the same vector space as your notes, and the closest matches surface — even when you didn't use the same words. *"How do I roll back the deploy?"* finds a note titled *"Rollback procedure"*. The model runs entirely on your device; no API is called.
 3. **Structural (the dual graph).** Once a few nodes match, Graphnosis walks the directed and undirected edges out from those seeds, pulling in the small handful of nodes that are clearly *adjacent* to what you asked. A `causes` edge from "the deploy failed" to "the migration ran out of memory" means a question about either one surfaces both.
 
@@ -55,7 +55,7 @@ Every `recall` call (and every `dig_deeper`, `recall_structured`, `recall_with_c
 - Runs the same query against every accessible engram in parallel.
 - Each engram returns its own subgraph — its best match, drawn from its own dual graph, with its own audit footer.
 - Results are merged into one ranked response, grouped per engram so you can see where each memory came from.
-- Sensitivity tiers are honoured — sensitive engrams without consent are silently excluded from federated recall (the consent gate only fires when you explicitly name a sensitive engram).
+- Sensitivity tiers are honored — sensitive engrams without consent are silently excluded from federated recall (the consent gate only fires when you explicitly name a sensitive engram).
 - The total result is capped — token and node budgets keep the response small enough for any AI client.
 
 This is why a question grounded in `work` can surface a relevant note from `research` without you having to ask twice.
@@ -99,7 +99,7 @@ A short list of things that would be easier but wrong, that Graphnosis deliberat
 - **No central vector index.** Each engram is its own file. There is no "all your memory in one bucket" representation, anywhere on disk.
 - **No cloud federation.** Federation happens locally on your device, at query time. No engram is sent anywhere to be searched.
 - **No silent merging.** Cross-engram connections are surfaced as connections — never collapsed into a single fused node that hides where the memory came from.
-- **No probabilistic re-ranking by default.** The lexical + semantic + graph blend is deterministic. The optional Neural Network and Local LLM overlays can widen the result, but they live in separate files (`.gnn` / `.gll`) and are always labelled when they contribute.
+- **No probabilistic re-ranking by default.** The lexical + semantic + graph blend is deterministic. The optional Neural Network and Local LLM overlays can widen the result, but they live in separate files (`.gnn` / `.gll`) and are always labeled when they contribute.
 
 ## Under the hood — the SDK boundary
 

@@ -128,7 +128,7 @@ Press **⌘F** anywhere in the app to jump focus directly to the search bar — 
 
 A **stats bar** below the search field shows the active engram name and match count (e.g. "Coding · 4 matches") so you know at a glance which engram you're searching and how many sources matched.
 
-When the lexical search finds no exact matches, Graphnosis falls back to semantic similarity. Results from the semantic fallback are clearly labelled as off-topic matches so you can tell them apart from direct hits.
+When the lexical search finds no exact matches, Graphnosis falls back to semantic similarity. Results from the semantic fallback are clearly labeled as off-topic matches so you can tell them apart from direct hits.
 
 The filter is session-only: it resets when you close the app, and it never hides anything permanently. Clear the field to restore the full list.
 

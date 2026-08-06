@@ -48,7 +48,7 @@ Ghampus is not just decoration. He is a shorthand for the four things Graphnosis
 | **Security** | He is paranoid by default. Every cortex is encrypted at rest with libsodium `xchacha20poly1305`, keyed by Argon2id from your passphrase. The `.gai` engram files cannot be read without the passphrase — not by your AI, not by us, not by any tool that lands on your disk. |
 | **Determinism** | He gives you the same answer to the same question, every time. The attested memory in `.gai` is byte-deterministic. The same query against the same cortex state returns the same memories — across runs, across AI clients, across days. No model in the loop, no probabilistic recall, no drift. |
 
-The optional layers (the Neural Network overlay in `.gnn`, the Local LLM overlay in `.gll`) sit *beside* Ghampus' deterministic core — clearly labelled, opt-in, never mixed into the canonical graph. The four principles above apply to the attested layer always; the overlays are honest about being predictions.
+The optional layers (the Neural Network overlay in `.gnn`, the Local LLM overlay in `.gll`) sit *beside* Ghampus' deterministic core — clearly labeled, opt-in, never mixed into the canonical graph. The four principles above apply to the attested layer always; the overlays are honest about being predictions.
 
 ## The brand stack
 

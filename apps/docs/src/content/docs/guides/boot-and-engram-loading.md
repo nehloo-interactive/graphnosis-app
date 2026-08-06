@@ -1,6 +1,6 @@
 ---
 title: Boot & engram loading
-description: How Graphnosis loads your engrams on unlock — preferred default, sequential background loading, status bar progress, and what the greyed-out engrams in the picker mean.
+description: How Graphnosis loads your engrams on unlock — preferred default, sequential background loading, status bar progress, and what the grayed-out engrams in the picker mean.
 sidebar:
   order: 8
 ---
@@ -26,7 +26,7 @@ how to read the status bar and engram picker.
    one at a time. The status bar shows "Loading N more engrams…" with
    a live countdown.
 5. **The engram picker fills in** as each background load completes —
-   pending engrams are visible from the start but greyed out until
+   pending engrams are visible from the start but grayed out until
    their data is ready.
 
 On a fresh cortex with one engram, steps 4–5 don't happen. On a cortex
@@ -93,19 +93,19 @@ Click the engram name in the topbar to open the dropdown. The list shows
 order:
 
 - **Bold / normal weight** — the engram is loaded and selectable.
-- **Greyed out, italic, "not allowed" cursor** — the engram exists on
+- **Grayed out, italic, "not allowed" cursor** — the engram exists on
   disk but hasn't finished decrypting into memory yet. Clicking it does
   nothing; the picker won't switch.
 - **✓ checkmark** — the engram currently active.
 
 As each engram finishes loading, its row **updates immediately** — the
-greyed styling drops and the engram becomes selectable as soon as its
+grayed styling drops and the engram becomes selectable as soon as its
 own load completes, without waiting for the rest. Positions stay
 alphabetical the whole time — engrams don't jump around as they load.
 
 If you click an engram that's still pending, the picker silently rejects
 the click and stays open so you can pick another. There's no error
-flash; the visual greying is the signal.
+flash; the visual graying is the signal.
 
 ## What if I deleted the engram I last had open?
 
@@ -146,7 +146,7 @@ distinguishes them and says which it is:
 - **It was written by a newer version of Graphnosis.** Nothing is damaged.
   Update the app to open it; the engram is left untouched.
 - **It was indexed by a newer version whose text analyzer this build does not
-  recognise.** Also not damage — an index question, not a data one. Your
+  recognize.** Also not damage — an index question, not a data one. Your
   memories are intact. Update to open it.
 
 The last two matter most on a downgrade: if you install an older build after a

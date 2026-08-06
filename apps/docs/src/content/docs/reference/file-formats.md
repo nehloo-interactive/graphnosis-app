@@ -165,7 +165,7 @@ Core recall traverses only `.gai`, so the same query always returns the same res
 
 - **The deterministic graph stays pure.** No prediction can silently change a recall answer.
 - **Undo is trivial.** "Remove all predicted connections" simply discards this file; the `.gai` graph is never touched.
-- **Predictions are always labelled.** They surface only in the clearly-marked recall-enrichment section and the 3D Engram's toggleable prediction layer (dashed edges) — never inside a deterministic answer.
+- **Predictions are always labeled.** They surface only in the clearly-marked recall-enrichment section and the 3D Engram's toggleable prediction layer (dashed edges) — never inside a deterministic answer.
 
 ### Structure
 

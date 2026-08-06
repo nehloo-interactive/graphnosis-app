@@ -162,7 +162,7 @@ Every engram file is integrity-checked on load via authenticated encryption (the
 
 ### Binary integrity
 
-On **macOS**, any modification to the `.app` bundle breaks the Developer ID code signature and Gatekeeper will refuse to launch the app. On **Windows** and **Linux**, protecting the install directory via OS-level access controls (standard file permissions, read-only mounts) is the appropriate defence — the same principle that applies to any desktop application. For Linux deployments, verify checksums published on the GitHub Releases page.
+On **macOS**, any modification to the `.app` bundle breaks the Developer ID code signature and Gatekeeper will refuse to launch the app. On **Windows** and **Linux**, protecting the install directory via OS-level access controls (standard file permissions, read-only mounts) is the appropriate defense — the same principle that applies to any desktop application. For Linux deployments, verify checksums published on the GitHub Releases page.
 
 ---
 
@@ -179,10 +179,10 @@ The following table covers deployment considerations that enterprise IT teams co
 | **Sensitive-data consent in headless environments** | Verify fallback works for your setup | The in-app consent modal works when a desktop GUI is available. For headless deployments (SSH, Docker, CI), a time-limited phrase shown in Settings provides the equivalent confirmation |
 | **Multi-user shared machines** | No action needed | Each OS user account has an independent, separately encrypted cortex not accessible to other accounts |
 | **Air-gapped or proxy-restricted environments** | Pre-stage the embedding model | The embedding model (~90 MB) downloads once on first use. Pre-stage it before deployment or pre-bake it into the Docker image; the application operates fully offline after that |
-| **User-initiated cortex backup to cloud storage** | Enforce via MDM DLP policy | Cortex files are strongly encrypted and require the user's passphrase to be useful. If organisational policy prohibits cloud backup of work data, apply data-loss-prevention rules to the cortex folder path |
+| **User-initiated cortex backup to cloud storage** | Enforce via MDM DLP policy | Cortex files are strongly encrypted and require the user's passphrase to be useful. If organizational policy prohibits cloud backup of work data, apply data-loss-prevention rules to the cortex folder path |
 | **Connector credentials for integrated services** | Follow principle of least privilege | Integration tokens (e.g. for GitHub or Slack) are encrypted with the same key as all other cortex data. Grant minimum-scope tokens and rotate them when personnel change |
 | **Linux desktop binary verification** | Verify checksums before deployment | Linux desktop packages are not code-signed. Verify the SHA checksums published on the GitHub Releases page before deploying; for high-assurance environments, build from source |
-| **Machine-level security** | Covered by your existing endpoint protection | Graphnosis's access controls operate at the application layer. Like all desktop applications, defence at the machine level — full-disk encryption, EDR/XDR, locked-down user accounts — is the foundation |
+| **Machine-level security** | Covered by your existing endpoint protection | Graphnosis's access controls operate at the application layer. Like all desktop applications, defense at the machine level — full-disk encryption, EDR/XDR, locked-down user accounts — is the foundation |
 | **Third-party local LLM (Ollama) configuration** | Configure Ollama independently | Graphnosis communicates with Ollama on the loopback interface only. Ollama's own privacy settings are outside Graphnosis's scope |
 | **Enterprise SSO (OIDC)** | Configure in Settings → Enterprise SSO | Federated cortex unlock via corporate IdP (Okta, Azure AD, Google Workspace, and other OIDC providers). Lock-screen sign-in, IdP group → sharing-role mapping, optional Entra tenant binding (`tid` / issuer match), and a reachability probe when the IdP is behind VPN. An admin saves SSO settings once while unlocked to provision the federated key on each Mac; optional break-glass passphrase remains available. Headless MCP seats: `/admin/provision`. **SAML 2.0 is not yet supported** — OIDC only |
 
@@ -339,7 +339,7 @@ This section maps Graphnosis's architecture to major regulatory frameworks. It i
 | **Right to erasure** | `forget` MCP tool (soft-delete nodes); source deletion via app UI. Data is never replicated to an external server, so erasure is local-only |
 | **Right to portability** | `.gai` files are decryptable with passphrase + open-source Apache-2.0 SDK (`@nehloo/graphnosis`). No vendor lock-in |
 | **No third-party AI API calls** | No data sent to OpenAI, Anthropic, Google, or any hosted LLM. Optional local LLM uses Ollama on-device only |
-| **Deterministic recall** | Same query → same result; auditable. Non-deterministic features are opt-in and clearly labelled |
+| **Deterministic recall** | Same query → same result; auditable. Non-deterministic features are opt-in and clearly labeled |
 
 ### GDPR (EU / UK GDPR)
 
@@ -385,7 +385,7 @@ This section maps Graphnosis's architecture to major regulatory frameworks. It i
 ### FDA 21 CFR Part 11 (pharma / medical device / laboratory)
 
 - Consent history and MCP tool-call audit rows are append-only and encrypted with per-event timestamps. Electronic signatures on each recall/ingest operation (Part 11-style audit trails) are on the roadmap
-- Computer system validation (IQ/OQ/PQ) documentation is not yet available; organisations using Graphnosis in a regulated documentation workflow would need to include it in their own CSV programme in the interim
+- Computer system validation (IQ/OQ/PQ) documentation is not yet available; organizations using Graphnosis in a regulated documentation workflow would need to include it in their own CSV program in the interim
 
 ### PCI-DSS (payment card)
 
@@ -411,7 +411,7 @@ Graphnosis is actively working on the items below. Updates are announced in the 
 
 ## 9. Licensing for internal deployment
 
-**Your organization may deploy Graphnosis internally, at any scale, without a separate licence.** The application is released under the [Functional Source License 1.1](https://github.com/nehloo-interactive/graphnosis-app/blob/main/LICENSE) (`FSL-1.1-Apache-2.0`), whose Additional Use Grant permits *"use in your organization for any purpose, including internal use, evaluation, and development of internal tools and integrations."*
+**Your organization may deploy Graphnosis internally, at any scale, without a separate license.** The application is released under the [Functional Source License 1.1](https://github.com/nehloo-interactive/graphnosis-app/blob/main/LICENSE) (`FSL-1.1-Apache-2.0`), whose Additional Use Grant permits *"use in your organization for any purpose, including internal use, evaluation, and development of internal tools and integrations."*
 
 There is no seat count, revenue threshold, or commercial-use fee attached to running it yourself. Paid tiers buy features, not the right to deploy.
 
@@ -421,9 +421,9 @@ There is no seat count, revenue threshold, or commercial-use fee attached to run
 | Self-hosting on your own servers, air-gapped or otherwise | **Yes** — internal use |
 | Forking and modifying for internal needs | **Yes** — internal use |
 | Building internal tools and integrations against it | **Yes** — expressly named in the grant |
-| A consultancy deploying or customising it for a client's internal use | **Yes** — professional services are expressly permitted |
-| Offering it to third parties as a hosted or managed service | **No** — requires a separate licence during the window |
-| Embedding it in a product you sell, where its functionality is substantially the value | **No** — requires a separate licence during the window |
+| A consultancy deploying or customizing it for a client's internal use | **Yes** — professional services are expressly permitted |
+| Offering it to third parties as a hosted or managed service | **No** — requires a separate license during the window |
+| Embedding it in a product you sell, where its functionality is substantially the value | **No** — requires a separate license during the window |
 
 The restriction is about **who you serve**, not whether money is involved: re-offering Graphnosis to third parties is a Competing Use; running it for your own people is not. Each release converts to Apache 2.0 two years after publication, at which point even that restriction lapses for that release.
 

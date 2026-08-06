@@ -122,7 +122,7 @@
   border-color: var(--sl-color-text-accent);
   /* !important is needed: the Download button is an <a>, and Starlight's
      `.sl-markdown-content a` rule (higher specificity) otherwise paints its
-     text the same accent colour as this button's background — invisible. */
+     text the same accent color as this button's background — invisible. */
   color: var(--sl-color-black) !important;
 }
 
