@@ -14,6 +14,31 @@ export function ipcCallTimeout<T = unknown>(method: string, params: unknown, ms 
   ]);
 }
 
+/**
+ * Does this error mean "the sidecar has no such method" — i.e. version skew —
+ * rather than "the method ran and failed"?
+ *
+ * The two are NOT interchangeable. A handler that ran and threw says something
+ * about this cortex's data; a handler that does not exist says something about
+ * the build on the other end of the socket. Any readout that would otherwise
+ * present an absent answer as a clean one has to be able to tell them apart.
+ *
+ * Matching is on the message text because that is the only thing that crosses
+ * both transports. `dispatch()` throws `Unknown IPC method: <name>` for a name
+ * it has no case for; the local Unix-socket client wraps it (with a stack) and
+ * the remote HTTP bridge returns it as the `error` field of a 400 — hence
+ * `includes` rather than `startsWith`.
+ *
+ * NB: over a remote cortex this only works against a shell built after
+ * `remote::rpc` started reading the error body. An older shell collapses the
+ * whole 400 to "failed with HTTP 400 Bad Request" and this correctly returns
+ * false — unknown reads as a plain failure, which is the safe direction.
+ */
+export function isUnknownIpcMethodError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.includes('Unknown IPC method');
+}
+
 export function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): Promise<T> {
   return Promise.race([
     p,

@@ -262,34 +262,16 @@
             </div>
           </div>
         </div>
-        <!-- Skill Demos ingest banner. Mirror of docs-offer-banner. Shown
-             when skillDemosEngram.declined !== true and the bundled-demos
-             engram is absent. Adds the 3 bundled "Skill Demos" packs to a
-             dedicated engram so the user can browse them and copy patterns
-             into their own skills. -->
-        <div id="skill-demos-offer-banner" class="engram-suggest hidden" role="dialog" aria-live="polite">
-          <div class="engram-suggest-body">
-            <div class="engram-suggest-title">
-              <span class="engram-suggest-icon">🧠</span>
-              <span id="skill-demos-offer-headline">
-                Add 3 starter skill demos? They teach your AI how to recall,
-                save, and protect memories well. Pick a language — only that
-                set of 3 is installed.
-              </span>
-            </div>
-            <!-- Single-language choice: each bundled pack ships English +
-                 Romanian variants of the same SOP; we install only the chosen
-                 set (3 skills), not both (6). -->
-            <div class="skill-demos-lang" id="skill-demos-lang" role="radiogroup" aria-label="Demo language">
-              <button type="button" class="skill-demos-lang-btn active" data-lang="en" role="radio" aria-checked="true">English</button>
-              <button type="button" class="skill-demos-lang-btn" data-lang="ro" role="radio" aria-checked="false">Română</button>
-            </div>
-            <div class="engram-suggest-actions">
-              <button type="button" class="btn-primary" id="skill-demos-offer-add">Add demos</button>
-              <button type="button" class="btn-ghost" id="skill-demos-offer-dismiss">Not now</button>
-            </div>
-          </div>
-        </div>
+        <!-- The Skill Demos offer banner (with its English/Română picker and
+             its "Add demos" / "Not now" buttons) used to live here. Removed
+             2026-08-06: the three default Agempi — Onboarding, Ghampus Hush,
+             Coach — now install unconditionally on a new cortex (roadmap
+             AG.39), so there is nothing to offer. Ghampus Hush and Coach
+             arrive switched OFF and the owner turns them on from the Agents
+             grid, which is where the "Not now" decision actually belongs — a
+             banner shown once could never be recalled. The language picker
+             went with it: the Agempus packs are English-only. See
+             checkSkillDemosOffer() in main.ts. -->
         <!-- Ghampus Memory Integrity bubble — synced with #home-attention-strip. -->
         <div id="ghampus-attention-bubble" class="ghampus-attention-bubble hidden" role="alert" aria-live="assertive">
           <div class="ghampus-attention-bubble-avatar">
@@ -347,14 +329,11 @@
             </button>
           </div>
           <div class="app-header-right">
-            <!-- Active engram picker cluster: vertical stack of "Active engram:"
-                 label on top and the sensitivity tier badge below, with the
-                 dropdown sitting to the right of both. -->
-            <div class="header-engram-stack">
-              <span class="header-engram-label">Active engram:</span>
-              <span id="sensitivity-badge" class="sensitivity-badge" style="display:none;" title="Click to change this engram's sensitivity tier"></span>
-            </div>
-            <select id="atlas-graph-picker" class="header-engram-picker" title="Switch active engram"></select>
+            <!-- The active-engram picker (#atlas-graph-picker) used to sit here,
+                 behind an "Active engram:" label. The label is gone and the
+                 picker was RELOCATED (moved, not copied) into the Memory /
+                 3D Engrams page, where it now IS that page's title. See the
+                 comment at its new site — search for `atlas-title-line`. -->
             <button id="btn-add-file" class="primary">+Files</button>
             <button id="btn-add-folder" class="primary">+Folders</button>
             <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
@@ -399,13 +378,28 @@
                  settings.ui.defaultLandingMode). Gated to Teams/Enterprise
                  on entry; the pane itself shows the upgrade card for free
                  plans, or the chat shell once licensed. -->
-            <button class="rail-btn" data-mode="ghampus" title="Ghampus Hush — your confidential AI: chat over your memory, run skills, save and recall">
+            <!-- Rail naming scheme (2026-08-05): "plain name / biological term".
+                 The plain word is the navigation label; the term after the slash
+                 is a quiet subtitle carrying the product's biological vocabulary
+                 (.label-term, dimmed to --fg-dim along with the slash). No organ
+                 is used twice: cortex = the whole store, synapses = connections,
+                 engrams = memories, agempi = agents. DISPLAY STRINGS ONLY —
+                 data-mode keys are untouched (saved landing modes, deep links,
+                 VALID_LANDING_MODES all key off them).
+                 aria-label is set on the rows whose only content is the label.
+                 It is deliberately NOT set on data-mode="atlas" or
+                 "get-connected": those carry live trailing content (corrections
+                 badge, AI-client name, connection count) that an aria-label
+                 would suppress from the accessible name. Their name is still
+                 computed as one coherent string because the space before the
+                 slash lives INSIDE .label-term. -->
+            <button class="rail-btn" data-mode="ghampus" aria-label="Inbox / Ghampus" title="Inbox / Ghampus — your confidential AI: chat over your memory, run skills, save and recall">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5z"/><circle cx="5" cy="5" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="19" r="1.2" fill="currentColor" stroke="none"/></svg></span>
-              <span class="rail-label">Ghampus Hush</span>
+              <span class="rail-label">Inbox<span class="label-term"> / Ghampus</span></span>
             </button>
-            <button class="rail-btn active" data-mode="atlas" title="Your Cortex — your memory at a glance: search, check-in deck, health, live AI-client status">
+            <button class="rail-btn active" data-mode="atlas" title="Stats / Cortex — your memory at a glance: search, check-in deck, health, live AI-client status">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5"/><path d="M5 9v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 21v-7h6v7"/></svg></span>
-              <span class="rail-label">Your Cortex</span>
+              <span class="rail-label">Stats<span class="label-term"> / Cortex</span></span>
               <!-- Trailing cluster (right-aligned): pending-corrections badge +
                    the live AI-client status indicator (moved here from the
                    now-removed Status item). -->
@@ -414,42 +408,43 @@
                 <span id="rail-mcp-indicator" class="rail-mcp-indicator" data-pres="surface:mcpClients"></span>
               </span>
             </button>
-            <!-- Get Connected — directly under Home: grow your cortex (AI clients
-                 read it, data sources feed it). Chips/recipes live on its page. -->
-            <button class="rail-btn" data-mode="get-connected" title="Get Connected — grow your cortex: connect AI clients to read it and data sources to feed it">
+            <!-- Connections / Synapses — directly under Home: grow your cortex
+                 (AI clients read it, data sources feed it). Chips/recipes live
+                 on its page. -->
+            <button class="rail-btn" data-mode="get-connected" title="Connections / Synapses — grow your cortex: connect AI clients to read it and data sources to feed it">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
-              <span class="rail-label">Get Connected</span>
+              <span class="rail-label">Connections<span class="label-term"> / Synapses</span></span>
               <span id="rail-gc-count" class="rail-badge hidden" title="Connected AI clients + data sources">0</span>
             </button>
-            <!-- MCP Tools — directly under Get Connected. -->
-            <button class="rail-btn" data-mode="mcp-tools" title="Browse all MCP tools Graphnosis exposes">
-              <span class="rail-icon">⚒︎</span>
-              <span class="rail-label">MCP Tools</span>
-              <span></span>
-            </button>
-            <button class="rail-btn" data-mode="engram" title="3D Engram — your memory graph, rendered in space">
+            <!-- MCP Tools left the rail on 2026-08-05, the same way Sources,
+                 Activity and Agents did: its entry point is now the width-long
+                 launcher in Get Connected → AI clients, which opens the pane in
+                 #mcp-tools-modal instead of navigating. The MODE is untouched —
+                 the mobile bottom nav (further down this file) still routes to
+                 the standalone pane, and 'mcp-tools' is still in
+                 VALID_LANDING_MODES, so a cortex that boots into it still does. -->
+            <button class="rail-btn" data-mode="engram" aria-label="Memory / 3D Engrams" title="Memory / 3D Engrams — your memory graph, rendered in space">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
-              <span class="rail-label">3D Engram</span>
+              <span class="rail-label">Memory<span class="label-term"> / 3D Engrams</span></span>
               <span></span>
             </button>
-            <button class="rail-btn" data-mode="sources" title="Files that fed your memory">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></span>
-              <span class="rail-label">Sources</span>
-              <span></span>
-            </button>
-            <button class="rail-btn" data-mode="skills" title="Autonomous Skills — walkable SOPs dispatched each session, self-improving with each run">
+            <!-- Sources moved OFF the rail 2026-08-05. Its entry point is now the
+                 document icon in the 3D Engram toolbar (#btn-atlas-sources), which
+                 opens the same pane as a modal. The pane itself, its data-pane, and
+                 activateMode('sources') all still exist: a citation's "open source"
+                 action still deep-links to it as a full page (main.ts), and the
+                 mobile More sheet still lists it — phones have no rail. -->
+            <button class="rail-btn" data-mode="skills" aria-label="Agents / Agempi" title="Agents / Agempi — each skill engram as an agent: un-ganglia plus a hippocampus, its skills walkable SOPs dispatched each session and self-improving with each run">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 2.7 3 6 3s6-2 6-3v-5"/></svg></span>
-              <span class="rail-label">Autonomous Skills</span>
+              <span class="rail-label">Agents<span class="label-term"> / Agempi</span></span>
               <span></span>
             </button>
-            <button class="rail-btn" data-mode="agents" title="Agents — your Agempi roster: each skill-template engram as a domain agent, with its skills, dispatch triggers, call graph, and autonomy at a glance">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg></span>
-              <span class="rail-label">Agents</span>
-              <span></span>
-            </button>
-            <button class="rail-btn" data-mode="goals" title="Foresight — predict the future from your growing memory (develop · predict · insights)">
+            <!-- The standalone Agents roster was retired 2026-08-05. Agents/Agempi
+                 is now the Autonomous Skills destination itself, which opens on the
+                 agent grid and drills into one agent's skills. -->
+            <button class="rail-btn" data-mode="goals" aria-label="Foresight / Dreams" title="Foresight / Dreams — predict the future from your growing memory (develop · predict · insights)">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M11 7v4l2.5 1.5"/><path d="M20 20l-3.5-3.5"/></svg></span>
-              <span class="rail-label">Foresight</span>
+              <span class="rail-label">Foresight<span class="label-term"> / Dreams</span></span>
               <span></span>
             </button>
             <button class="rail-btn" data-mode="search" title="Search — find any memory across your engrams">
@@ -457,11 +452,11 @@
               <span class="rail-label">Search</span>
               <span></span>
             </button>
-            <button class="rail-btn" data-mode="activity" title="Activity — every change to your memory, who made it, and when">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
-              <span class="rail-label">Activity</span>
-              <span></span>
-            </button>
+            <!-- Activity moved into the 3D Engram toolbar 2026-08-05
+                 (#btn-atlas-activity), opening the same pane as a modal.
+                 Search KEEPS its rail entry: it has no pane of its own — it is
+                 an atlas sub-mode driven by body.search-mode — so there is
+                 nothing to relocate until that UI is extracted. -->
             <!-- MemoryStudio rail item hidden for now — may be revisited later
             <button class="rail-btn" data-mode="power-tools" title="MemoryStudio — recall / remember / edit / GNN by hand (your AI usually does this for you via MCP)">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg></span>
@@ -486,6 +481,26 @@
             <!-- Memory trace removed — redundant with Activity / Search / the
                  Inspector, and it cluttered the rail. Settings is the last item,
                  pinned to the bottom. -->
+            <!-- TEAMS & ENTERPRISE — the multi-user / IT-admin destination:
+                 engram sharing, compliance operations, the IT classification
+                 schema, and the organization engram catalog. Lifted out of Get
+                 Connected 2026-08-05: those four are org-administration, not
+                 "grow your cortex", and they dominated a page aimed at a
+                 single-user first run.
+                 Shown to EVERY plan on purpose, same as data-mode="ghampus":
+                 each section already renders a named plan requirement plus real
+                 "View Premium Plans" / "Paste a license token" actions, so an
+                 unlicensed visitor gets an accurate statement of what is
+                 required rather than a dead end. Licence state arrives from two
+                 independent async IPCs (compliance.get, catalog:adminAccess), so
+                 a licence-conditional rail item would flicker or mis-hide on IPC
+                 failure. Placed low, next to Presentation Mode and Settings, so
+                 it reads as an admin destination rather than a daily surface. -->
+            <button class="rail-btn" data-mode="teams-enterprise" title="Teams &amp; Enterprise — engram sharing, compliance operations, classification schema, and the organization engram catalog">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+              <span class="rail-label">Teams &amp; Enterprise</span>
+              <span></span>
+            </button>
             <button class="rail-btn" data-mode="presentation" title="Presentation Mode — pick what to reveal during a demo or screen-share; everything else is redacted">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
               <span class="rail-label">Presentation Mode</span>
@@ -496,6 +511,18 @@
               <span class="rail-label">Settings</span>
               <span></span>
             </button>
+            <!-- CHATS — every Ghampus thread on disk (cortex/ghampus/sessions/*.jsonl),
+                 newest first. Sits below Settings as the rail's last block: it is a
+                 history list, not a destination, so it must not compete with the
+                 mode buttons above it. Each row's visible label is one unwrapped
+                 line clipped by CSS ellipsis; the full title lives in the row's
+                 title attribute so hovering always shows it whole. Populated by
+                 renderRailChats() in main.ts — empty until then, and it stays
+                 hidden while the cortex has no chat history at all. -->
+            <div class="rail-chats hidden" id="rail-chats">
+              <div class="rail-chats-head">Chats</div>
+              <div class="rail-chats-list" id="rail-chats-list"></div>
+            </div>
           </nav>
           <div class="app-canvas">
             <!-- Persistent error banner (any mode). Paired with #error-unlock
@@ -519,7 +546,7 @@
                 <div class="g-browse">
                   <div class="g-tabs">
                     <button class="g-tab active" data-gtab="checkin">MemoryStudio</button>
-                    <button class="g-tab" data-gtab="atlas">3D Engram</button>
+                    <button class="g-tab" data-gtab="atlas">3D Engrams</button>
                     <button class="g-tab" data-gtab="nondeterministic">Foresight</button>
                   </div>
 
@@ -615,21 +642,28 @@
                         </section>
 
                         <section class="home-card home-engram-card">
-                          <div class="home-engram-card-label">Active engram</div>
-                          <div id="home-engram-name" class="home-engram-name" data-pres="surface:stats">—</div>
-                          <div id="g-health" class="g-health">
-                            <div class="g-health-gauge">
-                              <div id="g-health-grade" class="g-health-grade">—</div>
-                              <div id="g-health-meter" class="g-health-meter">
-                                <div id="g-health-fill" class="g-health-fill"></div>
-                              </div>
-                            </div>
-                            <div class="g-health-meta">
-                              <p id="g-health-phrase" class="g-health-phrase">Loading…</p>
-                              <p id="g-health-detail" class="g-health-detail subtitle"></p>
-                            </div>
-                            <span id="g-health-engram" class="g-health-engram"></span>
-                          </div>
+                          <div class="home-engram-card-label">Agents / Agempi</div>
+                          <!-- The default agent's REAL Agempus tile — the same
+                               component the Agents / Agempi grid renders, built
+                               by tile() in src/ui/agents-grid.ts and painted by
+                               renderHomeAgentTile(). Empty in the markup on
+                               purpose: it has four states (present / loading /
+                               absent / error) and static placeholder content
+                               would show as a fifth.
+
+                               Clicking the tile opens the Agents / Agempi
+                               ROSTER, not that one agent — see the
+                               #home-agent-tile branch in agents-grid.ts.
+
+                               Replaced BOTH the static "Ghampus" chip and the
+                               per-engram health gauge (#g-health: letter grade +
+                               phrase + memory counts) that used to sit here,
+                               2026-08-05. The gauge's markup, its five `els`
+                               refs, its mobile tap-to-expand handler and its
+                               #g-health-engram name line all went with it — see
+                               renderHealth() in src/main.ts, which kept only the
+                               load/repaint control flow it also owned. -->
+                          <div id="home-agent-tile" class="home-agent-tile"></div>
                         </section>
 
                       <!-- Memory health — the richer 7-factor retrieval-quality
@@ -832,7 +866,7 @@
                             <a href="#" data-studio-banner-jump="edit">edit</a>, and
                             <a href="#" data-studio-banner-jump="gnn">GNN exploration</a>, running locally.
                             <span class="studio-banner-praxis">
-                              🛠️ <strong>Autonomous Skills</strong> — Powered by <strong>Graphnosis Autonomous Praxis</strong> · walkable SOPs — dispatched each session, self-improving with each run.
+                              🛠️ <strong>Agempi</strong> — walkable SOPs — dispatched each session, self-improving with each run.
                               Author SOPs in the Skills tab, compile from source (empty engram at train time), and recall personal memory at walk time via MCP.
                             </span>
                             <span class="studio-banner-docs">
@@ -863,22 +897,58 @@
                         <div class="lb-section hidden" data-studio-tool="skills">
                           <!-- Persistent attribution strip. Shown above the library + trainer
                                regardless of whether the user has any skills yet. -->
+                          <!-- Two lengths, one source of truth. The tail is hidden
+                               under a narrow viewport rather than being a second
+                               string kept in sync by hand — a duplicated tagline
+                               drifts the moment one copy is edited. -->
                           <div class="skills-praxis-strip">
-                            Powered by <strong>Graphnosis Autonomous Praxis</strong>
+                            <strong>Agempi</strong>
                             <span class="skills-praxis-dot">·</span>
-                            <span class="skills-praxis-sub">walkable SOPs — dispatched each session, self-improving with each run.</span>
+                            <span class="skills-praxis-sub">agents with your skills, living inside your memory</span>
                           </div>
+                          <!-- AGENTS GRID — the landing view of this page. Shown
+                               while body.agents-grid-mode is set; picking a tile
+                               clears that class and reveals .skills-pane below,
+                               scoped to that one agent. The trainer never renders
+                               here, which is what keeps "Train a Skill" out of the
+                               default view. -->
+                          <div id="skills-agents-grid" class="agempus-grid-host"></div>
+
                           <div class="skills-pane">
 
                             <!-- LEFT: Library of trained skills -->
                             <aside class="skills-library">
+                              <!-- Selected agent's avatar + name. Replaces the two
+                                   filters below, which are redundant once the list
+                                   is already one agent's skills — and worse than
+                                   redundant, since filtering to a different engram
+                                   would contradict the header. -->
+                              <div id="skills-agent-header" class="skills-agent-header"></div>
                               <div class="skills-library-header">
-                                <span class="skills-library-title">Autonomous Skills</span>
+                                <!-- "Skills", not "Autonomous Skills": in this view the
+                                     header above already names the agent, so this labels
+                                     THEIR skills. The page-level name lives on the rail. -->
+                                <span class="skills-library-title">Skills</span>
                                 <span id="skills-library-count" class="skills-library-count">—</span>
-                                <select id="skills-library-sort" class="studio-select skills-library-sort">
-                                  <option value="recent">Most recent</option>
-                                  <option value="vitality">Vitality ↓</option>
-                                  <option value="name">Name A→Z</option>
+                                <!-- One control, two kinds of thing: three sort
+                                     orders and one filter. The <optgroup>s are
+                                     the smallest honest fix — native, unselectable
+                                     section labels, no new CSS — so "Hidden skills"
+                                     stops reading as a fourth sort. -->
+                                <select id="skills-library-sort" class="studio-select skills-library-sort"
+                                        aria-label="Sort or filter the skills list">
+                                  <optgroup label="Sort by">
+                                    <option value="recent">Most recent</option>
+                                    <option value="vitality">Vitality ↓</option>
+                                    <option value="name">Name A→Z</option>
+                                  </optgroup>
+                                  <!-- A FILTER, not a sort: it shows ONLY hidden
+                                       skills. It rides this control because the
+                                       agent view is the one place hidden skills
+                                       would otherwise be unreachable. -->
+                                  <optgroup label="Show only">
+                                    <option value="hidden">Hidden skills</option>
+                                  </optgroup>
                                 </select>
                                 <button id="btn-skills-library-refresh" class="btn-ghost btn-sm" title="Recompute vitality for visible skills">↻</button>
                               </div>
@@ -1057,10 +1127,21 @@
                                      placeholder and the user creates one inline with the button. -->
                                 <div class="skills-field skills-section-start">
                                   <span class="skills-field-label">Saving to</span>
-                                  <div class="skills-target-row">
+                                  <!-- Read-only destination. The trainer is only reachable from
+                                       inside one agent's page, so that agent IS the target and
+                                       asking again is redundant — this states it instead. The
+                                       <select> below stays in the DOM (hidden) because it is the
+                                       value every train / draft / import path reads; syncSkillsTargetRow()
+                                       shows the picker again on the one path where no agent is
+                                       scoped (the scoped engram is not a Skills-template engram). -->
+                                  <p id="skills-target-fixed" class="skills-target-fixed hidden" aria-live="polite"></p>
+                                  <div class="skills-target-row" id="skills-target-row">
                                     <select id="skills-input-engram" class="studio-select skills-target-select">
                                       <option value="__preview__">Preview only — don't save</option>
                                     </select>
+                                    <!-- Creating an engram now also lives on the Agents grid as the
+                                         "+ New agent" tile, which is where a new agent belongs. This
+                                         button stays for the unscoped fallback above. -->
                                     <button id="btn-skills-create-engram" class="btn-ghost btn-sm" type="button">+ Create Skill engram</button>
                                   </div>
                                   <!-- Inline name input — replaces window.prompt() which doesn't
@@ -1108,13 +1189,19 @@
                                   <label class="skills-field" id="skills-autonomy-field">
                                     <span class="skills-field-label">Autonomy</span>
                                     <select id="skills-input-autonomy" class="studio-select">
-                                      <option value="inherit">Inherit from engram</option>
-                                      <option value="L0">L0 — Manual (never auto-surface)</option>
-                                      <option value="L1">L1 — Suggest (propose-card)</option>
-                                      <option value="L2">L2 — Preview (preview-then-run)</option>
-                                      <option value="L3" disabled>L3 — Autonomous (not available yet)</option>
+                                      <!-- Labels must stay in step with AGEMPUS_LEVELS in
+                                           ui/skills-shared.ts — same four names, same order.
+                                           Named rather than numbered for the reason given there:
+                                           L0–L3 conveyed the ORDER but never the meaning, so the
+                                           control read as a volume knob. Values are still L0–L3;
+                                           those are persisted and compared in the sidecar. -->
+                                      <option value="inherit">Inherit from Agempus</option>
+                                      <option value="L0">Handheld — you run it yourself, every time</option>
+                                      <option value="L1">Guided — propose-card to accept or dismiss</option>
+                                      <option value="L2">Tell'n'Go — preview-then-run</option>
+                                      <option value="L3">Unattended — auto-runs, opt-in and off by default</option>
                                     </select>
-                                    <span class="skills-field-hint">How far Ghampus may run this skill on its own. Capped by the skill's authored <code>dispatch-safe:</code> — a request above the cap is clamped and reported.</span>
+                                    <span class="skills-field-hint">How far this Agempus may run the skill on its own. Capped by the skill's authored <code>dispatch-safe:</code> — a request above the cap is clamped and reported. Unattended additionally requires the executor to be switched on, and every run is reviewable in the Unattended tab.</span>
                                   </label>
                                 </div>
                                 <div class="skills-actions">
@@ -1492,19 +1579,87 @@
                   <!-- 3D Atlas tab — unchanged from before. -->
                   <section class="g-tab-pane hidden" data-gpane="atlas">
                     <div class="atlas-toolbar" style="justify-content: flex-end;">
-                      <!-- Large active-engram title + live stats, left-aligned above
-                           the graph. The group's margin-right:auto pushes the toolbar
-                           buttons to the right. -->
+                      <!-- Two rows, left-aligned above the graph. Row one is the
+                           active-engram picker acting as this page's title; row
+                           two is the sensitivity tier chip leading the live
+                           node/edge/source counts. The group's margin-right:auto
+                           pushes the toolbar buttons to the right. -->
                       <div class="atlas-title-group">
-                        <h2 id="atlas-engram-title" class="atlas-engram-title">—</h2>
-                        <span id="atlas-engram-stats" class="atlas-engram-stats" data-pres="surface:stats"></span>
+                        <div class="atlas-title-line">
+                          <!-- ─────────────────────────────────────────────────────────
+                               THE ACTIVE-ENGRAM PICKER — RELOCATED FROM THE TOP BAR.
+
+                               This is the SAME <select> node that used to live in
+                               `.app-header-right`, moved here (never copied — a copy
+                               would duplicate the id and break `getElementById` plus
+                               `els.atlasGraphPicker` for both). It replaces the old
+                               static <h2 id="atlas-engram-title">, and app.css gives
+                               it that heading's exact type ramp so it READS as the
+                               title rather than as a form control. At runtime
+                               `installCustomEngramPicker()` wraps it in
+                               `.engram-picker-wrap` + `#engram-picker-button` and
+                               hides this native select — both carry
+                               `.header-engram-picker`, so one CSS rule styles either.
+
+                               CONSEQUENCE OF THE MOVE — the engram picker is now
+                               ONLY on this page. Four panes read `atlasActiveGraph`
+                               but have no engram control of their own, so they are
+                               stuck with whatever this picker last selected:
+                                 • Status   (data-pane="status")  — #g-recap, #g-mcp,
+                                   and refreshActivityLog()'s `graphId` argument
+                                 • Home     (data-gpane="checkin") — the Trust
+                                   factors fall back to computeHealth(), which
+                                   measures the ACTIVE engram, whenever the
+                                   sidecar's cortex-wide trust aggregate is not
+                                   available yet. (The #g-health gauge and
+                                   #g-health-engram that used to be listed here
+                                   were removed 2026-08-05.)
+                                 • Foresight(data-gpane="brain")  — its goal WRITE
+                                   TARGET: `brain:develop` sends
+                                   `goalGraphId: atlasActiveGraph`
+                                 • Ghampus  — its attachment WRITE TARGET, via
+                                   resolveAttachGraphId() in src/ui/ghampus.ts
+                               This is a known, accepted gap: each of those panes
+                               needs its own in-pane scope control. Wiring them up
+                               is deliberate follow-up work, not an oversight.
+
+                               Also note two DEAD references in src/main.ts that were
+                               already dead before this move and stay dead — both are
+                               null-guarded, so neither throws:
+                                 • #mobile-engram-picker (syncMobileEngramPicker() and
+                                   its change listener) — no such element exists
+                                 • #active-engram-label  (els.activeEngramLabel)
+                                   — no such element exists
+                               ───────────────────────────────────────────────────────── -->
+                          <select id="atlas-graph-picker" class="header-engram-picker" title="Switch active engram" aria-label="Active engram"></select>
+                        </div>
+                        <!-- Row two: sensitivity tier chip (PUBLIC / PERSONAL /
+                             SENSITIVE) leading the node/edge/source counts on one
+                             line. Both were relocated here from the top bar / from
+                             the title row; all of their JS resolves them by id, so
+                             re-parenting needs no code change. -->
+                        <div class="atlas-title-meta">
+                          <span id="sensitivity-badge" class="sensitivity-badge" style="display:none;" title="Click to change this engram's sensitivity tier"></span>
+                          <span id="atlas-engram-stats" class="atlas-engram-stats" data-pres="surface:stats"></span>
+                        </div>
                       </div>
                       <!-- Mobile-only: toggles the colour legend (hidden by default on phones). -->
-                      <button id="btn-atlas-legend" class="mobile-legend-toggle" title="Show / hide the colour legend" aria-label="Toggle legend" aria-pressed="false">
+                      <button id="btn-atlas-legend" class="mobile-legend-toggle" title="Show / hide the color legend" aria-label="Toggle legend" aria-pressed="false">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                           <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
                           <circle cx="3.5" cy="6" r="1.5"/><circle cx="3.5" cy="12" r="1.5"/><circle cx="3.5" cy="18" r="1.5"/>
                         </svg>
+                      </button>
+                      <!-- Sources — replaces the old sidebar rail entry. Same icon
+                           as that rail button so the affordance stays recognisable
+                           after it disappears from the rail. Opens the REAL Sources
+                           pane in a modal (the node is relocated, not copied), so
+                           every handler already bound inside it keeps working. -->
+                      <button id="btn-atlas-sources" title="Sources — the files and notes feeding this engram" aria-label="Open Sources" aria-haspopup="dialog">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+                      </button>
+                      <button id="btn-atlas-activity" title="Activity — every change to your memory, who made it, and when" aria-label="Open Activity" aria-haspopup="dialog">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
                       </button>
                       <button id="btn-atlas-sync-now" class="hidden" title="This engram's connector is on manual sync — pull its sources now" style="font-weight:600">⟳ Sync now</button>
                       <button id="btn-atlas-alive" title="Toggle cosmos motion — drift, breathing, and node elasticity" style="font-weight:600">🧠 Alive Engram: On</button>
@@ -1636,7 +1791,7 @@
                       </div>
 
                       <div class="lb-section lb-section-goals">
-                        <p class="lb-section-title">Foresight</p>
+                        <p class="lb-section-title">Foresight<span class="label-term"> / Dreams</span></p>
                         <p class="brain-subtitle">
                           Scan the tiles below — tap any lane for the full workbench, setup, or review queue.
                         </p>
@@ -2271,6 +2426,14 @@ ollama list</code></pre>
                         <div id="ghampus-walk-picker-empty" class="ghampus-walk-picker-empty hidden">
                           No skills match your filter.
                         </div>
+                        <!-- /train only, and only when the library LOADED and matched
+                             nothing. A failed load must not offer to create — we do
+                             not know whether the skill already exists. -->
+                        <div id="ghampus-walk-picker-create-wrap"
+                             class="ghampus-walk-picker-create-wrap hidden">
+                          <button type="button" id="btn-ghampus-walk-picker-create"
+                                  class="ghampus-walk-picker-create"></button>
+                        </div>
                       </div>
                     </div>
                     <div id="ghampus-compose-rail" class="ghampus-compose-rail hidden" aria-live="polite">
@@ -2361,13 +2524,6 @@ ollama list</code></pre>
             </section>
 
             <!-- AGENTS / AGEMPI ROSTER (feature #41) — read-only -->
-            <section class="mode-pane hidden" data-pane="agents">
-              <header class="pane-header">
-                <h2>Agents</h2>
-                <p class="brain-subtitle">your Agempi — each skill-template engram as a domain agent Ghampus dispatches to</p>
-              </header>
-              <div id="agents-list"><p class="subtitle">Loading Agempi…</p></div>
-            </section>
 
             <!-- Nodes pane removed — its functionality (search, per-node
                  inspect, edit, forget) is covered by the Graphnosis
@@ -2522,10 +2678,16 @@ ollama list</code></pre>
                  page: app posture + AI clients (read) + data sources (feed),
                  with a live connection-status summary. The #rail-gc-* chip
                  containers live here now; renderRailGetConnected() targets them
-                 by ID, unchanged. -->
+                 by ID, unchanged.
+                 2026-08-05: engram sharing, compliance operations, compliance
+                 classification and the organization engram catalog moved OUT of
+                 here into data-pane="teams-enterprise". Nothing left on this
+                 page refers to them — the header, the #gc-status strip (clients
+                 + sources + posture) and every remaining section are about
+                 connecting this one cortex. -->
             <section class="mode-pane hidden" data-pane="get-connected">
               <header class="pane-header">
-                <h2>Get Connected</h2>
+                <h2>Connections<span class="label-term"> / Synapses</span></h2>
                 <p class="brain-subtitle">grow your cortex — connect AI clients to read it, and data sources to feed it</p>
               </header>
 
@@ -2545,13 +2707,40 @@ ollama list</code></pre>
                 </div>
               </div>
 
-              <!-- App posture: standalone / local & offline (mode chips) -->
-              <section class="gc-section">
-                <h3 class="gc-section-title">App posture</h3>
-                <p class="gc-section-hint">How your memory flows. Standalone means nothing leaves this machine; layer on a local LLM or neural network without giving up that posture.</p>
-                <div class="rail-get-connected-group" id="rail-gc-mode"></div>
-                <div class="rail-get-connected-group" id="rail-gc-aimode" style="margin-top:6px;"></div>
+              <!-- Your connected sources — FIRST on the page. This is the only
+                   section describing what the user already has; everything below
+                   it is things they could add. It was previously buried at the
+                   bottom of the off-the-grid recipe block, which put a returning
+                   user's live inventory below two screens of marketing.
+                   Rendered by the shared connector-list painter (paintGcConnectorList);
+                   the whole section hides itself when there are no connectors, so
+                   a fresh cortex still opens on "AI clients". -->
+              <section class="gc-section" id="gc-connected-section" style="display:none;">
+                <h3 class="gc-section-title">Your connected sources <span class="gc-section-tag">already feeding your memory</span></h3>
+                <div id="gc-connectors-list" class="gc-connectors-list" data-pres="surface:connectors"></div>
+                <div class="gc-interval-row" id="gc-interval-row" style="display:none;">
+                  <label for="gc-default-interval">Default check interval — every</label>
+                  <input type="number" id="gc-default-interval" min="1" max="1440" step="1" value="15" />
+                  <span>minutes</span>
+                  <span class="gc-interval-note">Per-source overrides set in each connector’s form. Local folders also sync instantly on change.</span>
+                </div>
               </section>
+
+              <!-- App posture: REMOVED 2026-08-05. Three chips that had drifted
+                   into three different jobs: "Standalone" was a status the
+                   #gc-status strip already reports, "Local & offline" opened an
+                   explainer duplicating the Off-the-grid section further down
+                   this same page, and "Local LLM" / "Graphnosis Neural Network"
+                   called openNonDeterministic(), which runs activateMode('goals')
+                   and navigates the user off Get Connected entirely — the one
+                   thing this page should never do. The two explainer modals
+                   (#standalone-modal, #offline-sources-modal) are untouched and
+                   still reachable from their own surfaces.
+                   2026-08-05 follow-up: the SECTION SHELL was still on disk after
+                   the chip renderers were deleted from main.ts, so the page painted
+                   an "App posture" heading + hint above two permanently empty divs
+                   (#rail-gc-mode / #rail-gc-aimode had no populator left). Shell
+                   removed here; do not reintroduce those two ids. -->
 
               <!-- Mobile & Remote Access — its own card. Reach this cortex from a
                    phone/tablet/another machine over LAN or Tailscale. -->
@@ -2562,6 +2751,112 @@ ollama list</code></pre>
                 </div>
                 <p class="gc-section-hint" style="margin:6px 0 0;">Reach this cortex from Claude for iOS/Android or any HTTP MCP client over your LAN or Tailscale.</p>
               </section>
+
+              <!-- AI clients READ from the cortex -->
+              <section class="gc-section">
+                <h3 class="gc-section-title">AI clients <span class="gc-section-tag">read your memory</span></h3>
+                <!-- BOTH affordances below open #mcp-tools-modal through the
+                     SAME openMcpToolsModal() handler — the inline link keeps its
+                     id and its place in the sentence, it just no longer calls
+                     activateMode('mcp-tools') (which navigated the user off Get
+                     Connected, the one thing this page must never do).
+                     The link is kept alongside the launcher on purpose: the
+                     launcher's own class is transparent-until-hover (see
+                     .launcher-row-btn in app.css), so at rest it
+                     carries no border or fill and does not out-shout an
+                     accent-colored link the way a filled button would. Two
+                     entry points, one destination, one handler. -->
+                <p class="gc-section-hint">Connect an AI client over MCP so it can recall, remember, and correct your memory in context. Click a card to set it up. A card marked “Connected” is live right now. <a href="#" class="gc-inline-link" id="gc-mcp-tools-link">See every MCP tool your client can call →</a></p>
+                <div class="rail-get-connected-group" id="rail-gc-clients"></div>
+                <!-- Full-width launcher UNDER the client cards: the tool list
+                     answers the question the cards raise ("what can a client
+                     actually do once it's wired up?"), so it belongs after them.
+                     It hosts the REAL <section data-pane="mcp-tools"> inside
+                     #mcp-tools-modal via openPaneModal(), so closing it puts the
+                     user back here. The mode itself stays alive: the mobile
+                     bottom nav still navigates to the standalone pane
+                     (relocation-into-a-modal is not a phone pattern) and
+                     'mcp-tools' is still a valid landing mode.
+                     Same width-long .launcher-row-* component as the Premium
+                     Plans button on the Settings pane. Its four classes are
+                     shape-only and carry no domain-specific styling (see
+                     app.css), so this REUSES them rather than forking a
+                     near-identical look-alike.
+                     The subtitle's tool count is written at runtime by
+                     refreshGcMcpToolsCount() from the chips that
+                     mcpToolsOnboardingHtml() actually renders — never a
+                     hardcoded number that could drift out of true. -->
+                <button type="button" id="btn-gc-mcp-tools" class="launcher-row-btn"
+                        style="margin-top:14px;"
+                        aria-haspopup="dialog" aria-controls="mcp-tools-modal">
+                  <span class="launcher-row-icon" aria-hidden="true">⚒︎</span>
+                  <span class="launcher-row-text">
+                    <strong>Every tool your AI client can call</strong>
+                    <span class="subtitle" id="gc-mcp-tools-count">The full MCP toolset, grouped by determinism</span>
+                  </span>
+                  <span class="launcher-row-arrow" aria-hidden="true">›</span>
+                </button>
+              </section>
+
+              <!-- Data sources FEED the cortex -->
+              <section class="gc-section">
+                <h3 class="gc-section-title">Data sources <span class="gc-section-tag">feed your memory</span></h3>
+                <p class="gc-section-hint">Point Graphnosis at the places your knowledge already lives — it ingests them locally and keeps them in sync. Pick a recipe below to set one up.</p>
+
+                <div class="gc-offgrid-head">
+                  <span class="gc-offgrid-icon" aria-hidden="true">🛰️</span>
+                  <h4 class="gc-offgrid-title">Off-the-grid &amp; local sources</h4>
+                  <span class="gc-offgrid-badge">zero internet</span>
+                </div>
+                <p class="gc-section-hint">Anything you can pipe into a file or a webhook can feed Graphnosis — no cloud round-trip, no API keys. Pick a recipe to set it up; each stores encrypted on this machine.</p>
+                <input id="gc-recipe-filter" class="gc-recipe-filter" type="search" placeholder="Filter recipes — webhook · obsidian · NAS · sensors · PDF · MQTT …" autocomplete="off" />
+                <div class="gc-scenarios" id="gc-recipes"></div>
+              </section>
+            </section>
+
+            <!-- TEAMS & ENTERPRISE pane — the multi-user / IT-admin surface.
+                 These four sections lived in Get Connected until 2026-08-05;
+                 they are org administration, not "grow your cortex". The markup
+                 is moved VERBATIM, every id unchanged, because handlers all over
+                 main.ts and ui/settings-compliance.ts bind by getElementById at
+                 module scope — position-independent, so the move preserves the
+                 wiring. Entry refresh is split in activateMode(): the three
+                 calls that populate these sections moved to the
+                 'teams-enterprise' branch, and the MutationObserver that
+                 refreshes #sharing-token-summary now watches THIS pane. -->
+            <section class="mode-pane hidden" data-pane="teams-enterprise">
+              <header class="pane-header">
+                <h2>Teams &amp; Enterprise</h2>
+                <p class="brain-subtitle">share engrams, run compliance operations, define the IT classification schema, and publish the organization engram catalog</p>
+              </header>
+
+              <!-- Premium plans launcher — SECOND instance of the SHARED
+                   .launcher-row-* component. Instance 1 is on the
+                   Settings pane (#btn-pane-open-license); a third, shape-only
+                   reuse is #btn-gc-mcp-tools on Get Connected. Reuses the
+                   classes verbatim; this instance added no new CSS.
+
+                   Its ids are its OWN on purpose. Cloning the Settings ids
+                   would make getElementById() return only the first match, so
+                   one of the two cards would silently freeze on the "Manage
+                   your subscription token" placeholder while an admin read it
+                   as live subscription state.
+
+                   Both status spans carry `data-license-status`, and
+                   refreshLicenseLauncherStatus() in main.ts writes EVERY match
+                   in one pass, so the two cards cannot diverge. `data-pres`
+                   is required: without it this span would stay unredacted in
+                   Presentation Mode while the Settings one masks. -->
+              <div class="panel" id="teams-pane-license-launcher">
+                <button id="btn-teams-open-license" class="launcher-row-btn" type="button">
+                  <span class="launcher-row-icon">🔑</span>
+                  <span class="launcher-row-text">
+                    <strong>Graphnosis Premium Plans</strong>
+                    <span class="subtitle" id="teams-pane-license-status" data-license-status data-pres="surface:license">Manage your subscription token</span>
+                  </span>
+                  <span class="launcher-row-arrow">›</span>
+                </button>
+              </div>
 
               <!-- Engram Sharing — shares for collaborators -->
               <section class="gc-section" id="gc-section-sharing">
@@ -2598,8 +2893,17 @@ ollama list</code></pre>
 
               <!-- Compliance classification — IT label palette (collapsed by default) -->
               <details class="gc-section gc-collapsible" id="gc-section-compliance-schema">
-                <summary class="gc-section-title">Compliance classification</summary>
+                <summary class="gc-section-title">Compliance classification<span id="compliance-orphan-badge"></span></summary>
                 <p class="gc-section-hint">Define the label palette employees see when classifying engrams. Each label maps to an internal tier (public / personal / sensitive) and optional recall caps. Push via MDM bundle or edit here.</p>
+                <!-- Orphaned classification labels — engrams still pointing at a
+                     label the palette no longer contains (an MDM push or a Save
+                     that removed it). Ships EMPTY and STAYS empty until
+                     `compliance.getClassificationOrphans` answers: "nothing
+                     rendered" means the check has not run, and must never be
+                     read as "nothing is wrong". Every state in here is painted
+                     by renderClassificationOrphans() in ui/settings-compliance.ts,
+                     which owns #compliance-orphan-badge too. -->
+                <div id="compliance-orphan-readout"></div>
                 <div id="gc-compliance-schema-admin">
                   <div id="gc-compliance-schema-upsell" class="panel hidden" style="padding:12px;margin-bottom:10px;">
                     <p class="subtitle" style="margin:0;">Enterprise license required to configure the IT classification schema.</p>
@@ -2621,8 +2925,8 @@ ollama list</code></pre>
 
               <!-- Organization Engram Catalog — IT publish + employee subscribe (collapsed by default) -->
               <details class="gc-section gc-collapsible" id="gc-section-org-catalog">
-                <summary class="gc-section-title">Organization engram catalog</summary>
-                <p class="gc-section-hint">IT publishes engram packages (DevOps Skills, compliance baselines, etc.); employees add entitled packages to their cortex. IdP groups gate subscribe — not unlock. Org packages use explicit share only.</p>
+                <summary class="gc-section-title">Organization Catalog of Graphnosis Agempi</summary>
+                <p class="gc-section-hint">IT publishes engram packages: agents (Agempi), compliance baselines, reference data. Employees add entitled packages to their cortex. IdP groups gate subscribe — not unlock. Org packages use explicit share only.</p>
 
                 <!-- IT admin CRUD -->
                 <div id="gc-catalog-admin" style="display:none;">
@@ -2733,41 +3037,6 @@ ollama list</code></pre>
                   <p id="employee-catalog-empty" class="subtitle hidden" style="margin:0;">No organization packages published yet.</p>
                 </div>
               </details>
-
-              <!-- AI clients READ from the cortex -->
-              <section class="gc-section">
-                <h3 class="gc-section-title">AI clients <span class="gc-section-tag">read your memory</span></h3>
-                <p class="gc-section-hint">Connect an AI client over MCP so it can recall, remember, and correct your memory in context. Click a chip to set it up. A lit chip is connected right now. <a href="#" class="gc-inline-link" id="gc-mcp-tools-link">See every MCP tool your client can call →</a></p>
-                <div class="rail-get-connected-group" id="rail-gc-clients"></div>
-              </section>
-
-              <!-- Data sources FEED the cortex -->
-              <section class="gc-section">
-                <h3 class="gc-section-title">Data sources <span class="gc-section-tag">feed your memory</span></h3>
-                <p class="gc-section-hint">Point Graphnosis at the places your knowledge already lives — it ingests them locally and keeps them in sync. Pick a recipe below to set one up.</p>
-
-                <div class="gc-offgrid-head">
-                  <span class="gc-offgrid-icon" aria-hidden="true">🛰️</span>
-                  <h4 class="gc-offgrid-title">Off-the-grid &amp; local sources</h4>
-                  <span class="gc-offgrid-badge">zero internet</span>
-                </div>
-                <p class="gc-section-hint">Anything you can pipe into a file or a webhook can feed Graphnosis — no cloud round-trip, no API keys. Pick a recipe to set it up; each stores encrypted on this machine.</p>
-                <input id="gc-recipe-filter" class="gc-recipe-filter" type="search" placeholder="Filter recipes — webhook · obsidian · NAS · sensors · PDF · MQTT …" autocomplete="off" />
-                <div class="gc-scenarios" id="gc-recipes"></div>
-
-                <!-- Configured connector instances — every source the user has
-                     set up (multiple of the same kind supported; each keyed by
-                     its own slug + target engram). Rendered by the shared
-                     connector-list painter. Hidden when there are none. -->
-                <h4 class="gc-subsection-title" id="gc-connected-head" style="display:none;">Your connected sources</h4>
-                <div id="gc-connectors-list" class="gc-connectors-list" data-pres="surface:connectors"></div>
-                <div class="gc-interval-row" id="gc-interval-row" style="display:none;">
-                  <label for="gc-default-interval">Default check interval — every</label>
-                  <input type="number" id="gc-default-interval" min="1" max="1440" step="1" value="15" />
-                  <span>minutes</span>
-                  <span class="gc-interval-note">Per-source overrides set in each connector’s form. Local folders also sync instantly on change.</span>
-                </div>
-              </section>
             </section>
 
             <!-- STATUS pane — engram counts, lifetime corrections,
@@ -2882,13 +3151,16 @@ ollama list</code></pre>
                    background (not the AI-accent blue) so it sits in the
                    same visual language as everything below it. -->
               <div class="panel" id="settings-pane-license-launcher">
-                <button id="btn-pane-open-license" class="settings-license-launcher-btn" type="button">
-                  <span class="settings-license-launcher-icon">🔑</span>
-                  <span class="settings-license-launcher-text">
+                <button id="btn-pane-open-license" class="launcher-row-btn" type="button">
+                  <span class="launcher-row-icon">🔑</span>
+                  <span class="launcher-row-text">
                     <strong>Graphnosis Premium Plans</strong>
-                    <span class="subtitle" id="settings-pane-license-status" data-pres="surface:license">Manage your subscription token</span>
+                    <!-- data-license-status: shared write-hook. refreshLicenseLauncherStatus()
+                         updates every element carrying it, so this card and the
+                         Teams & Enterprise one always show identical live text. -->
+                    <span class="subtitle" id="settings-pane-license-status" data-license-status data-pres="surface:license">Manage your subscription token</span>
                   </span>
-                  <span class="settings-license-launcher-arrow">›</span>
+                  <span class="launcher-row-arrow">›</span>
                 </button>
               </div>
               <div class="panel">
@@ -3343,10 +3615,17 @@ ollama list</code></pre>
                  Click opens Preferences so they can toggle it back. -->
             <span id="status-lowpower" class="status-lowpower" style="display:none; font-size:12px; cursor:pointer; align-items:center; gap:4px; color:var(--accent, var(--color-status-info));" title="Low-power mode is ON — autonomous brain work is paused to save CPU. Click to open Preferences.">⏻ Low-power</span>
             <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; cursor:pointer;" title="Open Home — Trust &amp; Vitality" data-pres="surface:vitality">🧠 Vitality –</span>
-            <!-- GAP — Graphnosis Autonomous Praxis. Hidden when idle; pulses
-                 green while the Skills trainer is running. Click jumps to the
-                 Skills chip in MemoryStudio so the user can watch progress. -->
-            <span id="status-gap-pill" class="status-layer-pill pill-inactive" style="background:var(--ok); color:#000;" title="Graphnosis Autonomous Praxis — skill trainer. Pulses green while a skill is being trained. Click to open the trainer.">GAP</span>
+            <!-- Skill-training indicator. Was labelled "GAP" (Graphnosis
+                 Autonomous Praxis) — retired 2026-08-05: the acronym no longer
+                 expanded to anything the product says, so it named nothing.
+                 The INDICATOR is kept, because it is the only global signal
+                 that a skill is training while the user is elsewhere; only the
+                 misleading label went. Greyscale when idle, pulses green while
+                 the trainer runs, click opens the trainer.
+                 The element id stays `status-gap-pill` — three call sites in
+                 skills.ts hold it, and renaming a DOM id to match a copy change
+                 is churn with a chance of a silent miss. -->
+            <span id="status-gap-pill" class="status-layer-pill pill-inactive" style="background:var(--ok); color:#000;" title="Skill trainer — pulses while one of your Agempi is training a skill. Click to open the trainer.">Training</span>
             <!-- Layered intelligence pills — GLL (turquoise) and GNN (purple).
                  Pill backgrounds match the Graphnosis wordmark gradient endpoints.
                  Always rendered; toggled between pill-inactive and pill-pulsing. -->
@@ -3463,6 +3742,61 @@ ollama list</code></pre>
     </div>
 
     <!-- Snapshots: list / create. Restore lands in a follow-up session — too easy to footgun without a careful flow. -->
+    <!-- Sources, as a modal. Deliberately EMPTY: #sources-modal-mount receives
+         the real <section data-pane="sources"> node on open and gives it back on
+         close. Copying the markup instead would have produced a second, dead
+         Sources list — every handler and every id inside that pane is already
+         bound to the original, and duplicate ids would break getElementById for
+         both. Moving a node preserves its listeners; cloning does not. -->
+    <div id="sources-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sources-modal-title">
+      <div class="modal" style="max-width: 1100px; width: 92vw; max-height: 88vh; display: flex; flex-direction: column;">
+        <div class="modal-header" style="display:flex; align-items:flex-start; gap:12px;">
+          <div style="flex:1;">
+            <h2 id="sources-modal-title">Sources</h2>
+            <p class="subtitle">your sensory cortex — everything you've taken in</p>
+          </div>
+          <button id="btn-sources-modal-close" class="ghost" aria-label="Close Sources" title="Close (Esc)" style="font-size:20px; line-height:1; padding:2px 10px;">×</button>
+        </div>
+        <div class="modal-body" id="sources-modal-mount" style="overflow:auto; flex:1; min-height:0;"></div>
+      </div>
+    </div>
+    <!-- Activity, as a modal. Empty by design: #activity-modal-mount receives the
+         real <section data-pane="activity"> on open and gives it back on close,
+         exactly as the Sources modal does. Copying the markup would duplicate
+         every id inside it and break getElementById for both. -->
+    <div id="activity-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="activity-modal-title">
+      <div class="modal" style="max-width: 1100px; width: 92vw; max-height: 88vh; display: flex; flex-direction: column;">
+        <div class="modal-header" style="display:flex; align-items:flex-start; gap:12px;">
+          <div style="flex:1;">
+            <h2 id="activity-modal-title">Activity</h2>
+            <p class="subtitle">your episodic timeline — every memory event, in order</p>
+          </div>
+          <button id="btn-activity-modal-close" class="ghost" aria-label="Close Activity" title="Close (Esc)" style="font-size:20px; line-height:1; padding:2px 10px;">×</button>
+        </div>
+        <div class="modal-body" id="activity-modal-mount" style="overflow:auto; flex:1; min-height:0;"></div>
+      </div>
+    </div>
+    <!-- MCP Tools, as a modal. Empty by design, exactly like the two above:
+         #mcp-tools-modal-mount receives the real <section data-pane="mcp-tools">
+         on open and gives it back on close. Opened from Get Connected → AI
+         clients, which must never navigate away from itself; the mobile bottom
+         nav still routes to the standalone pane, so the mode stays a real
+         destination.
+         The close button carries no `ghost` class — that class has no rule in
+         app.css (the two modals above use it as a no-op), so the inline styles
+         are the whole appearance and are copied verbatim for visual parity. -->
+    <div id="mcp-tools-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="mcp-tools-modal-title">
+      <div class="modal" style="max-width: 1100px; width: 92vw; max-height: 88vh; display: flex; flex-direction: column;">
+        <div class="modal-header" style="display:flex; align-items:flex-start; gap:12px;">
+          <div style="flex:1;">
+            <h2 id="mcp-tools-modal-title">MCP Tools</h2>
+            <p class="subtitle">every tool Graphnosis exposes to your AI clients — click a name for what it does, or switch one off to stop exposing it</p>
+          </div>
+          <button id="btn-mcp-tools-modal-close" aria-label="Close MCP Tools" title="Close (Esc)" style="font-size:20px; line-height:1; padding:2px 10px;">×</button>
+        </div>
+        <div class="modal-body" id="mcp-tools-modal-mount" style="overflow:auto; flex:1; min-height:0;"></div>
+      </div>
+    </div>
     <div id="snapshots-modal" class="modal-backdrop hidden">
       <div class="modal">
         <div class="modal-header">
@@ -3544,11 +3878,11 @@ ollama list</code></pre>
 
           <p style="margin-top: 18px;"><strong>Where you'll bump into me</strong></p>
           <ul style="margin: 6px 0 0; padding-left: 20px;">
-            <li>The <strong>Ghampus Hush</strong> tab — top of the left rail, default landing for new users.</li>
+            <li>The <strong>Inbox / Ghampus</strong> tab — top of the left rail, default landing for new users.</li>
             <li><strong>MemoryStudio</strong> — recall, edits, GNN exploration, and skill training when you want the dashboard.</li>
             <li>Any MCP-aware client — Claude, Cursor, Copilot, Zed, Ollama, LM Studio, whatever speaks the protocol.</li>
             <li>Proactive cards in my chat thread — skill matches, walk plans, refine proposals.</li>
-            <li>The little <strong>GAP</strong> pill in the status bar — I light up when Autonomous Praxis is training a skill.</li>
+            <li>The little <strong>Training</strong> pill in the status bar — I light up when an Agempus is training a skill.</li>
             <li><strong>Activity</strong> — AI access log, savings tracker, skill runs. (Enterprise: MCP audit export.)</li>
           </ul>
 
@@ -4285,13 +4619,21 @@ ollama list</code></pre>
               <span id="settings-license-domain-feedback" class="subtitle"></span>
             </div>
           </div>
-          <!-- OTP verification — shown only when the billing server returns
-               otp_required (domain-allowlist users who haven't verified yet). -->
+          <!-- OTP verification — shown when the billing server returns
+               otp_required. TWO flows land here: a domain-allowlist user who
+               hasn't verified yet, and a Stripe subscriber whose poll secret is
+               stale or missing. The heading and purpose line below are therefore
+               placeholders: showLicenseOtpSection() rewrites both on every entry,
+               because whichever flow ran last would otherwise leave its wording
+               in place for the next one.
+               Note this section carries NEITHER .license-acquire NOR
+               .license-manage, so setLicenseSectionMode() leaves it alone and it
+               can be shown to an already-activated subscriber. -->
           <div id="license-otp-section" class="settings-section hidden">
-            <p class="settings-section-label">Verify your work email</p>
+            <p class="settings-section-label" id="license-otp-title">Verify your email</p>
             <p class="subtitle" style="margin-bottom: 10px;">
               We sent a 6-digit code to <strong id="license-otp-email-display"></strong>.
-              Enter it below to activate your domain seat.
+              <span id="license-otp-purpose">Enter it below to continue.</span>
             </p>
             <div class="row" style="margin-bottom: 8px;">
               <input id="settings-license-otp"
@@ -4334,6 +4676,23 @@ ollama list</code></pre>
           <!-- Manage / cancel — shown only when an active subscription is
                detected. Opens the Stripe-side billing portal (email-verified
                there) so the user can update payment or cancel. -->
+          <!-- Re-check — shown only when a subscription is already active.
+               The "Activate / Refresh" button above lives in a .license-acquire
+               section, which setLicenseSectionMode() HIDES once a valid token
+               is present. So an already-activated subscriber previously had no
+               way to re-poll for an updated token (e.g. after their plan gained
+               a feature). This is that action. -->
+          <div class="settings-section license-manage hidden">
+            <p class="settings-section-label">Re-check subscription</p>
+            <p class="subtitle" style="margin-bottom: 10px;">
+              Fetches the current token for your subscription and reports what changed.
+              Use this if your plan changed but the features listed above have not.
+            </p>
+            <div class="row" style="gap:8px;">
+              <button id="btn-license-recheck" class="primary">Re-check now</button>
+              <span id="license-recheck-feedback" class="subtitle"></span>
+            </div>
+          </div>
           <div class="settings-section license-manage hidden">
             <p class="settings-section-label">Manage subscription</p>
             <p class="subtitle" style="margin-bottom: 10px;">
@@ -5446,11 +5805,14 @@ ollama list</code></pre>
         </svg>
         <span class="mobile-nav-label">Home</span>
       </button>
-      <button class="mobile-nav-btn" data-mode="ghampus" aria-label="Ghampus Hush">
+      <!-- Short label, same convention as data-mode="skills" below: the phone
+           bar is five slots wide, so the VISIBLE label is the plain nav word
+           and aria-label carries the full "plain name / biological term". -->
+      <button class="mobile-nav-btn" data-mode="ghampus" aria-label="Inbox / Ghampus">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 12a8.5 8.5 0 0 1-8.5 8.5c-1.4 0-2.7-.3-3.9-.9L3 21l1.4-5.6A8.5 8.5 0 1 1 21 12z"/>
         </svg>
-        <span class="mobile-nav-label">Ghampus</span>
+        <span class="mobile-nav-label">Inbox</span>
       </button>
       <button class="mobile-nav-btn" data-mode="mcp-tools" aria-label="MCP Tools">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -5459,11 +5821,13 @@ ollama list</code></pre>
         </svg>
         <span class="mobile-nav-label">MCP</span>
       </button>
-      <button class="mobile-nav-btn" data-mode="skills" aria-label="Skills">
+      <!-- Short label: the bottom bar is five items wide on a phone and
+           "Agents / Agempi" wraps. aria-label carries the full name. -->
+      <button class="mobile-nav-btn" data-mode="skills" aria-label="Agents / Agempi">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 2.7 3 6 3s6-2 6-3v-5"/>
         </svg>
-        <span class="mobile-nav-label">Skills</span>
+        <span class="mobile-nav-label">Agents</span>
       </button>
       <button class="mobile-nav-btn" id="mobile-more-btn" data-nav="more" aria-label="More destinations" aria-expanded="false" aria-haspopup="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -5480,12 +5844,20 @@ ollama list</code></pre>
       <div class="mobile-more-backdrop" data-more-close></div>
       <div class="mobile-more-panel" role="dialog" aria-label="More destinations">
         <div class="mobile-more-grip" aria-hidden="true"></div>
-        <button class="mobile-more-item" data-mode="engram">3D Engram</button>
-        <button class="mobile-more-item" data-mode="agents">Agents</button>
+        <button class="mobile-more-item" data-mode="engram">3D Engrams</button>
         <button class="mobile-more-item" data-mode="sources">Sources</button>
         <button class="mobile-more-item" data-mode="activity">Activity</button>
-        <button class="mobile-more-item" data-mode="goals">Foresight</button>
-        <button class="mobile-more-item" data-mode="get-connected">Get Connected</button>
+        <!-- The label is wrapped in one span on purpose: .mobile-more-item is a
+             flex container, so a bare .label-term would become its own flex item
+             and the leading space before the slash would collapse away
+             ("Connections/ Synapses"). One inline wrapper = one flex item.
+             Applies to every renamed entry below. -->
+        <button class="mobile-more-item" data-mode="goals" aria-label="Foresight / Dreams"><span>Foresight<span class="label-term"> / Dreams</span></span></button>
+        <button class="mobile-more-item" data-mode="get-connected" aria-label="Connections / Synapses"><span>Connections<span class="label-term"> / Synapses</span></span></button>
+        <!-- Sharing / compliance / classification / org catalog were reachable on
+             mobile through Get Connected before 2026-08-05; without this entry the
+             pane move would make them unreachable on mobile entirely. -->
+        <button class="mobile-more-item" data-mode="teams-enterprise">Teams &amp; Enterprise</button>
         <button class="mobile-more-item" data-mode="presentation">Presentation Mode</button>
         <button class="mobile-more-item" data-mode="settings">Settings</button>
       </div>

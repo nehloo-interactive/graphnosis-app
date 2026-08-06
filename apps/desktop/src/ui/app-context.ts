@@ -103,4 +103,22 @@ export function el<T extends HTMLElement = HTMLElement>(key: string): T {
   return app().els[key] as T;
 }
 
+/**
+ * Human label for an engram, falling back to its id.
+ *
+ * Rehomed here when the standalone Agents page was retired (2026-08-05). It had
+ * been living in ui/agents.ts purely because that page happened to need it
+ * first, and main.ts imported it across a module boundary that no longer exists.
+ * It depends on nothing but the bound context, so this is its natural home.
+ *
+ * One deliberate behavior change: the agents.ts version had a second fallback
+ * through that page's own in-memory skills list, which surfaced a name for an
+ * engram that was not yet loaded. That state died with the page; an unloaded
+ * engram now shows its id, which is what every other caller already did.
+ */
+export function engramDisplayName(graphId: string): string {
+  const g = app().getLoadedGraphs().find((x) => x.graphId === graphId);
+  return g ? app().formatEngramLabel(g) : graphId;
+}
+
 export type { OpLogEvent, GraphWithMetadata, NodeRecord, StatusSnapshot };

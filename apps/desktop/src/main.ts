@@ -122,7 +122,11 @@ import {
   getSkillTrainStatusLabel,
   type SkillListEntry,
 } from './ui/skills';
-import { renderAgentsView, engramDisplayName } from './ui/agents';
+import { engramDisplayName } from './ui/app-context';
+import {
+  initAgentsGrid, loadAgentRecords, loadAgentActivity, loadCrews, renderAgentsGrid,
+  exitToAgentsGrid, refreshAgentsView, renderHomeAgentTile,
+} from './ui/agents-grid';
 import { dismissAttention } from './ui/attention-surfaces';
 import type { GraphMutationPayload } from './ui/types';
 // These were referenced without being imported — each one a ReferenceError that
@@ -258,11 +262,12 @@ interface ClaudeConfigResult {
   created_file: boolean;
   preserved_servers: string[];
   /**
-   * Non-fatal note about what was written. Set when the remote endpoint we
-   * emitted was probed and answered as something other than an MCP listener:
-   * the entry is still written (we emit the connection this app is using), but
-   * the modal must not claim unqualified success. `null` when there's nothing
-   * to flag, and absent on older backends.
+   * Non-fatal note about what was written — the modal renders it in the error
+   * style so it cannot read as unqualified success. Currently set when the
+   * config we replaced carried the MCP token as a command-line argument (the
+   * pre-fix `mcp-remote … --header` shape), so the user is told to rotate it,
+   * and when the platform could not enforce 0600 on the credential file.
+   * `null` when there's nothing to flag, and absent on older backends.
    */
   warning?: string | null;
 }
@@ -328,7 +333,7 @@ interface AppSettings {
     sessionNodeCapEnabled?: boolean;
     sessionBreadthCap?: number;
     sessionBreadthCapEnabled?: boolean;
-    /** Local LLM-assisted search. Both default false. UI greys out checkboxes when LLM not ready. */
+    /** Local LLM-assisted search. Both default false. UI grays out checkboxes when LLM not ready. */
     searchLlmSynthesize?: boolean;
     searchLlmRerank?: boolean;
     /** Restrict Local LLM to in-app search only (disables develop/predict/insights/llm_query MCP tools). */
@@ -434,7 +439,7 @@ interface NodeRecord {
 
 interface SearchHit { nodeId: string; score: number; text: string; type?: string; sourceId?: string }
 
-// Catalogue of graph templates. `tier: free` are creatable; `power` and
+// Catalog of graph templates. `tier: free` are creatable; `power` and
 // `enterprise` show with a lock for now (creation gated until pricing lands).
 interface GraphTemplateDef {
   id: GraphTemplate;
@@ -452,7 +457,7 @@ const GRAPH_TEMPLATES: GraphTemplateDef[] = [
   { id: 'learning', tier: 'free', title: 'Learning',
     desc: 'Study notes with spaced-repetition hints baked in.' },
   { id: 'skill', tier: 'free', title: 'Skills',
-    desc: 'Train and manage AI skills using Graphnosis Autonomous Praxis.' },
+    desc: 'Train and manage the skills your Agempi work from.' },
 
   { id: 'project', tier: 'power', title: 'Project',
     desc: 'Milestones, decisions, artifacts. Tagged by phase.' },
@@ -610,7 +615,7 @@ function currentRecents(): string[] {
 }
 let graphnosisEditingId: string | null = null; // node currently in inline-edit mode
 // Current forget mode — synced from settings whenever they are loaded/saved.
-// Used to show the right deletion-behaviour note in the forget confirmation UI.
+// Used to show the right deletion-behavior note in the forget confirmation UI.
 let currentForgetMode: ForgetMode = 'soft';
 
 // State for the graph wizard.
@@ -862,11 +867,11 @@ const els = {
   gSearchResults: $<HTMLDivElement>('g-search-results'),
   gSearchResultsStats: $<HTMLDivElement>('g-search-results-stats'),
   gList: $<HTMLDivElement>('g-list'),
-  gHealth: $<HTMLDivElement>('g-health'),
-  gHealthGrade: $<HTMLDivElement>('g-health-grade'),
-  gHealthFill: $<HTMLDivElement>('g-health-fill'),
-  gHealthPhrase: $<HTMLParagraphElement>('g-health-phrase'),
-  gHealthDetail: $<HTMLParagraphElement>('g-health-detail'),
+  // gHealth / gHealthGrade / gHealthFill / gHealthPhrase / gHealthDetail were
+  // removed 2026-08-05 with the per-engram health gauge on the Home card (the
+  // Agents / Agempi tile replaced it). `$` casts a missing id to the element
+  // type rather than returning null, so every one of these would have been a
+  // TypeError on first paint — they are deleted, not left dangling.
   gDeck: $<HTMLDivElement>('g-deck'),
   gDeckCard: $<HTMLDivElement>('g-deck-card'),
   gDeckProgress: $<HTMLSpanElement>('g-deck-progress'),
@@ -984,8 +989,6 @@ const els = {
   // New top-of-rail slot for app-level mode chips (Standalone, Local &
   // offline) — these describe the whole app's posture, not specific
   // integrations, so they sit above the AI clients / Data sources labels.
-  railGcMode: $<HTMLDivElement>('rail-gc-mode'),
-  railGcAimode: $<HTMLDivElement>('rail-gc-aimode'),
   standaloneModal: $<HTMLDivElement>('standalone-modal'),
   // Local & offline explainer modal — opened from the rail chip of the
   // same name. Pure documentation; no per-source UI lives here.
@@ -1769,7 +1772,14 @@ void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: numb
       //   - ingestJobToasts.size === 0: don't switch mid-batch; wait for
       //     the final file in a multi-file drop. (We already .delete()'d
       //     this job id above, so size === 0 means no more in flight.)
-      if (n > 0 && ingestJobToasts.size === 0) {
+      //   - not on Get Connected: five recipe cards there ("Files, folders &
+      //     PDFs", NAS, notes apps, logs, local email) and the MCP-tools
+      //     modal's "Add file to engram…" all run the ingest through
+      //     #btn-add-file. The user is mid-setup on a page whose whole job is
+      //     adding MORE sources; yanking them to the 3D view when the picker's
+      //     modals close loses that place. The toast + Sources still report
+      //     the result, so nothing is hidden — only the jump is suppressed.
+      if (n > 0 && ingestJobToasts.size === 0 && currentMode !== 'get-connected') {
         // Jump to the 3D Engram rail destination. activateMode('engram')
         // shows the shared atlas pane and delegates to switchGraphnosisTab
         // ('atlas') — which handles the mount, pushDataIntoAtlas, and
@@ -2078,7 +2088,7 @@ function render(status: StatusSnapshot): void {
       // Flush any engrams-loading event that fired during the unlockPending
       // bail window. Without this, missed events leave the picker frozen on
       // boot-time state and engrams that finished loading mid-unlock stay
-      // greyed forever (the bug behind the user's "stays grey randomly"
+      // grayed forever (the bug behind the user's "stays grey randomly"
       // report). Re-runs the same refresh path the live listener uses.
       if (_missedDuringUnlockPayload) {
         const { loaded, total } = _missedDuringUnlockPayload;
@@ -2090,11 +2100,11 @@ function render(status: StatusSnapshot): void {
         }
         processEngramsLoadingRefresh(allDone, true);
       }
-      // Belt-and-suspenders: start the periodic greyed-refresh poll. If any
+      // Belt-and-suspenders: start the periodic grayed-refresh poll. If any
       // engrams are still loading at unlock-complete, this self-heals the
       // picker every 5s without needing further `engrams-loading` events.
       // Stops on its own once all engrams report loaded.
-      schedulePeriodicGreyedRefresh();
+      schedulePeriodicGrayedRefresh();
     };
     void fetchGraphsMetadata().then(async () => {
       // atlasActiveGraph is now set. Load nodes directly — don't go through
@@ -2107,6 +2117,10 @@ function render(status: StatusSnapshot): void {
       }
       void checkDocsIngestOffer();
       void checkSkillDemosOffer();
+      // Chats list: populate as soon as the cortex unlocks, not only on first
+      // visit to the Inbox — the rail is visible immediately, so its content
+      // should not wait for a tab switch that may never happen this session.
+      void renderRailChats();
       await revealApp();
     }).catch(() => void revealApp()); // show the app even if metadata fetch fails
   } else {
@@ -2140,8 +2154,17 @@ function render(status: StatusSnapshot): void {
     // of a different cortex) re-evaluates the offer cleanly.
     docsOfferChecked = false;
     hideDocsOfferBanner();
+    // Reset the guard so unlocking a DIFFERENT cortex re-evaluates whether the
+    // default Agempi need installing. There is no banner to hide any more —
+    // the install runs silently with a toast (see checkSkillDemosOffer).
     skillDemosOfferChecked = false;
-    hideSkillDemosOfferBanner();
+    // Clear the Chats list so a re-unlock of a different cortex never shows
+    // the previous cortex's chat history, even for the instant before the
+    // next unlock's renderRailChats() call repopulates it.
+    document.body.classList.remove('rail-has-chats');
+    const railChatsList = document.getElementById('rail-chats-list');
+    if (railChatsList) railChatsList.innerHTML = '';
+    document.getElementById('rail-chats')?.classList.add('hidden');
     // Hide the needs-review overlay so it doesn't bleed into the next unlock.
     els.needsReviewOverlay?.classList.add('hidden');
     els.btnNeedsReview?.classList.add('hidden');
@@ -2154,6 +2177,15 @@ function render(status: StatusSnapshot): void {
     graphnosisSelectedId = null;
     graphnosisEditingId = null;
     renderDetailEmpty();
+    // The three pane-hosting modals must be CLOSED, not merely hidden: each one
+    // has a real <section class="mode-pane"> relocated into its mount, and the
+    // blanket sweep below only adds `hidden` to the backdrop. That would strand
+    // the pane inside a dialog nobody can reopen — and for MCP Tools the pane is
+    // also a navigable destination, so activateMode('mcp-tools') would come back
+    // to nothing. closePaneModal re-homes it; these are no-ops when not open.
+    if (sourcesModalOpen) closeSourcesModal();
+    if (activityModalOpen) closeActivityModal();
+    if (mcpToolsModalOpen) closeMcpToolsModal();
     // Hide every modal that might be left visible from the previous unlocked
     // session — Vite HMR preserves DOM, so a modal open at the moment of a
     // lock can persist into the next render.
@@ -2180,41 +2212,40 @@ function render(status: StatusSnapshot): void {
 }
 
 /**
- * Update the "on engram <name>" label in the app header. Single chokepoint
- * for the active-engram display so we don't drift between places that
- * mutate `atlasActiveGraph`. Called from `render()` on unlock and from
- * the picker change handler. Reads the friendly display name from the
- * loaded-graphs metadata, falling back to the raw graphId.
+ * Single chokepoint for everything that has to repaint when `atlasActiveGraph`
+ * changes, so the surfaces showing the active engram can't drift apart. Called
+ * from `render()` on unlock and from the picker change handler. Reads the
+ * friendly display name from the loaded-graphs metadata, falling back to the
+ * raw graphId.
+ *
+ * The engram NAME itself is no longer painted here. The picker
+ * (#atlas-graph-picker) was relocated onto the Memory / 3D Engrams page where
+ * it is that page's title, so its own label is the name display — kept current
+ * by installCustomEngramPicker()'s renderOptions(), which also re-applies the
+ * `data-pres="engram:<id>"` Presentation-Mode redaction tag. The <h2
+ * id="atlas-engram-title"> this function used to write is gone from
+ * index.html. `els.activeEngramLabel` (#active-engram-label) has no element
+ * either — it was already dead before the move, and stays null-guarded.
  */
 function refreshActiveEngramLabel(): void {
-  const atlasTitle = document.getElementById('atlas-engram-title');
   const id = atlasActiveGraph;
   if (id === FULL_CORTEX) {
     if (els.activeEngramLabel) els.activeEngramLabel.textContent = 'Full Cortex';
-    if (atlasTitle) { atlasTitle.textContent = '🌌 Full Cortex'; atlasTitle.removeAttribute('data-pres'); }
     updateSensitivityBadge(null);
     return;
   }
   if (!id) {
     if (els.activeEngramLabel) els.activeEngramLabel.textContent = '—';
-    if (atlasTitle) { atlasTitle.textContent = '—'; atlasTitle.removeAttribute('data-pres'); }
     updateSensitivityBadge(null);
     return;
   }
   const meta = loadedGraphs.find((g) => g.graphId === id);
   const displayName = meta?.metadata.displayName ?? id;
   if (els.activeEngramLabel) els.activeEngramLabel.textContent = displayName;
-  // Large title above the 3D graph. Tag it so it redacts in Presentation Mode
-  // when this engram isn't allowlisted.
-  if (atlasTitle) {
-    atlasTitle.textContent = displayName;
-    atlasTitle.setAttribute('data-pres', `engram:${id}`);
-    if (presActive()) applyPresentationMasking(atlasTitle.parentElement ?? atlasTitle);
-  }
-  // Mobile shows the active engram name in the health panel (the header picker
-  // is hidden on phones). Harmless on desktop — CSS hides it there.
-  const healthEngram = document.getElementById('g-health-engram');
-  if (healthEngram) healthEngram.textContent = displayName;
+  // The mobile-only echo of this name (#g-health-engram, inside the Home health
+  // gauge) went with that gauge on 2026-08-05. On phones the active engram is
+  // now named only by the picker on the Memory / 3D Engrams page, which is where
+  // the picker itself lives.
   updateSensitivityBadge(meta?.metadata.sensitivityTier ?? 'personal');
 }
 
@@ -2271,7 +2302,7 @@ function syncEngramPicker(): void {
   // for back-compat) and explicitly false for pending entries.
   // One flat alphabetical list. Pending engrams (not yet decrypted into
   // memory) carry the native `disabled` attribute — the custom dropdown
-  // reads each <option>'s `disabled` DOM property and applies a greyed
+  // reads each <option>'s `disabled` DOM property and applies a grayed
   // `.disabled` class to its own button. The native popover ignores this
   // attribute on macOS, but the native popover isn't what the user sees:
   // installCustomEngramPicker() replaces it with our own dropdown.
@@ -2354,7 +2385,7 @@ function syncSourcesEngramDropdown(): void {
   // last ran). If the selected engram has no group element in the list, rebuild
   // the list from scratch so newly-available sources show up. If the group is
   // already there, just re-apply the filter (cheaper — no IPC roundtrip).
-  if (currentMode === 'sources') {
+  if (isSourcesListVisible()) {
     const hasGroup = sourcesEngramFilter === ''
       || Array.from(els.sourcesList.querySelectorAll<HTMLElement>('.sources-engram-group'))
            .some((g) => g.dataset['graphId'] === sourcesEngramFilter);
@@ -2422,66 +2453,71 @@ function renderRailGetConnected(): void {
     b.addEventListener('click', onClick);
     return b;
   };
-  const llmOn = brainLlmReady;
-  const gnnOn = brainNeuralNetworkStatus?.enabled === true;
-
-  // Top-of-rail mode chips: Standalone + Local & offline. These sit above
-  // the AI clients label because they describe app-wide posture, not a
-  // specific connector / client. Standalone gates on AI clients + LLM +
-  // GNN (NOT on data connectors — connectors are incoming auto-ingest,
-  // don't change the output posture).
-  const aiClientConnected = liveMcpClients.size > 0;
-  const standaloneDisabled = llmOn || gnnOn || aiClientConnected;
-  els.railGcMode.innerHTML = '';
-  const standaloneChip = makeChip('Standalone', !standaloneDisabled, () => {
-    // Surface the connection state to the modal so its copy reads correctly
-    // ("right now you're standalone" vs "you have N AI clients connected").
-    els.standaloneModal.dataset['aiClientConnected'] = aiClientConnected ? '1' : '0';
-    els.standaloneModal.dataset['llmOn'] = llmOn ? '1' : '0';
-    els.standaloneModal.dataset['gnnOn'] = gnnOn ? '1' : '0';
-    updateStandaloneModalCopy();
-    els.standaloneModal.classList.remove('hidden');
-  });
-  // Dim the chip so the user visually understands "we're past standalone now"
-  // — still clickable (opens the explainer modal so they can read what
-  // standalone means and what each layered-on capability adds).
-  if (standaloneDisabled) standaloneChip.classList.add('dimmed');
-  els.railGcMode.appendChild(standaloneChip);
-  // Local & offline — info chip that opens an explainer modal listing
-  // every category of off-the-grid data the user can plug in (Home
-  // Assistant, MQTT, NAS, scanned PDFs, sensors, lab instruments, local
-  // databases…) via existing infrastructure (drag-drop files, the
-  // Webhook connector, mounted folders). Never shows "connected" — it's
-  // pure documentation that lives in the sidebar so users discover it.
-  els.railGcMode.appendChild(makeChip('Local & offline', false, () => {
-    els.offlineSourcesModal?.classList.remove('hidden');
-  }));
-
-  // AI mode addendum: Local LLM / Neural Network chips when they're
-  // enabled. These live UNDER the "AI clients" header because they're
-  // about AI capability (synthesis / edge prediction).
-  els.railGcAimode.innerHTML = '';
-  if (llmOn) {
-    els.railGcAimode.appendChild(makeChip('Local LLM', true, openNonDeterministic));
-  }
-  if (gnnOn) {
-    els.railGcAimode.appendChild(makeChip('Graphnosis Neural Network', true, openNonDeterministic));
-  }
+  // App posture (Standalone / Local & offline / Local LLM / Neural Network
+  // chips) was REMOVED from this page on 2026-08-05. The three chips had
+  // drifted into three unrelated jobs: "Standalone" restated what the
+  // #gc-status strip already shows, "Local & offline" opened an explainer
+  // duplicating the Off-the-grid section on this same page, and the AI-mode
+  // chips called openNonDeterministic(), which navigates to the Foresight
+  // pane — taking the user off Get Connected, which this page must never do.
+  //
+  // updateStandaloneModalCopy() and #standalone-modal / #offline-sources-modal
+  // are all still live and reachable from their own surfaces; only the chip
+  // entry points here are gone.
 
   // AI clients — lit when a live relay from that client is connected.
   // Idle state is intentionally not shown on sidebar chips — connected
   // is connected regardless of recent activity.
+  // AI clients render as CARDS, matching the Data-sources recipe grid below.
+  // They were pill chips: a bare product name with no indication of what
+  // connecting it does, sitting above a grid of cards that explain themselves.
+  // Two lists doing the same job — "pick one of these to set up" — should not
+  // look like different kinds of control.
+  //
+  // The live/connected state is kept and now reads as a labelled badge rather
+  // than a lit outline, because on a card an outline is chrome, not signal.
+  const makeClientCard = (
+    icon: string, label: string, desc: string, onClick: () => void, live: boolean,
+  ): HTMLButtonElement => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = `gc-scenario gc-client-card${live ? ' is-live' : ''}`;
+    card.innerHTML =
+      `<span class="gc-scenario-icon" aria-hidden="true">${icon}</span>` +
+      `<span class="gc-scenario-body">` +
+        `<span class="gc-scenario-name">${escape(label)}` +
+          (live ? `<span class="gc-scenario-badge gc-client-live" title="Connected right now">Connected</span>` : '') +
+        `</span>` +
+        `<span class="gc-scenario-desc">${escape(desc)}</span>` +
+      `</span>`;
+    card.addEventListener('click', onClick);
+    return card;
+  };
   const makeClientChip = (label: string, onClick: () => void): HTMLButtonElement =>
     makeChip(label, liveMcpClients.has(label), onClick);
+  void makeClientChip; // superseded by makeClientCard; kept for the mobile chip path
   els.railGcClients.innerHTML = '';
-  els.railGcClients.appendChild(makeClientChip('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
-  els.railGcClients.appendChild(makeClientChip('Claude Code', () => openConfigureClientModal('claude-code')));
-  els.railGcClients.appendChild(makeClientChip('Cursor', () => openConfigureClientModal('cursor')));
-  els.railGcClients.appendChild(makeClientChip('Hermes', () => openConfigureClientModal('hermes')));
+  els.railGcClients.appendChild(makeClientCard('🖥️', 'Claude Desktop',
+    'The desktop app. Recall and remember from any chat, with a one-click config write.',
+    () => openConfigureClientModal('claude-desktop'), liveMcpClients.has('Claude Desktop')));
+  els.railGcClients.appendChild(makeClientCard('⌨️', 'Claude Code',
+    'The terminal agent. Your cortex travels with the repo you are working in.',
+    () => openConfigureClientModal('claude-code'), liveMcpClients.has('Claude Code')));
+  els.railGcClients.appendChild(makeClientCard('✏️', 'Cursor',
+    'The editor. Recall project decisions and past fixes without leaving the file.',
+    () => openConfigureClientModal('cursor'), liveMcpClients.has('Cursor')));
+  els.railGcClients.appendChild(makeClientCard('🪽', 'Hermes',
+    'The Graphnosis client. Talks to this cortex over MCP with no extra setup.',
+    () => openConfigureClientModal('hermes'), liveMcpClients.has('Hermes')));
   // Copilot has its own setup modal (VS Code / Copilot Chat MCP wiring) rather
   // than the generic configure-client flow. It never lights "connected" — the
   // live-relay map keys on Claude/Cursor sessions, not Copilot Chat.
-  els.railGcClients.appendChild(makeChip('Copilot', false, () => { void openCopilotModal(); }));
+  // Copilot never lights "connected": the live-relay map keys on Claude/Cursor
+  // sessions, not Copilot Chat. Passing `false` is therefore honest, not a
+  // placeholder — it cannot be detected, so it is never claimed.
+  els.railGcClients.appendChild(makeClientCard('🧩', 'Copilot',
+    'VS Code and Copilot Chat, wired over MCP. Connection state is not detectable for this one.',
+    () => { void openCopilotModal(); }, false));
 
   // (Mobile-access chip removed from the rail; the feature is still
   // available from the menu-bar tray and from Settings → Mobile.)
@@ -2589,7 +2625,7 @@ function refreshGetConnectedStatus(): void {
 
       const bodyHtml =
         `<div class="home-gc-list">${onlineGroup}${offlineGroup}</div>` +
-        `<button type="button" class="home-card-cta" id="home-getconnected-open">Get Connected</button>`;
+        `<button type="button" class="home-card-cta" id="home-getconnected-open">Open Connections</button>`;
 
       // Only touch the DOM when the content actually changed — the 3s MCP poll
       // calls this constantly, and rewriting innerHTML each time reset the list's
@@ -2676,7 +2712,7 @@ const GC_RECIPES: GcRecipe[] = [
   { id: 'email', icon: '✉️', title: 'Local email archive (mbox / Maildir)', tags: 'email mbox maildir imap export eml',
     desc: 'Export a mailbox to a folder of .eml/.txt and drop it — keeps correspondence searchable, fully offline.', run: () => document.getElementById('btn-add-file')?.click() },
   { id: 'scripts', icon: '📋', title: 'Scripts & cron jobs', tags: 'cron script bash python automation scheduled task',
-    desc: 'Any scheduled job — back up a value, scrape a local file, summarise a log — can POST its result to the Webhook.', run: () => openConnectorSetupModal('webhook') },
+    desc: 'Any scheduled job — back up a value, scrape a local file, summarize a log — can POST its result to the Webhook.', run: () => openConnectorSetupModal('webhook') },
 
   // ── Native cloud connectors (first-class, no bridge needed) ──
   { id: 'rss', icon: '📡', title: 'RSS / Atom feeds', tags: 'rss atom feed blog news subscribe online',
@@ -2760,11 +2796,11 @@ document.getElementById('gc-recipes')?.addEventListener('click', (e) => {
   const filterInput = document.getElementById('gc-recipe-filter') as HTMLInputElement | null;
   filterInput?.addEventListener('input', () => renderGcRecipes(filterInput.value));
 }
-// "See every MCP tool…" link next to the AI-client chips → MCP Tools page.
-document.getElementById('gc-mcp-tools-link')?.addEventListener('click', (e) => {
-  e.preventDefault();
-  activateMode('mcp-tools');
-});
+// The "See every MCP tool…" link (#gc-mcp-tools-link) and the launcher under
+// the client cards (#btn-gc-mcp-tools) are both wired next to the other
+// pane-hosting modals, where openMcpToolsModal() lives. They open
+// #mcp-tools-modal rather than calling activateMode('mcp-tools'), which used to
+// navigate the user off this page.
 document.getElementById('offline-sources-modal-close')
   ?.addEventListener('click', () => els.offlineSourcesModal.classList.add('hidden'));
 els.offlineSourcesModal?.addEventListener('click', (e) => {
@@ -2850,7 +2886,7 @@ function updateStandaloneModalCopy(): void {
       <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px; color: var(--fg-dim);">
         ${aiConnected ? 'Your <strong>AI clients</strong> read from this cortex via MCP — every recall returns the same nodes regardless of which client asked, and every access is in the audit log.' : ''}
         ${llmOn ? '<br>The <strong>Local LLM</strong> runs on your machine — no cloud calls, no API keys.' : ''}
-        ${gnnOn ? '<br>The <strong>Neural Network</strong> proposes related-edge predictions in a clearly-labelled, separate block — never mixed into deterministic results.' : ''}
+        ${gnnOn ? '<br>The <strong>Neural Network</strong> proposes related-edge predictions in a clearly-labeled, separate block — never mixed into deterministic results.' : ''}
       </p>
       <p style="font-size: 14px; line-height: 1.6; margin: 0;">
         Connectors (RSS, GitHub, Slack, Trello, …) don't take you out of standalone — they're
@@ -3183,13 +3219,13 @@ type Mode =
   | 'engram'       // 3D Engram (the atlas sub-tab)
   | 'goals'        // Foresight — goals + predict + insights + GNN/GLL/Local-LLM (the brain sub-tab)
   | 'skills'       // Skills library/trainer (a studio tool inside checkin)
-  | 'agents'       // Agents/Agempi roster — read-only domain-agent view (feature #41)
   | 'search'       // Dedicated memory-search page (checkin sub-mode, body.search-mode)
   | 'power-tools'  // Manual recall/remember/edit/GNN page (checkin sub-mode, body.powertools-mode)
   | 'sources'
   | 'activity'     // Audit
   | 'status'
   | 'get-connected' // Grow your cortex — AI clients + data sources (own page)
+  | 'teams-enterprise' // Sharing + compliance + classification + org catalog (own page)
   | 'presentation'  // Demo-safe redaction config page (own page)
   | 'settings'
   | 'mcp-tools';
@@ -3206,7 +3242,14 @@ type Mode =
 //   - Brand-new cortexes with no preference → 'atlas' (Your Cortex is the
 //     primary surface; Ghampus is the AI assistant, not the landing page).
 const LANDING_MODE_STORAGE_KEY = 'graphnosis.landingMode';
-const VALID_LANDING_MODES: Mode[] = ['ghampus', 'atlas', 'engram', 'goals', 'skills', 'agents', 'sources', 'activity', 'get-connected', 'power-tools', 'mcp-tools'];
+// 'agents' removed 2026-08-05 with the standalone Agents page. A cortex that had
+// it saved as its landing mode would otherwise boot into a pane that no longer
+// exists; anything not in this list falls back to the default landing mode.
+// 'teams-enterprise' is deliberately ABSENT, like 'presentation', 'status' and
+// 'settings': it is a config/admin destination, and for any cortex without a
+// Teams or Enterprise licence the page is a plan-requirement card. Booting
+// straight into that is not a reasonable landing experience.
+const VALID_LANDING_MODES: Mode[] = ['ghampus', 'atlas', 'engram', 'goals', 'skills', 'sources', 'activity', 'get-connected', 'power-tools', 'mcp-tools'];
 function resolveLandingMode(raw: string | null | undefined): Mode {
   return raw && (VALID_LANDING_MODES as string[]).includes(raw) ? (raw as Mode) : 'atlas';
 }
@@ -3270,7 +3313,244 @@ function refreshActiveActivitySegment(): void {
   else void refreshUnattendedSegment();
 }
 
+// ── Sources modal ───────────────────────────────────────────────────────────
+//
+// Sources left the sidebar rail on 2026-08-05; its entry point is now the
+// document icon in the 3D Engram toolbar (#btn-atlas-sources).
+//
+// The modal HOSTS the real pane rather than re-rendering it: open relocates
+// <section data-pane="sources"> into #sources-modal-mount, close puts it back
+// exactly where it was. Everything already bound inside that pane — the filter
+// box, the engram select, Reingest, every per-source action — keeps working,
+// because DOM listeners travel with a moved node. Cloning the markup instead
+// would have produced a second, dead list AND duplicate ids, breaking
+// getElementById for the original too.
+let sourcesModalOpen = false;
+let activityModalOpen = false;
+/** Where a relocated pane came from, keyed by its data-pane value, so close()
+ *  can put it back at its exact sibling position rather than appending. */
+const paneHomes = new Map<string, { parent: HTMLElement; next: Node | null }>();
+
+/**
+ * Show a real mode-pane inside a modal.
+ *
+ * The pane is RELOCATED, never copied: every id and every bound listener inside
+ * it belongs to the original, and a clone would duplicate those ids and break
+ * getElementById for both copies. Moving a node preserves its listeners.
+ *
+ * Panes hosted this way must carry neither `.license-acquire` nor
+ * `.license-manage`, and must be reachable while another mode is on screen —
+ * setLicenseSectionMode and the activateMode visibility sweep both key off
+ * class/data attributes that stay intact through the move.
+ */
+function openPaneModal(paneName: string, modalId: string, mountId: string, closeBtnId: string): boolean {
+  const pane = document.querySelector<HTMLElement>(`.mode-pane[data-pane="${paneName}"]`);
+  const mount = document.getElementById(mountId);
+  const modal = document.getElementById(modalId);
+  if (!pane || !mount || !modal) return false;
+  if (!paneHomes.has(paneName)) {
+    paneHomes.set(paneName, { parent: pane.parentElement as HTMLElement, next: pane.nextSibling });
+    mount.appendChild(pane);
+  }
+  // The modal supplies its own title; the pane's header would repeat it.
+  const hdr = pane.querySelector<HTMLElement>(':scope > .pane-header');
+  if (hdr) hdr.style.display = 'none';
+  pane.classList.remove('hidden');
+  modal.classList.remove('hidden');
+  document.getElementById(closeBtnId)?.focus();
+  return true;
+}
+
+function closePaneModal(paneName: string, modalId: string, returnFocusId: string): boolean {
+  const modal = document.getElementById(modalId);
+  if (!modal || modal.classList.contains('hidden')) return false;
+  modal.classList.add('hidden');
+  const pane = document.querySelector<HTMLElement>(`.mode-pane[data-pane="${paneName}"]`);
+  const home = paneHomes.get(paneName);
+  if (pane) {
+    const hdr = pane.querySelector<HTMLElement>(':scope > .pane-header');
+    if (hdr) hdr.style.display = '';
+    // Re-hide BEFORE re-homing: among the mode-panes it is once again a pane for
+    // a mode that is not on screen, and activateMode only reconciles visibility
+    // on the next navigation.
+    pane.classList.add('hidden');
+    if (home) home.parent.insertBefore(pane, home.next);
+  }
+  paneHomes.delete(paneName);
+  document.getElementById(returnFocusId)?.focus();
+  return true;
+}
+
+/**
+ * True when the Sources list is on screen by EITHER route — full page or modal.
+ *
+ * The list's liveness checks read `currentMode === 'sources'`, which is false
+ * while the modal sits over the 3D Engram page. Left unchanged, the list would
+ * silently stop reacting to engram switches and finished ingests: still
+ * rendered, quietly stale, with nothing to indicate it had stopped updating.
+ */
+function isSourcesListVisible(): boolean {
+  return currentMode === 'sources' || sourcesModalOpen;
+}
+
+/** Entry work shared by the full page and the modal: aim the engram dropdown at
+ *  the active engram, then rebuild from a fresh snapshot. Full Cortex is not a
+ *  real engram, so it maps to "All engrams" (empty filter). */
+function primeSourcesView(): void {
+  const sourcesScope = atlasActiveGraph === FULL_CORTEX ? '' : atlasActiveGraph;
+  sourcesEngramFilter = sourcesScope || '';
+  if (els.sourcesEngramSelect) els.sourcesEngramSelect.value = sourcesEngramFilter;
+  updateReingestAllLabel();
+  void refreshStats();
+}
+
+function openSourcesModal(): void {
+  if (openPaneModal('sources', 'sources-modal', 'sources-modal-mount', 'btn-sources-modal-close')) {
+    sourcesModalOpen = true;
+    primeSourcesView();
+  }
+}
+
+function closeSourcesModal(): void {
+  if (closePaneModal('sources', 'sources-modal', 'btn-atlas-sources')) sourcesModalOpen = false;
+}
+
+// ── MCP Tools modal ─────────────────────────────────────────────────────────
+//
+// MCP Tools left the sidebar rail on 2026-08-05. It has two entry points, both
+// on Get Connected → AI clients and both calling openMcpToolsModal():
+//   - #gc-mcp-tools-link      — the inline link in the section hint
+//   - #btn-gc-mcp-tools       — the width-long launcher under the client cards
+// Neither navigates. Both used to be one link that called
+// activateMode('mcp-tools'), taking the user off Get Connected — the one thing
+// that page must never do. Same relocation contract as Sources and Activity:
+// the REAL <section data-pane="mcp-tools"> moves into #mcp-tools-modal-mount on
+// open and back on close.
+//
+// The mode itself is deliberately still alive: the mobile bottom nav routes to
+// the standalone pane (relocating a pane into a modal is not a phone pattern),
+// and 'mcp-tools' remains in VALID_LANDING_MODES.
+let mcpToolsModalOpen = false;
+/** Which affordance opened the modal, so closing returns focus to the control
+ *  the user actually pressed rather than always to the launcher. */
+let mcpToolsModalTrigger = 'btn-gc-mcp-tools';
+
+/**
+ * Guarantee #mcp-tools-content is populated, whichever surface asks for it.
+ *
+ * The toolset is built lazily and exactly once — re-running
+ * wireMcpToolsOnboarding() on already-wired markup would double-register the
+ * per-chip click handler (only the toggle-injection inside it is idempotent).
+ * On re-entry we just re-read the exposure switches.
+ *
+ * This has to run BEFORE the modal relocates the pane: on a cold start the pane
+ * has never been activated, so without it openPaneModal would move an empty
+ * node and the modal would open blank.
+ */
+function ensureMcpToolsContent(): void {
+  const host = document.getElementById('mcp-tools-content');
+  if (!host) return;
+  if (host.childElementCount === 0) buildMcpToolsContent();
+  else void syncMcpToolToggles(host); // refresh exposure toggles on re-entry
+}
+
+/** Build-only half of the above, for callers that need the markup to EXIST but
+ *  aren't about to put it on screen (the Get Connected launcher, which only
+ *  counts the chips). Skipping the re-sync keeps entering Get Connected from
+ *  firing an ai.getDisabledTools round-trip every single time — the one the
+ *  initial build does through wireMcpToolsOnboarding is enough. */
+function buildMcpToolsContent(): void {
+  const host = document.getElementById('mcp-tools-content');
+  if (!host || host.childElementCount > 0) return;
+  host.innerHTML = mcpToolsOnboardingHtml();
+  wireMcpToolsOnboarding(host);
+}
+
+/** Write the true number of exposed tools into the Get Connected launcher's
+ *  subtitle. Counted from the chips actually rendered into #mcp-tools-content,
+ *  so it can't drift from the list the modal shows. Scoped to that host on
+ *  purpose — the same onboarding markup is also rendered into the empty-deck
+ *  card, and a document-wide query would double-count. */
+function refreshGcMcpToolsCount(): void {
+  const label = document.getElementById('gc-mcp-tools-count');
+  if (!label) return;
+  buildMcpToolsContent();
+  const host = document.getElementById('mcp-tools-content');
+  const n = host?.querySelectorAll('.g-deck-cmd-chip[data-tool]').length ?? 0;
+  if (n > 0) label.textContent = `${n} tools, grouped by determinism — switch off any you don't want exposed`;
+}
+
+/** The ONE open path. Both Get Connected affordances call this; nothing else
+ *  duplicates the relocation logic. */
+function openMcpToolsModal(triggerId = 'btn-gc-mcp-tools'): void {
+  // Populate first: a cold start has never activated this pane, and relocating
+  // an empty #mcp-tools-content is how this ships as a silently blank dialog.
+  ensureMcpToolsContent();
+  if (openPaneModal('mcp-tools', 'mcp-tools-modal', 'mcp-tools-modal-mount', 'btn-mcp-tools-modal-close')) {
+    mcpToolsModalOpen = true;
+    mcpToolsModalTrigger = triggerId;
+  }
+}
+
+function closeMcpToolsModal(): void {
+  if (closePaneModal('mcp-tools', 'mcp-tools-modal', mcpToolsModalTrigger)) mcpToolsModalOpen = false;
+}
+
+function openActivityModal(): void {
+  if (openPaneModal('activity', 'activity-modal', 'activity-modal-mount', 'btn-activity-modal-close')) {
+    activityModalOpen = true;
+    // Same entry work activateMode('activity') does — without it the timeline
+    // renders whatever was last loaded, which for a modal you just opened reads
+    // as stale data rather than as "not refreshed".
+    refreshActiveActivitySegment();
+    void refreshAiActivityRollup();
+    void refreshActivityCompliancePanel();
+  }
+}
+
+function closeActivityModal(): void {
+  if (closePaneModal('activity', 'activity-modal', 'btn-atlas-activity')) activityModalOpen = false;
+}
+
+document.getElementById('btn-atlas-sources')?.addEventListener('click', () => { openSourcesModal(); });
+document.getElementById('btn-atlas-activity')?.addEventListener('click', () => { openActivityModal(); });
+document.getElementById('btn-activity-modal-close')?.addEventListener('click', () => { closeActivityModal(); });
+document.getElementById('activity-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeActivityModal();
+});
+document.getElementById('btn-gc-mcp-tools')?.addEventListener('click', () => { openMcpToolsModal('btn-gc-mcp-tools'); });
+// The inline link in the AI-clients hint — same handler, same modal. It is an
+// <a href="#">, so the default jump-to-top has to be suppressed.
+document.getElementById('gc-mcp-tools-link')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  openMcpToolsModal('gc-mcp-tools-link');
+});
+document.getElementById('btn-mcp-tools-modal-close')?.addEventListener('click', () => { closeMcpToolsModal(); });
+document.getElementById('mcp-tools-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeMcpToolsModal();
+});
+document.getElementById('btn-sources-modal-close')?.addEventListener('click', () => { closeSourcesModal(); });
+// Backdrop click closes; clicks inside the dialog must not.
+document.getElementById('sources-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeSourcesModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (sourcesModalOpen) closeSourcesModal();
+  if (activityModalOpen) closeActivityModal();
+  if (mcpToolsModalOpen) closeMcpToolsModal();
+});
+
 function activateMode(mode: Mode): void {
+  // Navigating away with the modal up would strand the pane inside a hidden
+  // dialog — and the pane-visibility sweep below would then fight over it.
+  if (sourcesModalOpen) closeSourcesModal();
+  if (activityModalOpen) closeActivityModal();
+  // Same reason, and it matters twice over here: the pane this modal hosts is
+  // itself a navigable mode, so leaving it stranded in a hidden dialog would
+  // make activateMode('mcp-tools') — still reachable from the mobile nav and
+  // from a saved landing mode — show nothing at all.
+  if (mcpToolsModalOpen) closeMcpToolsModal();
   if (currentMode === 'ghampus' && mode !== 'ghampus') stopGhampusLlmStatusPoll();
   currentMode = mode;
   // Skills is a rail destination that reuses the skills sub-pane inside the
@@ -3345,33 +3625,29 @@ function activateMode(mode: Mode): void {
       setTimeout(() => (document.getElementById('g-search') as HTMLInputElement | null)?.focus(), 50);
     }
     if (mode === 'goals') void renderForesight(); // Foresight lanes (Predict + Insights)
+    if (mode === 'skills') {
+      // Agents/Agempi is the landing view; the per-agent skills layout (and the
+      // trainer with it) is only reached by picking an agent. Reset to the grid
+      // on EVERY entry rather than restoring the last agent — returning to a
+      // page and finding it already filtered to one agent, with no memory of
+      // having chosen them, reads as missing data.
+      exitToAgentsGrid();
+      void Promise.all([loadAgentRecords(), loadAgentActivity(), loadCrews()]).then(renderAgentsGrid);
+    }
     void refreshUnifiedAttentionBadge();
     return;
   }
   // Lazy-load per standalone mode
-  if (mode === 'sources') {
-    // Default the engram dropdown to the active engram each time the
-    // Sources page is entered so the user immediately sees their current
-    // context. refreshStats() rebuilds the dropdown options and will
-    // honour this pre-set selection value. Full Cortex isn't a real engram,
-    // so it maps to "All engrams" (empty filter).
-    const sourcesScope = atlasActiveGraph === FULL_CORTEX ? '' : atlasActiveGraph;
-    if (sourcesScope) {
-      sourcesEngramFilter = sourcesScope;
-      els.sourcesEngramSelect.value = sourcesScope;
-    } else {
-      sourcesEngramFilter = '';
-      els.sourcesEngramSelect.value = '';
-    }
-    updateReingestAllLabel();
-    void refreshStats();
-  }
+  if (mode === 'sources') primeSourcesView();
   // (mode === 'atlas' and the other atlas sub-modes returned early above —
   //  switchGraphnosisTab handles their refresh lifecycle.)
   if (mode === 'ghampus') {
     void refreshGhampusState();
     void refreshGhampusHeader();
     void refreshGhampusThread();
+    // Entering the Inbox is when the chat list is most likely stale — the
+    // previous visit added turns, which changes both order and titles.
+    void renderRailChats();
     void refreshGhampusNotifications();
     void refreshGhampusSavings();
     void refreshGhampusRecentSaves();
@@ -3384,13 +3660,6 @@ function activateMode(mode: Mode): void {
     void refreshAiActivityRollup();
     void refreshActivityCompliancePanel();
   }
-  if (mode === 'agents') {
-    // Agents/Agempi roster (read-only). Batched fetch on each entry; the
-    // autonomy + vitality caches are reused across entries (renderAgentsView
-    // re-fetches only the list + call graph). Scroll to top on entry.
-    void renderAgentsView();
-    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
-  }
   if (mode === 'presentation') {
     renderPresentationPane();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
@@ -3400,11 +3669,39 @@ function activateMode(mode: Mode): void {
     // the off-the-grid recipe cards, and the configured-connector instances.
     renderRailGetConnected();
     refreshGetConnectedStatus();
+    // Fills the MCP-tools launcher subtitle with a real count, and — as a side
+    // effect of the same call — guarantees #mcp-tools-content is built before
+    // the user can click through to the modal that hosts it.
+    refreshGcMcpToolsCount();
     renderGcRecipes((document.getElementById('gc-recipe-filter') as HTMLInputElement | null)?.value ?? '');
     void refreshConnectorsList();
+    // Sharing / compliance / classification / org-catalog refreshes moved to the
+    // 'teams-enterprise' branch below with their markup (2026-08-05). Nothing
+    // left on this page reads them.
+    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
+  }
+  if (mode === 'teams-enterprise') {
+    // Every populator for the four sections that moved out of Get Connected.
+    // Split by what each call actually WRITES, not by name:
+    //  - refreshCatalogGetConnectedPanel  → #gc-catalog-admin/-upsell/-config,
+    //    #catalog-entry-list, #catalog-empty-hint, and the playbooks supervisor
+    //    dashboard (#playbooks-supervisor-*) it calls internally.
+    //  - refreshComplianceGetConnectedPanel → #gc-section-compliance AND the
+    //    classification schema: it calls the module-private
+    //    refreshClassificationSchemaPanel() on both the licensed and unlicensed
+    //    paths, so compliance ops + classification are ONE unit. Do not try to
+    //    give the schema section its own entry call — it has no exported one.
+    //  - refreshEmployeeCatalogPanel → #gc-catalog-employee.
+    // #sharing-token-summary is NOT refreshed here: it is driven by the
+    // MutationObserver on this pane's `class` attribute (see below), which now
+    // watches [data-pane="teams-enterprise"] instead of Get Connected.
     void refreshCatalogGetConnectedPanel();
     void refreshComplianceGetConnectedPanel();
     void refreshEmployeeCatalogPanel();
+    // Premium-plans launcher at the top of this pane — same call the Settings
+    // pane makes on entry. It writes every [data-license-status] node, so this
+    // also keeps the Settings card in step.
+    refreshLicenseLauncherStatus();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
   if (mode === 'status') {
@@ -3433,20 +3730,86 @@ function activateMode(mode: Mode): void {
     // Lazy-render the toolset once, then leave it alone — content is
     // static (one entry per MCP tool with its determinism class) and
     // re-rendering on every activation would lose the user's scroll
-    // position inside the chip list.
-    const host = document.getElementById('mcp-tools-content');
-    if (host && host.childElementCount === 0) {
-      host.innerHTML = mcpToolsOnboardingHtml();
-      wireMcpToolsOnboarding(host);
-    } else if (host) {
-      void syncMcpToolToggles(host); // refresh exposure toggles on re-entry
-    }
+    // position inside the chip list. Shared with the Get Connected modal,
+    // which needs the same guarantee before it relocates this pane.
+    ensureMcpToolsContent();
     // Scroll to top on each entry — the tool list is long and a returning
     // user should always start from the top.
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
   syncGhampusTimeTicker(mode === 'ghampus');
 }
+
+// ── Chats list in the rail ───────────────────────────────────────────────
+// Every Ghampus thread on disk (cortex/ghampus/sessions/*.jsonl), newest
+// first, rendered under Settings. Titles come from the sidecar: the local LLM
+// writes one when it is available, otherwise the opening user message is
+// truncated — so a machine with no local model still gets real titles rather
+// than placeholders. Clicking a row makes that thread active and shows it in
+// the Inbox; the thread being left stays on disk and stays listed.
+interface RailChatSummary {
+  sessionId: string;
+  title: string;
+  turnCount: number;
+  updatedAt: number;
+  active: boolean;
+}
+
+/** Guards against two in-flight renders racing (rail click + mode switch). */
+let railChatsInFlight = false;
+
+export async function renderRailChats(): Promise<void> {
+  const wrap = document.getElementById('rail-chats');
+  const list = document.getElementById('rail-chats-list');
+  if (!wrap || !list || railChatsInFlight) return;
+  railChatsInFlight = true;
+  try {
+    const res = await ipcCall<{ chats?: RailChatSummary[] }>('ghampus:chats:list', {})
+      .catch(() => null);
+    const chats = res?.chats ?? [];
+    // No history yet — hide the whole block rather than show an empty heading,
+    // and drop the body class so Settings goes back to being the sticky anchor.
+    wrap.classList.toggle('hidden', chats.length === 0);
+    document.body.classList.toggle('rail-has-chats', chats.length > 0);
+    if (chats.length === 0) {
+      list.innerHTML = '';
+      return;
+    }
+    list.innerHTML = chats.map((c) => {
+      // The FULL title goes in the title attribute; CSS clips the visible line
+      // with an ellipsis at whatever the rail's real width turns out to be.
+      const full = escapeHtml(c.title);
+      const when = new Date(c.updatedAt).toLocaleString();
+      return `<button class="rail-chat-btn${c.active ? ' active' : ''}"`
+        + ` data-session-id="${escapeHtml(c.sessionId)}"`
+        + ` title="${full} — ${escapeHtml(when)}">${full}</button>`;
+    }).join('');
+  } finally {
+    railChatsInFlight = false;
+  }
+}
+
+// Fired by clearGhampusSessionUi() after "start fresh" archives a thread.
+document.addEventListener('graphnosis:ghampus-sessions-changed', () => {
+  void renderRailChats();
+});
+
+document.getElementById('rail-chats-list')?.addEventListener('click', (ev) => {
+  const btn = (ev.target as HTMLElement | null)?.closest<HTMLButtonElement>('.rail-chat-btn');
+  const sessionId = btn?.dataset.sessionId;
+  if (!sessionId) return;
+  void (async () => {
+    const res = await ipcCall<{ ok?: boolean }>('ghampus:chats:open', { sessionId })
+      .catch(() => null);
+    if (!res?.ok) return;
+    // The cached thread is the one we just left — clear it before the Inbox
+    // re-reads, or the old conversation renders under the new session.
+    resetGhampusThreadCache();
+    activateMode('ghampus');
+    await refreshGhampusThread();
+    await renderRailChats();
+  })();
+});
 
 // Wire the rail buttons once on module load.
 document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
@@ -3626,13 +3989,8 @@ document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((btn) =>
   });
 }
 
-// ── Engram health: tap to expand on mobile ────────────────────────────────────
-// The dashboard health gauge collapses to just the grade + meter on phones
-// (mobile.css hides .g-health-meta); tapping toggles the detail text.
-document.getElementById('g-health')?.addEventListener('click', () => {
-  if (window.innerWidth > 768) return; // desktop shows details inline already
-  document.getElementById('g-health')?.classList.toggle('g-health-expanded');
-});
+// (The mobile tap-to-expand handler for the Home health gauge lived here. Both
+//  the gauge and its `.g-health-expanded` state were removed 2026-08-05.)
 
 // ── Fit the top-bar Ghampus tagline to the available space ───────────────────
 // CSS clamp() only scales with the viewport; this measures the actual gap left
@@ -6377,7 +6735,7 @@ function openConfigureClientModal(clientId: McpClientId): void {
   els.claudeModal.dataset['mcpClient'] = clientId;
   // Clear any stale apply-done state from a previous configure session
   // — without this, opening the modal a second time would show the
-  // Apply button labelled "Done" and clicking it would just close.
+  // Apply button labeled "Done" and clicking it would just close.
   delete els.claudeModal.dataset['applyDone'];
   delete els.claudeModal.dataset['hermesConfirmPending'];
   delete els.claudeModal.dataset['hermesPreview'];
@@ -6424,7 +6782,7 @@ els.btnClaudeClose.addEventListener('click', () => {
 });
 
 els.btnClaudeApply.addEventListener('click', async () => {
-  // Post-success state: the button is labelled "Done" and clicking it
+  // Post-success state: the button is labeled "Done" and clicking it
   // should dismiss the modal, NOT re-fire the apply IPC (which would
   // pointlessly re-write the same config and re-render the success
   // screen). The flag is set after a successful apply and cleared on
@@ -6517,16 +6875,19 @@ els.btnClaudeApply.addEventListener('click', async () => {
         <strong>Config file:</strong> <code>${escape(r.config_path)}</code><br/>
         ${r.remote_base
           ? `<strong>Remote cortex:</strong> <code>${escape(r.remote_base)}</code><br/>
-             <strong>Connects via:</strong> <code>mcp-remote</code> (local proxy)`
+             <strong>Connects via:</strong> <code>${escape(r.relay_path)}</code> (local proxy)`
           : `<strong>Relay binary:</strong> <code>${escape(r.relay_path)}</code><br/>
              <strong>Socket:</strong> <code>${escape(r.socket_path)}</code>`}
       </p>
       ${r.remote_base
         ? `<p style="margin-top: 8px; font-size: 14px; color: var(--fg-dim);">
              This app is attached to a remote cortex, so it serves no local socket.
-             ${escape(r.client_name)} was pointed at the remote bridge through a local
-             proxy instead — it runs on this machine, so it can reach a server that a
-             cloud-registered connector cannot. Requires <code>npx</code> (bundled with Node).
+             ${escape(r.client_name)} was pointed at the remote bridge through the Graphnosis
+             relay instead — it runs on this machine, so it can reach a server that a
+             cloud-registered connector cannot. The config contains <strong>no token</strong>:
+             the relay reads it from an owner-only (0600) file in
+             <code>~/.graphnosis/</code>, so it never appears in a process's arguments where
+             <code>ps</code> would expose it.
            </p>`
         : ''}
     `;
@@ -7968,8 +8329,11 @@ function updateStatusBar(connections: McpConnection[]): void {
       els.statusMcpDot.className = 'status-dot';
       els.statusMcpText.textContent = 'No AI client connected';
       if (railIndicator) {
+        // The name is the only element in this rail row allowed to truncate,
+        // so every branch carries the full text in a title tooltip.
         railIndicator.innerHTML =
-          '<span class="rail-mcp-dot"></span><span class="rail-mcp-name">No client</span>';
+          '<span class="rail-mcp-dot"></span>'
+          + '<span class="rail-mcp-name" title="No AI client connected">No client</span>';
       }
     }
   } else {
@@ -8094,7 +8458,7 @@ let atlasGalaxyMode = false;
 let _galaxyLoading = false; // re-entrancy guard (activateMode re-enters the tab guard)
 
 /** Render the whole cortex as a constellation: one super-node per engram (size
- *  ∝ memory count, distinct colour), linked by aggregated cross-engram edges.
+ *  ∝ memory count, distinct color), linked by aggregated cross-engram edges.
  *  Light + freeze-free (~N engrams, not N×1000 nodes). Click a super-node to
  *  zoom into that engram. */
 async function loadFullCortexGalaxy(): Promise<void> {
@@ -8118,7 +8482,7 @@ async function loadFullCortexGalaxy(): Promise<void> {
     const maxCount = Math.max(1, ...[...countById.values()], 1);
 
     // Super-nodes — text carries the engram name + count; sourceFile=graphId so
-    // each gets a distinct colour; confidence ∝ count drives its size.
+    // each gets a distinct color; confidence ∝ count drives its size.
     const superNodes: AtlasNode[] = graphs.map((g) => {
       const count = countById.get(g.graphId) ?? 0;
       // Presentation Mode: non-allowlisted engrams show a generic label so the
@@ -8611,93 +8975,41 @@ async function ensureActiveEngramLoadedForHome(): Promise<void> {
   }
 }
 
-function wireHomeEngramRetry(graphId: string): void {
-  const btn = document.getElementById('home-engram-retry') as HTMLButtonElement | null;
-  if (!btn) return;
-  btn.onclick = () => {
-    void (async () => {
-      bumpActiveEngramHomeLoadGen();
-      graphLoadFailedAt.delete(graphId);
-      _activeEngramLoadFailed = null;
-      renderHealth();
-      await ensureActiveEngramLoadedForHome();
-    })();
-  };
-}
-
+/**
+ * Make sure the active engram is resident, then repaint Home.
+ *
+ * Until 2026-08-05 this ALSO painted a per-engram health gauge (#g-health: a
+ * letter grade, a phrase, and a memories/trust/orphans line) on the Home card;
+ * that card now holds the Agents / Agempi tile and the gauge is gone. What is
+ * left is what every branch was really for — the Home dashboard still measures
+ * the ACTIVE engram whenever the sidecar's cortex-wide trust aggregate is not
+ * available yet (renderHomeDashboard → computeHealth), so it still has to be
+ * loaded, and Home still has to repaint once it is.
+ *
+ * The branch ORDER is the old one, deliberately: hollow-materializing is tested
+ * before the failure flag, because ensureActiveEngramLoadedForHome() clears the
+ * flag and reschedules for a graph that is still being built.
+ *
+ * ONE CAPABILITY WENT WITH THE GAUGE: the manual "Retry" button, which lived in
+ * its failure state and had nowhere else to go. Recovery is now automatic only
+ * — the materialize retry timer, switching engrams (bumpActiveEngramHomeLoadGen)
+ * and the next successful load all still clear `_activeEngramLoadFailed`.
+ */
 function renderHealth(): void {
   const graphId = atlasActiveGraph;
-  if (!graphId || graphId === FULL_CORTEX) {
-    els.gHealthGrade.textContent = '—';
-    els.gHealthGrade.className = 'g-health-grade';
-    els.gHealthFill.style.width = '0%';
-    els.gHealthPhrase.textContent = 'Select an engram to see its health.';
-    els.gHealthDetail.textContent = '';
-    renderHomeDashboard();
-    return;
+  const idle =
+    !graphId ||                             // nothing selected
+    graphId === FULL_CORTEX ||              // whole cortex — no single engram to load
+    deferredAtlasLoadGraph === graphId;     // an import is still landing in it
+  if (!idle) {
+    if (isEngramHollowMaterializing(graphId) && atlasLoadedForGraph !== graphId) {
+      void ensureActiveEngramLoadedForHome();
+    } else if (_activeEngramLoadFailed !== graphId && atlasLoadedForGraph !== graphId) {
+      // A graph that just failed is NOT asked for again here — that would hammer
+      // a failing read on every repaint.
+      void ensureActiveEngramLoadedForHome();
+    }
   }
-
-  if (deferredAtlasLoadGraph === graphId) {
-    els.gHealthGrade.textContent = '…';
-    els.gHealthGrade.className = 'g-health-grade';
-    els.gHealthFill.style.width = '0%';
-    els.gHealthPhrase.textContent = 'Importing into this engram…';
-    els.gHealthDetail.textContent = 'The graph will update when the import finishes.';
-    renderHomeDashboard();
-    return;
-  }
-
-  if (isEngramHollowMaterializing(graphId) && atlasLoadedForGraph !== graphId) {
-    els.gHealthGrade.textContent = '…';
-    els.gHealthGrade.className = 'g-health-grade';
-    els.gHealthFill.style.width = '0%';
-    els.gHealthPhrase.textContent = 'Building this engram…';
-    els.gHealthDetail.textContent = 'Documentation and bundled sources are loading in the background.';
-    void ensureActiveEngramLoadedForHome();
-    renderHomeDashboard();
-    return;
-  }
-
-  if (_activeEngramLoadFailed === graphId) {
-    els.gHealthGrade.textContent = '!';
-    els.gHealthGrade.className = 'g-health-grade d';
-    els.gHealthFill.style.width = '0%';
-    els.gHealthFill.style.background = 'var(--error)';
-    els.gHealthPhrase.textContent = `Couldn't load ${engramName(graphId)}.`;
-    els.gHealthDetail.innerHTML =
-      'The read timed out or the engram isn\'t resident yet. ' +
-      '<button type="button" id="home-engram-retry" class="btn-sm">Retry</button>';
-    wireHomeEngramRetry(graphId);
-    renderHomeDashboard();
-    return;
-  }
-
-  const needsLoad = atlasLoadedForGraph !== graphId;
-  if (needsLoad) {
-    els.gHealthGrade.textContent = '…';
-    els.gHealthGrade.className = 'g-health-grade';
-    els.gHealthFill.style.width = '0%';
-    els.gHealthPhrase.textContent = 'Loading this engram…';
-    els.gHealthDetail.textContent = '';
-    void ensureActiveEngramLoadedForHome();
-    renderHomeDashboard();
-    return;
-  }
-
-  const h = computeHealth();
-  els.gHealthGrade.textContent = h.grade;
-  els.gHealthGrade.className = `g-health-grade ${h.grade.toLowerCase()}`;
-  els.gHealthFill.style.width = `${h.score}%`;
-  // Tint the bar to match the grade.
-  els.gHealthFill.style.background =
-    h.grade === 'A' ? 'var(--ok)' :
-    h.grade === 'B' ? 'var(--accent)' :
-    h.grade === 'C' ? '#d9a445' :
-    'var(--error)';
-  els.gHealthPhrase.textContent = h.phrase;
-  els.gHealthDetail.textContent = h.detail;
-  // The Home dashboard reuses this health data — refresh it in lockstep so the
-  // hero pulse + trust factors never drift from the gauge.
   renderHomeDashboard();
 }
 
@@ -8720,9 +9032,11 @@ function relTimeShort(ms: number): string {
 // ── Home: Mission-Control dashboard ───────────────────────────────────────
 // Hero + cortex Trust & Vitality are CORTEX-WIDE: cortexStats (inspector_stats
 // totals) + brainVitalityReport.overall + brainVitalityReport.trust (the
-// sidecar's whole-cortex aggregates, computed once + cached). The active
-// engram lives in its own compact square card (the #g-health gauge, driven by
-// computeHealth — which only sees the loaded engram). Every number is a real,
+// sidecar's whole-cortex aggregates, computed once + cached). The square card
+// beside them no longer shows the ACTIVE engram at all — it is the default
+// agent's Agempus tile since 2026-08-05 — but computeHealth(), which only sees
+// the loaded engram, is still the fallback for the Trust factors until the
+// sidecar's cortex-wide `trust` aggregate arrives. Every number is a real,
 // decomposable fact, not a black-box composite.
 function gradeFromScore(s: number): 'A' | 'B' | 'C' | 'D' {
   return s >= 85 ? 'A' : s >= 70 ? 'B' : s >= 50 ? 'C' : 'D';
@@ -8814,13 +9128,16 @@ function renderHomeDashboard(): void {
     ).join('');
   }
 
-  // ── Active engram square card name (the #g-health gauge is driven by
-  //    renderHealth() → computeHealth(), which measures the loaded engram). ──
-  const nameEl = document.getElementById('home-engram-name');
-  if (nameEl) {
-    const g = loadedGraphs.find((x) => x.graphId === atlasActiveGraph);
-    nameEl.textContent = g?.metadata.displayName ?? atlasActiveGraph ?? '—';
-  }
+  // ── The square card is the default agent's real Agempus tile: the same
+  //    component the Agents / Agempi grid draws, from agents-grid.ts, so the two
+  //    pages can never disagree about that agent. It replaced the static
+  //    "Ghampus" chip AND the per-engram health gauge on 2026-08-05.
+  //
+  //    Painted from here so an engram being archived or unloaded — which changes
+  //    the roster without touching the skills library, and so fires no
+  //    `skills:library-changed` — still reaches it. The call is cheap and skips
+  //    its own DOM write when nothing about the tile changed. ──
+  renderHomeAgentTile();
 
   renderHomeEngramBars();
   renderHomeCoherenceBanner();
@@ -9574,7 +9891,7 @@ function wireHomeCardRetry(body: HTMLElement, retry: () => void): void {
 function showHomeSkeletons(): void {
   const SKEL = '<div class="home-skel"></div><div class="home-skel w70"></div>';
   // Always reset async card bodies on Home entry — stale partial content from a
-  // cancelled prior load left titled cards with empty bodies on some machines.
+  // canceled prior load left titled cards with empty bodies on some machines.
   for (const id of ['home-needs', 'home-stranded', 'home-digest', 'home-foresight', 'home-brainact', 'home-growth', 'home-mhealth', 'home-selfheal']) {
     const card = document.getElementById(id);
     const body = document.getElementById(`${id}-body`);
@@ -9746,7 +10063,7 @@ function finalizeHomeAsyncCardsIfStale(): void {
   for (const id of HOME_ASYNC_CARD_IDS) finalizeSingleHomeAsyncCard(id);
 }
 
-/** Last-resort guard — cards must never stay on skeleton forever (IPC hang / cancelled chain). */
+/** Last-resort guard — cards must never stay on skeleton forever (IPC hang / canceled chain). */
 const HOME_ASYNC_CARD_WATCHDOG_MS: Record<(typeof HOME_ASYNC_CARD_IDS)[number], number> = {
   'home-needs': 12_000,
   'home-digest': 65_000,
@@ -10792,7 +11109,7 @@ function mcpToolsOnboardingHtml(): string {
                history, vitality, save_run, resume_run) all carry the
                skill-training Pro gate. -->
           <div class="g-deck-cmd-group">
-            <span class="g-deck-cmd-grouplabel">Skills (Autonomous Praxis)</span>
+            <span class="g-deck-cmd-grouplabel">Skills (Agempi)</span>
             <div class="g-deck-cmd-chips">
               <span class="g-deck-cmd-chip" data-tool="list_skills">list_skills</span>
               <span class="g-deck-cmd-chip" data-tool="get_skill">get_skill</span>
@@ -11253,7 +11570,7 @@ async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: Node
   `;
 
   // Clicking the candidate text loads it in the right-panel Node Inspector,
-  // mirroring the source node's click-to-inspect behaviour in the card head.
+  // mirroring the source node's click-to-inspect behavior in the card head.
   slot.querySelector<HTMLElement>('.g-deck-trivia-text')?.addEventListener('click', () => {
     selectGraphnosisNode(candidate.id, { trace: true });
   });
@@ -11555,7 +11872,7 @@ function skipForwardDeck(): void {
   }
 }
 
-// Greys out the deck-header nav arrows at the edges of the queue.
+// Grays out the deck-header nav arrows at the edges of the queue.
 // Next is disabled once we're viewing the LAST card (10 / 10): there's
 // no "skip past the end" navigation; the empty-state lives there on
 // its own. Prev is disabled at the first card.
@@ -12560,7 +12877,7 @@ function renderDetailPane(): void {
         opt.addEventListener('click', async () => {
           // "Disconnect" path: remove the edge entirely and don't replace
           // it. The two memories are no longer related per the user's
-          // judgement. No retype, no new edge — just unlink.
+          // judgment. No retype, no new edge — just unlink.
           if (opt.dataset['disconnect'] === '1') {
             close();
             if (!edgeId) return;
@@ -14216,7 +14533,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
       // freshly-created engine also opens with the full graph un-dimmed.
       if (enteringFresh) mainAtlas?.resetEmphasis();
       // Frame the graph on first mount. On mobile, also re-frame on every
-      // entry so the node cloud is always centred in the (narrow) viewport —
+      // entry so the node cloud is always centered in the (narrow) viewport —
       // the user can't easily re-fit by hand on a phone.
       const isMobile = window.innerWidth <= 768;
       if (firstMount || isMobile) setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
@@ -14252,7 +14569,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     void refreshLlmStatus();
     // Refresh the cached Pro license so the GNN block paints the upgrade
     // card immediately on entry for free users (matching the MemoryStudio
-    // GNN Exploration chip behaviour).
+    // GNN Exploration chip behavior).
     void refreshGnnLicenseStatus();
   }
 }
@@ -14608,7 +14925,7 @@ function renderAtlasLegend(): void {
     const cls = s.visible ? '' : 'off';
     // Pretty-print AI-conversation sources: the raw label looks like
     // "ai-conversation:1779139479066:Milestone — first end-to-end..."
-    // which is just noise next to clean user-labelled sources like
+    // which is just noise next to clean user-labeled sources like
     // "collaboration" or "book-notes.md". Collapse to "AI: <topic>" so
     // the legend reads like a list of things, not internal source refs.
     // The full original label stays in the title attribute for hover.
@@ -14720,17 +15037,13 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
     return;
   }
   atlasGalaxyMode = false;
-  // Conditional jump to the 3D Engram view. Selecting an engram from the top
-  // picker means "show me this engram" → jump to 3D — UNLESS we're on a pane
-  // that uses the picker to scope its OWN content in place (Sources filters its
-  // list, Foresight/Skills/Power-tools/Presentation/Activity/Settings/Audit all
-  // scope rather than visualize), where yanking to 3D would interrupt the task.
-  // So: Home, Search, the engram view, and Get Connected jump; config/scope
-  // panes stay put.
-  const SCOPE_IN_PLACE_MODES = new Set<Mode>([
-    'sources', 'activity', 'presentation', 'settings', 'skills', 'goals', 'power-tools', 'mcp-tools', 'status',
-  ]);
-  const jumpTo3D = !SCOPE_IN_PLACE_MODES.has(currentMode);
+  // Switching engrams never navigates. Picking an engram re-scopes whichever
+  // pane you are already on and leaves you there; the 3D view reloads in the
+  // background so it is ready when you go to it. (This used to jump you to the
+  // 3D Engram view from "browse" panes like Home and Search, while a
+  // SCOPE_IN_PLACE_MODES allowlist held you put on the config/scope panes.
+  // Yanking the user out of the pane they were working in was the wrong default
+  // everywhere, so both the jump and the allowlist are gone.)
   // Lazy-boot: selecting a not-yet-resident engram (loaded:false) is normal —
   // do NOT bail. The sidecar's IPC dispatch hook ensureLoaded()s the graphId on
   // the nodes.list/edges.list calls below, so the engram loads on demand and the
@@ -14753,10 +15066,6 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   showAtlasLoading(
     loadedGraphs.find((g) => g.graphId === atlasActiveGraph)?.metadata.displayName ?? atlasActiveGraph,
   );
-  // From a browse context, navigate to the 3D Engram so the user lands on
-  // the visualization of the engram they just picked. Both 'atlas' and
-  // 'search' share the atlas mode-pane, so this just flips the inner view.
-  if (jumpTo3D) activateMode('engram');
   graphnosisSelectedId = null;
   atlasSelectedId = null;
   // Cancel any pending Home data loads — they're cortex-wide (not per-engram)
@@ -14769,7 +15078,7 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   // Also force a full refreshStats() so the sources DOM is rebuilt from
   // a fresh IPC snapshot — this fixes the "no sources listed" stale-DOM
   // bug that occurs when the filter + DOM get out of sync after a switch.
-  if (currentMode === 'sources' && atlasActiveGraph) {
+  if (isSourcesListVisible() && atlasActiveGraph) {
     sourcesEngramFilter = atlasActiveGraph;
     els.sourcesEngramSelect.value = atlasActiveGraph;
     updateReingestAllLabel();
@@ -14888,7 +15197,7 @@ els.btnAtlasAlive.addEventListener('click', () => {
   const syncStageFlag = (visible: boolean) => {
     stage?.classList.toggle('nav-help-visible', visible);
   };
-  // Always show on launch. The old behaviour persisted a "hidden" flag in
+  // Always show on launch. The old behavior persisted a "hidden" flag in
   // localStorage so dismissing the cheatsheet stuck across sessions, but
   // the navigation bindings are subtle enough (drag rotate, shift+drag
   // pan, scroll zoom) that a refresher every launch costs little and
@@ -15587,7 +15896,7 @@ document.querySelectorAll<HTMLButtonElement>('.g-activity-chip').forEach((btn) =
 // sequence (reload data, re-render dashboard/atlas/detail, update
 // recap, update forgotten row).
 //
-// Three layers of staleness defence:
+// Three layers of staleness defense:
 //   1. Push events  → sub-second updates when everything's healthy
 //   2. 3s poll      → catches dropped events (backpressure, socket
 //                     reconnect race)
@@ -15671,7 +15980,7 @@ void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', 
   if (allEngramsReportLoaded()) markEngramsLoaded();
   // Catch up picker + hero stats if boot broadcasts landed before subscribe.
   else if (isEngramPreloadInProgress()) {
-    schedulePeriodicGreyedRefresh();
+    schedulePeriodicGrayedRefresh();
     markBootSweepCompleteIfCatalogReady();
     seedCortexStatsFromCatalog();
     cancelDebouncedFederatedStats();
@@ -15690,7 +15999,7 @@ type ConsentPromptPayload = {
   clientName: string;
   tiers: Array<'personal' | 'sensitive'>;
   /** The specific engram(s) access is requested for (per-engram consent). When
-   *  present the modal names them so the user authorises exactly these. */
+   *  present the modal names them so the user authorizes exactly these. */
   engrams?: Array<{ graphId: string; name: string; tier: 'personal' | 'sensitive' }>;
   suggestedDurations: Array<{ tier: string; durationMs: number }>;
   privacyUrl: string | null;
@@ -15767,7 +16076,7 @@ void listen<ConsentPromptPayload>('graphnosis://consent-prompt', (evt) => {
   if (bodyEl) bodyEl.innerHTML = CONSENT_BODY_EXTERNAL;
   const engrams = p.engrams ?? [];
   if (subEl) {
-    // Name the specific engram(s) so the user authorises exactly these, not the
+    // Name the specific engram(s) so the user authorizes exactly these, not the
     // whole tier (per-engram consent). Fall back to tiers for older payloads.
     subEl.textContent = engrams.length
       ? `Access requested to ${engrams.length === 1 ? 'engram' : 'engrams'}: ${engrams.map((e) => e.name).join(', ')}`
@@ -15888,7 +16197,7 @@ function resetPageScopesForFullCortex(): void {
   sourcesEngramFilter = '';
   if (els.sourcesEngramSelect) els.sourcesEngramSelect.value = '';
   if (els.activityEngramSelect) els.activityEngramSelect.value = '';
-  if (currentMode === 'sources') applySourcesFilter();
+  if (isSourcesListVisible()) applySourcesFilter();
   if (currentMode === 'activity') applyActivityFilter();
 }
 
@@ -16101,7 +16410,7 @@ let _skillsRefreshTimer: number | null = null;
 /** Debounce hero-only stats during the boot engram sweep — a full
  *  refreshCortexScopedStats per engram (inspector_stats + brain IPC +
  *  sources DOM rebuild) saturates the IPC queue and freezes the UI on large
- *  cortexes. Federated hero numbers are enough while greyed engrams load. */
+ *  cortexes. Federated hero numbers are enough while grayed engrams load. */
 let _federatedStatsDebounce: ReturnType<typeof setTimeout> | null = null;
 function scheduleDebouncedFederatedStats(): void {
   if (_federatedStatsDebounce) clearTimeout(_federatedStatsDebounce);
@@ -16221,7 +16530,7 @@ function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = fals
     if (saved && saved !== atlasActiveGraph
         && graphs.some((g) => !g.metadata.archived && g.graphId === saved)) {
       void switchActiveEngram(saved);
-      schedulePeriodicGreyedRefresh();
+      schedulePeriodicGrayedRefresh();
       return;
     }
     syncEngramPicker();
@@ -16237,11 +16546,11 @@ function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = fals
         })();
       }, allDone ? 0 : 350);
     }
-    schedulePeriodicGreyedRefresh();
+    schedulePeriodicGrayedRefresh();
   });
 }
 
-/** Periodic catch-up: while ANY engram in loadedGraphs is still greyed
+/** Periodic catch-up: while ANY engram in loadedGraphs is still grayed
  *  (loaded === false), poll the sidecar every 5s for a fresh snapshot.
  *  Self-stops once all engrams report loaded — no recurring timer cost
  *  in steady state. Defensive against missed `engrams-loading` events:
@@ -16250,12 +16559,12 @@ function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = fals
  *
  *  Idempotent: calling it while a timer is already scheduled is a no-op.
  *  The single tick re-schedules itself if still needed. */
-let _periodicGreyedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-function schedulePeriodicGreyedRefresh(): void {
-  if (_periodicGreyedRefreshTimer !== null) return; // already scheduled
+let _periodicGrayedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePeriodicGrayedRefresh(): void {
+  if (_periodicGrayedRefreshTimer !== null) return; // already scheduled
   if (!isEngramPreloadInProgress()) return; // boot sweep done (or not started)
-  _periodicGreyedRefreshTimer = window.setTimeout(() => {
-    _periodicGreyedRefreshTimer = null;
+  _periodicGrayedRefreshTimer = window.setTimeout(() => {
+    _periodicGrayedRefreshTimer = null;
     void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true })
       .then((graphs) => {
         const before = loadedGraphs.filter((g) => g.loaded === false).length;
@@ -16275,11 +16584,11 @@ function schedulePeriodicGreyedRefresh(): void {
           void refreshCortexScopedStats();
         } else {
           updateEngramLoadingStatus(0, 0);
-          schedulePeriodicGreyedRefresh();
+          schedulePeriodicGrayedRefresh();
         }
       })
       .catch(() => {
-        schedulePeriodicGreyedRefresh();
+        schedulePeriodicGrayedRefresh();
       });
   }, 5000);
 }
@@ -16453,7 +16762,7 @@ const PHASE_LINE: Record<string, PhaseLine> = {
  *  (which use the Graphnosis wordmark gradient endpoints) so the user can
  *  read the dot at a glance. */
 const PHASE_TONE_COLOR: Record<PhaseLine['tone'], string> = {
-  det:  '#9aa4ad',  // grey-ish for deterministic
+  det:  '#9aa4ad',  // gray-ish for deterministic
   llm:  '#6ab3c8',  // turquoise — matches GLL pill (and the wordmark start)
   gll:  '#6ab3c8',
   gnn:  '#a78bfa',  // purple — matches GNN pill (and the wordmark end)
@@ -16691,7 +17000,7 @@ const PRES_SURFACE_DEFS: Array<{ key: PresSurface; label: string; hint: string }
   { key: 'vitality',       label: 'Vitality & health',  hint: 'Cortex grade, memory-health figures' },
   { key: 'cortexPath',     label: 'Cortex folder path',  hint: 'The on-disk location in the status bar' },
   { key: 'mcpClients',     label: 'AI clients',         hint: 'Connected MCP client names (status bar, Home, MCP Tools)' },
-  { key: 'connectors',     label: 'Data sources / connectors', hint: 'Connector names + file paths in Get Connected' },
+  { key: 'connectors',     label: 'Data sources / connectors', hint: 'Connector names + file paths in Connections / Synapses' },
   { key: 'recents',        label: 'Recents',            hint: 'Recently-touched memory previews' },
   { key: 'studioResults',  label: 'Recall results', hint: 'Recall / dig-deeper output (per-engram sections still follow your engram picks)' },
   { key: 'predict',        label: 'Foresight — Predict',  hint: 'The Predict output (risks & opportunities) on the Foresight page' },
@@ -18022,7 +18331,7 @@ function renderLbInsights(): void {
       const diag = brainStatus?.lastInsightResult;
       let diagLine: string;
       if (!diag) {
-        diagLine = 'No scans completed yet — Graphnosis analyses your engrams every 6 hours and surfaces patterns, gaps, and opportunities here. Click <strong>Scan now</strong> for an immediate pass.';
+        diagLine = 'No scans completed yet — Graphnosis analyzes your engrams every 6 hours and surfaces patterns, gaps, and opportunities here. Click <strong>Scan now</strong> for an immediate pass.';
       } else {
         const when = new Date(diag.at).toLocaleString();
         if (diag.status === 'ok') {
@@ -18034,7 +18343,7 @@ function renderLbInsights(): void {
         } else if (diag.status === 'parse-error') {
           diagLine = `Last scan at <strong>${escape(when)}</strong> <strong style="color:var(--color-status-warn-gold)">failed to parse</strong> — ${escape(diag.message ?? 'the LLM output was malformed')}. Retry scheduled within 1 hour.`;
         } else if (diag.status === 'no-data') {
-          diagLine = `Last scan at <strong>${escape(when)}</strong> found <strong>no engrams with enough nodes</strong> to summarise — ${escape(diag.message ?? 'add more memories first')}.`;
+          diagLine = `Last scan at <strong>${escape(when)}</strong> found <strong>no engrams with enough nodes</strong> to summarize — ${escape(diag.message ?? 'add more memories first')}.`;
         } else {
           diagLine = `Last scan at <strong>${escape(when)}</strong> errored: ${escape(diag.message ?? 'unknown error')}.`;
         }
@@ -18911,7 +19220,7 @@ interface EmbeddingSwitchProgressPayload {
   total?: number;
   nodesInGraph?: number;
   graphsRebuilt?: number;
-  cancelled?: boolean;
+  canceled?: boolean;
   errors?: Array<{ graphId: string; error: string }>;
 }
 function openEmbeddingProgressModal(target: 'english' | 'multilingual'): void {
@@ -18935,7 +19244,7 @@ function openEmbeddingProgressModal(target: 'english' | 'multilingual'): void {
   cancelBtn.disabled = false;
   cancelBtn.onclick = () => {
     cancelBtn.disabled = true;
-    cancelBtn.textContent = 'Cancelling…';
+    cancelBtn.textContent = 'Canceling…';
     void ipcCall('embedding:cancelSwitch', {}).catch(() => { /* non-fatal */ });
   };
   phaseEl.textContent = 'Starting…';
@@ -18995,10 +19304,10 @@ void listen<EmbeddingSwitchProgressPayload>('graphnosis://embedding-switch-progr
     }
     case 'done': {
       barEl.style.width = '100%';
-      phaseEl.textContent = p.cancelled ? 'Cancelled' : 'Done';
+      phaseEl.textContent = p.canceled ? 'Canceled' : 'Done';
       const errs = p.errors ?? [];
-      if (p.cancelled) {
-        detailEl.textContent = `Cancelled after re-embedding ${p.graphsRebuilt ?? 0} engrams. The remaining engrams kept their old vectors (recoverable from the snapshot if needed).`;
+      if (p.canceled) {
+        detailEl.textContent = `Canceled after re-embedding ${p.graphsRebuilt ?? 0} engrams. The remaining engrams kept their old vectors (recoverable from the snapshot if needed).`;
       } else {
         detailEl.textContent = errs.length === 0
           ? `Re-embedded ${p.graphsRebuilt ?? 0} engrams. Your memory now uses the new model.`
@@ -19201,7 +19510,7 @@ interface ReingestProgressPayload {
   index?: number;
   total?: number;
   reingested?: number;
-  cancelled?: boolean;
+  canceled?: boolean;
   skipped?: number | Array<{ sourceId: string; reason: string }>;
   failed?: number | Array<{ sourceId: string; error: string }>;
   perGraph?: ReingestPerGraphResult[];
@@ -19232,7 +19541,7 @@ function openReingestModal(opts?: { graphId: string; displayName: string }): voi
   cancelBtn.textContent = 'Cancel';
   cancelBtn.onclick = () => {
     cancelBtn.disabled = true;
-    cancelBtn.textContent = 'Cancelling…';
+    cancelBtn.textContent = 'Canceling…';
     void ipcCall('reingest:cancel', {}).catch(() => { /* non-fatal */ });
   };
   phaseEl.textContent = 'Starting…';
@@ -19300,13 +19609,13 @@ void listen<ReingestProgressPayload>('graphnosis://reingest-progress', (evt) => 
       // is what the user reads and what they repeat back ("the reingest is
       // done"), while the counts underneath scroll past. Name the failures in
       // the phase line itself.
-      phaseEl.textContent = p.cancelled
-        ? 'Cancelled'
+      phaseEl.textContent = p.canceled
+        ? 'Canceled'
         : failedCount > 0
           ? `Done — ${failedCount} source(s) failed`
           : 'Done';
-      detailEl.textContent = p.cancelled
-        ? `Cancelled after reingesting ${reingested} source(s). ${skippedCount} skipped before cancel. Remaining sources kept their old chunks (recoverable from snapshot).`
+      detailEl.textContent = p.canceled
+        ? `Canceled after reingesting ${reingested} source(s). ${skippedCount} skipped before cancel. Remaining sources kept their old chunks (recoverable from snapshot).`
         : `Reingested ${reingested} source(s). ${skippedCount} skipped. ${failedCount} failed.`;
       counterEl.textContent = '';
       // Reset the cancel button so a future reingest starts clean.
@@ -19642,7 +19951,7 @@ function seedCortexStatsFromCatalog(): void {
   if (eng) eng.textContent = `${engrams} engram${engrams === 1 ? '' : 's'}`;
 }
 
-/** True when the picker shows no greyed engrams — sidecar sweep is done. */
+/** True when the picker shows no grayed engrams — sidecar sweep is done. */
 function allEngramsReportLoaded(): boolean {
   return _bootSweepComplete
     || loadedGraphs.length === 0
@@ -19778,127 +20087,87 @@ let skillDemosOfferChecked = false;
 interface SkillDemosIngestResult {
   packsAttempted: number;
   skillsIngested: number;
-  language?: 'en' | 'ro';
-  skillsSkippedOtherLanguage?: number;
   skillsSkippedEmpty: string[];
   packErrors: Array<{ filename: string; reason: string }>;
   verified: Array<{ filename: string; verified: boolean }>;
+  /** Per-Agempus outcome. The flat totals above sum all three, which cannot
+   *  express "Coach was refused but the other two installed" — the case that
+   *  most needs saying. Optional so an older sidecar still typechecks. */
+  perAgempus?: Array<{
+    engramId: string;
+    displayName: string;
+    skillsIngested: number;
+    refused?: { reason: string; foreignSourceCount: number; foreignSourceRefs: string[] };
+  }>;
 }
 
-/** Ask the sidecar what to do about the Skill Demos engram, then act on it.
- *  Runs once per unlock. `offer` shows a banner; `reingest` runs silently
- *  with a toast; `none` does nothing. */
+/** Ask the sidecar what to do about the three default Agempi, then act on it.
+ *  Runs once per unlock. `install` and `reingest` both run silently with a
+ *  toast; `none` does nothing.
+ *
+ *  There is no banner and no prompt any more. The Agempi ARE the app's default
+ *  agents (roadmap AG.39) rather than optional sample content, so asking
+ *  permission to install them made as much sense as asking permission to
+ *  create the docs engram. Ghampus Hush and Coach arrive switched OFF, which
+ *  is what the old "Not now" button was really for — the owner still decides
+ *  whether they run, they just decide it on the Agents grid instead of in a
+ *  modal they see once and can never get back.
+ *
+ *  The English/Română picker went with it: the packs are English-only. */
 async function checkSkillDemosOffer(): Promise<void> {
   if (skillDemosOfferChecked) return;
   skillDemosOfferChecked = true;
   try {
     const appVersion = await getVersion();
-    const { decision } = await ipcCall<{ decision: 'offer' | 'reingest' | 'none'; packsAvailable: number }>(
+    const { decision } = await ipcCall<{ decision: 'install' | 'reingest' | 'none'; packsAvailable: number }>(
       'skillDemos:checkOffer', { appVersion },
     );
-    if (decision === 'offer') {
-      // Show the banner — unlike docs (silent ingest), demos are
-      // SOP-style content users probably want to opt into. They're
-      // labeled in two languages and could be irrelevant to a fresh
-      // user's actual workflow, so a one-click yes is friendlier than
-      // a surprise extra engram appearing.
-      showSkillDemosOfferBanner();
-    } else if (decision === 'reingest') {
-      // App updated and the user already had demos installed → refresh
-      // silently. Wait for the initial engram sweep to finish so we
-      // don't saturate the embed workers.
-      await Promise.race([
-        engramsLoaded,
-        new Promise<void>((r) => setTimeout(r, 30_000)),
-      ]);
-      const tid = addIngestToast('Updating Skill Demos', 'The app updated — refreshing the bundled demos…');
-      try {
-        const result = await ipcCall<SkillDemosIngestResult>('skillDemos:ingest', { appVersion });
-        finishIngestToast(
-          tid, 'success',
-          `Skill Demos updated · ${result.skillsIngested} skill(s) across ${result.packsAttempted} pack(s)` +
-          (result.packErrors.length ? `, ${result.packErrors.length} failed` : ''),
-        );
-        await fetchGraphsMetadata();
-        await fetchSkillsLibrary();
-        renderSkillsLibrary();
-        void refreshStats();
-      } catch (e) {
-        finishIngestToast(tid, 'error', `Couldn't update Skill Demos: ${String(e)}`);
-      }
-    }
-    // 'none' → nothing to do.
-  } catch (e) {
-    console.error('skillDemos:checkOffer failed', e);
-  }
-}
+    if (decision !== 'install' && decision !== 'reingest') return; // 'none'
 
-function showSkillDemosOfferBanner(): void {
-  document.getElementById('skill-demos-offer-banner')?.classList.remove('hidden');
-}
-
-function hideSkillDemosOfferBanner(): void {
-  document.getElementById('skill-demos-offer-banner')?.classList.add('hidden');
-}
-
-// Selected language for the skill-demos install. Defaults to English; the
-// two-button segmented control in the offer banner toggles it. Only the
-// chosen-language set of 3 skills is ingested (never both / all 6).
-let skillDemosLang: 'en' | 'ro' = 'en';
-document.getElementById('skill-demos-lang')?.querySelectorAll<HTMLButtonElement>('.skill-demos-lang-btn')
-  .forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const lang = btn.dataset['lang'];
-      if (lang !== 'en' && lang !== 'ro') return;
-      skillDemosLang = lang;
-      document.getElementById('skill-demos-lang')
-        ?.querySelectorAll<HTMLButtonElement>('.skill-demos-lang-btn')
-        .forEach((b) => {
-          const on = b === btn;
-          b.classList.toggle('active', on);
-          b.setAttribute('aria-checked', on ? 'true' : 'false');
-        });
-    });
-  });
-
-document.getElementById('skill-demos-offer-add')?.addEventListener('click', () => {
-  const addBtn = document.getElementById('skill-demos-offer-add') as HTMLButtonElement | null;
-  const dismissBtn = document.getElementById('skill-demos-offer-dismiss') as HTMLButtonElement | null;
-  if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'Adding demos…'; }
-  if (dismissBtn) dismissBtn.disabled = true;
-  void (async () => {
-    const langLabel = skillDemosLang === 'ro' ? 'Romanian' : 'English';
-    const tid = addIngestToast('Adding Skill Demos', `Importing the 3 bundled ${langLabel} starter skills…`);
+    const installing = decision === 'install';
+    // Wait for the initial engram sweep so three pack ingests don't saturate
+    // the embed workers on a first unlock.
+    await Promise.race([
+      engramsLoaded,
+      new Promise<void>((r) => setTimeout(r, 30_000)),
+    ]);
+    const tid = addIngestToast(
+      installing ? 'Setting up your agents' : 'Updating your agents',
+      installing
+        ? 'Installing Onboarding, Ghampus Hush and Coach…'
+        : 'The app updated — refreshing the built-in agents…',
+    );
     try {
-      const appVersion = await getVersion();
-      const result = await ipcCall<SkillDemosIngestResult>('skillDemos:ingest', { appVersion, language: skillDemosLang });
-      hideSkillDemosOfferBanner();
+      const result = await ipcCall<SkillDemosIngestResult>('skillDemos:ingest', { appVersion });
+      // Report what actually landed, per agent. A refusal (owner work in one of
+      // the engrams) is a real outcome and has to be said out loud — summing it
+      // into a single skill count is how "0 skills" reads as success.
+      const refused = (result.perAgempus ?? []).filter((a) => a.refused);
+      const installed = (result.perAgempus ?? []).filter((a) => a.skillsIngested > 0);
+      const detail = installed.length
+        ? installed.map((a) => `${a.displayName} (${a.skillsIngested})`).join(', ')
+        : 'no skills';
       finishIngestToast(
-        tid, 'success',
-        `Skill Demos added · ${result.skillsIngested} skill(s) across ${result.packsAttempted} pack(s)` +
-        (result.packErrors.length ? `, ${result.packErrors.length} failed` : ''),
+        tid,
+        refused.length || result.packErrors.length ? 'error' : 'success',
+        `${installing ? 'Agents installed' : 'Agents updated'} · ${detail}`
+        + (refused.length ? ` — skipped ${refused.map((a) => a.displayName).join(', ')}: your own work is in there` : '')
+        + (result.packErrors.length ? `, ${result.packErrors.length} pack(s) failed` : ''),
       );
       await fetchGraphsMetadata();
-      // Refresh the in-memory skills library so the 3 freshly-ingested
-      // demo skills surface in the Skills w/ Goals list. fetchGraphsMetadata
-      // updates the engram picker but the skills list reads from a
-      // separate `skillsLibrary` cache that needs its own refetch.
+      // The skills list reads from a separate `skillsLibrary` cache that needs
+      // its own refetch — fetchGraphsMetadata only updates the engram picker.
       await fetchSkillsLibrary();
       renderSkillsLibrary();
       void refreshStats();
       void pollGraphMutations();
     } catch (e) {
-      finishIngestToast(tid, 'error', `Couldn't add Skill Demos: ${String(e)}`);
-      if (addBtn) { addBtn.disabled = false; addBtn.textContent = 'Add demos'; }
-      if (dismissBtn) dismissBtn.disabled = false;
+      finishIngestToast(tid, 'error', `Couldn't set up the built-in agents: ${String(e)}`);
     }
-  })();
-});
-
-document.getElementById('skill-demos-offer-dismiss')?.addEventListener('click', () => {
-  hideSkillDemosOfferBanner();
-  void ipcCall('skillDemos:decline', {}).catch((e) => console.error('skillDemos:decline failed', e));
-});
+  } catch (e) {
+    console.error('skillDemos:checkOffer failed', e);
+  }
+}
 
 // Selection state for the banner: null = "Create new", string = existing graphId.
 let pendingEngramSuggestion: EngramSuggestPayload | null = null;
@@ -20284,7 +20553,7 @@ const TOUR_STEPS: Array<{ title: string; body: string; connectArea?: boolean }> 
     // MemoryStudio as the power-user dashboard so users discover it
     // without needing to stumble upon the chip later.
     title: 'Skills — your knowledge, compiled.',
-    body: 'Ghampus turns what you know into compact, AI-loadable instructions — system prompts, .cursorrules, .claude/CLAUDE.md, or portable .gsk packs.\n\nTrain once; Graphnosis Autonomous Praxis (Pro) retrains your skills on schedule, on cortex growth, or as a skill\'s vitality decays. The compile is autonomous; the export is yours.\n\nWatch it all live in MemoryStudio — Ghampus\' power-user workspace for recall, edits, GNN exploration, and skill training.',
+    body: 'Ghampus turns what you know into compact, AI-loadable instructions — system prompts, .cursorrules, .claude/CLAUDE.md, or portable .gsk packs.\n\nTrain once; Graphnosis (Pro) retrains the skills your Agempi work from, on schedule, on cortex growth, or as a skill\'s vitality decays. The compile is autonomous; the export is yours.\n\nWatch it all live in MemoryStudio — Ghampus\' power-user workspace for recall, edits, GNN exploration, and skill training.',
   },
   {
     title: 'Your local, encrypted, private memory',
@@ -20303,7 +20572,7 @@ function startTour(): void {
   // The window-state plugin restores whatever size + maximize state the
   // user last had. If they were maximized when they cleared the tour
   // (or this is a brand-new install on a high-DPI display), the tour
-  // overlay sits inside an enormous window with a tiny centred card,
+  // overlay sits inside an enormous window with a tiny centered card,
   // which reads as "the app is broken" on first impression. Shrink to
   // a tour-friendly default and un-maximize before showing the card.
   // The user's preferred size restores naturally the next time they
@@ -20312,7 +20581,7 @@ function startTour(): void {
   // (ensureMinWindowSize() — runs before render() so the user sees a
   // stable window from frame zero). Tour just un-maximizes if needed
   // so the overlay reads as a card rather than a tiny floater in a
-  // huge maximised window.
+  // huge maximized window.
   void (async () => {
     try {
       const w = getCurrentWindow();
@@ -20358,7 +20627,7 @@ function startTour(): void {
     // completes, from Settings + the rail's get-connected shortcuts.
     if (step.connectArea) {
       els.tourConnectArea.classList.add('visible');
-      // Curated, organised, deliberately broad. The catch-all "Anything
+      // Curated, organized, deliberately broad. The catch-all "Anything
       // that POSTs a webhook" line at the end is the honest backstop —
       // anything not listed here can still feed Graphnosis through the
       // generic webhook connector.
@@ -21227,7 +21496,7 @@ async function openMobileWizard(): Promise<void> {
               enabled: enabledCb?.checked ?? false,
               port: parseInt(portInput?.value ?? '3457', 10),
               host: hostSelect?.value ?? '127.0.0.1',
-              // Normalised in the settings layer (trailing slash and a
+              // Normalized in the settings layer (trailing slash and a
               // pasted /mcp are stripped) so consumers append the path.
               publicUrl: publicUrlInput?.value.trim() ?? '',
             },
@@ -22304,13 +22573,20 @@ function syncGezExportButton(): void {
   });
 }
 
-// Refresh sharing summary when the Get Connected page becomes visible.
+// Refresh sharing summary when the Teams & Enterprise page becomes visible.
+// Retargeted 2026-08-05 when #gc-section-sharing moved off Get Connected. This
+// observer is the ONLY entry-time populator of #sharing-token-summary. Left
+// pointing at the old pane it would still have "worked" — ids are global, so
+// getElementById keeps resolving and nothing throws — but it would have fired on
+// the wrong pane: opening Get Connected would refresh an off-screen panel, and
+// opening Teams & Enterprise would show whatever was last loaded. Silent stale
+// data, no error. It must watch the pane the markup actually lives in.
 {
-  const gcPane = document.querySelector('[data-pane="get-connected"]');
-  if (gcPane) {
+  const tePane = document.querySelector('[data-pane="teams-enterprise"]');
+  if (tePane) {
     new MutationObserver(() => {
-      if (!gcPane.classList.contains('hidden')) void refreshSharingTokenSummary();
-    }).observe(gcPane, { attributes: true, attributeFilter: ['class'] });
+      if (!tePane.classList.contains('hidden')) void refreshSharingTokenSummary();
+    }).observe(tePane, { attributes: true, attributeFilter: ['class'] });
   }
 }
 
@@ -22934,7 +23210,7 @@ async function maybeOfferCatalogPackages(): Promise<void> {
     const suffix = available.length > 3 ? ` (+${available.length - 3} more)` : '';
     const go = await gConfirm(
       `${available.length} organization package${available.length === 1 ? '' : 's'} available`,
-      `${names}${suffix}\n\nAdd to your cortex now? You can also browse in Get Connected → Organization engram catalog.`,
+      `${names}${suffix}\n\nAdd to your cortex now? You can also browse in Teams & Enterprise → Organization Catalog of Graphnosis Agempi.`,
     );
     if (!go) return;
     for (const row of available) {
@@ -23269,17 +23545,24 @@ function installCustomEngramPicker(): void {
       const aria = isDisabled ? ' aria-disabled="true"' : '';
       // Pending engrams (still loading from disk) get a rotating spinner
       // and a tooltip explaining the state. Without this the user just
-      // sees a greyed-out row with no indication of why.
+      // sees a grayed-out row with no indication of why.
       const spinner = isDisabled
         ? `<span class="engram-picker-loading-spinner" aria-hidden="true">⟳</span>`
         : '';
+      // Rows never wrap (see .engram-picker-option in app.css) — a name longer
+      // than the panel's max-width ellipsizes instead, so the full name goes on
+      // the row's `title` and stays readable on hover. Truncation with no way
+      // to read the whole thing is the failure mode being avoided here.
+      // Suppressed while Presentation Mode is on: a `title` can't be CSS-masked
+      // and would leak the engram name that the label span is redacting.
+      // (Disabled rows keep their own explanatory tooltip, which names nothing.)
       const title = isDisabled
         ? ' title="Still loading from disk — usually a few seconds, sometimes longer for large engrams. Click outside and reopen the picker to refresh."'
-        : '';
+        : presActive() ? '' : ` title="${escapeHtml(o.text)}"`;
       const divider = isFull ? '<div class="engram-picker-divider" aria-hidden="true"></div>' : '';
       // Presentation Mode: the option's engram name redacts unless allowlisted
       // (the name text only — the row stays clickable).
-      return `<button type="button" class="${classes.join(' ')}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}"${aria}${title}>${spinner}<span data-pres="engram:${escapeHtml(o.value)}">${escapeHtml(o.text)}</span></button>${divider}`;
+      return `<button type="button" class="${classes.join(' ')}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}"${aria}${title}>${spinner}<span class="engram-picker-option-label" data-pres="engram:${escapeHtml(o.value)}">${escapeHtml(o.text)}</span></button>${divider}`;
     }).join('');
     const curOpt = opts.find((o) => o.value === sel.value) ?? opts.find((o) => !o.disabled) ?? opts[0];
     labelEl.textContent = curOpt?.text ?? '—';
@@ -23607,6 +23890,7 @@ document.addEventListener('graphnosis:attention-dismiss', () => {
 initUnlock({ cortexDir: els.cortexDir, btnUnlock: els.btnUnlock, btnLock: els.btnLock, bootStatusText: els.bootStatusText, unlockStatus: els.unlockStatus, passphrase: els.passphrase });
 initCloudOnboardingHandlers();
 initSkills();
+initAgentsGrid();
 
     initDialogs();
     prefillLastCortexDir();
@@ -23709,7 +23993,7 @@ if (!IS_TAURI) {
 //
 // Two checkboxes inline with the search input let the user opt in to LLM
 // synthesis (paragraph answer with citations) and/or LLM reranking. Both
-// are greyed out when the Local LLM isn't ready. Toggling persists the
+// are grayed out when the Local LLM isn't ready. Toggling persists the
 // preference to settings and re-runs the active search instantly.
 
 let searchLlmRerankEnabled = false;
@@ -24698,7 +24982,7 @@ document.getElementById('btn-new-graph')?.addEventListener('click', () => {
           }
         }
       }, 200);
-      // Hard stop after 10s so a cancelled wizard doesn't leak a permanent timer.
+      // Hard stop after 10s so a canceled wizard doesn't leak a permanent timer.
       setTimeout(() => clearInterval(watcher), 10_000);
     }
     const pendingTier = gwTier;
@@ -24851,6 +25135,55 @@ async function getBillingEmail(): Promise<string | null> {
   return cached && cached.includes('@') ? cached : null;
 }
 
+/** The slot a re-check actually rewrites: the personal subscription token.
+ *  Falls back to the effective flat fields for legacy statuses that predate
+ *  the `tokens` array. Returns null when there is nothing stored. */
+function personalLicenseSnapshot(s: LicenseStatus): { plan: string; features: string[]; expiresAt: number } | null {
+  const personal = s.tokens?.find((t) => t.source === 'personal');
+  if (personal) {
+    return { plan: personal.plan ?? '', features: personal.features ?? [], expiresAt: personal.expiresAt ?? 0 };
+  }
+  if (s.tokens && s.tokens.length > 0) return null; // only a domain seat — re-check does not touch it
+  if (!s.present || !s.valid) return null;
+  return { plan: s.plan ?? '', features: s.features ?? [], expiresAt: s.expiresAt ?? 0 };
+}
+
+/**
+ * Human-readable diff of what a re-check actually changed.
+ *
+ * The point is to state FACTS. A bare success tick after a re-check is useless
+ * to the case this action exists for — a subscriber whose plan gained a feature
+ * needs to see whether the new token carries it. So we name the features that
+ * appeared or disappeared, and say "no change" plainly when nothing moved.
+ */
+function describeLicenseChange(before: LicenseStatus, after: LicenseStatus): string {
+  const b = personalLicenseSnapshot(before);
+  const a = personalLicenseSnapshot(after);
+  if (!a) return 'Re-checked — no usable subscription token was returned.';
+  if (!b) {
+    const feats = a.features.length ? a.features.join(', ') : 'no features';
+    return `License installed — ${humanizePlanName(a.plan || 'Pro')}, grants: ${feats}.`;
+  }
+
+  const parts: string[] = [];
+  const added = a.features.filter((f) => !b.features.includes(f));
+  const removed = b.features.filter((f) => !a.features.includes(f));
+  if (added.length) parts.push(`features added: ${added.join(', ')}`);
+  if (removed.length) parts.push(`features removed: ${removed.join(', ')}`);
+  if (a.plan !== b.plan) parts.push(`plan: ${humanizePlanName(b.plan || 'Pro')} → ${humanizePlanName(a.plan || 'Pro')}`);
+  // Only report an expiry move that is a real extension/shortening, not the
+  // sub-second jitter of a re-issued token with the same period.
+  if (Math.abs(a.expiresAt - b.expiresAt) > 60_000) {
+    parts.push(`valid until ${new Date(a.expiresAt).toLocaleDateString()}`);
+  }
+
+  if (parts.length === 0) {
+    const feats = a.features.length ? a.features.join(', ') : 'no features';
+    return `No change — your license still grants: ${feats}.`;
+  }
+  return `Updated — ${parts.join('; ')}.`;
+}
+
 async function pollLicenseTokenFromServer(explicitEmail?: string): Promise<{ ok: boolean; reason?: string; plan?: string } | null> {
   let email = explicitEmail;
   let key: string | undefined;
@@ -24928,6 +25261,42 @@ function setLicenseSectionMode(subscribed: boolean): void {
     .forEach((s) => s.classList.toggle('hidden', !subscribed));
 }
 
+/**
+ * Reveal the shared OTP form, labeled for whichever flow asked for it.
+ *
+ * ONE form serves two flows — Stripe recovery ('primary') and domain seat
+ * ('domain') — so the heading and purpose line MUST be rewritten on every
+ * entry, not just once at startup. Setting them on only one path leaves the
+ * other showing whatever was written last, which is how a subscriber
+ * refreshing their plan gets told to "activate your domain seat".
+ *
+ * `#license-otp-section` deliberately carries neither `.license-acquire` nor
+ * `.license-manage`, so setLicenseSectionMode() never touches it and it can be
+ * shown to an ALREADY-ACTIVATED subscriber. That is what makes an in-place
+ * re-check possible: the alternative previously offered — reset and start over
+ * — discards a working license to reach a form that was already on screen.
+ */
+function showLicenseOtpSection(target: 'primary' | 'domain', email: string): void {
+  const section = document.getElementById('license-otp-section');
+  const emailDisplay = document.getElementById('license-otp-email-display');
+  const title = document.getElementById('license-otp-title');
+  const purpose = document.getElementById('license-otp-purpose');
+  if (emailDisplay) emailDisplay.textContent = email;
+  if (title) {
+    title.textContent = target === 'primary'
+      ? 'Verify your subscription email'
+      : 'Verify your work email';
+  }
+  if (purpose) {
+    purpose.textContent = target === 'primary'
+      ? 'Enter it below to refresh your subscription. Your current license stays active until this succeeds.'
+      : 'Enter it below to activate your domain seat.';
+  }
+  section?.classList.remove('hidden');
+  section?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  document.getElementById('settings-license-otp')?.focus();
+}
+
 async function syncLicenseDomainSeatSsoHint(): Promise<void> {
   const section = document.getElementById('license-domain-seat-section');
   const ssoNote = document.getElementById('license-domain-seat-sso-note');
@@ -24953,6 +25322,13 @@ async function syncLicenseDomainSeatSsoHint(): Promise<void> {
 }
 
 async function refreshSettingsLicenseStatus(): Promise<void> {
+  // Every "the license changed" path in this file funnels through here (token
+  // set, domain seat activated, OTP redeemed, deep-link claim, startup). Fan
+  // the refresh out to the launcher cards from this one place so the plan /
+  // renewal line on the Settings pane AND on Teams & Enterprise updates
+  // together with the modal — before the early-returns below, which fire when
+  // the modal markup isn't mounted.
+  refreshLicenseLauncherStatus();
   const el = document.getElementById('settings-license-status');
   if (!el) return;
   const status = await ipcLicenseStatus();
@@ -25023,6 +25399,68 @@ function bindSettingsLicensePanel(): void {
   // token poll; the server gates portal access behind magic-link auth).
   document.getElementById('btn-license-manage')?.addEventListener('click', () => {
     void invoke('plugin:opener|open_url', { url: `${BILLING_BASE_URL}/account` });
+  });
+
+  // ── Standalone re-check (already-activated subscribers) ───────────────────
+  //
+  // The "Activate / Refresh" button lives in a .license-acquire section, which
+  // setLicenseSectionMode() hides as soon as a valid token exists. That left an
+  // activated subscriber with no way to re-poll — which is exactly who needs it
+  // when their plan gains a feature but the local token predates the change.
+  // This button sits in .license-manage, so it is visible precisely when the
+  // other one is not.
+  const recheckBtn = document.getElementById('btn-license-recheck') as HTMLButtonElement | null;
+  const recheckFeedback = document.getElementById('license-recheck-feedback');
+  recheckBtn?.addEventListener('click', async () => {
+    const email = await getBillingEmail();
+    if (!email) {
+      if (recheckFeedback) {
+        recheckFeedback.textContent = 'No billing email on file — use the Stripe receipt field to activate.';
+      }
+      return;
+    }
+    recheckBtn.disabled = true;
+    if (recheckFeedback) recheckFeedback.textContent = 'Asking the billing server…';
+    try {
+      // Snapshot BEFORE so we can report what actually moved rather than a
+      // bare success tick.
+      const before = await ipcLicenseStatus();
+      const result = await pollLicenseTokenFromServer(email);
+      if (result && !result.ok) {
+        const reason = result.reason ?? 'unknown';
+        let msg: string;
+        if (reason === 'no_token') {
+          msg = `The billing server has no subscription for ${email}. Your existing license is unchanged.`;
+        } else if (reason === 'otp_required') {
+          // The server wants a fresh code (stale or missing poll secret). The
+          // form for that is already on this screen — reveal it in place.
+          // This used to read "use Reset and start over", which was a dead end:
+          // it told an activated subscriber to CLEAR A WORKING LICENSE in order
+          // to reach a six-digit box sitting one section below, and it was the
+          // only advice given even though the code had already been emailed.
+          stripeOtpPending = true;
+          showLicenseOtpSection('primary', email);
+          msg = `We emailed a 6-digit code to ${email}. Enter it below to finish the re-check — your current license keeps working meanwhile.`;
+        } else if (reason === 'network_blocked' || reason.startsWith('fetch_failed')) {
+          msg = 'Could not reach the billing server. Your existing license is unchanged and still works offline.';
+        } else if (reason.startsWith('http_')) {
+          msg = `Billing server error (${reason}). Your existing license is unchanged.`;
+        } else {
+          msg = `Re-check failed — ${reason}. Your existing license is unchanged.`;
+        }
+        if (recheckFeedback) recheckFeedback.textContent = msg;
+        return;
+      }
+      const after = await ipcLicenseStatus();
+      if (recheckFeedback) recheckFeedback.textContent = describeLicenseChange(before, after);
+      // Re-render the status rows so the feature list above matches the verdict.
+      await refreshSettingsLicenseStatus();
+    } catch (e) {
+      console.warn('[license] re-check failed', e);
+      if (recheckFeedback) recheckFeedback.textContent = 'Re-check failed. Your existing license is unchanged.';
+    } finally {
+      recheckBtn.disabled = false;
+    }
   });
 
   applyBtn?.addEventListener('click', async () => {
@@ -25097,12 +25535,7 @@ function bindSettingsLicensePanel(): void {
       if (result?.reason === 'otp_required') {
         // Server triggered OTP re-auth for Stripe recovery (stale/missing poll secret).
         stripeOtpPending = true;
-        const otpSection = document.getElementById('license-otp-section');
-        const otpEmailDisplay = document.getElementById('license-otp-email-display');
-        if (otpEmailDisplay) otpEmailDisplay.textContent = email;
-        otpSection?.classList.remove('hidden');
-        otpSection?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        document.getElementById('settings-license-otp')?.focus();
+        showLicenseOtpSection('primary', email);
         if (feedback) feedback.textContent = 'Check your inbox for a 6-digit recovery code.';
         return;
       }
@@ -25179,12 +25612,13 @@ function bindSettingsLicensePanel(): void {
       );
       if (result?.reason === 'otp_required') {
         markDomainOtpPending(email);
-        const otpSection = document.getElementById('license-otp-section');
-        const otpEmailDisplay = document.getElementById('license-otp-email-display');
-        if (otpEmailDisplay) otpEmailDisplay.textContent = email;
-        otpSection?.classList.remove('hidden');
-        otpSection?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        document.getElementById('settings-license-otp')?.focus();
+        // Clear the Stripe flag. The submit handler picks its target from it,
+        // so a subscriber who ran the re-check first (which now sets it) and
+        // then activated a work email would have had the domain code verified
+        // against the PRIMARY slot. Harmless while re-check was a dead end;
+        // reachable the moment it stopped being one.
+        stripeOtpPending = false;
+        showLicenseOtpSection('domain', email);
         if (domainFeedback) domainFeedback.textContent = 'Check your inbox for a 6-digit code.';
         return;
       }
@@ -25331,6 +25765,9 @@ function bindSettingsLicensePanel(): void {
     if (domainEmailInput) domainEmailInput.value = '';
     if (otpInput) otpInput.value = '';
     document.getElementById('license-otp-section')?.classList.add('hidden');
+    // "Start over" means start over: drop the pending-flow flag too, or the
+    // next OTP entered after a reset is routed by whatever ran before it.
+    stripeOtpPending = false;
     // Reset feedback text
     const feedbacks = document.querySelectorAll<HTMLElement>(
       '#license-modal .subtitle[id$="-feedback"]',
@@ -25360,12 +25797,19 @@ document.getElementById('btn-settings-open-license')?.addEventListener('click', 
   // license modal on top — backdrop z-indices handle the layering.
   openLicenseModal();
 });
-// Same launcher, but on the Settings pane itself (first panel) — relocated
-// from inside the Settings modal so the subscription affordance is the
-// first thing the user sees on the Settings page.
-document.getElementById('btn-pane-open-license')?.addEventListener('click', () => {
-  openLicenseModal();
-});
+// Same launcher rendered on two panes: the Settings pane (first panel,
+// relocated out of the Settings modal so the subscription affordance is the
+// first thing the user sees) and the top of Teams & Enterprise. ONE handler,
+// two call sites — the open logic is not duplicated. openLicenseModal() is a
+// pure overlay (it only un-hides #license-modal) and closeLicenseModal() only
+// re-hides it, so neither card navigates: closing returns the user to
+// whichever pane is still mounted behind the modal. Nothing hardcodes a
+// return destination, so both cards return correctly on their own.
+for (const launcherId of ['btn-pane-open-license', 'btn-teams-open-license']) {
+  document.getElementById(launcherId)?.addEventListener('click', () => {
+    openLicenseModal();
+  });
+}
 document.getElementById('btn-license-modal-close')?.addEventListener('click', () => closeLicenseModal());
 // Close on backdrop click — same UX as the other modals.
 document.getElementById('license-modal')?.addEventListener('click', (e) => {
@@ -25382,13 +25826,19 @@ document.addEventListener('keydown', (e) => {
 // at a glance before they even click in. Updated each time the Settings
 // modal opens (we re-run on visibility changes via a MutationObserver).
 function refreshLicenseLauncherStatus(): void {
-  // Two launcher status nodes share the same copy: one inside the
-  // Settings modal (legacy) and one on the Settings pane (new primary
-  // home). Update both so whichever the user has open shows fresh text.
-  const targets = [
-    document.getElementById('settings-license-launcher-status'),
-    document.getElementById('settings-pane-license-status'),
-  ].filter((el): el is HTMLElement => !!el);
+  // EVERY launcher status node shares the same copy. Select by the
+  // `data-license-status` hook rather than by id: the component is now
+  // instantiated more than once (#settings-pane-license-status on the
+  // Settings pane, #teams-pane-license-status at the top of Teams &
+  // Enterprise) and getElementById would only ever reach the first one,
+  // leaving the other frozen on its placeholder text — a stale plan/renewal
+  // date on a page an admin trusts. A hook attribute (the codebase's
+  // existing pattern: data-pro-upgrade-btn, data-foresight-open) is used
+  // instead of a class so we don't emit a class name with no CSS rule.
+  // Any future instance is picked up automatically just by carrying it.
+  const targets = Array.from(
+    document.querySelectorAll<HTMLElement>('[data-license-status]'),
+  );
   if (targets.length === 0) return;
   void (async () => {
     const status = await ipcLicenseStatus();
@@ -25820,7 +26270,7 @@ function switchStudioTool(tool: StudioTool, save = true): void {
   // vitality for the visible window. Deferred via queueMicrotask so the
   // module-init-time `switchStudioTool(activeStudioTool, false)` call (which
   // runs BEFORE the Skills state `let`s further down the file are
-  // initialised) doesn't trip a temporal-dead-zone ReferenceError on
+  // initialized) doesn't trip a temporal-dead-zone ReferenceError on
   // skillsLibrary. By the time the microtask drains, module init is done.
   if (tool === 'skills') {
     queueMicrotask(() => { void mountSkillsPane(); });
@@ -28197,7 +28647,7 @@ document.getElementById('btn-studio-remember')?.addEventListener('click', () => 
 // without an extra click.
 function watchForNewEngramAndSelect(selectId: string, beforeIds: Set<string>): void {
   // Poll loadedGraphs for a new id that wasn't there before the wizard opened.
-  // Cap at ~10s so a cancelled wizard doesn't leak a permanent timer.
+  // Cap at ~10s so a canceled wizard doesn't leak a permanent timer.
   let elapsed = 0;
   const tick = (): void => {
     elapsed += 200;

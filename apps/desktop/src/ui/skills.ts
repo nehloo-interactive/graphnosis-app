@@ -31,6 +31,25 @@ function getLoadedGraphs(): GraphWithMetadata[] {
 }
 
 /**
+ * The agent OFF SWITCH for one engram, read from ENGRAM metadata
+ * (`GraphMetadata.skillsDisabled`) — the UI mirror of `host.skillsDisabled`.
+ *
+ * Deliberately a second small reader rather than an import of
+ * `isAgentDisabled` from agents-grid.ts: that module already imports from this
+ * one, so reaching back would close an import cycle (the same reason
+ * `renderSkillsLibrary` tells the grid to refresh through a DOM event instead
+ * of calling it). The grid's copy additionally shadows metadata with the
+ * sidecar's write-echo; this surface repaints from the reloaded engram list
+ * anyway, so it reads the stored flag directly.
+ *
+ * OWNER-FACING ONLY. Callers here MARK disabled rows — they must never drop
+ * them; see the note in `filteredSortedLibrary`.
+ */
+function engramSkillsDisabled(graphId: string): boolean {
+  return getLoadedGraphs().find((g) => g.graphId === graphId)?.metadata.skillsDisabled === true;
+}
+
+/**
  * Current skill-training operation label for the global status bar
  * (#status-process), set from `__skill_train_status__` frames and from the
  * source-only training path below. Null when no train is running.
@@ -338,7 +357,12 @@ function applySkillsDraft(draft: SkillsDraft): void {
   }
   if (nameEl && draft.name) nameEl.value = draft.name;
   if (modelEl && draft.modelTarget) modelEl.value = draft.modelTarget;
-  if (engramEl && draft.targetEngramId) {
+  // `!skillsSaveTargetAgent`: on an agent's page the destination is that agent
+  // and the row above SAYS SO in plain text. A draft saved while a different
+  // agent was open would move the select underneath that sentence, and the skill
+  // would land somewhere the user was just told it would not. Restore the text,
+  // not the target.
+  if (engramEl && draft.targetEngramId && !skillsSaveTargetAgent) {
     // Only set if that engram still exists in the picker — engrams may
     // have been archived/deleted since the draft was saved.
     const exists = Array.from(engramEl.options).some((o) => o.value === draft.targetEngramId);
@@ -403,11 +427,141 @@ const skillsVitalityCache = new Map<string, { value: SkillVitality; fetchedAt: n
 // Library + trainer state
 export let skillsLibrary: SkillListEntry[] = [];
 let skillsLibrarySort: 'recent' | 'vitality' | 'name' = 'recent';
-let skillsShowHidden = false;
+
+/**
+ * How hidden skills are treated by the library list. THREE states, not a
+ * boolean, because two different controls want two different things and a
+ * shared boolean could only serve one of them:
+ *
+ *   'exclude'  hidden rows dropped. The default.
+ *   'include'  hidden rows listed alongside the rest. What the library-foot
+ *              "Show hidden" button means, and all a boolean could express.
+ *   'only'     ONLY hidden rows. What the "Hidden skills" menu item means.
+ *
+ * The menu item used to set the boolean, so choosing it rendered the whole
+ * library — every unhidden skill included. Reported as "Hidden Skills filter
+ * lists the unhidden skills as well". A filter that returns everything is
+ * indistinguishable from no filter at all.
+ */
+type SkillsHiddenView = 'exclude' | 'include' | 'only';
+let skillsHiddenView: SkillsHiddenView = 'exclude';
 // Skills-library filters (item: filter box + engram dropdown). Display-only —
 // they never touch the underlying skill data, just what the library renders.
 let skillsFilterText = '';
 let skillsFilterEngram = 'all'; // 'all' or a graphId
+
+/**
+ * Scope the skills library to ONE agent's engram, or back to 'all'.
+ *
+ * The Agents grid drives this: picking an agent narrows the left sidebar to that
+ * agent's skills without touching the trainer on the right. Exported rather than
+ * reaching into the module's state from outside, so the dropdown stays in sync
+ * and the re-render happens exactly once.
+ */
+export function setSkillsEngramScope(graphId: string): void {
+  skillsFilterEngram = graphId;
+  const sel = document.getElementById('skills-library-engram-filter') as HTMLSelectElement | null;
+  if (sel) sel.value = graphId;
+  renderSkillsLibrary();
+}
+
+export function getSkillsEngramScope(): string {
+  return skillsFilterEngram;
+}
+
+/**
+ * Put the library menu back to its landing state: sorted by Most recent, no
+ * hidden-only filter. Called on the way INTO an agent.
+ *
+ * The trap it removes: leave "Hidden skills" selected, open an agent that has
+ * none, and you land on an empty list with no visible cause — which reads
+ * identically to "this agent has no skills" or "the page broke". Arriving on a
+ * known state makes that unreachable by accident. (It stays reachable
+ * deliberately, which is why the empty state still names the filter.)
+ *
+ * Resets BOTH halves. A reset that changed the list but left the control
+ * reading "Hidden skills" would be worse than none — the menu would be lying
+ * about what is on screen.
+ *
+ * Does NOT repaint: every caller re-renders immediately afterwards (via
+ * setSkillsEngramScope), and a second full library render is not free.
+ */
+export function resetSkillsLibraryView(): void {
+  skillsLibrarySort = 'recent';
+  skillsHiddenView = 'exclude';
+  const sel = document.getElementById('skills-library-sort') as HTMLSelectElement | null;
+  if (sel) sel.value = 'recent';
+}
+
+/**
+ * The full landing state for a newly-entered agent: library on Most recent with
+ * no hidden-only filter, trainer back on the blank "Train a skill" form with
+ * nothing selected, and the library scrolled to the top.
+ *
+ * Why all three together: each one alone leaves a different piece of the
+ * PREVIOUS agent on screen. Enter agent B while agent A's skill is open in
+ * review and the trainer keeps showing A's skill — beside a header that now
+ * says B, and above a "Saving to" that now says B. A retrain is worse: it lives
+ * in compose mode with A's text in the textarea and A's goal fields populated,
+ * so the next save writes A's skill into B.
+ *
+ * Deliberately does NOT clear the compose textarea. That text may be something
+ * the user typed rather than something a retrain loaded, and wiping it on a
+ * navigation would be silent work loss. `applyComposeModeDom` drops the
+ * SELECTION and the retrain title; the draft survives (and is autosaved to
+ * SKILLS_DRAFT_KEY regardless).
+ *
+ * Does not repaint the library itself — `setSkillsEngramScope` does that in the
+ * caller. The scroll reset is deferred a frame so it lands after that repaint;
+ * the scroll host is the `.skills-library` column, not the list, so replacing
+ * the list's innerHTML does not reset it on its own.
+ */
+export function resetSkillsWorkbenchForAgent(): void {
+  resetSkillsLibraryView();
+  applyComposeModeDom();
+  updateSkillsResetButton();
+  syncSkillsPreviewWarning();
+  const scrollLibraryTop = (): void => {
+    const col = document.querySelector<HTMLElement>('.skills-library');
+    if (col) col.scrollTop = 0;
+  };
+  scrollLibraryTop();
+  requestAnimationFrame(scrollLibraryTop);
+}
+
+/**
+ * Mean vitality (0–100) across one engram's skills, or `undefined` when nothing
+ * is cached yet for it.
+ *
+ * `undefined` is NOT zero and callers must not conflate them: a fresh boot has
+ * an empty cache, and drawing that as an empty ring would report every agent as
+ * completely stale. The Agents grid renders no ring at all in that case.
+ * Vitality is fetched lazily per visible skill (warmVitalityCache), so this
+ * fills in over the first seconds on the page.
+ */
+export function agentVitality(graphId: string): number | undefined {
+  let sum = 0;
+  let n = 0;
+  for (const s of skillsLibrary) {
+    if (s.graphId !== graphId) continue;
+    const c = skillsVitalityCache.get(s.sourceId);
+    if (!c) continue;
+    sum += c.value.score;
+    n += 1;
+  }
+  return n === 0 ? undefined : Math.round(sum / n);
+}
+
+/** Most recent training timestamp across one engram's skills (ms), or 0. */
+export function agentLastTrainedAt(graphId: string): number {
+  let latest = 0;
+  for (const s of skillsLibrary) {
+    if (s.graphId !== graphId) continue;
+    const t = s.trainedAt ? Date.parse(s.trainedAt) : s.ingestedAt;
+    if (Number.isFinite(t) && t > latest) latest = t;
+  }
+  return latest;
+}
 let skillsActiveSourceId: string | null = null;
 // The result currently in review mode (either a fresh training run, or an
 // opened library row hydrated via skill:get).
@@ -480,6 +634,65 @@ function isSkillsPreviewSaveTarget(value: string | undefined | null): boolean {
   return !value || value === '__preview__';
 }
 
+/**
+ * The agent whose page the trainer is currently on, or null in the Agents grid.
+ *
+ * WHY THIS EXISTS: the trainer is only reachable by opening one agent, so that
+ * agent IS the save target and the "Saving to" picker was asking a question the
+ * page had already answered. Set by `enterAgentView` and cleared by
+ * `exitToAgentsGrid` (both in agents-grid.ts, which already imports from this
+ * module — so the dependency does not have to run the other way).
+ *
+ * It is a HINT, not the value: `#skills-input-engram` remains the single source
+ * of truth every train / draft / import path reads. This only decides what that
+ * select is defaulted to, and whether the user is shown a control or a sentence.
+ */
+let skillsSaveTargetAgent: string | null = null;
+
+/** Scope the trainer's save target to one agent, or clear it (null). */
+export function setSkillsSaveTargetAgent(graphId: string | null): void {
+  skillsSaveTargetAgent = graphId;
+  // Re-runs the select defaulting AND the row sync, so one call covers both.
+  populateSkillsEngramPickers();
+}
+
+/**
+ * Show the destination as a sentence instead of a control when the trainer is
+ * scoped to an agent — and put the control back when it is not.
+ *
+ * The fallback is NOT theoretical: the roster is derived from the skills library
+ * and an engram can own skills without carrying the Skills template (imports and
+ * older cortexes), while the picker deliberately lists Skills-template engrams
+ * only. Defaulting to such an engram would scatter trained skills into an
+ * unrelated area, so in that one case the picker returns and the user chooses.
+ */
+function syncSkillsTargetRow(): void {
+  const sel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
+  const row = document.getElementById('skills-target-row');
+  const fixed = document.getElementById('skills-target-fixed');
+  if (!sel || !row || !fixed) return;
+  const scoped = skillsSaveTargetAgent;
+  const opt = scoped
+    ? Array.from(sel.options).find((o) => o.value === scoped && !o.disabled)
+    : undefined;
+  if (opt) {
+    // Read-only: the engram label exactly as the dropdown spelled it, so the
+    // two never disagree about which engram this is.
+    fixed.textContent = opt.text;
+    fixed.classList.remove('hidden');
+    row.classList.add('hidden');
+    // The inline create-name row belongs to the hidden button — never leave it
+    // stranded open behind a control the user can no longer see.
+    document.getElementById('skills-create-engram-row')?.classList.add('hidden');
+    const createBtn = document.getElementById('btn-skills-create-engram') as HTMLButtonElement | null;
+    if (createBtn) createBtn.disabled = false;
+  } else {
+    fixed.textContent = '';
+    fixed.classList.add('hidden');
+    row.classList.remove('hidden');
+  }
+}
+
 /** Show the ⚠️ preview-mode warning ONLY when the "Saving to" target is the
  *  non-persisting sentinel. Must be called after EVERY change to the select —
  *  including programmatic `value =` assignments (create / import / draft-restore /
@@ -526,13 +739,22 @@ export function populateSkillsEngramPickers(): void {
         '<option disabled>──────────</option>',
         ...skillsEngrams.map((g) => `<option value="${escape(g.graphId)}">${escape(app().formatEngramLabel(g))}</option>`),
       ].join('');
+      // THE AGENT ON THE PAGE WINS. The trainer is only reachable from inside
+      // one agent, and a skill trained there belongs to that agent — so the
+      // scoped engram outranks both the remembered choice and the alphabetical
+      // default. Only when it is missing from this list (not a Skills-template
+      // engram) do the older rules apply, and the picker comes back with them.
+      const scopedIsSkillEngram = skillsSaveTargetAgent
+        && skillsEngrams.some((g) => g.graphId === skillsSaveTargetAgent);
       // Preserve a real engram the user already picked; otherwise default to the
       // first Skills engram alphabetically (so saving is the default when one
       // exists). The HTML/bootstrap '__preview__' sentinel is NOT preserved here
       // — it only means "no engrams loaded yet", not an explicit user choice.
       const prevIsRealEngram = prev && prev !== '__preview__'
         && skillsEngrams.some((g) => g.graphId === prev);
-      if (prevIsRealEngram) {
+      if (scopedIsSkillEngram && skillsSaveTargetAgent) {
+        target.value = skillsSaveTargetAgent;
+      } else if (prevIsRealEngram) {
         target.value = prev;
       } else {
         const first = skillsEngrams[0];
@@ -541,6 +763,8 @@ export function populateSkillsEngramPickers(): void {
     }
     // Keep the ⚠️ preview-mode warning in sync with the value we just set.
     syncSkillsPreviewWarning();
+    // …and the row itself: control when unscoped, sentence when scoped.
+    syncSkillsTargetRow();
   }
 
   // ── Focus engrams — hidden (train uses empty recall scope) ───────────
@@ -672,6 +896,33 @@ export async function fetchSkillsLibrary(): Promise<void> {
   } finally {
     skillsLibraryFetching = false;
   }
+}
+
+/**
+ * What the library's last load attempt did — for callers that must tell a
+ * PENDING load apart from a FAILED one.
+ *
+ * `skillsLibraryLoadOk` alone cannot: it is false both before the first fetch
+ * and after a failed one, so a surface that renders a spinner on `!loadOk`
+ * spins forever when skill:list errors, which is indistinguishable from a hang.
+ * Derived entirely from the three variables above — no new state, just a name
+ * for what they already mean together.
+ *
+ *   idle    — never fetched. Nothing has been claimed about the library yet.
+ *   loading — a fetch is in flight right now.
+ *   ok      — the last fetch succeeded. An empty library is now a real answer.
+ *   error   — the last fetch failed. The library is empty because of that, and
+ *             callers must NOT read the emptiness as "there is nothing".
+ */
+export function skillsLibraryStatus(): 'idle' | 'loading' | 'ok' | 'error' {
+  if (skillsLibraryFetching) return 'loading';
+  if (skillsLibraryLoadOk) return 'ok';
+  return skillsLibraryLoadError === null ? 'idle' : 'error';
+}
+
+/** The message from the last failed skill:list, or null. */
+export function skillsLibraryError(): string | null {
+  return skillsLibraryLoadError;
 }
 
 /** Imported .gsk packs still awaiting owner review. Rendered as a promote/reject
@@ -874,14 +1125,22 @@ async function warmRetrainCache(): Promise<void> {
   renderSkillsLibrary();
 }
 
-export async function warmVitalityCache(): Promise<void> {
-  const visible = filteredSortedLibrary().slice(0, SKILLS_VITALITY_AUTO_CAP);
+/**
+ * Fill the vitality cache for a specific set of skills. Returns true when at
+ * least one entry was actually due (i.e. the caller should repaint).
+ *
+ * Split out of warmVitalityCache so a second surface can warm a DIFFERENT
+ * subset through the same cache, the same TTL and the same pacing. Two copies
+ * of this loop would be two answers to "is this agent alive", which is exactly
+ * the disagreement the shared tile exists to prevent.
+ */
+async function warmVitalityFor(entries: SkillListEntry[]): Promise<boolean> {
   const now = Date.now();
-  const due = visible.filter((s) => {
+  const due = entries.filter((s) => {
     const cached = skillsVitalityCache.get(s.sourceId);
     return !cached || (now - cached.fetchedAt) > SKILLS_VITALITY_TTL_MS;
   });
-  if (due.length === 0) return;
+  if (due.length === 0) return false;
   // Sequential — vitality is cheap but a burst of 10 parallel recalls would
   // hammer the sidecar. Sequential is fast enough and keeps UI responsive.
   for (const skill of due) {
@@ -895,7 +1154,38 @@ export async function warmVitalityCache(): Promise<void> {
       console.warn('[skills] vitality failed for', skill.sourceId, e);
     }
   }
-  renderSkillsLibrary();
+  return true;
+}
+
+export async function warmVitalityCache(): Promise<void> {
+  if (await warmVitalityFor(filteredSortedLibrary().slice(0, SKILLS_VITALITY_AUTO_CAP))) {
+    renderSkillsLibrary();
+  }
+}
+
+/**
+ * Warm vitality for ONE engram's skills — what the Home card's agent tile needs.
+ *
+ * warmVitalityCache() warms the top N of the LIBRARY's current filter and sort,
+ * which on a session that never opened the Skills page is both unwarmed and,
+ * once warmed, quite possibly ten skills belonging to other agents. `agentVitality()`
+ * would then keep returning undefined for the home agent, and the tile would
+ * render with no ring and no idle motion — not because the agent is lifeless
+ * but because nothing ever asked.
+ *
+ * Capped at the same SKILLS_VITALITY_AUTO_CAP: the mean over the agent's ten
+ * most recent skills is what the ring already shows on the grid for a large
+ * agent, so this is the same number, not a cheaper approximation of it.
+ *
+ * Deliberately does NOT repaint the Skills library — the caller owns its own
+ * surface. Returns once the cache is filled.
+ */
+export async function warmAgentVitality(graphId: string): Promise<void> {
+  const mine = skillsLibrary
+    .filter((s) => s.graphId === graphId)
+    .sort((a, b) => (parseTrainedAt(b.trainedAt) ?? b.ingestedAt) - (parseTrainedAt(a.trainedAt) ?? a.ingestedAt))
+    .slice(0, SKILLS_VITALITY_AUTO_CAP);
+  await warmVitalityFor(mine);
 }
 
 // ── Skill grouping helpers ────────────────────────────────────────────────────
@@ -1079,6 +1369,17 @@ function filteredSortedLibrary(): SkillListEntry[] {
   // confirmation dialog promises "those skills will be hidden". Without
   // this filter the promise was broken: the engram disappeared from the
   // engram picker but its trained skills kept showing in the library.
+  //
+  // THE OFF SWITCH IS DELIBERATELY *NOT* A FILTER HERE, and that is load-
+  // bearing rather than an omission. This is the owner's own library, and the
+  // Agents roster is DERIVED from it — dropping a disabled agent's rows takes
+  // its tile with them, and the tile carries the only control that turns the
+  // agent back on. A gate that drops would make "off" a one-way door. Disabled
+  // rows are MARKED instead (see `renderSkillRow` and the group header): the
+  // owner keeps seeing what the agent knows and how to switch it on, while
+  // every AI-facing enumeration — MCP `list_skills`, the Ghampus agent tool,
+  // the proactive watcher, `@skill:` resolution — refuses server-side on
+  // host.skillsDisabled. Inertness is enforced there, not by hiding it here.
   const visibleGraphIds = new Set(
     getLoadedGraphs().filter((g) => !g.metadata.archived).map((g) => g.graphId),
   );
@@ -1087,8 +1388,12 @@ function filteredSortedLibrary(): SkillListEntry[] {
   let list = visibleGraphIds.size === 0
     ? skillsLibrary.slice()
     : skillsLibrary.filter((s) => visibleGraphIds.has(s.graphId));
-  if (!skillsShowHidden) {
+  // Hidden-skills view. 'include' is the only state that adds no predicate —
+  // 'only' is a filter in its own right, not the absence of one.
+  if (skillsHiddenView === 'exclude') {
     list = list.filter((s) => !skillsHiddenSet.has(s.sourceId));
+  } else if (skillsHiddenView === 'only') {
+    list = list.filter((s) => skillsHiddenSet.has(s.sourceId));
   }
   // Engram dropdown filter.
   if (skillsFilterEngram !== 'all') {
@@ -1129,9 +1434,26 @@ function filteredSortedLibrary(): SkillListEntry[] {
 function syncSkillsEngramFilterOptions(): void {
   const sel = document.getElementById('skills-library-engram-filter') as HTMLSelectElement | null;
   if (!sel) return;
-  const gids = [...new Set(skillsLibrary.map((s) => s.graphId))]
-    .filter((gid) => getLoadedGraphs().some((g) => g.graphId === gid && !g.metadata.archived))
-    .sort((a, b) => engramDisplayName(a).localeCompare(engramDisplayName(b)));
+  const live = getLoadedGraphs().filter((g) => !g.metadata.archived);
+  // AN EMPTY ENGRAM IS NOT A MISSING ONE.
+  //
+  // This list was built purely from engrams that already hold a skill, so a
+  // brand-new agent — which by definition holds none — was absent from it, and
+  // the reset below concluded the selection was "gone" and widened the scope to
+  // ALL. The user created an empty agent to put skills into and the library
+  // answered with every skill in the cortex: 206 rows under a header reading
+  // "0 skills". The two states have to be told apart, because the recovery for
+  // one of them (widen to everything) is exactly wrong for the other.
+  //
+  // So the currently-scoped engram counts as an option whenever it is loaded
+  // and unarchived, whether or not it has skills yet. Genuinely deleted or
+  // archived engrams still fail the `live` test and still fall back to ALL.
+  const gids = [...new Set([
+    ...skillsLibrary.map((s) => s.graphId).filter((gid) => live.some((g) => g.graphId === gid)),
+    ...(skillsFilterEngram !== 'all' && live.some((g) => g.graphId === skillsFilterEngram)
+      ? [skillsFilterEngram]
+      : []),
+  ])].sort((a, b) => engramDisplayName(a).localeCompare(engramDisplayName(b)));
   if (skillsFilterEngram !== 'all' && !gids.includes(skillsFilterEngram)) {
     skillsFilterEngram = 'all';
   }
@@ -1447,6 +1769,17 @@ function bindQuarantineReviewOnce(listEl: HTMLElement): void {
 }
 
 export function renderSkillsLibrary(): void {
+  // Tell the Agents grid the library changed. Fired FIRST, before any of the
+  // early returns below, so a render that bails (no list element, trainer reset)
+  // still refreshes the roster.
+  //
+  // An event rather than a direct call: agents-grid.ts already imports from this
+  // module, so calling into it here would close an import cycle. This also picks
+  // up all eleven call sites of this function at once, instead of each one having
+  // to remember to refresh the grid — the omission that left the grid stuck on
+  // "Loading agents…" forever, because it rendered once before the library
+  // existed and nothing told it to try again.
+  document.dispatchEvent(new CustomEvent('skills:library-changed'));
   syncSkillsEngramFilterOptions();
   updateSkillsStickyOffsets();
   if (!_skillsStickyResizeBound) {
@@ -1456,11 +1789,29 @@ export function renderSkillsLibrary(): void {
   const list = filteredSortedLibrary();
   const countEl = document.getElementById('skills-library-count');
   const listEl = document.getElementById('skills-library-list');
+  const sortSel = document.getElementById('skills-library-sort') as HTMLSelectElement | null;
+  if (sortSel) sortSel.value = skillsHiddenView === 'only' ? 'hidden' : skillsLibrarySort;
   const hiddenBtn = document.getElementById('btn-skills-show-hidden');
   const totalHidden = skillsHiddenSet.size;
-  if (countEl) countEl.textContent = String(list.length);
+  if (countEl) {
+    // The badge counts ROWS ON SCREEN, always. While the hidden view is on it
+    // also says so — a bare "3" beside a header reading "93 skills · 3 hidden"
+    // is arithmetically fine and still leaves the reader guessing which number
+    // the list is. Naming the subset costs one word and removes the guess.
+    countEl.textContent = skillsHiddenView === 'only'
+      ? `${list.length} hidden`
+      : String(list.length);
+    countEl.title = skillsHiddenView === 'only'
+      ? `Showing only hidden skills — ${list.length} of ${skillsLibrary.length} in the library`
+      : `${list.length} skill${list.length === 1 ? '' : 's'} shown`;
+  }
   if (hiddenBtn) {
-    hiddenBtn.textContent = skillsShowHidden ? `Hide hidden (${totalHidden})` : `Show hidden (${totalHidden})`;
+    // 'only' also has hidden skills on screen, so it shares the "Hide hidden"
+    // label — and clicking it lands on 'exclude', which is what that label
+    // promises from either state.
+    hiddenBtn.textContent = skillsHiddenView === 'exclude'
+      ? `Show hidden (${totalHidden})`
+      : `Hide hidden (${totalHidden})`;
     hiddenBtn.style.visibility = totalHidden > 0 ? 'visible' : 'hidden';
   }
   if (!listEl) return;
@@ -1489,13 +1840,50 @@ export function renderSkillsLibrary(): void {
       msg = 'Promote an imported skill above to add it to your library.';
     } else if (skillsLibrary.length === 0) {
       msg = 'You haven\'t trained any skills yet. Compose one on the right to begin.';
-    } else if (skillsShowHidden) {
+    } else if (skillsHiddenView === 'only') {
+      // A blank box and a broken filter are the same picture. This branch names
+      // every condition that produced nothing — the hidden view, the agent
+      // scope, and the free-text box, which is the other filter that can
+      // combine with it — and says how to get back out.
+      const scope = skillsFilterEngram !== 'all' ? engramDisplayName(skillsFilterEngram) : null;
+      const q = skillsFilterText.trim();
+      if (q) {
+        msg = scope
+          ? `No hidden skills in ${scope} match "${q}". Clear the filter box, or choose a sort above to see all of them.`
+          : `No hidden skills match "${q}". Clear the filter box, or choose a sort above to see your library.`;
+      } else {
+        msg = scope
+          ? `No hidden skills in ${scope}. Choose a sort above to see all of its skills.`
+          : 'No hidden skills. Choose a sort above to see your library.';
+      }
+    } else if (skillsHiddenView === 'include') {
       msg = 'No skills match your filter.';
     } else {
-      const allHidden = skillsLibrary.every((s) => skillsHiddenSet.has(s.sourceId));
-      msg = allHidden
-        ? 'All your skills are hidden. Click "Show hidden" to bring them back.'
-        : 'No skills match your filter.';
+      // "All your skills are hidden" has to be true of the skills the reader
+      // is actually looking at. The Agents page narrows the library to ONE
+      // engram through `skillsFilterEngram`, so measuring the whole cortex
+      // answered a question nobody asked: an agent with every skill hidden
+      // fell through to "No skills match your filter." — no cause named, no
+      // route back — for as long as some OTHER agent still had a visible one.
+      const scope = skillsFilterEngram !== 'all' ? engramDisplayName(skillsFilterEngram) : null;
+      const inScope = skillsFilterEngram === 'all'
+        ? skillsLibrary
+        : skillsLibrary.filter((s) => s.graphId === skillsFilterEngram);
+      // `[].every(...)` is `true`. Without the length guard an agent that owns
+      // no skills at all would be told its skills are hidden and pointed at a
+      // button that cannot produce any — a worse lie than the vague message
+      // this branch replaces. (`syncSkillsEngramFilterOptions` widens a
+      // skill-less scope back to "All engrams" before we get here, so this is
+      // belt-and-braces — but the guard is one expression and the failure it
+      // prevents is a confident false statement.)
+      const allHidden = inScope.length > 0 && inScope.every((s) => skillsHiddenSet.has(s.sourceId));
+      if (!allHidden) {
+        msg = 'No skills match your filter.';
+      } else if (scope) {
+        msg = `All skills in ${scope} are hidden. Click "Show hidden" to bring them back.`;
+      } else {
+        msg = 'All your skills are hidden. Click "Show hidden" to bring them back.';
+      }
     }
     listEl.innerHTML = reviewHtml + `<p class="subtitle skills-library-empty">${escape(msg)}</p>`;
     return;
@@ -1529,12 +1917,39 @@ export function renderSkillsLibrary(): void {
     if (expanded) expandedEngramIds.push(gid);
     const count = countNodes(rootsInGroup);
     const childrenHtml = rootsInGroup.map((n) => renderSkillTreeNode(n)).join('');
+    // OFF SWITCH: the group still renders with its REAL count — these skills
+    // exist, they are simply not dispatchable — so the header has to say which
+    // of the two it is. Without the badge a disabled agent is indistinguishable
+    // from a working one, and the count alone reads as a promise the un-ganglia
+    // will not keep. (Suppressing the count to 0 instead would be the other
+    // lie: nothing was deleted.)
+    const groupOff = engramSkillsDisabled(gid);
+    const offBadge = groupOff
+      ? `<span class="agempus-badge" style="background:color-mix(in oklab,var(--fg-muted) 22%,transparent);color:var(--fg-muted)" title="This agent is switched OFF — its skills do not dispatch (automatically, by hand, from other agents' @skill: calls, or to MCP clients). Nothing is deleted; turn it back on from the Agents grid.">off</span>`
+      : '';
     // Every engram in this library is a skill-template engram → an Agempus.
+    // SCOPED TO ONE AGENT: no group header.
+    //
+    // When the library is filtered to a single engram, the collapsing header
+    // named that engram, badged it "Agempus" and counted it — all three of which
+    // the agent header directly above already says, in a bigger, centered form.
+    // A collapse control is also actively wrong there: it can hide the only
+    // content on the page, leaving an apparently empty sidebar for an agent that
+    // has skills. The group still renders (and stays expanded) so the dial and
+    // the children keep their container and every existing handler still works.
+    const scoped = skillsFilterEngram !== 'all';
+    if (scoped) {
+      return `<div class="skill-engram-group expanded is-scoped" data-engram-id="${escape(gid)}">
+        ${renderAgempusDial(gid)}
+        <div class="skill-engram-group-children">${childrenHtml}</div>
+      </div>`;
+    }
     return `<div class="skill-engram-group${expanded ? ' expanded' : ''}" data-engram-id="${escape(gid)}">
       <button class="skill-engram-group-toggle" aria-expanded="${expanded}">
         <span class="skill-engram-group-arrow">▶</span>
         <span class="skill-engram-group-name" data-pres="engram:${escape(gid)}">${escape(engramDisplayName(gid))}</span>
         <span class="agempus-badge" title="This skill-template engram is an Agempus — a domain agent Ghampus can dispatch to.">Agempus</span>
+        ${offBadge}
         <span class="skill-engram-group-count">${count}</span>
       </button>
       ${renderAgempusDial(gid)}
@@ -1566,19 +1981,26 @@ export function renderSkillsLibrary(): void {
       return;
     }
 
-    // Per-skill autonomy control — Inherit toggle or an L0–L3 segment. Checked
-    // BEFORE the row-click handler so adjusting a skill's autonomy never opens
-    // the trainer. Disabled segments (above the authored dispatch-safe cap) are
+    // Per-skill autonomy control — an L0–L3 segment. Checked BEFORE the
+    // row-click handler so adjusting a skill's autonomy never opens the
+    // trainer. Disabled segments (above the authored dispatch-safe cap) are
     // inert. Reads graphId+sourceId off the wrapping control.
-    const skillAutBtn = target.closest<HTMLButtonElement>('.skill-autonomy-seg, .skill-autonomy-inherit');
+    const skillAutBtn = target.closest<HTMLButtonElement>('.skill-autonomy-seg');
     if (skillAutBtn) {
       e.stopPropagation();
       if (skillAutBtn.disabled) return;
       const ctl = skillAutBtn.closest<HTMLElement>('.skill-autonomy');
       const gid = ctl?.dataset['skillAutonomyGraph'] ?? '';
       const sid = ctl?.dataset['skillAutonomySource'] ?? '';
-      const lvl = skillAutBtn.dataset['skillLevel'] as 'L0' | 'L1' | 'L2' | 'L3' | 'inherit' | undefined;
-      // A greyed L2/L3 segment carrying data-skill-raise is an "unlock" — it
+      let lvl = skillAutBtn.dataset['skillLevel'] as 'L0' | 'L1' | 'L2' | 'L3' | 'inherit' | undefined;
+      // Re-clicking the selected chip clears an override back to inherit. This
+      // is what replaces the removed Inherit button — without it, removing that
+      // button would have quietly deleted the only way to undo an override.
+      if (lvl && lvl !== 'inherit' && skillAutBtn.classList.contains('active')) {
+        const ctlEl = skillAutBtn.closest<HTMLElement>('.skill-autonomy');
+        if (ctlEl?.classList.contains('is-overridden')) lvl = 'inherit';
+      }
+      // A grayed L2/L3 segment carrying data-skill-raise is an "unlock" — it
       // lifts the skill's dispatch-safe cap before setting the level.
       const raise = skillAutBtn.dataset['skillRaise'] as 'partial' | 'yes' | undefined;
       if (gid && sid && lvl) {
@@ -1712,17 +2134,21 @@ async function warmDispatchReadouts(graphIds: Iterable<string>): Promise<void> {
 }
 
 const SKILL_AUTONOMY_LEVELS: ReadonlyArray<{ level: AutonomyLevel; label: string; title: string; locked?: boolean }> = [
-  { level: 'L0', label: 'L0', title: 'Manual — never surface a card for this skill.' },
-  { level: 'L1', label: 'L1', title: 'Suggest — surface a propose-card.' },
-  { level: 'L2', label: 'L2', title: 'Preview — surface a preview-then-run card.' },
-  { level: 'L3', label: 'L3', title: 'Autonomous — eligible for unattended auto-run when the executor is enabled (opt-in, OFF by default). Capped by this skill’s authored dispatch-safe.' },
+  // Same names as the family dial (skills-shared.ts) on purpose: one vocabulary
+  // for one concept. A per-skill control reading L2 while the family control
+  // above it reads Tell'n'Go would look like two different settings.
+  { level: 'L0', label: 'Handheld', title: 'Handheld — never surfaces a card for this skill. You run it yourself.' },
+  { level: 'L1', label: 'Guided', title: 'Guided — surfaces a propose-card for you to accept or dismiss.' },
+  { level: 'L2', label: "Tell'n'Go", title: "Tell'n'Go — surfaces a preview-then-run card: you see the plan, then it runs." },
+  { level: 'L3', label: 'Unattended', title: 'Unattended — eligible for auto-run with no human when the executor is enabled (opt-in, OFF by default). Capped by this skill’s authored dispatch-safe.' },
 ];
 
 /**
- * Render a per-skill autonomy control: an "Inherit" toggle + an L0–L3
- * segmented dial showing the skill's EFFECTIVE (capped) level. Segments above
- * the skill's authored cap are greyed/disabled; when the effective level is
- * pinned BELOW the chosen level by the cap, an annotation explains it.
+ * Render a per-skill autonomy control: an L0–L3 segmented dial showing the
+ * skill's EFFECTIVE (capped) level. Segments above the skill's authored cap are
+ * grayed/disabled; when the effective level is pinned BELOW the chosen level by
+ * the cap, an annotation explains it. Re-clicking the already-selected segment
+ * clears an override back to inheriting the family default.
  *
  * Falls back to a "loading" stub when the engram's readout hasn't arrived yet
  * (warmDispatchReadouts repaints when it lands).
@@ -1754,13 +2180,16 @@ function renderSkillAutonomyControl(graphId: string, sourceId: string): string {
   // The skill is limited by its dispatch-safe TAG (not a meta/router pin or an
   // unresolved contradiction) exactly when its actual cap equals the cap that
   // tag alone implies. Only then can the owner lift it by re-tagging — clicking
-  // a greyed L2/L3 segment raises dispatch-safe (no→partial→yes).
+  // a grayed L2/L3 segment raises dispatch-safe (no→partial→yes).
   const DS_CAP: Record<string, AutonomyLevel> = { no: 'L1', partial: 'L2', yes: 'L3' };
   const raisableByTag = entry.cap === (DS_CAP[entry.dispatchSafe] ?? 'L3') && entry.dispatchSafe !== 'yes';
 
   const segs = SKILL_AUTONOMY_LEVELS.map((s) => {
     const aboveCap = levelRankUi(s.level) > capRank;
-    const isActive = !inheriting && s.level === active;
+    // Selected on the EFFECTIVE level regardless of inheritance. Previously an
+    // inheriting skill showed no selection at all, which read as "unset" when it
+    // is in fact set — by the family default.
+    const isActive = s.level === active;
     const raiseTo = aboveCap && raisableByTag
       ? (s.level === 'L2' ? 'partial' : s.level === 'L3' ? 'yes' : null)
       : null;
@@ -1775,18 +2204,28 @@ function renderSkillAutonomyControl(graphId: string, sourceId: string): string {
     return `<button type="button" class="${cls}"${disabled ? ' disabled' : ''} data-skill-level="${s.level}"${raiseAttr} title="${escape(title)}">${escape(s.label)}</button>`;
   }).join('');
 
-  const inheritCls = `skill-autonomy-inherit${inheriting ? ' active' : ''}`;
   const note = pinnedByCap
     ? `<span class="skill-autonomy-note pinned">Pinned to ${entry.effectiveLevel} by authored cap (<code>dispatch-safe: ${escape(entry.dispatchSafe)}</code>).</span>`
     : inheriting
       ? `<span class="skill-autonomy-note">Inheriting family default — effective <strong>${entry.effectiveLevel}</strong> (cap ${entry.cap}).</span>`
       : `<span class="skill-autonomy-note">Override <strong>${entry.configuredSkillLevel}</strong> — effective <strong>${entry.effectiveLevel}</strong> (cap ${entry.cap}).</span>`;
 
-  return `<div class="skill-autonomy" data-skill-autonomy-graph="${escape(graphId)}" data-skill-autonomy-source="${escape(sourceId)}">
-    <span class="skill-autonomy-label">Autonomy</span>
-    <button type="button" class="${inheritCls}" data-skill-level="inherit" title="Clear the override — inherit the Agempus family default.">Inherit</button>
+  // `is-overridden` marks a skill whose level the user set EXPLICITLY (i.e. not
+  // inheriting the family default). The scoped list hides these dials until
+  // hover; a deliberate override must stay visible, or the setting becomes
+  // invisible until you happen to point at the row that carries it.
+  // CHIPS ONLY. The "Autonomy" caption, the Inherit button and the explanatory
+  // note all said what the chips now show directly: the EFFECTIVE level is the
+  // selected chip, whether it is inherited or overridden. `note` still carries
+  // the cap/override detail, so it moves to the title attribute rather than
+  // being deleted — the information survives, the clutter does not.
+  //
+  // Clearing an override is still reachable: clicking the already-selected chip
+  // toggles back to inherit (see the click handler), so the capability did not
+  // disappear with the button.
+  const noteText = note.replace(/<[^>]+>/g, '').trim();
+  return `<div class="skill-autonomy${inheriting ? '' : ' is-overridden'}" title="${escape(noteText)}" data-skill-autonomy-graph="${escape(graphId)}" data-skill-autonomy-source="${escape(sourceId)}">
     <span class="skill-autonomy-track">${segs}</span>
-    ${note}
   </div>`;
 }
 
@@ -1962,6 +2401,27 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
     ? `<span class="skill-row-pending" title="Auto-retrain proposed a new version — review pending">📝 review</span>`
     : '';
 
+  // OFF SWITCH — the row is MARKED, never dropped (see `filteredSortedLibrary`).
+  // Greying alone would not do: colour is not a cause, it is unavailable to
+  // anyone who cannot see it, and "this skill quietly stopped working" is
+  // exactly the failure the badge exists to prevent. So the chip names the
+  // state in words and the tooltip names the fix, and the grey is only the
+  // at-a-glance echo of it. Retrain/Export/History/Hide all still work: the
+  // owner has to be able to keep authoring an agent that is switched off, and
+  // none of those routes dispatch anything.
+  const agentOff = engramSkillsDisabled(s.graphId);
+  const offChip = agentOff
+    ? `<span class="skill-row-engram" style="background:color-mix(in oklab,var(--fg-muted) 22%,transparent);color:var(--fg-muted)" title="“${escape(s.engramName)}” is switched OFF — this skill will not dispatch automatically, by hand, from another agent's @skill: call, or to an MCP client. Nothing is deleted; turn the agent back on from the Agents grid.">off</span>`
+    : '';
+  // Inline because the greyed rule lives with the agent tiles in app.css
+  // (`.agempus-tile.is-disabled`), which this file does not own; the values
+  // mirror it so the two surfaces read as the same state. Applied to the NAME
+  // and the vitality/meta line only — never to the action buttons or the chips,
+  // which are what the owner still has to read and click on an agent that is
+  // off. That is the same split the tile makes (avatar/name/caption dim, the
+  // power switch does not).
+  const offDim = agentOff ? ' style="filter:grayscale(1);opacity:.62"' : '';
+
   // Expand/collapse toggle shown only when the group has children.
   const toggle = hasChildren
     ? `<button class="skill-group-toggle" type="button" aria-expanded="${groupExpanded}" title="Expand to see trained versions">▶</button>`
@@ -1981,9 +2441,10 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
 
   return `
     <div class="skill-row${activeClass}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}">
-      <div class="skill-row-title" title="${escape(skillDisplayName(s.label))}">${toggle}<span data-pres="skill:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(displayName)}</span></div>
+      <div class="skill-row-title" title="${escape(skillDisplayName(s.label))}">${toggle}<span${offDim} data-pres="skill:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(displayName)}</span></div>
       <div class="skill-row-top">
         <span class="skill-row-engram" title="${escape(s.engramName)}" data-pres="engram:${escape(s.graphId)}">${escape(s.engramName)}</span>
+        ${offChip}
         ${kindChip}
         ${authorBadge}
         ${modeChip}
@@ -1992,7 +2453,7 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
         ${pendingChip}
         <span class="skill-row-actions">${actions}</span>
       </div>
-      <div class="skill-row-meta">
+      <div class="skill-row-meta"${offDim}>
         <span class="skill-vitality ${vitClass}" title="${vit ? escape(vit.recommendation) : 'Vitality not yet computed'}">
           <span class="skill-vitality-bar"><span style="width:${vitWidth}"></span></span>
           <span class="skill-vitality-score">${vitScore}</span>
@@ -2054,10 +2515,25 @@ async function toggleSkillHistory(btn: HTMLElement, sourceId: string, graphId: s
   panel.innerHTML = '<div class="skill-history-empty">Loading version history…</div>';
   try {
     const res = await ipcCall<{ ok: boolean; versions: SkillVersionEntry[] }>('skill:history', { graphId, sourceId });
+    // ok:false means the sidecar HAS no trainer to ask — a different thing from
+    // "this skill has no earlier versions". Ignoring `ok` rendered the first as
+    // the second, quietly reporting a missing capability as an empty history.
+    if (res && res.ok === false) {
+      panel.innerHTML = '<div class="skill-history-empty">Version history is unavailable — the skill trainer is not loaded in this sidecar.</div>';
+      return;
+    }
     panel.innerHTML = renderSkillHistory(res?.versions ?? [], graphId, sourceId);
   } catch (e) {
+    // NAME THE CAUSE. "Couldn't load" with the reason only in a console the user
+    // cannot see is unactionable — and it is how this bug reached a screenshot
+    // with nothing to diagnose it by. The most common real cause is a sidecar
+    // that predates this IPC, which the message now says outright.
     console.warn('[skills] history load failed:', e);
-    panel.innerHTML = '<div class="skill-history-empty">Couldn\'t load version history.</div>';
+    const msg = e instanceof Error ? e.message : String(e);
+    const looksMissing = /unknown method|not a function|unsupported|no such/i.test(msg);
+    panel.innerHTML = `<div class="skill-history-empty">Couldn't load version history — ${escape(msg.slice(0, 160))}${
+      looksMissing ? ' (this sidecar may predate the history feature — rebuild it)' : ''
+    }</div>`;
   }
 }
 
@@ -2186,7 +2662,11 @@ function applyComposeModeDom(): void {
   skillsActiveResult = null;
 }
 
-function showSkillsComposeMode(): void {
+/** Put the trainer back on the blank "Train a skill" form. Exported for the
+ *  Agents grid's "+ New agent" tile, which lands on a brand-new agent and must
+ *  not leave the previous agent's skill sitting in the review pane. It switches
+ *  panes only — any text already typed into the compose form is left alone. */
+export function showSkillsComposeMode(): void {
   applyComposeModeDom();
   renderSkillsLibrary();
   updateSkillsResetButton();
@@ -2331,7 +2811,7 @@ async function paintTrainedOutputSourceDriven(
     el.textContent = 'Could not load skill chunks.';
     return;
   }
-  // Hide metadata chunks (HTML comments) — they're an internal audit artefact.
+  // Hide metadata chunks (HTML comments) — they're an internal audit artifact.
   // Title chunks stay out of the numbered card list (slug + date as card #1 was
   // confusing) but we render a static heading below so TRAINED OUTPUT still opens
   // with the skill name before Goals / steps.
@@ -2656,7 +3136,7 @@ function bindCardInteractions(root: HTMLElement, skillId: string, graphId: strin
 
       const editable = draft.querySelector<HTMLElement>('.skills-output-card-text');
 
-      /** Strip ALL recognised goal prefixes from the start of the editable,
+      /** Strip ALL recognized goal prefixes from the start of the editable,
        *  then prepend the new one. So clicking Trigger after Success
        *  REPLACES "Success:" with "Trigger:" instead of stacking them.
        *
@@ -3026,7 +3506,7 @@ function renderDiffView(opts: { animate?: boolean } = {}): void {
   // Concrete summary first ("+12 / −0 across 1 block"), then a one-line
   // legend. Free / memory-augmented mode gets an extra sentence pointing
   // out that the change is Personal Context appended at the end —
-  // otherwise users see "1 block" and don't realise the meaningful
+  // otherwise users see "1 block" and don't realize the meaningful
   // change is the giant block of recalled memories at the bottom.
   const summary = `+${addedLines} added · −${removedLines} removed · ${hunkCount} change block(s) vs ${active.baselineLabel ?? 'baseline'}.`;
   const legend = 'Green = added by Ghampus. Red = removed.';
@@ -3260,7 +3740,7 @@ function renderInfluentialNode(n: SkillInfluentialNode): string {
         : '⊙ goal: completion'
       }</span>`
     : '';
-  // Normalise score: anchored=99, gnn-expanded=1.5+, semantic=0–1.
+  // Normalize score: anchored=99, gnn-expanded=1.5+, semantic=0–1.
   // Render anchored/gnn nodes as 100% / their rounded integer; semantic as percentage.
   const displayScore = n.score >= 90 ? '100%'
     : n.score > 1 ? `${Math.round(n.score * 10) / 10}×`
@@ -3801,7 +4281,7 @@ function showTrainingBanner(): void {
   if (!banner || !textEl) return;
   banner.classList.remove('hidden');
   trainerIsBusy = true;
-  // Wake the status-bar GAP pill: switch from greyscale-inactive to
+  // Wake the status-bar Training pill: switch from greyscale-inactive to
   // pulsing green so the trainer's activity is visible even when the
   // user has scrolled away from MemoryStudio.
   {
@@ -3887,7 +4367,7 @@ function hideTrainingBanner(): void {
   trainerIsBusy = false;
   const banner = document.getElementById('skills-train-progress');
   if (banner) banner.classList.add('hidden');
-  // Send the GAP pill back to its idle (greyscale) state — still visible
+  // Send the Training pill back to its idle (greyscale) state — still visible
   // but clearly inactive, matching how GLL/GNN behave when their layers
   // aren't busy.
   {
@@ -3938,7 +4418,7 @@ document.getElementById('btn-skills-train-cancel')?.addEventListener('click', ()
 });
 
 /** Read the Train-a-Skill form's Autonomy selector. Returns the chosen
- *  per-skill level, or null when "Inherit from engram" (write no override).
+ *  per-skill level, or null when "Inherit from Agempus" (write no override).
  *  Read BEFORE the form is disabled for the training run. */
 function readSkillsComposeAutonomy(): 'L0' | 'L1' | 'L2' | 'L3' | null {
   const v = (document.getElementById('skills-input-autonomy') as HTMLSelectElement | null)?.value ?? 'inherit';
@@ -4086,7 +4566,7 @@ async function runSkillTraining(): Promise<void> {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg === 'cancelled-by-user') {
-      showSkillsToast('Training cancelled.', 'success');
+      showSkillsToast('Training canceled.', 'success');
     } else {
       console.warn('[skills] skill:train failed', e);
       showSkillsToast('Training failed. Check the sidecar logs.', 'error');
@@ -4357,6 +4837,10 @@ function scrollSkillsPaneToTop(): void {
     });
   };
   wireGhampusChat('home-ghampus-btn');
+  // The static "Ghampus" chip that used to sit on the Home card was removed
+  // 2026-08-05, along with the handler that lived here. The card now renders the
+  // default agent's real Agempus tile, and agents-grid.ts owns its click (it has
+  // to enter that agent's skills, which needs state this module does not have).
   // Legacy header mark opens the "Meet Ghampus" intro modal (if present).
   const openGhampusModal = (): void => {
     document.getElementById('ghampus-modal')?.classList.remove('hidden');
@@ -4382,7 +4866,7 @@ function scrollSkillsPaneToTop(): void {
       if (m && !m.classList.contains('hidden')) closeGhampusModal();
     }
   });
-  // GAP pill — same target as goHome, plus snap to the Skills chip so the
+  // Training pill — same target as goHome, plus snap to the Skills chip so the
   // user lands directly on the trainer that's actually running.
   const gapPill = document.getElementById('status-gap-pill');
   if (gapPill) {
@@ -4837,7 +5321,7 @@ async function runGskImport(): Promise<void> {
     showSkillsToast(`File picker failed: ${msg}`, 'error');
     return;
   }
-  if (!gskBase64) return; // user cancelled
+  if (!gskBase64) return; // user canceled
 
   // ── Peek ──────────────────────────────────────────────────────────────
   let peek: SkillPeekResult;
@@ -4857,7 +5341,7 @@ async function runGskImport(): Promise<void> {
 
   // ── Pick destination engram ──────────────────────────────────────────
   const choice = await chooseSkillImportDestination(peek);
-  if (!choice) return; // user cancelled the modal
+  if (!choice) return; // user canceled the modal
 
   // Imports land in QUARANTINE by default — the real destination engram is
   // chosen later in the review panel's "Promote into …" picker, NOT here. So we
@@ -4970,7 +5454,7 @@ async function runGskImport(): Promise<void> {
 /**
  * Render the destination picker modal for a .gsk import. Resolves with the
  * user's choice — either an existing graphId, or a name for a new engram to
- * create — or null if the user cancelled.
+ * create — or null if the user canceled.
  *
  * Per-pack engram is selected by default. The list of existing options is
  * limited to Skills-template engrams so users aren't tempted to dump skills
@@ -5252,7 +5736,25 @@ function _bindSkillsHandlersInner(): void {
       .catch(() => { window.open(url, '_blank'); });
   });
   document.getElementById('skills-library-sort')?.addEventListener('change', (e) => {
-    skillsLibrarySort = (e.target as HTMLSelectElement).value as typeof skillsLibrarySort;
+    const sel = e.target as HTMLSelectElement;
+    // "Hidden skills" is a FILTER, not a sort order — it rides this control
+    // (under its own <optgroup>, so the menu does not present it as a fourth
+    // sort) because the agent view has no other route to hidden skills.
+    //
+    // It leaves `skillsLibrarySort` alone deliberately: whatever order you were
+    // reading the library in is the order the hidden subset is handed back in,
+    // so switching the view does not also silently re-order what you see.
+    //
+    // Choosing any real sort clears the filter, so there is no way to get
+    // stranded in it. It clears ONLY the 'only' state — 'include' belongs to
+    // the library-foot toggle, and a sort change must not reach over and
+    // switch off a control the user set somewhere else.
+    if (sel.value === 'hidden') {
+      skillsHiddenView = 'only';
+    } else {
+      if (skillsHiddenView === 'only') skillsHiddenView = 'exclude';
+      skillsLibrarySort = sel.value as typeof skillsLibrarySort;
+    }
     renderSkillsLibrary();
   });
   document.getElementById('skills-library-filter')?.addEventListener('input', (e) => {
@@ -5272,7 +5774,9 @@ function _bindSkillsHandlersInner(): void {
     scheduleSkillsLibraryRefresh();
   });
   document.getElementById('btn-skills-show-hidden')?.addEventListener('click', () => {
-    skillsShowHidden = !skillsShowHidden;
+    // Two-position toggle over a three-position state: from 'only' the button
+    // reads "Hide hidden", and landing on 'exclude' is exactly what it says.
+    skillsHiddenView = skillsHiddenView === 'exclude' ? 'include' : 'exclude';
     renderSkillsLibrary();
   });
   // ── Import .gsk skill pack ───────────────────────────────────────────────

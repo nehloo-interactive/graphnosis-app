@@ -12,6 +12,7 @@ import {
   type ForesightInsightRow,
   type InsightPrimaryAction,
 } from './foresight-page';
+import { runSkillCreateFlow } from './ghampus-skill-create';
 import { openMemoryIntegrityWorkbench } from './memory-integrity-workbench';
 import type { AttentionCounts } from './memory-integrity-workbench';
 import { ipcCall } from './ipc';
@@ -826,7 +827,7 @@ function wireGhampusAttachButtons(): void {
         if (!p?.trim()) return;
         const graphId = resolveAttachGraphId();
         if (!graphId) {
-          void gAlert('No engram found', 'Open Your Cortex, select an engram, then try attaching again.');
+          void gAlert('No engram found', 'Open the Stats / Cortex tab, select an engram, then try attaching again.');
           return;
         }
         try {
@@ -970,6 +971,9 @@ export async function refreshGhampusSkills(): Promise<void> {
     }
     if (ul) {
       if (res.skills.length === 0) {
+        // Same distinction as the picker: this branch is reached only on a
+        // SUCCESSFUL call that returned zero, so the wording is safe here — but
+        // the caller must not route failures into it.
         ul.innerHTML = '<li class="ghampus-panel-empty">No skills in your library yet.</li>';
       } else {
         ul.innerHTML = res.skills.map((s) => {
@@ -3417,6 +3421,10 @@ async function clearGhampusSessionUi(): Promise<void> {
   clearGhampusFragmentComments();
   const thread = ghampusChatMessagesEl();
   if (thread) thread.innerHTML = GHAMPUS_THREAD_EMPTY_HTML;
+  // The thread just archived is now a past chat — tell the rail's Chats list to
+  // re-read. An event rather than a direct call: main.ts already imports this
+  // module, so importing renderRailChats back would be a cycle.
+  document.dispatchEvent(new CustomEvent('graphnosis:ghampus-sessions-changed'));
 }
 
 /** Archive the on-disk session and reset the visible thread. */
@@ -3546,9 +3554,27 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
 
   // "Handled by {Agempus}" chip — descriptive routing chip; clicking deep-links
   // to the Agents roster. No re-dispatch action.
+  // Announce the routing so the Agents grid can pulse that avatar. Emitted at
+  // CHIP RENDER, which is the moment a real dispatch became visible — not a
+  // timer and not a guess.
+  {
+    const chip = node.querySelector<HTMLElement>('.ghampus-handled-by-chip');
+    const engramId = chip?.dataset['handledByEngram'];
+    if (engramId) {
+      document.dispatchEvent(new CustomEvent('agents:dispatched', { detail: { engramId } }));
+    }
+  }
   node.querySelector<HTMLElement>('.ghampus-handled-by-chip')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    app().activateMode('agents');
+    // Was activateMode('agents') — the standalone roster retired 2026-08-05, and
+    // that mode no longer resolves to any pane, so this chip navigated nowhere.
+    // Agents/Agempi is now the 'skills' destination.
+    //
+    // The chip already carries data-handled-by-engram; once the agent-detail
+    // view lands, this should open THAT agent rather than the grid. Deliberately
+    // not faked here — sending the user to the grid is honest, whereas pretending
+    // to deep-link and silently landing somewhere else is not.
+    app().activateMode('skills');
   });
 
   if (msg.kind === 'skill-match') {
@@ -4507,8 +4533,12 @@ const SKILL_PICKER_MODE_CONFIG: Record<SkillPickerMode, {
   },
   train: {
     title: 'Train a skill',
-    hint: '',
-    placeholder: 'Filter by name…',
+    // The drawer is no longer only a picker: text that matches nothing offers to
+    // author a new skill instead of dead-ending. Say that up front — a create
+    // path the user has to discover by typing into an apparently-empty list is
+    // barely better than not having one.
+    hint: 'Pick a skill to retrain, or describe a new one and train it from scratch.',
+    placeholder: 'Filter by name, or describe a new skill…',
     commandPrefix: '/train',
   },
   skills: {
@@ -4551,6 +4581,12 @@ type SkillPickerHandle = {
   isOpen: () => boolean;
   close: () => void;
   findExactMatch: (filter: string) => SkillPickerSkill | undefined;
+  /**
+   * Render `filter` synchronously and, if the drawer is offering to author it,
+   * start that flow. `false` = no live offer, and the caller still owns the
+   * keystroke.
+   */
+  submitCreateIntent: (mode: SkillPickerMode, filter: string) => boolean;
 };
 
 function skillPickerVitalityClass(v: number | null): string {
@@ -4567,6 +4603,10 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
   const filterEl = document.getElementById('ghampus-walk-picker-filter') as HTMLInputElement | null;
   const listEl = document.getElementById('ghampus-walk-picker-list');
   const emptyEl = document.getElementById('ghampus-walk-picker-empty');
+  // Create affordance — present only in `train` mode, only when the library
+  // actually loaded, and only when the typed text matched nothing.
+  const createWrapEl = document.getElementById('ghampus-walk-picker-create-wrap');
+  const createBtnEl = document.getElementById('btn-ghampus-walk-picker-create') as HTMLButtonElement | null;
   const noop: SkillPickerHandle = {
     open: async () => {},
     syncFromInput: () => {},
@@ -4574,10 +4614,13 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
     isOpen: () => false,
     close: () => {},
     findExactMatch: () => undefined,
+    submitCreateIntent: () => false,
   };
   if (!backdrop || !filterEl || !listEl || !emptyEl) return noop;
 
   let allSkills: SkillPickerSkill[] = [];
+  /** True when the last load THREW. Distinct from an empty library. */
+  let skillsLoadFailed = false;
   let filtered: SkillPickerSkill[] = [];
   let activeIdx = 0;
   let previousFocus: HTMLElement | null = null;
@@ -4599,6 +4642,17 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
     listEl.setAttribute('aria-label', cfg.title);
   };
 
+  /**
+   * Move focus onto the create offer, if one is showing. Cheap because it needs
+   * no shared index space with the list: the offer appears only when the list is
+   * EMPTY, so the two are never navigable at the same time.
+   */
+  const focusCreateOffer = (): boolean => {
+    if (!createWrapEl || createWrapEl.classList.contains('hidden') || !createBtnEl) return false;
+    createBtnEl.focus();
+    return true;
+  };
+
   const focusActiveItem = (): void => {
     listEl.querySelector<HTMLButtonElement>(`.ghampus-walk-picker-item[data-idx="${activeIdx}"]`)?.focus();
   };
@@ -4617,6 +4671,28 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
       previousFocus.focus();
     }
     previousFocus = null;
+  };
+
+  /**
+   * THE one definition of "start authoring a new skill". Three entry points call
+   * it — the offer's own click, Enter in the drawer filter, and Enter in the chat
+   * box via `sendMessage` — and none of them may re-implement it.
+   *
+   * The live offer is read back off the button's own dataset rather than
+   * recomputed, so this cannot start a flow the user was never shown: `renderList`
+   * sets `data-description` under exactly one condition (`canCreate` — train mode,
+   * a loaded library, no matches, non-empty text) and deletes it otherwise. The
+   * `skillsLoadFailed` guard therefore protects every entry point for free.
+   *
+   * Returns false when there is no live offer, so a caller that CONSUMED a
+   * keystroke knows it must not swallow it silently.
+   */
+  const startSkillCreate = (): boolean => {
+    const description = (createBtnEl?.dataset['description'] ?? '').trim();
+    if (!description) return false;
+    close();
+    void runSkillCreateFlow(description);
+    return true;
   };
 
   const findExactMatch = (filter: string): SkillPickerSkill | undefined => {
@@ -4684,11 +4760,38 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
 
     const noSkills = allSkills.length === 0;
     const noMatches = filtered.length === 0;
-    emptyEl.textContent = noSkills
-      ? 'No skills in your library yet. Train one in Skills.'
-      : 'No skills match your filter.';
+    // Three distinct states, three distinct messages. Collapsing the first two
+    // is what made this lie.
+    emptyEl.textContent = skillsLoadFailed
+      ? 'Could not load your skills — the sidecar may be busy or unreachable. Close and reopen to retry.'
+      : noSkills
+        ? 'No skills in your library yet. Train one in Skills.'
+        : 'No skills match your filter.';
     emptyEl.classList.toggle('hidden', !noMatches);
     listEl.classList.toggle('hidden', noMatches && !noSkills);
+
+    // ── Fourth state: /train with text that matches nothing ────────────────
+    //
+    // This is ALONGSIDE the empty message, not instead of it — "no skills match
+    // your filter" is still true and still worth saying; what was missing was
+    // anywhere to go from there. Before this, typing a description into /train
+    // and pressing Enter re-opened the drawer and sent nothing at all.
+    //
+    // `skillsLoadFailed` is the first condition on purpose. When the load threw
+    // we do not know whether a skill by this name already exists, so offering to
+    // create one would invite a duplicate on the back of a transient error. The
+    // failed-load branch keeps its own message and offers nothing.
+    const rawFilter = filterEl.value.trim();
+    const canCreate = activeMode === 'train' && !skillsLoadFailed && noMatches && rawFilter.length > 0;
+    if (createWrapEl && createBtnEl) {
+      createWrapEl.classList.toggle('hidden', !canCreate);
+      if (canCreate) {
+        createBtnEl.textContent = `Train a new skill: ${rawFilter}`;
+        createBtnEl.dataset['description'] = rawFilter;
+      } else {
+        delete createBtnEl.dataset['description'];
+      }
+    }
 
     listEl.querySelectorAll<HTMLButtonElement>('.ghampus-walk-picker-item').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -4712,9 +4815,21 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
         displayLabel: skillHumanLabel(s.label),
         vitality: s.recallBreadth ?? null,
       })).sort((a, b) => a.displayLabel.localeCompare(b.displayLabel));
-    } catch {
+    } catch (e) {
+      // DO NOT convert a failed fetch into an empty library.
+      //
+      // This used to `allSkills = []` and fall through to `skillsLoaded = true`,
+      // so a failing agent:listSkills rendered "No skills in your library yet.
+      // Train one in Skills." to a user with a hundred skills — and never
+      // retried, because the failure had marked the load complete. The value
+      // returned on "you genuinely have none" and on "the call blew up" were
+      // identical, which is the one thing an empty state must never be.
+      console.warn('[ghampus] could not load skills for the picker', e);
+      skillsLoadFailed = true;
       allSkills = [];
+      return;   // leave skillsLoaded false so the next open retries
     }
+    skillsLoadFailed = false;
     skillsLoaded = true;
   };
 
@@ -4722,6 +4837,17 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
     if (skillsLoaded) return;
     if (!loadPromise) loadPromise = loadSkills();
     await loadPromise;
+    // Clear the cached promise on failure, or the retry the empty-state message
+    // PROMISES ("Close and reopen to retry") can never happen: `loadSkills`
+    // deliberately leaves `skillsLoaded` false so the next open re-runs, but a
+    // memoised `loadPromise` meant every later `ensureReady` awaited the same
+    // already-settled failure and returned instantly. The user was told to
+    // reopen and reopening did nothing.
+    //
+    // This matters more now than it did: the create affordance is suppressed
+    // while `skillsLoadFailed` is set, so a permanently-stuck failure would also
+    // permanently hide the only way forward.
+    if (!skillsLoaded) loadPromise = null;
   };
 
   const showDrawerShell = (focusFilter: boolean): void => {
@@ -4772,6 +4898,25 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
     }, 50);
   };
 
+  /**
+   * `sendMessage`'s door to `startSkillCreate`.
+   *
+   * The pending 50 ms sync is cancelled and the filter applied SYNCHRONOUSLY
+   * first, so the offer reflects the text being submitted rather than whatever
+   * the debounce last painted — otherwise an Enter within 50 ms of the last
+   * keystroke would read a stale `data-description`, or none at all. `applyFilter`
+   * is synchronous once the library is loaded, which `sendMessage` guarantees by
+   * awaiting `ensureReady()` before calling this.
+   */
+  const submitCreateIntent = (mode: SkillPickerMode, filter: string): boolean => {
+    if (syncDebounce) {
+      clearTimeout(syncDebounce);
+      syncDebounce = null;
+    }
+    applyFilter(mode, filter, false);
+    return startSkillCreate();
+  };
+
   filterEl.addEventListener('input', () => {
     filterEl.classList.remove('is-synced');
     activeIdx = 0;
@@ -4785,7 +4930,9 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
   filterEl.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (!filtered.length) return;
+      // Nothing in the list — but the create offer may be sitting right below it,
+      // and it was previously unreachable by keyboard.
+      if (!filtered.length) { focusCreateOffer(); return; }
       activeIdx = (activeIdx + 1) % filtered.length;
       renderList();
       focusActiveItem();
@@ -4799,6 +4946,10 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
       e.preventDefault();
       if (filtered[activeIdx]) void pickSkill(filtered[activeIdx]);
       else if (activeMode === 'skills' && filterEl.value.trim()) void submitPickerChoice(undefined, filterEl.value.trim());
+      // Nothing to pick. If the drawer is offering to author this text, Enter
+      // takes that offer; `startSkillCreate` is a no-op when there is none, and
+      // the drawer stays open showing whichever empty state explains why.
+      else startSkillCreate();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       close();
@@ -4846,7 +4997,17 @@ function wireSkillPickerDrawer(submitText: (text: string) => Promise<void>): Ski
 
   document.getElementById('btn-ghampus-walk-picker-close')?.addEventListener('click', close);
 
-  return { open, syncFromInput, ensureReady, isOpen: () => drawerOpen, close, findExactMatch };
+  // Hands off to the recall → draft → review → train flow. Nothing is written
+  // here: `runSkillCreateFlow` drafts with `save: false` and only writes on the
+  // approve click inside its own review modal.
+  createBtnEl?.addEventListener('click', () => {
+    startSkillCreate();
+  });
+
+  return {
+    open, syncFromInput, ensureReady, isOpen: () => drawerOpen, close, findExactMatch,
+    submitCreateIntent,
+  };
 }
 
 // ── Slash command definitions ─────────────────────────────────────────────────
@@ -5119,6 +5280,19 @@ function wireGhampusChat(): void {
         await submitGhampusText(`${cfg.commandPrefix} ${exact.slug}`);
         return;
       }
+      // No skill by that name. In `train` mode the drawer offers to AUTHOR the
+      // typed description, and this Enter is the user taking that offer — the
+      // drawer is synced from this box, so focus never moved and this is the
+      // only key they have. `submitCreateIntent` runs the same
+      // `startSkillCreate` the offer's own click runs; there is one definition.
+      if (parsed.mode === 'train' && skillPicker.submitCreateIntent(parsed.mode, parsed.filter)) {
+        input!.value = '';
+        input!.style.height = 'auto';
+        return;
+      }
+      // No live offer — the guard suppressed it (a failed load, or matches the
+      // user should pick from instead). `submitCreateIntent` has already
+      // re-rendered the drawer, so the reason is on screen rather than swallowed.
       skillPicker.syncFromInput(parsed.mode, parsed.filter);
       return;
     }

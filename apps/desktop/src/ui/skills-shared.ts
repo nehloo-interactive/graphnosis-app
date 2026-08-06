@@ -2,7 +2,7 @@
  * Skills-shared — helpers shared between the Skills library page (skills.ts)
  * and the Agents/Agempi roster (agents.ts). Extracted (feature #41) so the two
  * surfaces never fork the Agempus dial / vitality-grade / dispatch-safe readout
- * logic. NO behaviour change to the Skills page — these are the exact same
+ * logic. NO behavior change to the Skills page — these are the exact same
  * helpers, just lifted into one module both pages import.
  */
 import { app } from './app-context';
@@ -24,10 +24,20 @@ export type DispatchSafety = 'yes' | 'partial' | 'no';
 // tab). It only ever auto-runs skills that clear their authored dispatch-safe
 // cap plus the executor's live gates, so the segment is selectable but bounded.
 export const AGEMPUS_LEVELS: ReadonlyArray<{ level: AutonomyLevel; label: string; title: string; locked?: boolean }> = [
-  { level: 'L0', label: 'L0', title: 'Manual — never surface a card.' },
-  { level: 'L1', label: 'L1', title: 'Suggest — surface a propose-card (default).' },
-  { level: 'L2', label: 'L2', title: 'Preview — surface a card flagged preview-then-run.' },
-  { level: 'L3', label: 'L3', title: 'Autonomous — auto-run eligible skills unattended. Opt-in and OFF by default; enable and review runs in the Unattended tab.' },
+  // Named rather than numbered. L0–L3 told the user the ORDER but never the
+  // meaning, so the tooltip was doing all the work and the control read as a
+  // volume knob. The names say what actually happens; the tooltip stays as the
+  // detail. Level ids are untouched — they are persisted in engram metadata and
+  // compared across the sidecar, so only the labels change.
+  //
+  // L3 is "Unattended", not "Autonomous", for two reasons: the product already
+  // calls that surface the Unattended tab, so the name points at where the runs
+  // are reviewed; and "Autonomous" would collide with the "Autonomy" heading
+  // directly above the dial.
+  { level: 'L0', label: 'Handheld', title: 'Handheld — never surfaces a card. You run this skill yourself, every time.' },
+  { level: 'L1', label: 'Guided', title: 'Guided — surfaces a propose-card for you to accept or dismiss (default).' },
+  { level: 'L2', label: "Tell'n'Go", title: "Tell'n'Go — surfaces a card flagged preview-then-run: you see the plan, then it runs." },
+  { level: 'L3', label: 'Unattended', title: 'Unattended — auto-runs eligible skills with no human in the loop. Opt-in and OFF by default; enable it and review every run in the Unattended tab. Always capped by each skill\'s authored dispatch-safe.' },
 ];
 
 // Default level shown when an engram has no per-engram override. Mirrors core
@@ -56,9 +66,8 @@ export function renderAgempusDial(graphId: string): string {
     return `<button class="${cls}"${disabled} data-agempus-level="${s.level}" title="${escape(title)}">${escape(s.label)}</button>`;
   }).join('');
   return `<div class="agempus-dial" data-agempus-engram="${escape(graphId)}">
-    <span class="agempus-dial-label">Family default</span>
+    <span class="agempus-dial-label" title="The autonomy every skill in this Agempus inherits, unless you set a per-skill override below. Always capped by each skill's authored dispatch-safe:. Unattended auto-runs eligible skills with no human — it is opt-in and OFF by default; enable it and review every run in the Unattended tab.">Autonomy</span>
     <span class="agempus-dial-track">${segs}</span>
-    <span class="agempus-dial-note">The family default for every skill in this Agempus. Each skill inherits it unless you set a per-skill override below, and is always capped by its authored <code>dispatch-safe:</code>. L3 (unattended) auto-runs eligible skills with no human — it is opt-in and OFF by default; enable it and review every run in the Unattended tab.</span>
   </div>`;
 }
 

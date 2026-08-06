@@ -806,7 +806,7 @@ async function maybeOfferBiometricSetup(): Promise<void> {
 
 function friendlyUnlockError(msg: string): string {
   if (/biometric authentication cancelled/i.test(msg)) {
-    return 'Touch ID was cancelled. Try again or enter your cortex passphrase.';
+    return 'Touch ID was canceled. Try again or enter your cortex passphrase.';
   }
   if (/no saved passphrase for this cortex/i.test(msg)) {
     return 'Touch ID is not set up for this cortex yet. Unlock with your passphrase once to enable it.';

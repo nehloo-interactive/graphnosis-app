@@ -59,16 +59,20 @@ const CONNECTOR_KIND_GLYPH: Record<ConnectorKind, string> = {
  *  with 3 Obsidian vaults or 12 NAS folders sees + manages each one here. */
 export function paintGcConnectorList(configs: ConnectorConfigShape[], statuses: ConnectorStatus[]): void {
   const wrap = document.getElementById('gc-connectors-list');
-  const head = document.getElementById('gc-connected-head');
+  // The whole section now hides/shows as a unit — it sits FIRST on Get
+  // Connected, so an empty heading above an empty list would be the first
+  // thing a fresh cortex sees. Previously only the <h4> was toggled because
+  // the block lived mid-page where a stray heading was harmless.
+  const section = document.getElementById('gc-connected-section');
   const intervalRow = document.getElementById('gc-interval-row');
   if (!wrap) return;
   if (configs.length === 0) {
     wrap.innerHTML = '';
-    if (head) head.style.display = 'none';
+    if (section) section.style.display = 'none';
     if (intervalRow) intervalRow.style.display = 'none';
     return;
   }
-  if (head) head.style.display = '';
+  if (section) section.style.display = '';
   if (intervalRow) intervalRow.style.display = '';
   const statusById = new Map(statuses.map((s) => [s.id, s]));
   wrap.innerHTML = configs.map((cfg) => renderConnectorRow(cfg, statusById.get(cfg.id))).join('');
@@ -143,8 +147,10 @@ export async function refreshConnectorsList(): Promise<void> {
     }
   } catch (e) {
     const gcWrap = document.getElementById('gc-connectors-list');
-    const head = document.getElementById('gc-connected-head');
-    if (head) head.style.display = '';
+    // Reveal the section on failure — the error and its Retry button live
+    // inside it, so leaving it hidden would swallow both.
+    const section = document.getElementById('gc-connected-section');
+    if (section) section.style.display = '';
     const timedOut = /within \d+s|timed out|did not respond/i.test(String(e));
     if (gcWrap) {
       gcWrap.innerHTML =
@@ -221,7 +227,7 @@ function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus)
             : `<button data-connector-action="pull" data-connector-id="${escapeHtml(cfg.id)}">${status?.paused ? 'Resume' : 'Pull now'}</button>
         <button data-connector-action="resync" data-connector-id="${escapeHtml(cfg.id)}" title="Reset this connector's cursor and re-pull everything from scratch">Re-sync</button>`)}
         <button data-connector-action="edit" data-connector-id="${escapeHtml(cfg.id)}">Edit</button>
-        <button data-connector-action="remove" data-connector-id="${escapeHtml(cfg.id)}" class="danger">Remove</button>
+        <button data-connector-action="remove" data-connector-id="${escapeHtml(cfg.id)}" class="danger" title="Remove this connector" aria-label="Remove this connector">✕</button>
       </div>
     </div>`;
 }
@@ -423,7 +429,7 @@ export function openConnectorSetupModal(kind: ConnectorKind, existing?: Connecto
  * Pick one or more folders. In the Tauri app this is the native OS dialog. In
  * browser / personal-server mode there's no native dialog AND the relevant
  * disk is the SERVER's, so we open a server-side folder navigator backed by
- * the `fs.listDir` IPC. Returns selected absolute path(s), or [] if cancelled.
+ * the `fs.listDir` IPC. Returns selected absolute path(s), or [] if canceled.
  */
 export async function pickFolders(): Promise<string[]> {
   if (IS_TAURI) {
@@ -438,7 +444,7 @@ interface ListDirResult { path: string; parent: string; dirs: Array<{ name: stri
 
 /** Server-side folder navigator (browser/personal-server mode). Walks the
  *  server's directories via the `fs.listDir` IPC; resolves the chosen absolute
- *  path, or null if cancelled. */
+ *  path, or null if canceled. */
 function browserFolderPicker(): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
     const overlay = document.createElement('div');

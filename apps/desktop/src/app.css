@@ -473,7 +473,7 @@
         flex-shrink: 0;
         animation: mcp-pulse 2s ease-in-out infinite;
       }
-      /* Idle bubble: same pulse, amber colour. Used when an MCP
+      /* Idle bubble: same pulse, amber color. Used when an MCP
          connection hasn't seen activity in a while — the relay is
          still attached, just not actively forwarding anything. */
       .mcp-dot-idle {
@@ -1287,7 +1287,7 @@
          wordmark sits to its LEFT via the ::before pseudo-element so
          the brand name is anchored alongside the seahorse on every
          tour card. pointer-events:none on the wrapper so the corner
-         doesn't intercept clicks on neighbouring controls. */
+         doesn't intercept clicks on neighboring controls. */
       .tour-logo {
         position: absolute;
         top: 18px;
@@ -2127,18 +2127,10 @@
       .sensitivity-badge[data-tier="personal"]  { background: var(--color-status-warn-soft); color: var(--color-status-warn-gold); border-color: var(--color-status-warn-border); }
       .sensitivity-badge[data-tier="sensitive"] { background: var(--color-status-error-soft); color: var(--color-status-error); border-color: var(--color-status-error-border); }
       .sensitivity-badge:hover { opacity: 0.75; }
-      /* Vertical stack: "Active engram:" label on top, tier badge below.
-         Sits to the LEFT of the engram dropdown. The badge is right-aligned
-         within the stack so its right edge sits under the right edge of the
-         "Active engram:" label (rather than left-aligned under "A"). */
-      .header-engram-stack {
-        display: inline-flex; flex-direction: column;
-        align-items: flex-end; justify-content: center;
-        gap: 3px; line-height: 1;
-      }
-      .header-engram-stack .header-engram-label { line-height: 1; }
-      .header-engram-stack .sensitivity-badge { padding: 1px 6px; font-size: 9px; }
-      /* Sensitivity popover — opens from the topbar badge */
+      /* (.header-engram-stack / .header-engram-label were deleted with the
+         top-bar "Active engram:" cluster — the picker now IS the Memory /
+         3D Engrams page title. See `.atlas-title-line` further down.) */
+      /* Sensitivity popover — opens from the tier badge */
       .sensitivity-popover {
         position: absolute; z-index: 9999;
         background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
@@ -2186,16 +2178,17 @@
         margin-bottom: 14px;
       }
       .settings-section.no-top-border { /* keep class for compat, no extra rules needed */ }
-      /* Pro license launcher — full-width button at the top of Settings
-         that opens the dedicated license modal. Styled as a primary CTA
-         to surface the subscription affordance without burying it in the
-         per-cortex preferences. */
-      .settings-license-launcher {
-        margin: 0 0 14px;
-        padding: 0;
-        border-bottom: none;
-      }
-      .settings-license-launcher-btn {
+      /* SHARED width-long launcher row — a full-width button laid out as
+         icon · two-line text block · trailing chevron. The name is shape-only
+         on purpose: this component carries no license-, Settings- or
+         Get-Connected-specific styling (transparent background, plain
+         --fg/--border/--fg-dim tokens, no #id selectors), so any surface that
+         needs this shape reuses it as-is. Three call sites:
+         #btn-pane-open-license (Settings pane), #btn-teams-open-license
+         (Teams & Enterprise pane), #btn-gc-mcp-tools (Get Connected). Keep it
+         neutral — do NOT add domain-specific rules here, and do not fork a
+         look-alike for the next surface that needs this shape. */
+      .launcher-row-btn {
         width: 100%;
         display: flex; align-items: center; gap: 14px;
         padding: 4px 4px;
@@ -2212,24 +2205,24 @@
         text-align: left;
         transition: background 0.12s, border-color 0.12s;
       }
-      .settings-license-launcher-btn:hover {
+      .launcher-row-btn:hover {
         background: color-mix(in oklab, var(--fg) 6%, transparent);
         border-color: var(--border);
       }
-      .settings-license-launcher-icon { font-size: 22px; flex-shrink: 0; }
-      .settings-license-launcher-text {
+      .launcher-row-icon { font-size: 22px; flex-shrink: 0; }
+      .launcher-row-text {
         flex: 1; min-width: 0;
         display: flex; flex-direction: column; gap: 2px;
       }
-      .settings-license-launcher-text strong { font-size: 14px; font-weight: 700; }
-      .settings-license-launcher-text .subtitle { font-size: 12px; margin: 0; }
-      .settings-license-launcher-arrow {
+      .launcher-row-text strong { font-size: 14px; font-weight: 700; }
+      .launcher-row-text .subtitle { font-size: 12px; margin: 0; }
+      .launcher-row-arrow {
         font-size: 20px;
         color: var(--fg-dim);
         flex-shrink: 0;
         transition: transform 0.12s;
       }
-      .settings-license-launcher-btn:hover .settings-license-launcher-arrow {
+      .launcher-row-btn:hover .launcher-row-arrow {
         transform: translateX(2px);
         color: var(--fg);
       }
@@ -2584,11 +2577,13 @@
         opacity: 0.5;
         margin: 0 2px;
       }
-      /* Active engram picker — lighter-gray pill living in the right
-         action cluster, left of "Add file." Slightly elevated above the
-         top-bar `var(--bg)` so it reads as an interactive control
-         without competing with the title or the primary "Add file"
-         button next to it. */
+      /* Active engram picker — a lighter-gray pill. The class name is a
+         holdover: the picker no longer lives in the header's right action
+         cluster, it was relocated onto the Memory / 3D Engrams page where it
+         serves as that page's title. These are its BASE looks; the block at
+         `.atlas-title-line .header-engram-picker` (search "engram picker AS
+         the page title") overrides the type ramp and strips the chrome.
+         Everything here still applies to whatever is not overridden. */
       .header-engram-picker {
         font-size: 14px;
         font-weight: 600;
@@ -2658,10 +2653,42 @@
       .engram-picker-dropdown {
         position: absolute;
         top: calc(100% + 4px);
+        /* Flush with the trigger. This was `left: 6px` while the trigger itself
+           carried a -7px margin and hung off the pane edge — the inset was
+           buying clearance for this panel's own border and shadow. That margin
+           is now positive (see "Left-edge arithmetic" below), so the clearance
+           comes from the trigger and a second inset here would just make the
+           menu look detached from the title it belongs to. */
         left: 0;
         z-index: 250;
+        /* SIZE TO THE OPTION LIST, NOT TO THE TRIGGER.
+           An absolutely-positioned box shrink-to-fits against the width its
+           containing block offers — here .engram-picker-wrap, i.e. the trigger.
+           That was survivable while the trigger was a top-bar control; now that
+           the trigger IS the page title (content-sized, and as narrow as the
+           active engram's name — "FORA" is ~60px), the panel inherited that
+           width and every 14px option label wrapped onto 3-8 lines.
+           `width: max-content` sizes the panel from its widest row instead;
+           `min-width: 100%` still keeps it at least as wide as the trigger so
+           it never looks detached; `max-width` caps it (see the row rules —
+           anything longer ellipsizes rather than wrapping or escaping the
+           viewport). The vw term is a guard for a narrow window, not the
+           normal case.
+
+           THE CAP IS SIZED FOR LARGE ROWS, NOT FOR 14px. It was first set to
+           320px against 14px rows, which left almost nothing in reserve once
+           the rows are read at the title ramp: measured in a headless harness
+           against a real 34-engram list, the widest row ("🛠️ Business & GTM
+           Skills", counting formatEngramLabel()'s wrench prefix) needs a
+           305.70px panel at 24px/700 — 14px short of the old cap, i.e. one
+           slightly longer engram name away from truncating. 480px clears that
+           worst case by 57% (~13 more characters at that ramp) and is still
+           under half the 1112px pane, so the panel never dominates the page.
+           `width: max-content` means the cap only ever binds for a pathological
+           name — a normal list is unaffected by raising it. */
+        width: max-content;
         min-width: 100%;
-        max-width: 320px;
+        max-width: min(480px, calc(100vw - 48px));
         max-height: 360px;
         overflow-y: auto;
         background: var(--bg-elev);
@@ -2683,14 +2710,34 @@
         padding: 6px 10px;
         border-radius: 4px;
         cursor: pointer;
-        /* Wrap long engram names onto multiple lines instead of cutting
-           them off with ellipsis — the dropdown is capped at max-width
-           320px and some names (TripPlanningArchive, Graphnosis-app-nf9p)
-           overflow that. word-break keeps even a single un-spaced name
-           breakable at any character so nothing escapes the panel. */
-        white-space: normal;
-        word-break: break-word;
+        /* ONE LINE PER OPTION. The panel above is sized from the widest row,
+           so a real engram name never needs to wrap; only a name longer than
+           the panel's max-width does, and that one ellipsizes on the label
+           span below (with the full name on the row's `title`) rather than
+           wrapping. Flex so the loading spinner, the "✓" marker and the label
+           sit on one baseline and only the label absorbs the truncation. */
+        display: flex;
+        align-items: center;
+        white-space: nowrap;
+        overflow: hidden;
         line-height: 1.3;
+        /* The panel is a COLUMN flex container with a definite max-height, so
+           every row is a flex ITEM and defaults to flex-shrink:1 — once the
+           list outgrows max-height the rows compress instead of the panel
+           scrolling. Measured with a real 34-engram list: rows collapsed from
+           30.20px to 12px (their padding), leaving the labels overflowing
+           boxes barely taller than the gaps between them. Nothing here may
+           shrink; the panel's overflow-y handles the excess. */
+        flex-shrink: 0;
+      }
+      /* The option's name. Carries the truncation so the spinner / ✓ marker
+         are never the thing that gets cut. renderOptions() puts the full name
+         on the row's `title`, so an ellipsized name stays readable on hover. */
+      .engram-picker-option-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .engram-picker-option:hover {
         background: color-mix(in oklab, var(--fg) 8%, transparent);
@@ -2703,11 +2750,13 @@
       }
       .engram-picker-option-full:hover { background: color-mix(in oklab, var(--accent) 24%, transparent); }
       .engram-picker-option-full.selected { background: color-mix(in oklab, var(--accent) 28%, transparent); }
-      .engram-picker-divider { height: 1px; margin: 5px 4px; background: var(--border); }
+      /* flex-shrink:0 for the same reason as the rows above — a 1px rule in a
+         scrolling column flex container otherwise gets squeezed to nothing. */
+      .engram-picker-divider { height: 1px; margin: 5px 4px; background: var(--border); flex-shrink: 0; }
       .engram-picker-option.disabled {
         /* Pending engrams — listed for awareness but the sidecar hasn't
            decrypted them into memory yet, so picking one would just
-           surface a "Graph not loaded" IPC error. Hard-coded grey (not
+           surface a "Graph not loaded" IPC error. Hard-coded gray (not
            var(--fg-dim) which is only slightly darker than --fg and reads
            as "normal" on this dark background) makes the disabled state
            unmistakable. Drops the disabled flag on the next engrams-loading
@@ -2727,6 +2776,7 @@
         font-size: 12px;
         line-height: 1;
         opacity: 0.7;
+        flex: 0 0 auto; /* the row is a flex line — only the label may shrink */
         animation: engramPickerSpin 1.1s linear infinite;
         transform-origin: 50% 55%;
       }
@@ -2740,9 +2790,10 @@
         font-weight: 600;
       }
       .engram-picker-option.selected::before {
-        content: "✓ ";
+        content: "✓";
         color: var(--accent);
         margin-right: 4px;
+        flex: 0 0 auto; /* flex item on the row — never squashed by a long name */
       }
 
       .header-engram-picker option {
@@ -2789,15 +2840,6 @@
         -webkit-app-region: no-drag;
       }
       .btn-help:hover { color: var(--fg); border-color: var(--accent); }
-      /* Label that sits before the engram picker — muted, smaller than
-         the picker text so the eye lands on the engram name itself. The
-         tight 4px gap to the picker visually binds them as one control. */
-      .header-engram-label {
-        font-size: 11.5px;
-        color: var(--fg-dim);
-        margin-right: -2px;  /* trim the .app-header-right 6px gap down to ~4px */
-      }
-
       .app-body {
         display: grid;
         grid-template-columns: var(--rail-width, 280px) 1fr;
@@ -2853,6 +2895,28 @@
       }
       .rail-btn .rail-icon svg { display: block; }
       .rail-btn .rail-label { line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* The plain-language nav word carries the weight; the biological term
+         after the slash stays regular because .label-term re-declares
+         font-weight:400 on its own element (inheritance never beats a
+         directly-matching declaration), so no markup change is needed.
+         Applied to EVERY rail label, including the rows with no term
+         (Search, Teams & Enterprise, Presentation Mode, Settings) — a rail
+         where only some rows are bold reads as an inconsistency, not a
+         grouping, and scoping with :has() would also stake the whole effect
+         on a selector the oldest supported WebViews may not have.
+         The active row keeps a weight step above the rest (was 400→500 via
+         .rail-btn.active; now 600→700) — a direct .rail-label rule would
+         otherwise override the inherited active weight and flatten it.
+         letter-spacing is the companion to the weight bump, and it is what
+         pays for it: bolder text is wider, and the "Connections / Synapses"
+         row has only ~6px of slack before a 3-digit #rail-gc-count badge
+         reaches the label. Measured at the fixed 280px rail with a "999"
+         badge, worst case (that row active, so 700): 175.89px of label and a
+         1.16px COLLISION without the tracking, 172.47px and 2.26px of
+         clearance with it — parity with the 2.96px the row had at 500.
+         -0.01em is the same tracking h1 already uses. */
+      .rail-btn .rail-label { font-weight: 600; letter-spacing: -0.01em; }
+      .rail-btn.active .rail-label { font-weight: 700; }
 
       /* Logo row holds the seahorse mark plus the collapse toggle. The toggle
          sits in the top-right corner of the rail; flexbox alignment keeps the
@@ -2983,6 +3047,93 @@
       .rail-mcp-indicator .rail-mcp-name {
         overflow: hidden;
         text-overflow: ellipsis;
+        /* A flex item will not shrink below its own content width without an
+           explicit min-width:0 — this is what lets the NAME ellipsize instead
+           of shoving the shortfall onto its neighbors. */
+        min-width: 0;
+      }
+
+      /* ── "plain name / biological term" labels ───────────────────────────
+         Second half of a two-part destination label ("Stats / Cortex",
+         "Connections / Synapses", …). The SLASH lives inside this span too, so
+         the plain word alone reads as the navigation label and the biological
+         term reads as a quiet subtitle.
+
+         Absolute --fg-dim rather than a relative dim (opacity / color-mix off
+         currentColor) on purpose: .rail-btn is ALREADY --fg-dim when inactive,
+         and a relative dim would stack on top of that. Measured on the dark
+         theme, a 62%-of-currentColor stack lands at 3.04:1 against --bg-elev
+         and an 80% stack at 4.09:1 — both under the 4.5:1 floor for 15.5px
+         text. Clamping at --fg-dim keeps the term at 5.57:1 on an inactive row
+         (identical to every other rail label, so no compounding) and steps it
+         visibly down from --fg on the active/hover row.
+
+         The leading space belongs INSIDE the span so the accessible name still
+         computes as one coherent string ("Stats / Cortex"). */
+      .label-term {
+        color: var(--fg-dim);
+        /* Only bites where the parent is bolder: .rail-btn.active (500), the
+           pane <h2> (600), .mobile-more-item (600). No-op elsewhere. */
+        font-weight: 400;
+      }
+
+      /* ── "Stats / Cortex" rail row: the nav label never loses the width contest ──
+         This is the only rail row carrying a trailing cluster (corrections
+         badge + live AI-client indicator). With the shared `22px 1fr auto`
+         tracks the trailing column is content-sized FIRST and the 1fr label
+         column absorbs whatever is left, so the primary nav label clipped to
+         "Your Cor…" while the secondary detail kept its full width.
+         Flip the contest: the label track is `auto` (max-content, fixed) and
+         the trailing cluster becomes `minmax(0, 1fr)` so the AI-client NAME is
+         the only thing that ellipsizes. Scoped to the expanded rail so the
+         collapsed single-column icon layout below is untouched. */
+      body:not(.rail-collapsed) .rail-btn[data-mode="atlas"] {
+        grid-template-columns: 22px auto minmax(0, 1fr);
+      }
+      body:not(.rail-collapsed) .rail-btn[data-mode="atlas"] .rail-label {
+        /* Overrides the shared .rail-label ellipsis: this label is identity,
+           not detail, so it renders in full or not at all. */
+        min-width: max-content;
+        white-space: nowrap;
+        overflow: visible;
+        text-overflow: clip;
+      }
+      body:not(.rail-collapsed) .rail-btn[data-mode="atlas"] .rail-trailing {
+        /* Fill the flexible track and hug its right edge, so the inner flex
+           items resolve their shrinking against the real remaining space. */
+        justify-self: stretch;
+        justify-content: flex-end;
+        min-width: 0;
+        overflow: hidden;
+      }
+      /* The count badge is part of the control's signal — it always renders. */
+      .rail-trailing .rail-badge { flex: 0 0 auto; }
+      body:not(.rail-collapsed) .rail-btn[data-mode="atlas"] .rail-mcp-indicator {
+        /* Shrinkable, and free to use the whole remaining track instead of the
+           old hard 110px cap — it now truncates only when space really runs out
+           (the dot inside is already flex-shrink:0, so it always renders). */
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: 100%;
+      }
+      /* Same contest on the "Connections / Synapses" row, for the same reason.
+         Its trailing cell is the #rail-gc-count badge (clients + data sources).
+         Measured at the fixed 280px rail: the label needs 169.70px and the 1fr
+         track gives 181.13px with a 2-digit badge but only 168.73px with a
+         3-digit one — a 0.97px clip that would render "… / Synapse…". Pinning
+         the label to max-content and letting the badge column flex removes the
+         cliff entirely; the badge still hugs the right edge. */
+      body:not(.rail-collapsed) .rail-btn[data-mode="get-connected"] {
+        grid-template-columns: 22px auto minmax(0, 1fr);
+      }
+      body:not(.rail-collapsed) .rail-btn[data-mode="get-connected"] .rail-label {
+        min-width: max-content;
+        white-space: nowrap;
+        overflow: visible;
+        text-overflow: clip;
+      }
+      body:not(.rail-collapsed) .rail-btn[data-mode="get-connected"] #rail-gc-count {
+        justify-self: end;
       }
       /* Rail bottom row: pinned to the bottom of the sidebar via
          margin-top:auto. Holds the MCP Tools + Settings buttons side by
@@ -3016,6 +3167,75 @@
         border-radius: 0;
         /* Left-aligned like every other rail item (keeps the .rail-btn grid). */
       }
+      /* Once the Chats list is showing, Settings is no longer the last thing in
+         the rail — so it must stop being the sticky bottom anchor. Left sticky,
+         it would stay pinned to the scrollport edge and the chat rows would
+         scroll underneath it, unreachable. body.rail-has-chats is set by
+         renderRailChats() only when at least one chat rendered. */
+      body.rail-has-chats .rail-btn-settings {
+        position: static;
+        margin-bottom: 0;
+        padding-bottom: 7px;
+      }
+      /* ── Chats (rail) ──────────────────────────────────────────────────
+         Ghampus chat history, newest first, below Settings. Deliberately
+         quieter than the mode buttons above: smaller type, dimmer, no icon
+         column — it is a list of past threads, not a set of destinations. */
+      .rail-chats {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        padding: 6px 0 12px;
+        border-top: 1px solid var(--border);
+        margin-top: 4px;
+      }
+      .rail-chats-head {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--fg-dim);
+        opacity: 0.75;
+        padding: 4px 10px 6px;
+      }
+      .rail-chats-list {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .rail-chat-btn {
+        /* Single column: the title is the whole row, so it gets the full width
+           to spend before the ellipsis bites. */
+        display: block;
+        width: 100%;
+        padding: 5px 10px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--fg-dim);
+        text-align: left;
+        font-size: 13.5px;
+        line-height: 1.25;
+        cursor: pointer;
+        /* One line, clipped with "…" — never wrapped. The row's title attribute
+           carries the untruncated text, so hover always shows it whole. */
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition: background 80ms, color 80ms;
+      }
+      .rail-chat-btn:hover {
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+        color: var(--fg);
+      }
+      .rail-chat-btn.active {
+        background: color-mix(in oklab, var(--accent) 18%, transparent);
+        color: var(--fg);
+        font-weight: 500;
+      }
+      /* Collapsed rail has no room for titles at all — hide the block rather
+         than render a column of unreadable stubs. */
+      body.rail-collapsed .rail-chats { display: none !important; }
       .rail-btn-half {
         flex: 1 1 0;
         min-width: 0;
@@ -3643,7 +3863,7 @@
         padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
         background: var(--bg); color: var(--fg); font: inherit; font-size: 13px;
         -webkit-user-select: text; user-select: text;
-        /* auto-height textarea behaviour */
+        /* auto-height textarea behavior */
         resize: none; overflow-y: hidden; line-height: 1.5;
         min-height: calc(1.5em + 14px); /* single line + vertical padding */
         display: block;
@@ -4591,6 +4811,29 @@
         grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
         gap: 10px;
       }
+      /* AI-client cards reuse .gc-scenario wholesale — same padding, radius,
+         border and hover as the Data-sources recipes, because they are the same
+         kind of choice. Only the grid container and the live badge are new. */
+      #rail-gc-clients {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 10px;
+      }
+      /* A connected client reads as a labelled badge, not a lit outline: on a
+         card an outline is chrome and gets lost, while the word cannot be
+         mistaken for styling. */
+      .gc-client-card.is-live {
+        border-color: color-mix(in oklab, var(--ok, #2f9e44) 55%, var(--border));
+      }
+      .gc-client-live {
+        margin-left: 8px; padding: 1px 7px; border-radius: 8px;
+        font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
+        text-transform: uppercase; vertical-align: middle;
+        background: color-mix(in oklab, var(--ok, #2f9e44) 20%, transparent);
+        color: var(--ok, #2f9e44);
+        border: 1px solid color-mix(in oklab, var(--ok, #2f9e44) 45%, transparent);
+      }
+
       .gc-scenario {
         display: flex; align-items: flex-start; gap: 11px;
         text-align: left;
@@ -4650,7 +4893,64 @@
       .gc-recipe-filter:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
       .gc-recipe-empty { padding: 14px 4px; }
       /* Configured-connector instances list on the page. */
-      .gc-connectors-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+      /* Connected sources on Get Connected render as CARDS, matching the AI
+         clients and Data sources grids above/below them — one visual language
+         for "a thing that connects to your cortex", whether it is already set
+         up or not. Full-width stacked rows made the user's live inventory read
+         as a settings table while the things they had NOT connected got the
+         richer treatment, which is backwards.
+
+         Scoped to #gc-connectors-list, NOT to .connector-row globally: the
+         legacy Settings list reuses the same row markup and should stay a
+         compact list. Same minmax(280px) track as .gc-scenarios so the three
+         grids line up column-for-column at every width. */
+      .gc-connectors-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 10px;
+        margin-top: 10px;
+      }
+      /* Card layout: glyph and text on the top row, actions on their own row
+         beneath. The row version put actions in a third grid column, which at
+         card width would have crushed the name to a few characters — these
+         connectors carry a name AND a slug AND a target engram. */
+      #gc-connectors-list .connector-row {
+        grid-template-columns: 22px 1fr;
+        align-items: start;
+        padding: 12px 14px;
+        gap: 10px 12px;
+        border-radius: 10px;
+      }
+      #gc-connectors-list .connector-row:hover {
+        border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+        background: color-mix(in oklab, var(--fg) 5%, transparent);
+      }
+      /* Actions span both columns on a second row, LEFT-packed and wrapping.
+         They were right-aligned, which read badly the moment they wrapped: with
+         four buttons (Pull now / Re-sync / Edit / Remove) and a ~280px card, the
+         overflow button landed alone against the right edge, so each card broke
+         at a different place and the row looked ragged. Left-packing aligns the
+         first button under the connector name and makes any wrap read as a
+         deliberate second row. */
+      #gc-connectors-list .connector-row-actions {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 6px;
+      }
+      /* Tighten the action buttons so all four fit the card width rather than
+         wrapping at all. Scoped to this grid only — the same .connector-row
+         markup is reused by the legacy Settings list, which is full-width and
+         wants the roomier default. `white-space: nowrap` keeps "Pull now" from
+         breaking across two lines once the padding shrinks. */
+      #gc-connectors-list .connector-row-actions button {
+        padding: 4px 9px;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      /* An error card is prose, not a two-column record — let it use the width. */
+      .gc-connectors-list .gc-connectors-error { grid-column: 1 / -1; }
       .gc-interval-row {
         display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
         margin-top: 12px; font-size: 13px; color: var(--fg-dim);
@@ -4741,7 +5041,7 @@
          a while — often a relay subprocess outliving the AI client that spawned
          it. Deliberately amber rather than green: the app does not force-close
          these, so the only thing stopping a dead connection from reading as
-         healthy is this colour. Matches .mcp-dot-idle on the AI-tools card. */
+         healthy is this color. Matches .mcp-dot-idle on the AI-tools card. */
       .home-gc-dot-idle { background: var(--color-status-warn-amber); }
       .home-gc-row-idle .home-gc-row-name,
       .home-gc-row-idle .home-gc-row-meta { opacity: 0.72; }
@@ -4889,11 +5189,29 @@
         font-size: 10px; font-weight: 700; text-transform: uppercase;
         letter-spacing: 0.05em; color: var(--fg-dim);
       }
-      .home-engram-name {
-        font-size: 16px; font-weight: 700; color: var(--fg);
-        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      /* The default agent's Agempus tile on the Home card. The tile itself is
+         .agempus-tile — styled once, with the Agents / Agempi grid, and NOT
+         restyled here: a second set of rules is how the two copies would start
+         to look different. This is only the box it sits in.
+         (.home-engram-name, .home-agent-chip* and the .g-health override that
+         used to live on this card went with the elements they styled.) */
+      .home-agent-tile {
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 8px; min-height: 176px;
       }
-      .home-engram-card .g-health { display: flex; flex-direction: column; gap: 8px; }
+      /* .home-skel sets a height but no width — as a centered flex item it would
+         shrink to nothing and the loading state would look like an empty card. */
+      .home-agent-tile .home-skel { width: 100%; }
+      .home-agent-tile-note {
+        font-size: 12px; line-height: 1.45; text-align: center; margin: 0;
+      }
+      .home-agent-tile-link {
+        -webkit-appearance: none; appearance: none; background: none; border: 0;
+        padding: 0; color: var(--accent); font: inherit; font-size: 12px;
+        font-weight: 600; cursor: pointer;
+      }
+      .home-agent-tile-link:hover { text-decoration: underline; }
+      .home-agent-tile-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       /* Cortex vitality ring — the big number + meter on the left card. */
       .home-cortex-ring { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; min-width: 90px; }
       .home-cortex-ring .g-health-grade { font-size: 34px; font-weight: 800; line-height: 1; }
@@ -5484,7 +5802,7 @@
       .skills-praxis-sub { color: var(--fg-dim); }
       /* Second-line praxis text inside the MemoryStudio banner.
          Smaller + dimmer than the main banner copy, with the inline
-         shortcuts and doc links styled as accent-coloured anchors. */
+         shortcuts and doc links styled as accent-colored anchors. */
       .studio-banner-praxis {
         display: block;
         margin-top: 8px;
@@ -5596,6 +5914,733 @@
         min-height: 0;
         overflow: hidden;
       }
+
+      /* ── Agents / Agempi ──────────────────────────────────────────────────
+         Two views share this page, switched by body.agents-grid-mode:
+           set    → the agent grid; .skills-pane (and therefore the trainer) is
+                    not rendered, which is what keeps "Train a Skill" out of the
+                    default view
+           clear  → one agent's skills, sidebar scoped, trainer untouched
+         Both rules are written as explicit opposites rather than one toggling
+         `display`, so neither view can end up visible at the same time as the
+         other if a class is left behind. */
+      body.agents-grid-mode .skills-pane { display: none; }
+      body:not(.agents-grid-mode) #skills-agents-grid { display: none; }
+      /* In agent view the header names the agent, so the name/engram filters
+         below it are redundant — and filtering to a DIFFERENT engram would
+         contradict the header. */
+      body:not(.agents-grid-mode) .skills-library-filters { display: none; }
+      /* The library title is the section heading for one agent's skills now, so
+         it carries weight instead of reading as a minor label. */
+      body:not(.agents-grid-mode) .skills-library-title {
+        font-size: 15px; font-weight: 800; letter-spacing: .01em;
+      }
+
+      /* ── Scoped-view corrections ─────────────────────────────────────────
+         (1) No box around the sidebar. In the scoped view the agent header is
+             already the frame; a second border boxed a box. */
+      body:not(.agents-grid-mode) .skills-library {
+        /* No box, but a REAL fill. `transparent` let the enclosing .lb-section
+           card (--bg-elev) show through, so the list area sat one step lighter
+           than the sticky agent/Skills headers above it, which already paint
+           var(--bg). Same-token fill: the whole column is one app-background
+           surface, and the skill cards (--bg-elev) finally read as cards
+           against it instead of dissolving into an identical backdrop. */
+        border: 0; background: var(--bg); border-radius: 0;
+      }
+
+      /* (2) "Autonomy" sits on the SAME LINE as its chips — it is a label for
+             the control beside it, not a section heading above it. */
+      body:not(.agents-grid-mode) .agempus-dial {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      }
+      body:not(.agents-grid-mode) .agempus-dial-label {
+        font-size: 11px; font-weight: 700; letter-spacing: .06em;
+        text-transform: uppercase; color: var(--fg-dim);
+        white-space: nowrap;
+      }
+
+      /* (3) SELECTED CHIP CONTRAST — see the .agempus-dial-seg / .skill-autonomy-seg
+             blocks further down this file. It is deliberately NOT patched here:
+             this spot is ~700 lines ABOVE the rules that define those chips, and
+             a fix written here at the same specificity loses on source order and
+             is dead the moment it is written. */
+
+      /* ── Skill rows as cards (scoped view) ───────────────────────────────
+         Alternating flat rows made a long list read as one undifferentiated
+         block. Cards give each skill an edge to land on, and the left accent
+         bar gives the eye a rail to scan. Only in the scoped view — the
+         all-engrams list still groups by engram and needs the flatter density. */
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-left: 3px solid color-mix(in oklab, var(--accent) 45%, transparent);
+        border-radius: 9px;
+        margin: 0 0 7px; padding: 9px 10px;
+        transition: border-color .12s, box-shadow .12s;
+      }
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row:hover {
+        border-color: var(--accent);
+        border-left-color: var(--accent);
+        box-shadow: 0 2px 10px rgba(0,0,0,.18);
+      }
+      /* THE CARD DOES NOT MOVE ON HOVER. It used to `transform: translateX(2px)`
+         here, which slid the whole row — title, chips and action buttons with it —
+         2px right the instant the pointer arrived, so the button you were aiming
+         at walked out from under the cursor. Every geometric property is already
+         paid for at REST: the 1px box border and the 3px left rail exist in the
+         resting rule above, and hover only recolors them, so there is nothing
+         left for hover to add. Color, border color and shadow still carry the
+         affordance. Keep the guard BELOW the :hover rule — an earlier attempt put
+         `transform: none` ABOVE it at equal specificity, where the cascade simply
+         discarded it and the shift survived. */
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row,
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row:hover,
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row.active,
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row.active:hover,
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row:focus-within {
+        transform: none;
+      }
+      /* Zebra the cards very slightly — enough to separate adjacent ones without
+         implying the alternates mean something. */
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row:nth-child(even) {
+        background: color-mix(in oklab, var(--bg-elev) 78%, var(--bg));
+      }
+
+      /* ── Autonomy dial on hover ──────────────────────────────────────────
+         Four level buttons on every row turned the list into a wall of
+         controls. They appear on hover or keyboard focus, so the resting state
+         is the SKILLS and the controls arrive when you reach for them.
+         `focus-within` is not optional here: without it the dial is
+         unreachable by keyboard, which would make this a mouse-only feature. */
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row .skill-autonomy {
+        opacity: 0; transition: opacity .13s;
+      }
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row:hover .skill-autonomy,
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row:focus-within .skill-autonomy {
+        opacity: 1;
+      }
+      /* AN OVERRIDE IS MARKED ON THE ROW, NOT BY PINNING THE DIAL OPEN.
+         This used to be `.is-overridden { opacity: 1 }`, which meant that the
+         moment you set a level the chips stopped hiding — hover revealed them,
+         and then they never went away again. Correct by the letter of "an
+         override must stay visible", wrong in practice: it turned a transient
+         control into permanent clutter, and inconsistently, only on rows you had
+         touched.
+         The information still cannot be lost — the card's left rail turns solid
+         accent, which is always visible and costs no space. */
+      body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row:has(.skill-autonomy.is-overridden) {
+        border-left-color: var(--accent);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        body:not(.agents-grid-mode) .skill-engram-group.is-scoped .skill-row { transition: none; }
+      }
+      body.agents-grid-mode .skills-agent-header { display: none; }
+
+      /* Mobile: name only. The explanation is the first thing to go when space
+         is short — it is context, not identity, and a wrapped three-line tagline
+         above the grid pushes the agents themselves below the fold. */
+      @media (max-width: 640px) {
+        .skills-praxis-strip .skills-praxis-sub,
+        .skills-praxis-strip .skills-praxis-dot { display: none; }
+      }
+
+      .agempus-grid-host { padding: 4px 2px 24px; }
+      .agempus-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+        gap: 22px 14px;
+        margin: 6px 0 22px;
+      }
+      /* ── Crews ────────────────────────────────────────────────────────────
+         A crew heading carries what a bare label could not: a shared brief and
+         one autonomy dial. */
+      .agempus-crew {
+        margin: 22px 0 6px; padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
+      .agempus-crew-top { display: flex; align-items: center; gap: 10px; }
+      .agempus-crew-name {
+        font-size: 13px; font-weight: 700; letter-spacing: .05em;
+        text-transform: uppercase; color: var(--fg);
+        cursor: text; border-radius: 4px; padding: 1px 4px; margin-left: -4px;
+      }
+      .agempus-crew-name:hover { background: var(--bg-elev); }
+      .agempus-crew-count {
+        font-size: 11px; font-weight: 700; color: var(--fg-dim);
+        background: var(--bg-elev); border-radius: 9px; padding: 1px 7px;
+      }
+      .agempus-crew-dial { display: flex; gap: 3px; margin-left: auto; }
+      .agempus-crew-lvl {
+        font-size: 11px; font-weight: 700; padding: 2px 7px;
+        border-radius: 6px; border: 1px solid var(--border);
+        background: var(--bg); color: var(--fg-dim); cursor: pointer;
+      }
+      .agempus-crew-lvl:hover { border-color: var(--accent); color: var(--accent); }
+      .agempus-crew-lvl.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .agempus-crew-x {
+        background: none; border: none; color: var(--fg-dim);
+        font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px;
+      }
+      .agempus-crew-x:hover { color: var(--err, #e03131); }
+      .agempus-crew-brief {
+        margin: 6px 0 0; font-size: 12px; line-height: 1.45;
+        color: var(--fg-dim); cursor: text;
+        border-radius: 5px; padding: 3px 5px; margin-left: -5px;
+        max-width: 68ch;
+      }
+      .agempus-crew-brief:hover { background: var(--bg-elev); }
+      .agempus-crew-brief-empty { opacity: .6; font-style: italic; }
+
+      /* ── Drag to group ───────────────────────────────────────────────────
+         The drop target is emphasized rather than the dragged tile, because the
+         question mid-drag is "where will this land", not "what am I holding". */
+      .agempus-tile.is-dragging { opacity: .4; }
+      .agempus-tile.is-drop-target {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        border-color: var(--accent);
+        transform: translateY(-2px) scale(1.03);
+      }
+      .agempus-tile.is-drop-target .agempus-tile-av { animation: none; }
+
+      .agempus-group-label {
+        font-size: 12px; font-weight: 700; letter-spacing: .06em;
+        text-transform: uppercase; color: var(--fg-dim);
+        margin: 18px 0 2px; padding-top: 12px;
+        border-top: 1px solid var(--border);
+      }
+      .agempus-tile {
+        display: flex; flex-direction: column; align-items: center; gap: 8px;
+        background: none; border: 1px solid transparent; border-radius: 12px;
+        padding: 12px 6px; cursor: pointer; color: inherit;
+        transition: background .12s, border-color .12s, transform .12s;
+      }
+      .agempus-tile:hover {
+        background: var(--bg-elev); border-color: var(--border);
+        transform: translateY(-2px);
+      }
+      .agempus-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      /* Staggered entrance — the roster assembles rather than snapping into
+         existence. Delay comes from the tile's own --enter-delay so one keyframe
+         serves any roster size; the JS caps the total at ~1s so this never turns
+         into latency the user has to sit through.
+         `both` fill keeps a tile invisible during its delay — without it every
+         avatar flashes at full opacity before its turn, which is exactly the
+         all-at-once effect this replaces. */
+      .agempus-grid-host.is-entering .agempus-tile {
+        animation: agempus-enter .42s cubic-bezier(.2,.8,.3,1) both;
+        animation-delay: var(--enter-delay, 0ms);
+      }
+      @keyframes agempus-enter {
+        from { opacity: 0; transform: translateY(10px) scale(.9); }
+        to   { opacity: 1; transform: none; }
+      }
+      /* The idle bob lives on the inner .agempus-tile-av, so it does not fight
+         this transform. Reduced motion drops the movement but keeps the fade —
+         appearing is information, bouncing is decoration. */
+      @media (prefers-reduced-motion: reduce) {
+        .agempus-grid-host.is-entering .agempus-tile { animation-duration: .01ms; animation-delay: 0ms; }
+      }
+      .agempus-tile-av { position: relative; display: inline-block; }
+      /* Skill count. Reads "3 skills", not a bare number — a lone integer on an
+         avatar reads as an unread badge, which is the opposite of the meaning.
+         The shape is a deliberately irregular blob rather than a pill: it marks
+         this as an organic property of the agent rather than a system counter,
+         and it echoes the un-brain language the rest of the product uses. The
+         eight-value border-radius gives asymmetry on both axes; the slight
+         rotation keeps it from reading as a wonky rectangle. */
+      .agempus-tile-count {
+        position: absolute; right: -10px; bottom: -4px;
+        min-width: 62px; padding: 5px 12px;
+        border-radius: 58% 42% 48% 52% / 62% 55% 45% 38%;
+        /* High contrast on purpose: this sits ON the avatar, over whichever of
+           ten plate tints that agent drew, so it cannot borrow the page
+           background for legibility. Ink-on-warm rather than white-on-accent —
+           white text at 12px over a mid-tone reads thin at this size. */
+        background: linear-gradient(145deg, #ffd43b, #f59f00);
+        color: #1d2433;
+        font-size: 12.5px; font-weight: 800; letter-spacing: .01em;
+        white-space: nowrap; text-shadow: 0 1px 0 rgba(255,255,255,.35);
+        display: flex; align-items: center; justify-content: center;
+        border: 3px solid var(--bg);
+        box-shadow: 0 2px 7px rgba(0,0,0,.32);
+        transform: rotate(-4deg);
+        transition: transform .14s ease;
+      }
+      /* Straightens and lifts as you approach — a small piece of life, and it
+         makes the number easier to read at the moment you are reading it. */
+      .agempus-tile:hover .agempus-tile-count { transform: rotate(0deg) scale(1.06); }
+      /* Grouped agents sit on the elevated surface on hover — keep the cut-out
+         matching, or the blob shows a hairline of the wrong background. */
+      .agempus-tile:hover .agempus-tile-count { border-color: var(--bg-elev); }
+      .agempus-tile-name {
+        font-size: 13.5px; font-weight: 600; text-align: center; line-height: 1.25;
+        max-width: 152px;
+      }
+      .agempus-grid-empty { padding: 32px 8px; text-align: center; }
+
+      /* ── "+ New agent" — the first cell of the grid ───────────────────────
+         Same footprint as an agent tile (same flex column, same 12px 6px
+         padding, same 124px lead element, same 152px text width) so it sits in
+         the grid rhythm rather than beside it — but nothing about it is an
+         agent. No avatar, no vitality ring, no skill-count blob: a dashed,
+         empty SQUARE-cornered slot, which is the one shape no agent can have,
+         since every avatar on this page is a circle. Dim at rest and accent on
+         approach, the way an affordance behaves and a portrait does not. */
+      .agempus-new-tile {
+        display: flex; flex-direction: column; align-items: center; gap: 8px;
+        /* Transparent at rest, exactly like `.agempus-tile` — the dashed edge
+           belongs to the SLOT inside, and drawing it here too gave the tile two
+           nested dashed rectangles and made it the loudest thing on the page. */
+        background: none; border: 1px solid transparent; border-radius: 12px;
+        padding: 12px 6px; cursor: pointer; color: var(--fg-dim);
+        transition: background .12s, border-color .12s, color .12s, transform .12s;
+      }
+      .agempus-new-tile:hover {
+        background: var(--bg-elev); border-color: var(--accent); color: var(--accent);
+        transform: translateY(-2px);
+      }
+      .agempus-new-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .agempus-new-mark {
+        width: 124px; height: 124px; border-radius: 24px;
+        display: flex; align-items: center; justify-content: center;
+        border: 2px dashed currentColor; opacity: .7;
+        font-size: 46px; font-weight: 300; line-height: 1;
+      }
+      .agempus-new-tile:hover .agempus-new-mark { opacity: 1; }
+      .agempus-new-name {
+        font-size: 13.5px; font-weight: 600; text-align: center; line-height: 1.25;
+        max-width: 152px;
+      }
+      .agempus-new-caption {
+        font-size: 11px; line-height: 1.3; max-width: 152px; text-align: center;
+        opacity: .85;
+      }
+      /* NO ENTRANCE RULE HERE, on purpose. `.agempus-grid-host.is-entering`
+         animates `.agempus-tile` only, and this tile is deliberately not one —
+         it is already on screen during "Loading agents…", so replaying it as an
+         arrival when the roster lands would blink a tile the user is looking at.
+         See newAgentTile() in agents-grid.ts. */
+
+      /* ── Vitality ring ────────────────────────────────────────────────────
+         A conic sweep behind the avatar: full and warm at 100, thinning and
+         cooling as vitality decays. --vit-hue runs 0 (red) → 120 (green), so
+         the color carries the same information as the arc length for anyone
+         who reads shape more easily than hue.
+         Rendered ONLY when vitality is known — see the tile builder; an
+         unloaded cache is not a score of zero. */
+      .agempus-ring {
+        position: absolute; inset: -6px; border-radius: 50%;
+        background: conic-gradient(
+          hsl(var(--vit-hue) 68% 52%) 0turn,
+          hsl(var(--vit-hue) 68% 52%) var(--vit-turn),
+          transparent var(--vit-turn), transparent 1turn);
+        /* Punch out the middle so it reads as a ring, not a pie. */
+        /* CLOSEST-SIDE IS LOad-BEARING. In a radial-gradient, `50%` resolves
+           against the gradient's default size (farthest-corner), NOT the box
+           radius — so the previous `calc(50% - 1.6px)` produced a ~20px band
+           instead of the 1.6px it claimed. `closest-side` makes 100% mean the
+           box's half-width, so the band below is exactly its stated width. */
+        -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 5px), #000 calc(100% - 5px));
+        mask: radial-gradient(circle closest-side, transparent calc(100% - 5px), #000 calc(100% - 5px));
+        opacity: .9; pointer-events: none;
+      }
+
+      /* The caption: one FACT per line, never a "·"-joined string left to wrap.
+         The two facts never fit on one line at 152px, and the wrap landed
+         mid-phrase — "no recorded / use". captionLines() in agents-grid.ts picks
+         the break instead.
+
+         min-height RESERVES BOTH LINES whether or not both are filled, and that
+         is what keeps the grid level: not every agent has two facts (an agent
+         used today has no training line, an untrained one has no training date),
+         so without the reserve a one-line tile would sit shorter than its
+         two-line neighbor. 2.6em = 2 × the 1.3 line-height, in this element's
+         own 11px — so it is exactly two lines, with no invented text to fill the
+         second. A caption that genuinely needs a third line still grows; this is
+         a floor, not a cap. */
+      .agempus-tile-caption {
+        font-size: 11px; color: var(--fg-dim); line-height: 1.3;
+        max-width: 152px; text-align: center;
+        min-height: 2.6em;
+      }
+      .agempus-tile-caption-line { display: block; }
+
+      /* ── Idle motion, scaled by vitality ──────────────────────────────────
+         A fresh agent bobs briskly; a decaying one barely stirs; an unknown or
+         sleeping one does not move at all. The amplitude, period and sway all
+         come from custom properties the tile sets, so ONE keyframe serves every
+         agent and the difference between two avatars is genuinely proportional
+         rather than bucketed. --vit-amp reaches ~0 well before vitality does,
+         so "nearly dead" looks nearly dead. */
+      .agempus-tile.is-living .agempus-tile-av {
+        animation: agempus-live var(--vit-dur, 6s) ease-in-out infinite;
+      }
+      @keyframes agempus-live {
+        0%, 100% { transform: translateY(0) rotate(calc(var(--vit-tilt, 0deg) * -1)); }
+        50%      { transform: translateY(calc(var(--vit-amp, 0px) * -1)) rotate(var(--vit-tilt, 0deg)); }
+      }
+      /* Busy overrides idle: a dispatch is more important than a vitality read. */
+      .agempus-tile.is-busy.is-living .agempus-tile-av { animation: agempus-breathe 1.9s ease-in-out infinite; }
+
+      /* ── Asleep ───────────────────────────────────────────────────────────
+         No run and no training in 90 days. Dimmed rather than hidden: the agent
+         still exists and its skills still dispatch, so hiding it would be a
+         lie. Hovering restores full opacity — dimming must never make something
+         unreadable. */
+      .agempus-tile.is-asleep .agempus-tile-av,
+      .agempus-tile.is-asleep .agempus-tile-name { opacity: .42; filter: saturate(.35); }
+      .agempus-tile.is-asleep:hover .agempus-tile-av,
+      .agempus-tile.is-asleep:hover .agempus-tile-name { opacity: 1; filter: none; }
+      .agempus-zzz {
+        position: absolute; left: -2px; top: 2px;
+        font-size: 15px; font-weight: 700; color: var(--fg-dim);
+        opacity: .75; animation: agempus-zzz 3.2s ease-in-out infinite;
+      }
+      @keyframes agempus-zzz {
+        0%, 100% { transform: translateY(0) scale(1); opacity: .35; }
+        50%      { transform: translateY(-5px) scale(1.15); opacity: .8; }
+      }
+
+      /* ── Breathing while working ──────────────────────────────────────────
+         Same motion language as the 3D Engram's living graph, so a dispatch
+         reads as the cortex working rather than as a spinner. */
+      .agempus-tile.is-busy .agempus-tile-av { animation: agempus-breathe 1.9s ease-in-out infinite; }
+      .agempus-tile.is-busy .agempus-tile-count {
+        background: var(--ok, #2f9e44);
+        box-shadow: 0 0 0 0 color-mix(in oklab, var(--ok, #2f9e44) 60%, transparent);
+        animation: agempus-ping 1.9s ease-out infinite;
+      }
+      @keyframes agempus-breathe {
+        0%, 100% { transform: scale(1); }
+        50%      { transform: scale(1.055); }
+      }
+      @keyframes agempus-ping {
+        0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--ok, #2f9e44) 55%, transparent); }
+        70%  { box-shadow: 0 0 0 9px transparent; }
+        100% { box-shadow: 0 0 0 0 transparent; }
+      }
+
+      /* Respect the OS setting — motion here is decorative, and for some people
+         it is genuinely painful. State stays legible without it. */
+      @media (prefers-reduced-motion: reduce) {
+        .agempus-tile.is-busy .agempus-tile-av,
+        .agempus-tile.is-living .agempus-tile-av,
+        .agempus-tile.is-busy .agempus-tile-count,
+        .agempus-zzz { animation: none; }
+        .agempus-tile.is-busy .agempus-tile-count { box-shadow: 0 0 0 3px color-mix(in oklab, var(--ok, #2f9e44) 45%, transparent); }
+      }
+
+      /* ── OFF ──────────────────────────────────────────────────────────────
+         The agent's un-ganglia is inert: no dispatch by any route, and its
+         skills are out of the AI-facing listings.
+
+         GREY, NOT GONE, and not merely dimmer than `is-asleep`. Asleep is a
+         MEASUREMENT (nothing has happened in 90 days) and lifts on hover;
+         off is a DECISION the owner made, so it stays desaturated on hover
+         too — it is the tile's actual condition, not a hint to be brushed
+         away. The caption says "off — no dispatch" in words as well, because
+         color is not a cause and is not available to everyone.
+
+         Deliberately NOT `pointer-events: none`: the tile must stay clickable
+         so its skills are still browsable and the switch is still reachable.
+         A control you can see but cannot press is how an off switch becomes a
+         one-way door. */
+      .agempus-tile.is-disabled .agempus-tile-av,
+      .agempus-tile.is-disabled .agempus-tile-name,
+      .agempus-tile.is-disabled .agempus-tile-caption { filter: grayscale(1); opacity: .5; }
+      .agempus-tile.is-disabled:hover .agempus-tile-av,
+      .agempus-tile.is-disabled:hover .agempus-tile-name,
+      .agempus-tile.is-disabled:hover .agempus-tile-caption { opacity: .78; }
+      .agempus-tile.is-disabled .agempus-tile-count {
+        background: linear-gradient(145deg, #adb5bd, #868e96);
+        animation: none;
+      }
+      /* The skill-count blob is the one thing that must NOT lose its color when
+         the agent is busy AND off — but an off agent has no live ring either. */
+      .agempus-tile.is-disabled .agempus-ring { opacity: .35; filter: grayscale(1); }
+
+      /* ── Hidden, while revealed ───────────────────────────────────────────
+         Only ever on screen inside the reveal (see .agempus-hidden-foot). The
+         dashed edge says "this is not normally here" so a revealed tile is
+         never mistaken for one the grid always shows. */
+      .agempus-tile.is-hidden-agent {
+        border-style: dashed;
+        border-color: color-mix(in oklab, var(--fg-dim) 45%, transparent);
+        opacity: .8;
+      }
+      .agempus-tile.is-hidden-agent:hover { opacity: 1; border-style: dashed; }
+
+      /* ── The two on-tile controls ─────────────────────────────────────────
+         Spans, not buttons — a nested <button> would close the tile's own
+         button element and split the tile in half. See tileControls() in
+         ui/agents-grid.ts.
+
+         The power switch is ALWAYS visible, at low contrast when the agent is
+         on. It is a state readout as much as a control, and a hover-only state
+         readout tells you nothing about the tile you are not touching. The eye
+         is an ACTION with no state to report, so it is revealed on hover or
+         keyboard focus and stays out of the way otherwise. */
+      .agempus-tile { position: relative; }
+      /* Bottom-right, stacked, power lowest. The eye is hidden with `opacity`
+         and never `display: none` — it keeps its slot in the column, so the
+         power switch stays pinned at the same y whether or not the tile is
+         hovered. Dropping the eye out of flow instead would make the power
+         jump up 25px the moment the pointer leaves. */
+      .agempus-tile-controls {
+        position: absolute; bottom: 6px; right: 6px;
+        display: flex; flex-direction: column; gap: 3px; z-index: 2;
+      }
+      .agempus-power,
+      .agempus-eye {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 22px; height: 22px; border-radius: 7px;
+        border: 1px solid transparent; color: var(--fg-dim);
+        cursor: pointer; transition: opacity .12s, color .12s, background .12s, border-color .12s;
+      }
+      .agempus-power { opacity: .32; }
+      .agempus-tile:hover .agempus-power,
+      .agempus-tile:focus-within .agempus-power { opacity: 1; }
+      .agempus-power:hover,
+      .agempus-eye:hover {
+        background: var(--bg); border-color: var(--border); color: var(--fg);
+      }
+      .agempus-power:focus-visible,
+      .agempus-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      /* OFF is loud on purpose: it is the one state on this page that changes
+         what the product does, and it must be readable without hovering. */
+      .agempus-power[aria-checked="false"] {
+        opacity: 1;
+        color: var(--err, #e03131);
+        border-color: color-mix(in oklab, var(--err, #e03131) 45%, transparent);
+        background: color-mix(in oklab, var(--err, #e03131) 12%, transparent);
+      }
+      .agempus-eye { opacity: 0; }
+      .agempus-tile:hover .agempus-eye,
+      .agempus-tile:focus-within .agempus-eye { opacity: .75; }
+      .agempus-eye:hover { opacity: 1; }
+      /* A revealed hidden tile keeps its eye visible — it is the ONLY control
+         that can put the tile back, so making it hover-only would hide the way
+         out inside the way out. */
+      .agempus-tile.is-hidden-agent .agempus-eye { opacity: 1; color: var(--accent); }
+      /* Touch and keyboard-only: :hover never fires, so both controls stay
+         visible rather than being unreachable. */
+      @media (hover: none) {
+        .agempus-power, .agempus-eye { opacity: 1; }
+      }
+
+      /* ── The way back to hidden agents ────────────────────────────────────
+         Rendered ONLY when something is actually hidden — see hiddenFoot() in
+         ui/agents-grid.ts. It is not permanent chrome and it is not a filter
+         control: on a cortex that has never hidden an agent, nothing here is
+         on the page at all. */
+      .agempus-hidden-foot { margin: 4px 0 0; text-align: left; }
+      .agempus-hidden-toggle {
+        background: none; border: 1px dashed var(--border); border-radius: 8px;
+        color: var(--fg-dim); font-size: 12px; padding: 4px 10px; cursor: pointer;
+        transition: color .12s, border-color .12s, background .12s;
+      }
+      .agempus-hidden-toggle:hover {
+        color: var(--fg); border-color: var(--accent); background: var(--bg-elev);
+      }
+      .agempus-hidden-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      /* The avatar itself — shared by the grid, the sidebar header and (later)
+         the picker, so size comes from the inline style, never from here. */
+      .agempus-avatar {
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 50%; overflow: hidden; flex: none;
+      }
+
+      /* ── Agent header (scoped sidebar) ────────────────────────────────────
+         Sticky, centered, and larger. Sticky because the skills list under it
+         scrolls and the header is the only thing saying WHOSE skills these are —
+         scroll it away and the list loses its subject. The sticky element covers
+         the header AND the sort/refresh row, so the controls that act on the
+         list stay with it. */
+      .skills-agent-header {
+        position: sticky; top: 0; z-index: 3;
+        padding: 6px 0 12px;
+        background: var(--bg);
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 10px;
+      }
+      body:not(.agents-grid-mode) .skills-library-header {
+        position: sticky; top: var(--agent-header-h, 190px); z-index: 2;
+        background: var(--bg); padding-top: 6px; padding-bottom: 8px;
+      }
+      .agempus-header-centered {
+        flex-direction: column; align-items: center; text-align: center; gap: 8px;
+      }
+      .agempus-header-centered .agempus-header-text { align-items: center; }
+      .agempus-header-centered .agempus-header-name {
+        font-size: 21px; font-weight: 800; line-height: 1.15;
+        white-space: normal; overflow: visible; text-overflow: clip;
+      }
+      .agempus-header-centered .agempus-header-sub {
+        font-size: 13px; font-weight: 600;
+        color: var(--fg-dim);
+      }
+      /* A real button, not a text link. This is the only way out of the agent
+         view, so it has to look pressable at a glance rather than read as a
+         caption above the avatar. */
+      .agempus-back {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: var(--bg-elev); border: 1px solid var(--border);
+        border-radius: 8px; padding: 6px 12px; margin-bottom: 10px;
+        cursor: pointer; color: var(--fg);
+        font-size: 13px; font-weight: 650;
+        transition: border-color .12s, background .12s, color .12s;
+      }
+      .agempus-back:hover {
+        border-color: var(--accent); color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 10%, var(--bg-elev));
+      }
+      .agempus-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .agempus-header-id { display: flex; align-items: center; gap: 10px; }
+      .agempus-header-text { display: flex; flex-direction: column; min-width: 0; }
+      .agempus-header-name {
+        font-size: 15px; font-weight: 700; line-height: 1.2;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .agempus-header-sub { font-size: 12px; color: var(--fg-dim); }
+
+      /* Avatar doubles as the edit affordance. The pencil is revealed on hover
+         AND on keyboard focus — a hover-only control does not exist for anyone
+         navigating by keyboard. */
+      .agempus-avatar-edit {
+        position: relative; background: none; border: none; padding: 0;
+        border-radius: 50%; cursor: pointer; line-height: 0; flex: none;
+        /* Flex, not the default inline-block: it makes the button's box exactly
+           the avatar's 92px square. An inline box would leave baseline slack
+           under the avatar, and the edit ring below — sized off this box — would
+           then sit a couple of pixels low instead of concentric. */
+        display: inline-flex; align-items: center; justify-content: center;
+      }
+      .agempus-avatar-pencil {
+        position: absolute; right: -2px; bottom: -2px;
+        width: 22px; height: 22px; border-radius: 50%;
+        background: var(--accent); color: #fff;
+        display: flex; align-items: center; justify-content: center;
+        border: 2px solid var(--bg);
+        opacity: 0; transform: scale(.85);
+        transition: opacity .12s, transform .12s;
+        pointer-events: none;
+        /* Above the edit ring below, whose band crosses this corner. */
+        z-index: 1;
+      }
+      .agempus-avatar-edit:hover .agempus-avatar-pencil,
+      .agempus-avatar-edit:focus-visible .agempus-avatar-pencil { opacity: 1; transform: scale(1); }
+      .agempus-avatar-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+      /* ── Shine ring while the appearance editor is open ────────────────────
+         `is-editing` is toggled in agents-grid.ts alongside the picker, so the
+         avatar says out loud that it is the thing being changed — which is also
+         what makes the hover preview legible as a preview rather than a save.
+
+         Drawn on a pseudo-element OUTSIDE the avatar edge (inset -5px on a 92px
+         avatar → a band at radius 48–51px, clear of the 46px plate). It must
+         stay outside and separate: the vitality ring is its own element with a
+         radial-gradient mask, and layering another mask onto that element is
+         how the ring became a ~20px blob once already.
+
+         `closest-side` for the same reason as the vitality ring — a plain `50%`
+         resolves against farthest-corner, and the band would be several times
+         the width stated here. */
+      .agempus-avatar-edit.is-editing {
+        box-shadow: 0 0 16px color-mix(in oklab, var(--accent) 40%, transparent);
+      }
+      .agempus-avatar-edit.is-editing .agempus-avatar-pencil { opacity: 1; transform: scale(1); }
+      .agempus-avatar-edit.is-editing::after {
+        content: ''; position: absolute; inset: -5px;
+        border-radius: 50%; pointer-events: none;
+        background: conic-gradient(
+          from 0deg,
+          color-mix(in oklab, var(--accent) 22%, transparent) 0deg,
+          var(--accent) 62deg,
+          #ffffff 100deg,
+          var(--accent) 138deg,
+          color-mix(in oklab, var(--accent) 22%, transparent) 200deg,
+          color-mix(in oklab, var(--accent) 22%, transparent) 360deg);
+        -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+        mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+        animation: agempus-shine 2.6s linear infinite;
+      }
+      /* Rotating the whole element sweeps the conic highlight; the mask is
+         radially symmetric, so it is unaffected by the spin. */
+      @keyframes agempus-shine {
+        to { transform: rotate(1turn); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        /* Keep the ring — it is what says "being edited" — and drop only the
+           sweep. A frozen conic would read as a lopsided arc, so the static
+           version is an even one. */
+        .agempus-avatar-edit.is-editing::after {
+          animation: none;
+          background: var(--accent);
+        }
+      }
+
+      .agempus-header-name { cursor: text; border-radius: 4px; padding: 0 3px; margin-left: -3px; }
+      .agempus-header-name:hover { background: var(--bg-elev); }
+      .agempus-name-input {
+        font-size: 15px; font-weight: 700; width: 100%;
+        padding: 1px 4px; border-radius: 5px;
+        border: 1px solid var(--accent); background: var(--bg);
+        color: var(--fg);
+      }
+
+      .agempus-editor {
+        margin-top: 10px; padding: 10px;
+        border: 1px solid var(--border); border-radius: 10px;
+        background: var(--bg-elev);
+      }
+      .agempus-editor.hidden { display: none; }
+      .agempus-editor-label {
+        font-size: 10.5px; font-weight: 700; letter-spacing: .07em;
+        text-transform: uppercase; color: var(--fg-dim);
+        margin: 2px 0 6px;
+      }
+      .agempus-pick-row {
+        display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+      }
+      /* Shapes scroll rather than growing the sidebar: 43 of them at 40px would
+         otherwise push the skills list off-screen. The cap rose with the
+         catalogue — at the old 148px, everything past the first seven or so was
+         reachable only by hunting, which is exactly how the sombrero went
+         missing. Headings below make the rest navigable rather than merely
+         present. */
+      .agempus-pick-shapes { max-height: 216px; overflow-y: auto; }
+      /* Full-width break in the wrapping row, and sticky so the section you are
+         scrolling through keeps naming itself. Opaque background is required,
+         not decoration: swatches scroll UNDER this. */
+      .agempus-pick-group {
+        flex: 0 0 100%;
+        position: sticky; top: 0; z-index: 1;
+        background: var(--bg-elev);
+        margin: 8px 0 2px; padding: 2px;
+        font-size: 10px; font-weight: 700; letter-spacing: .06em;
+        text-transform: uppercase; color: var(--fg-dim); line-height: 1.4;
+      }
+      .agempus-pick-shapes > .agempus-pick-group:first-child { margin-top: 0; }
+      .agempus-pick {
+        background: none; border: 2px solid transparent; border-radius: 10px;
+        padding: 2px; cursor: pointer; line-height: 0;
+      }
+      .agempus-pick:hover { border-color: var(--border); }
+      .agempus-pick.is-selected { border-color: var(--accent); }
+      .agempus-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .agempus-swatch {
+        display: block; width: 26px; height: 26px; border-radius: 50%;
+        border: 1px solid rgba(0,0,0,.18);
+      }
+      .agempus-editor-done {
+        font-size: 12px; font-weight: 600; padding: 4px 12px;
+        border-radius: 7px; border: 1px solid var(--border);
+        background: var(--bg); color: var(--fg); cursor: pointer;
+      }
+      .agempus-editor-done:hover { border-color: var(--accent); color: var(--accent); }
 
       .skills-pane {
         display: grid;
@@ -5786,126 +6831,43 @@
         border-right: 1px solid var(--border);
       }
       .agempus-dial-seg:last-child { border-right: 0; }
-      .agempus-dial-seg:not(:disabled):hover {
+      /* `:not(.active)` is load-bearing. Without it this rule (0,3,0) outranked
+         the `.active` rule (0,2,0) and repainted the SELECTED chip with the
+         unselected hover fill, while the theme rule below kept the label dark —
+         black on a near-black chip, 1.62:1. Excluding .active removes the
+         conflict outright instead of escalating specificity against it. */
+      .agempus-dial-seg:not(.active):not(:disabled):hover {
         background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev));
         color: var(--fg);
       }
+      /* SELECTED. --accent is DARK in light mode and LIGHT in dark mode, so the
+         label has to flip with it: --accent-contrast carries that, and
+         --accent-fill / --accent-fill-hover carry the fill. All three are
+         defined in every theme block of theme-tokens.css (light, [data-theme=
+         "dark"], and the prefers-color-scheme media block), so none of them can
+         leak a light value into dark mode.
+         Hover moves the fill AWAY from the label — darker in light, lighter in
+         dark — so the affordance stays visible without eating the label. */
       .agempus-dial-seg.active {
-        background: color-mix(in oklab, var(--accent) 72%, white);
-        color: white;
+        background: var(--accent-fill);
+        color: var(--accent-contrast);
+        border-color: var(--accent-fill);
+        font-weight: 700;
+        box-shadow: inset 0 0 0 1px color-mix(in oklab, #fff 22%, transparent);
       }
-      :root:not([data-theme="light"]) .agempus-dial-seg.active { color: #000; }
+      /* 0,3,0 — beats `.agempus-dial-seg.active` (0,2,0) above it, and nothing
+         else in this file matches a selected+hovered segment. */
+      .agempus-dial-seg.active:not(:disabled):hover {
+        background: var(--accent-fill-hover);
+        color: var(--accent-contrast);
+        border-color: var(--accent-fill-hover);
+      }
       .agempus-dial-seg:disabled { cursor: not-allowed; opacity: 0.5; }
       .agempus-dial-note {
         flex-basis: 100%; font-size: 10px; color: var(--fg-dim);
         line-height: 1.4; opacity: 0.85;
       }
 
-      /* ── Agents / Agempi roster (data-pane="agents", feature #41) ────────── */
-      .mode-pane[data-pane="agents"] { padding-bottom: 40px; }
-      #agents-list { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
-      .agents-empty { padding: 24px; text-align: center; color: var(--fg-dim); }
-      .agents-card {
-        border: 1px solid var(--border); border-radius: 8px;
-        background: var(--bg-elev); overflow: hidden;
-      }
-      .agents-card-header {
-        display: flex; align-items: center; gap: 10px;
-        padding: 10px 12px;
-      }
-      .agents-card-toggle {
-        appearance: none; border: 0; background: transparent; cursor: pointer;
-        display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
-        color: var(--fg); font: inherit; text-align: left; padding: 0;
-      }
-      .agents-card-arrow {
-        font-size: 10px; color: var(--fg-dim); transition: transform .15s ease;
-      }
-      .agents-card.expanded .agents-card-arrow { transform: rotate(90deg); }
-      .agents-card-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .agents-card-count { font-size: 11px; color: var(--fg-dim); }
-      .agents-rollup {
-        font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px;
-        white-space: nowrap; background: color-mix(in oklab, var(--fg) 8%, transparent);
-        color: var(--fg-dim);
-      }
-      .agents-rollup-pending { opacity: 0.6; }
-      .agents-vitality-grade--a { background: rgba(34,197,94,.14); color: #16a34a; }
-      .agents-vitality-grade--b { background: rgba(132,204,22,.14); color: #65a30d; }
-      .agents-vitality-grade--c { background: rgba(245,158,11,.14); color: #d97706; }
-      .agents-vitality-grade--d { background: rgba(239,68,68,.14); color: #dc2626; }
-      .agents-card-body {
-        border-top: 1px solid var(--border);
-        padding: 8px 12px 14px; display: flex; flex-direction: column; gap: 14px;
-      }
-      .agents-card-body[hidden] { display: none; }
-      /* In the Agents roster the family dial is always visible (the Skills page
-         only shows it on group-expand via .skill-engram-group.expanded). */
-      .agents-card-dial .agempus-dial { display: flex; padding-left: 0; }
-      .agents-region { display: flex; flex-direction: column; gap: 6px; }
-      .agents-region-title {
-        margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
-        text-transform: uppercase; color: var(--fg-dim);
-      }
-      .agents-region-empty { margin: 0; font-size: 12px; color: var(--fg-dim); opacity: 0.8; }
-      .agents-skill-rows { display: flex; flex-direction: column; gap: 4px; }
-      .agents-skill-row {
-        appearance: none; border: 1px solid var(--border); border-radius: 6px;
-        background: var(--bg); cursor: pointer; color: var(--fg); font: inherit;
-        display: flex; align-items: center; gap: 8px; padding: 6px 9px; text-align: left;
-      }
-      .agents-skill-row:hover { background: color-mix(in oklab, var(--accent) 8%, var(--bg)); }
-      .agents-skill-name { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .agents-skill-steps { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
-      .agents-grade-chip {
-        font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px; line-height: 1.4;
-      }
-      .agents-grade-chip--pending { background: color-mix(in oklab, var(--fg) 8%, transparent); color: var(--fg-dim); }
-      .agents-trigger-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-      .agents-trigger-chip {
-        font-size: 11px; padding: 2px 8px; border-radius: 10px;
-        background: color-mix(in oklab, var(--accent) 10%, transparent);
-        border: 1px solid color-mix(in oklab, var(--accent) 28%, transparent);
-        color: var(--fg); max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .agents-call-graph { display: flex; flex-direction: column; gap: 4px; }
-      .agents-edge {
-        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-        font-size: 12px; padding: 4px 0;
-      }
-      .agents-edge-from, .agents-edge-to { font-weight: 600; }
-      .agents-edge-kind {
-        font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em;
-        position: relative; padding: 0 16px;
-      }
-      .agents-edge-kind::before {
-        content: ""; position: absolute; left: 0; right: 0; top: 50%;
-        border-top: 1.5px solid var(--border);
-      }
-      .agents-edge--cross .agents-edge-kind::before { border-top-style: dashed; border-top-color: var(--accent); }
-      .agents-edge-cross-note {
-        font-size: 11px; color: var(--accent);
-        background: color-mix(in oklab, var(--accent) 10%, transparent);
-        padding: 1px 7px; border-radius: 8px;
-      }
-      .agents-autonomy-table {
-        width: 100%; border-collapse: collapse; font-size: 12px;
-      }
-      .agents-autonomy-table th {
-        text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
-        color: var(--fg-dim); font-weight: 700; padding: 2px 8px 4px 0; border-bottom: 1px solid var(--border);
-      }
-      .agents-autonomy-table td { padding: 4px 8px 4px 0; border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent); }
-      .agents-autonomy-skill { font-weight: 600; }
-      .agents-autonomy-cap, .agents-autonomy-note { color: var(--fg-dim); font-size: 11px; }
-      .agents-eff-level {
-        font-weight: 700; font-size: 11px; padding: 1px 7px; border-radius: 5px;
-        background: color-mix(in oklab, var(--fg) 8%, transparent);
-      }
-      .agents-eff-level--l0 { background: rgba(148,163,184,.18); color: #64748b; }
-      .agents-eff-level--l1 { background: rgba(59,130,246,.16); color: #2563eb; }
-      .agents-eff-level--l2 { background: rgba(168,85,247,.16); color: #9333ea; }
-      .agents-eff-level--l3 { background: rgba(239,68,68,.16); color: #dc2626; }
 
       /* ── "Handled by {Agempus}" chat chip (feature #41) ─────────────────────
          Clone of .skill-meta-chip styling; descriptive routing chip, clickable
@@ -5923,8 +6885,10 @@
 
       /* ── Per-skill autonomy control (in each skill row) ──────────────────── */
       /* Mirrors the Agempus family dial but scoped to one skill. The dial shows
-         the EFFECTIVE (capped) level; segments above the authored cap are greyed,
-         and an "Inherit" pill clears the override. */
+         the EFFECTIVE (capped) level; segments above the authored cap are grayed,
+         and re-clicking the already-selected segment clears the override back to
+         inheriting the family default. (There is no longer an "Inherit" pill —
+         the chips say what it said.) */
       .skill-autonomy {
         display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
         margin-top: 6px; font-size: 11px; color: var(--fg-dim);
@@ -5934,21 +6898,6 @@
         text-transform: uppercase; color: var(--fg-dim);
       }
       .skill-autonomy-loading { opacity: 0.55; }
-      .skill-autonomy-inherit {
-        appearance: none; cursor: pointer;
-        background: var(--bg-elev); color: var(--fg-dim);
-        border: 1px solid var(--border); border-radius: 6px;
-        font-size: 10px; font-weight: 600; padding: 2px 8px;
-      }
-      .skill-autonomy-inherit:hover {
-        background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev));
-        color: var(--fg);
-      }
-      .skill-autonomy-inherit.active {
-        background: color-mix(in oklab, var(--accent) 72%, white);
-        color: white; border-color: transparent;
-      }
-      :root:not([data-theme="light"]) .skill-autonomy-inherit.active { color: #000; }
       .skill-autonomy-track {
         display: inline-flex; border: 1px solid var(--border);
         border-radius: 6px; overflow: hidden;
@@ -5960,17 +6909,27 @@
         border-right: 1px solid var(--border);
       }
       .skill-autonomy-seg:last-child { border-right: 0; }
-      .skill-autonomy-seg:not(:disabled):hover {
+      /* Same defect and same fix as .agempus-dial-seg above — these two rows
+         are styled independently but were byte-for-byte identical in the part
+         that broke, so they broke identically. See the note there. */
+      .skill-autonomy-seg:not(.active):not(:disabled):hover {
         background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev));
         color: var(--fg);
       }
       .skill-autonomy-seg.active {
-        background: color-mix(in oklab, var(--accent) 72%, white);
-        color: white;
+        background: var(--accent-fill);
+        color: var(--accent-contrast);
+        border-color: var(--accent-fill);
+        font-weight: 700;
+        box-shadow: inset 0 0 0 1px color-mix(in oklab, #fff 22%, transparent);
       }
-      :root:not([data-theme="light"]) .skill-autonomy-seg.active { color: #000; }
+      .skill-autonomy-seg.active:not(:disabled):hover {
+        background: var(--accent-fill-hover);
+        color: var(--accent-contrast);
+        border-color: var(--accent-fill-hover);
+      }
       .skill-autonomy-seg:disabled { cursor: not-allowed; opacity: 0.45; }
-      /* Segments above the skill's authored cap read as inert/greyed. */
+      /* Segments above the skill's authored cap read as inert/grayed. */
       .skill-autonomy-seg.above-cap {
         opacity: 0.32; text-decoration: line-through;
       }
@@ -6241,7 +7200,11 @@
         display: flex; flex-direction: column; gap: 12px;
         border: 1px solid var(--border);
         border-radius: 8px;
-        background: var(--bg-elev);
+        /* App-background fill, matching the library column beside it. Was
+           --bg-elev, which is the same color as the .lb-section card behind
+           both columns — the pane had a background but not a distinguishable
+           one. var(--bg) is defined in all three theme-tokens blocks. */
+        background: var(--bg);
         padding: 14px;
         /* Grid items default to min-width:auto — cap so long unbreakable
            lines use the box's own overflow:auto instead of blowing the grid. */
@@ -6260,7 +7223,10 @@
         /* Sticky so "+ New skill" stays reachable while scrolling long review
            content — the trainer column scrolls independently of the library. */
         position: sticky; top: 0; z-index: 2;
-        background: var(--bg-elev);
+        /* Must match .skills-trainer exactly — a sticky cover in a different
+           shade than the pane it masks reads as a band across the top while
+           scrolling. Mirrors .skills-library-header, which already uses --bg. */
+        background: var(--bg);
         padding-bottom: 6px;
       }
       /* Title sits on its own full-width line above the action buttons */
@@ -6428,6 +7394,18 @@
         display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
       }
       .skills-target-select { min-width: 180px; flex: 1; max-width: 320px; }
+      /* The destination as a STATEMENT, shown instead of the row above whenever
+         the trainer is open inside an agent — which is every route to it except
+         the non-Skills-template fallback. Styled as text, not as a disabled
+         control: a greyed-out select invites clicking and then refuses, whereas
+         a sentence is simply read. */
+      .skills-target-fixed {
+        margin: 0; font-size: 13px; font-weight: 600; color: var(--fg);
+        display: inline-flex; align-items: center; gap: 6px;
+      }
+      .skills-target-fixed::before {
+        content: '↳'; color: var(--fg-dim); font-weight: 400;
+      }
       /* Preview warning — appears when the SAVING TO target is the
          "Preview only" sentinel. Tells the user that hitting Train won't
          actually persist the trained skill anywhere. */
@@ -7777,6 +8755,123 @@
       }
       .ghampus-walk-picker-empty.hidden { display: none; }
 
+      /* /train create affordance — sits BELOW the empty message, never in
+         place of it. */
+      .ghampus-walk-picker-create-wrap {
+        padding: 0 14px 14px; flex-shrink: 0;
+      }
+      .ghampus-walk-picker-create-wrap.hidden { display: none; }
+      .ghampus-walk-picker-create {
+        width: 100%; box-sizing: border-box;
+        padding: 10px 12px; border-radius: 10px;
+        border: 1px solid var(--accent, #6366f1);
+        background: rgba(99,102,241,.14);
+        color: var(--fg, #fff);
+        font-family: inherit; font-size: 13px; font-weight: 600;
+        text-align: left; cursor: pointer;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .ghampus-walk-picker-create:hover { background: rgba(99,102,241,.26); }
+      .ghampus-walk-picker-create:focus-visible {
+        outline: 2px solid var(--accent, #6366f1); outline-offset: 2px;
+      }
+
+      /* ── /train → new skill: draft review modal ─────────────────────────── */
+      .skill-create-backdrop {
+        position: fixed; inset: 0; z-index: 9000;
+        display: flex; align-items: center; justify-content: center;
+        background: var(--color-modal-scrim, rgba(0,0,0,.55));
+        padding: 24px;
+      }
+      .skill-create {
+        display: flex; flex-direction: column;
+        width: min(720px, 100%); max-height: min(760px, 90vh);
+        background: var(--bg-elev, #1e1e22);
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        border-radius: 14px;
+        box-shadow: 0 18px 48px rgba(0,0,0,.42);
+        overflow: hidden;
+      }
+      .skill-create-header {
+        display: flex; align-items: center; gap: 10px;
+        padding: 14px 16px 8px; flex-shrink: 0;
+      }
+      .skill-create-header h3 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
+      .skill-create-close {
+        width: 28px; height: 28px; border-radius: 8px; border: none;
+        background: transparent; color: var(--fg-dim, #9a9a9c);
+        cursor: pointer; font-size: 18px; line-height: 1;
+      }
+      .skill-create-close:hover { background: rgba(255,255,255,.08); color: var(--fg, #fff); }
+      .skill-create-desc {
+        margin: 0; padding: 0 16px 6px;
+        font-size: 13px; line-height: 1.45; color: var(--fg-dim, #9a9a9c);
+      }
+      .skill-create-status {
+        margin: 0; padding: 0 16px 8px;
+        font-size: 12px; color: var(--fg-dim, #9a9a9c);
+      }
+      .skill-create-notes { padding: 0 16px 8px; flex-shrink: 0; }
+      .skill-create-notes.hidden { display: none; }
+      .skill-create-note {
+        margin: 0 0 6px; padding: 8px 10px; border-radius: 8px;
+        background: rgba(245,158,11,.12);
+        border-left: 3px solid #f59e0b;
+        font-size: 12px; line-height: 1.5;
+      }
+      .skill-create-note-bad {
+        background: rgba(239,68,68,.12); border-left-color: #ef4444;
+      }
+      .skill-create-review {
+        display: flex; flex-direction: column; gap: 10px;
+        padding: 4px 16px 8px; overflow-y: auto; flex: 1; min-height: 0;
+      }
+      .skill-create-review.hidden { display: none; }
+      .skill-create-field { display: flex; flex-direction: column; gap: 5px; }
+      .skill-create-field-grow { flex: 1; min-height: 0; }
+      .skill-create-field > span {
+        font-size: 11px; font-weight: 600; letter-spacing: .02em;
+        text-transform: uppercase; color: var(--fg-dim, #9a9a9c);
+      }
+      .skill-create-field input,
+      .skill-create-field select,
+      .skill-create-field textarea {
+        width: 100%; box-sizing: border-box;
+        background: var(--bg, rgba(255,255,255,.04));
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        border-radius: 9px; padding: 8px 11px;
+        font-size: 13px; color: var(--fg, #fff); font-family: inherit;
+        outline: none;
+      }
+      .skill-create-field textarea {
+        min-height: 200px; resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px; line-height: 1.55;
+      }
+      .skill-create-field input:focus,
+      .skill-create-field select:focus,
+      .skill-create-field textarea:focus { border-color: var(--accent, #6366f1); }
+      .skill-create-actions {
+        display: flex; justify-content: flex-end; gap: 8px;
+        padding: 10px 16px 14px; flex-shrink: 0;
+        border-top: 1px solid var(--g-border, rgba(255,255,255,.08));
+      }
+      .skill-create-btn {
+        padding: 8px 14px; border-radius: 9px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.14));
+        background: transparent; color: var(--fg, #fff);
+        font-family: inherit; font-size: 13px; cursor: pointer;
+      }
+      .skill-create-btn.hidden { display: none; }
+      .skill-create-btn:hover:not(:disabled) { background: rgba(255,255,255,.07); }
+      .skill-create-btn-primary {
+        border-color: var(--accent, #6366f1);
+        background: var(--accent, #6366f1);
+        font-weight: 600;
+      }
+      .skill-create-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+      .skill-create-btn:disabled { opacity: .45; cursor: not-allowed; }
+
       .ghampus-engram-picker-chips {
         display: flex;
         flex-wrap: wrap;
@@ -8477,7 +9572,7 @@
 
       /* Preview-mode container shown inside #skills-review-output when the
          user trained with "Preview only — don't save" selected. Hosts a
-         labelled textarea + copy button instead of the source-driven
+         labeled textarea + copy button instead of the source-driven
          editor cards, so the trained text is obviously a transient
          scratch result rather than something already persisted. */
       .skills-preview-result {
@@ -8756,7 +9851,7 @@
       .skills-node-preview { color: var(--fg-dim); font-size: 11px; line-height: 1.4; }
       .skills-export-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       /* Autonomous retrain schedule row — inline controls for the enable
-         toggle and the interval input. Greyed out when Pro is inactive. */
+         toggle and the interval input. Grayed out when Pro is inactive. */
       .skills-retrain-row {
         display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
         padding: 8px 10px; border-radius: 6px;
@@ -9756,7 +10851,7 @@
         /* Push the counter pill to the far right of the bar so the header
            reads "icon · label · stats … pill · close". Without this the pill
            sat snug after the stats text, which collapsed visually toward
-           the centre when stats was short ("Loading…"). */
+           the center when stats was short ("Loading…"). */
         margin-left: auto;
         transition: background 0.25s, color 0.25s;
       }
@@ -9791,24 +10886,14 @@
       }
       .g-search-results.hidden { display: none; }
 
-      /* Health gauge — single horizontal card. Grade + bar + phrase. */
-      .g-health {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 14px;
-        align-items: center;
-        padding: 14px 18px;
-        background: var(--bg-elev);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-      }
-      .g-health-gauge {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 4px;
-        min-width: 88px;
-      }
+      /* What is left of the health gauge.
+         The gauge itself (#g-health — its .g-health container, .g-health-gauge,
+         .g-health-meta / -phrase / -detail, its .g-health-inline variant and the
+         mobile .g-health-expanded state) was removed with the Home card that
+         carried it, 2026-08-05. These three rules did NOT go with it: the
+         cortex-wide vitality ring on the neighbouring card is built from
+         .g-health-grade + .g-health-meter + .g-health-fill and still uses the
+         grade colors. */
       .g-health-grade {
         font-size: 32px;
         font-weight: 700;
@@ -9835,22 +10920,6 @@
         transition: width 600ms ease-out, background 400ms;
         border-radius: 2px;
       }
-      .g-health-meta { min-width: 0; }
-      .g-health-phrase {
-        font-size: 14px;
-        font-weight: 500;
-        color: var(--fg);
-        margin: 0;
-        line-height: 1.3;
-      }
-      .g-health-detail {
-        margin: 4px 0 0;
-        font-size: 15px;
-        line-height: 1.45;
-      }
-      /* Inline variant — health gauge sits in the Graphnosis pane
-         header next to the h2 title. More horizontal, less vertical
-         padding so it doesn't dwarf the title row. */
       .g-pane-header {
         display: flex;
         align-items: flex-start;
@@ -9861,38 +10930,6 @@
          gauge takes all remaining horizontal space (flex:1 is on .g-search-wrap). */
       .g-pane-header-title { flex-shrink: 0; min-width: 0; }
       .g-pane-header-title h2 { margin: 0 0 2px; }
-      .g-health.g-health-inline {
-        padding: 8px 12px;
-        gap: 12px;
-        min-width: 0;
-        /* Fixed at the same 360px as the inspector column in g-main so
-           the health box and inspector are visually aligned. */
-        width: 360px;
-        flex: 0 0 360px;
-        background: var(--bg-elev);
-      }
-      .g-health.g-health-inline .g-health-gauge {
-        flex-direction: row;
-        min-width: auto;
-        gap: 8px;
-      }
-      .g-health.g-health-inline .g-health-grade {
-        font-size: 22px;
-      }
-      .g-health.g-health-inline .g-health-meter {
-        width: 48px;
-      }
-      .g-health.g-health-inline .g-health-phrase {
-        font-size: 14px;
-        font-weight: 500;
-      }
-      .g-health.g-health-inline .g-health-detail {
-        font-size: 14px;
-        margin-top: 2px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
 
       /* Review deck — one card at a time with quick-action buttons.
          Padding-top moved INTO the pinned region (below) so the
@@ -12059,29 +13096,165 @@
         font-size: 14px;
       }
       .atlas-toolbar .filler { flex: 1; }
-      /* Title + stats group above the 3D graph, left-aligned. The auto
-         right-margin pushes the toolbar buttons to the right edge. */
+      /* Title block above the 3D graph, left-aligned, exactly two rows:
+           row 1  .atlas-title-line — the active-engram picker, acting as the
+                  page title (it replaced a static <h2 class="atlas-engram-title">)
+           row 2  .atlas-title-meta — the sensitivity tier chip leading the
+                  node / edge / source counts, both on one line
+         The auto right-margin pushes the toolbar buttons to the right edge. */
       .atlas-title-group {
         display: flex;
-        align-items: baseline;
-        gap: 10px;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
         margin-right: auto;
         min-width: 0;
         max-width: 70%;
+        /* Single source of truth for the block's left edge. The picker's first
+           GLYPH (row 1) and the tier chip's border box (row 2) both resolve to
+           this x, so the two rows line up. 2px reproduces the left margin the
+           old .atlas-engram-title <h2> carried. */
+        --atlas-title-inset: 2px;
+        /* Horizontal padding inside the picker's hover/focus box. It is pulled
+           straight back out by the negative margin below, so it buys the hover
+           rect some breathing room at zero cost in visual indent. */
+        --atlas-title-pad-x: 8px;
       }
-      .atlas-engram-title {
-        margin: 0 0 0 2px;
+      /* Row one: the picker alone. A single flex item, so `center` here only
+         decides cross-axis alignment of that one control. */
+      .atlas-title-line {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        max-width: 100%;
+      }
+      /* Row two: tier chip first, then the counts, sharing a baseline. */
+      .atlas-title-meta {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+        max-width: 100%;
+      }
+      /* The chip's border box sits on the block's left edge — the same x as the
+         picker's first glyph one row above — and never squashes. */
+      .atlas-title-group .sensitivity-badge {
+        margin-left: var(--atlas-title-inset);
+        flex: 0 0 auto;
+      }
+
+      /* ── The engram picker AS the page title ───────────────────────────────
+         #atlas-graph-picker was relocated out of the top bar into
+         .atlas-title-line, taking the place of the static <h2> that used to
+         hold the engram name. It has to READ as that heading, not as a form
+         control parked in a heading slot, so it takes the deleted
+         .atlas-engram-title rule's type ramp verbatim:
+
+             font-size: 24px;  font-weight: 700;
+             letter-spacing: -0.01em;  line-height: 1.1;  color: var(--fg);
+
+         plus `font-family: inherit`, which the <h2> got for free from <body>
+         (-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
+         sans-serif) but a <select>/<button> does not — form controls fall back
+         to the UA system font unless told otherwise.
+
+         Two elements match: the native <select id="atlas-graph-picker"> and the
+         <button id="engram-picker-button"> that installCustomEngramPicker()
+         builds beside it (the select is then display:none). Both carry
+         .header-engram-picker, so this one rule covers whichever is visible.
+         Specificity 0,2,0 beats both `.header-engram-picker` (0,1,0) and
+         `button.header-engram-picker` (0,1,1) from the top-bar block above. */
+      .atlas-title-line .header-engram-picker {
+        font-family: inherit;
         font-size: 24px;
         font-weight: 700;
         letter-spacing: -0.01em;
         line-height: 1.1;
         color: var(--fg);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        /* REST-STATE CONTAINER — roughly 80/20: unmistakably clickable, still
+           clearly the page title. A fully chrome-less heading gave no hint
+           that it opens anything (and hid a large click target), so it now
+           carries a soft raised fill plus a hairline border AT REST. Flat on
+           purpose — no gradient, no inset shadow, nothing that would read as
+           full form-control chrome or as a stray design system.
+           Geometry is deliberately UNCHANGED from the chrome-less version:
+           the border was already 1px (only transparent) and the padding is
+           the same, so the left-edge arithmetic below still resolves the
+           first glyph to --atlas-title-inset and nothing shifts on hover.
+           --color-surface-2 / --color-border are used (not the --surface-2 /
+           --border-strong short aliases) because only the --color-* tokens
+           are redefined in the dark and prefers-color-scheme blocks. */
+        background-color: var(--color-surface-2);
+        background-image: none;
+        border-width: 1px;
+        border-style: solid;
+        border-color: var(--color-border);
+        border-radius: 8px;
+        margin: 0;
+        padding: 2px var(--atlas-title-pad-x);
+        max-width: 100%;
+        transition: background-color 140ms ease, border-color 140ms ease;
+      }
+      /* Left-edge arithmetic: align the control's BORDER BOX to
+         --atlas-title-inset, same as `.atlas-title-group .sensitivity-badge`
+         one row below — so the two rows line up on the edges you can actually
+         see.
+
+         This used to align the first GLYPH instead, via
+         `calc(inset - pad-x - 1px)`. That was right while the title was
+         chrome-less: there was no visible box, so the glyph WAS the left edge.
+         It resolves to -7px, and once the control gained a rest-state fill,
+         a hairline border and a 2px focus ring, that negative margin pushed
+         all three outside the pane and they were clipped — the title read as
+         running off the left of the window.
+
+         The +2px clears the focus ring, which paints outside the border box.
+         Two selectors: the wrap the custom picker builds at runtime, and —
+         before that JS has run — the bare native <select> in the same slot. */
+      .atlas-title-line > .engram-picker-wrap,
+      .atlas-title-line > select.header-engram-picker {
+        margin-left: calc(var(--atlas-title-inset) + 2px);
+        min-width: 0;
         flex: 0 1 auto;
       }
-      /* Node / edge / source counts beside the engram name. */
+      /* Hover DEEPENS the rest container — same shape, more contrast. The
+         mix is against --fg so it darkens on the light theme and lightens on
+         the dark one, i.e. it always pulls away from the page background. */
+      .atlas-title-line .header-engram-picker:hover {
+        background-color: color-mix(in oklab, var(--color-surface-2) 88%, var(--fg) 12%);
+        border-color: var(--color-border-strong);
+      }
+      .atlas-title-line .header-engram-picker:focus,
+      .atlas-title-line .header-engram-picker[aria-expanded="true"] {
+        outline: none;
+        background-color: color-mix(in oklab, var(--color-surface-2) 88%, var(--fg) 12%);
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 25%, transparent);
+      }
+      /* Chevron: scaled to the heading, given room off the last glyph, and
+         carrying most of the "this opens" signal — so it is bigger and at full
+         --fg contrast at rest (the base rule's --fg-dim read as decoration),
+         goes accent on hover, and ROTATES 180° while the panel is open, which
+         is the cheapest possible confirmation that the click registered.
+         It is a flex item of button.header-engram-picker, so it is blockified
+         and `transform` applies; display is pinned anyway for the case where
+         the button is not a flex container. */
+      .atlas-title-line .engram-picker-chevron {
+        display: inline-block;
+        font-size: 16px;
+        color: var(--fg);
+        margin-left: 10px;
+        transition: transform 140ms ease, color 140ms ease;
+      }
+      .atlas-title-line .header-engram-picker:hover .engram-picker-chevron {
+        color: var(--accent);
+      }
+      .atlas-title-line .header-engram-picker[aria-expanded="true"] .engram-picker-chevron {
+        color: var(--accent);
+        transform: rotate(180deg);
+      }
+      /* Node / edge / source counts beside the tier chip. */
       .atlas-engram-stats {
         font-size: 13px;
         color: var(--fg-dim);
@@ -12674,7 +13847,7 @@
       .ar-quiet { color: var(--fg-dim); font-weight: 400; }
       .ar-why { font-style: italic; color: var(--fg-dim); }
       /* Engram name in an activity row — friendly display name, lightly
-         emphasised (replaces the old monospace slug in <code>). */
+         emphasized (replaces the old monospace slug in <code>). */
       .ar-engram { font-weight: 600; color: var(--fg); }
       .activity-day-divider {
         font-size: 15px;

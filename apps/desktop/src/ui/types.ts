@@ -29,6 +29,17 @@ export interface GraphMetadata {
    */
   executionAutonomyLevel?: 'L0' | 'L1' | 'L2' | 'L3';
   /**
+   * Agent OFF SWITCH — mirrors the core `GraphMetadata.skillsDisabled`. True =
+   * this engram's un-ganglia is meant to be INERT: no skill of its dispatches
+   * by any route and none appear in a listing.
+   *
+   * FUNCTIONAL, so it lives on the ENGRAM and not on the presentation-only
+   * `AgentRecord`. The grid reads it to grey and re-sort the tile; the actual
+   * inertness is enforced server-side (dispatch, walk, `@skill:` resolution,
+   * the library listing and the MCP tools each consult it). Absent = enabled.
+   */
+  skillsDisabled?: boolean;
+  /**
    * Quarantine marker for engrams created by an untrusted IMPORT (#39). While
    * present with any item still in the 'quarantined' state the engram is
    * QUARANTINED — excluded at the host boundary from recall/dispatch/cross-skill
