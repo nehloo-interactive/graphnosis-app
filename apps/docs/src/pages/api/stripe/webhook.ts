@@ -143,9 +143,44 @@ async function mintAndPersist(
   email: string,
   sub: Stripe.Subscription | null,
 ): Promise<void> {
-  // Pull plan + features from subscription metadata, falling back to defaults
-  // for the monthly-subscription plan we ship today.
-  const metaFeatures = sub?.metadata?.['features'] ?? 'skill-training,gnn-exploration';
+  // Pull plan + features from subscription metadata, falling back to the full
+  // Pro set for the monthly-subscription plan we ship today.
+  //
+  // WHO ACTUALLY HITS THIS FALLBACK — corrected 2026-08-05, after an earlier
+  // version of this comment claimed checkout never sets subscription metadata.
+  // That was FALSE: upgrade/checkout.ts:86-88 does pass
+  // `subscription_data.metadata.features`, and at HEAD the 'monthly' plan writes
+  // all six Pro slugs (checkout.ts:33).
+  //
+  // The real hazard is subtler and this fallback cannot fix it: Stripe writes
+  // `subscription_data.metadata` ONCE, at checkout-session creation, and never
+  // rewrites it. So a subscription's feature list is frozen at whatever the
+  // checkout map held on the day it was purchased. Subscriptions created between
+  // 2026-05-29 and 2026-06-09 carry the literal string
+  // 'skill-training,gnn-exploration' — byte-identical to the old fallback below.
+  // For those, `??` never fires, this default is dead code, and the ONLY repairs
+  // are editing the Subscription's metadata in Stripe or re-minting via
+  // /api/admin/grant. Nothing reads the purchased price to re-derive the tier.
+  //
+  // It used to read 'skill-training,gnn-exploration'. Measured on a live paying
+  // account on 2026-08-05: a token minted that day carried exactly those two,
+  // leaving `memory-integrity` (six Memory Integrity tools) and `foresight`
+  // (five local-LLM tools) dark for a Pro subscriber. Worse, every other issuing
+  // path granted MORE than the paying one — gifts 4, vouchers/domains 5, admin
+  // grant/groups/extend 6. The paying path had the smallest set in the system.
+  //
+  // The list below is the Pro tier exactly as license-validator.ts documents it:
+  // skill-training, gnn-exploration, foresight, memory-integrity (annotated
+  // "entry Pro"), connector-cadence ("Pro/Teams"), mcp-tool-control ("Granted to
+  // Pro/Teams/Enterprise"). Deliberately EXCLUDED: `teams` and `enterprise`
+  // (higher tiers), `ghampus` (Teams/Enterprise), `beta` (select users).
+  //
+  // KNOWN GAP, not fixed here: nothing reads the purchased PRICE, so a Teams
+  // subscriber lands on this same default and `plan` stays 'monthly-subscription'
+  // — which means the `plan.startsWith('teams')` branch below never fires and no
+  // group/seat record is created. A price-id → tier map is the real fix.
+  const metaFeatures = sub?.metadata?.['features']
+    ?? 'skill-training,gnn-exploration,foresight,memory-integrity,connector-cadence,mcp-tool-control';
   const features = metaFeatures
     .split(',')
     .map((s) => s.trim())
