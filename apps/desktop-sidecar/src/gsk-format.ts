@@ -31,13 +31,13 @@ export interface SkillGoals {
   successLooksLike: string;
   /** What is explicitly out of scope — the skill should not attempt this. */
   outOfScope: string;
-  /** What tangible output or behaviour is expected when the skill completes. */
+  /** What tangible output or behavior is expected when the skill completes. */
   expectedOnCompletion: string;
   /** When the AI should autonomously invoke this skill (Trigger:). */
   trigger?: string;
   /** What must be true before step 1 can run (Prerequisites:). */
   prerequisites?: string;
-  /** Recovery / fallback behaviour if execution fails mid-procedure (On failure:).
+  /** Recovery / fallback behavior if execution fails mid-procedure (On failure:).
    *  May contain a `@skill: name` reference to a recovery skill — `linkSkillCalls`
    *  detects this and writes an `evidence='skill:calls;onFailure=true'` edge. */
   onFailure?: string;

@@ -639,7 +639,7 @@ export class ReinforcementEngine {
    *  USER-SETTABLE and its only validation is `> 0`
    *  (packages/graphnosis-app-core/src/settings/index.ts — `typeof
    *  rf.crossEngramMinSim === 'number' && rf.crossEngramMinSim > 0`). At the
-   *  0.82 default the stub's normalised noise (mean -0.0003, sd 0.1774 over
+   *  0.82 default the stub's normalized noise (mean -0.0003, sd 0.1774 over
    *  44,850 unrelated pairs) sits 4.63 sigma out and nothing forms. Measured
    *  through this exact `findSimilarPairs` call on 300 stub vectors: minSim
    *  0.5 -> 4 pairs, 0.4 -> 38, 0.3 -> 79, 0.2 -> 146. Every one of those
@@ -1327,7 +1327,7 @@ function computeRwpe(
 ): Map<string, Float64Array> {
   const rwpe = new Map<string, Float64Array>();
   if (nodeIds.length === 0 || nodeIds.length > MAX_GNN_RWPE_NODES) return rwpe;
-  // Weighted degree per node — the row sum that normalises RW = D⁻¹A.
+  // Weighted degree per node — the row sum that normalizes RW = D⁻¹A.
   const degree = new Map<string, number>();
   for (const [node, nbrs] of wadj) {
     let d = 0;
@@ -1350,7 +1350,7 @@ function computeRwpe(
         const nbrs = wadj.get(node);
         if (!nbrs) continue;
         for (const [nb, w] of nbrs) {
-          // degree(nb) > 0: `node` is one of nb's neighbours.
+          // degree(nb) > 0: `node` is one of nb's neighbors.
           const moved = (w / degree.get(nb)!) * mass;
           next.set(nb, (next.get(nb) ?? 0) + moved);
         }

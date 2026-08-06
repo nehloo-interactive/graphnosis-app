@@ -162,7 +162,7 @@ export class SidecarIdleMaintenance {
   /**
    * DETECT → AUTO-HEAL → ASK, in that order, on the stat-only path.
    *
-   * Auto-heal is limited to files that are provably behaviour-neutral to move
+   * Auto-heal is limited to files that are provably behavior-neutral to move
    * (see oplog-health.ts). Everything else is a question for the user, asked
    * once and then snoozed — a prompt that reappears every 90 seconds is not a
    * prompt, it is a fault.

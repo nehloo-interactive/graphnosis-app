@@ -17,7 +17,7 @@
  *   GRAPHNOSIS_EVAL_MAX_ROUNDS=5 — outer agent macro-loop cap (skill)
  *   GRAPHNOSIS_EVAL_ALL_PROFILES=1 — run gll/gnn overlay matrix (default: deterministic only)
  *   GRAPHNOSIS_EVAL_FORCE_RESEED=1 — ingest fixtures even when seed marker exists
- *   GRAPHNOSIS_EVAL_CLEAN_SEED=1 — forget seed-labelled sources before ingest
+ *   GRAPHNOSIS_EVAL_CLEAN_SEED=1 — forget seed-labeled sources before ingest
  *   GRAPHNOSIS_EVAL_CASE_GAP_MS — pause between cases (soak: 12000 recommended)
  *
  * Regression gate (isolated cortex, blocks on failure):

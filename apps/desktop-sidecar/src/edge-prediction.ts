@@ -363,7 +363,7 @@ export function edgePredictionEnabled(host: GraphnosisHost): boolean {
  * So every pair of sections carrying the same filename looked like a
  * high-scoring pair that the substrate had "failed" to link, when in truth
  * the substrate is never allowed to link them. Feeding those to the LLM
- * would have burnt the whole MAX_CANDIDATES budget on matching filenames.
+ * would have burned the whole MAX_CANDIDATES budget on matching filenames.
  *
  * This mirrors the substrate's own rule, plus the activity filter the rest
  * of the pipeline uses (soft-deleted and expired nodes are not candidates).

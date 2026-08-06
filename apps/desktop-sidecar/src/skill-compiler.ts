@@ -14,7 +14,7 @@
  * This module is the honest floor. It runs with no LLM, no network and no
  * cortex recall:
  *
- *   L0  scaffoldAgempus()  — normalise prose into Agempus SHAPE. Reorders and
+ *   L0  scaffoldAgempus()  — normalize prose into Agempus SHAPE. Reorders and
  *                            renumbers; never invents semantics. Missing
  *                            contract fields become explicit placeholders.
  *   ——  assessAgempus()    — score the result against the 8-field contract and
@@ -229,7 +229,7 @@ export function assessAgempus(text: string): AgempusConformance {
   if (parsed.dispatchSafe === undefined) {
     // Reported, not enforced: an absent tag already means `yes`, so this is
     // load-bearing information rather than a nit — but injecting a cap would
-    // change autonomy behaviour behind the author's back.
+    // change autonomy behavior behind the author's back.
     issues.push(
       'no `[dispatch-safe: yes|partial|no]` cap — an absent tag means `yes`, so this skill is ' +
       'eligible for unattended L3 dispatch. Add an explicit cap.',
@@ -436,7 +436,7 @@ export interface ScaffoldResult {
 }
 
 /**
- * Normalise arbitrary prose into Agempus SHAPE.
+ * Normalize arbitrary prose into Agempus SHAPE.
  *
  * Hard rule: this never invents semantics. It reorders, renumbers, and marks
  * gaps. It will not guess a `Trigger:` from the prose, because a wrong Trigger

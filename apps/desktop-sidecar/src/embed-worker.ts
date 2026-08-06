@@ -107,7 +107,7 @@ process.on('message', async (req: { id: number; text: string }) => {
     const model = await modelReady;
     const trimmed = req.text.trim().slice(0, 8000);
 
-    // Empty text: return a zero vector (consistent with previous behaviour).
+    // Empty text: return a zero vector (consistent with previous behavior).
     if (!trimmed) {
       sendToParent({ id: req.id, vec: new Array<number>(DIM).fill(0) });
       return;

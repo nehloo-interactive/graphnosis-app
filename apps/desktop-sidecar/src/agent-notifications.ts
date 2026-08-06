@@ -31,7 +31,7 @@ export interface NotificationEntry {
    *   - 'ai-client'      — saved by an external MCP client (Claude, Cursor)
    *   - 'sharing'        — written via an editor-role sharing token
    *   - 'direct'         — user added it via the app (file picker, paste)
-   *   - 'other'          — fallback for anything we can't categorise.
+   *   - 'other'          — fallback for anything we can't categorize.
    */
   originKind: 'connector' | 'ai-client' | 'sharing' | 'direct' | 'other';
   /** Free-form attribution string from SourceRecord.addedBy or ref. */

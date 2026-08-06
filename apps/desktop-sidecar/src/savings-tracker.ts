@@ -174,7 +174,7 @@ export interface SavingsSummary {
  * normal cortex sizes (one append-only JSONL file); for huge cortexes a
  * future optimisation could maintain a rolling aggregate in settings.
  */
-export async function summariseSavings(
+export async function summarizeSavings(
   cortexDir: string,
   windowDays = 30,
   baseline: SavingsBaseline = DEFAULT_BASELINE,

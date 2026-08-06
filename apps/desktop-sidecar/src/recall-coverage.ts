@@ -47,7 +47,7 @@
  *
  * CONSEQUENCE FOR THE TESTS. Because the installed producer cannot reach them,
  * every interesting branch below is exercised only by synthetic input. Those
- * tests are labelled CONTRACT-ONLY in the runner's own output — see
+ * tests are labeled CONTRACT-ONLY in the runner's own output — see
  * `tests/_contract-level.mjs` and the roll-up in
  * `tests/contract-level-census.test.mjs`. They are not skipped: this module has
  * no other coverage, so their assertions are the only thing holding it.

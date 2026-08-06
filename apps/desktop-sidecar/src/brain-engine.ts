@@ -961,7 +961,7 @@ export class BrainEngine {
       }
     }
     // Prior builds persisted overall only — or the catalog grew since last
-    // session. Fill gaps from one live pass so Home doesn't show empty grey
+    // session. Fill gaps from one live pass so Home doesn't show empty gray
     // tracks for every engram until boot scans finish. Cached graphIds stay
     // frozen; only resident graphIds missing from the snapshot use live scores.
     const resident = this.host.listGraphs();
@@ -2065,8 +2065,8 @@ export class BrainEngine {
     // permanent edges into the `.gai`.
     //
     // It was safe until now only by ARITHMETIC ACCIDENT: `duplicate-scan.ts`
-    // uses `@graphnosis-app/core`'s `cosine`, which DOES normalise, and the
-    // stub's normalised noise measures mean -0.0003 / sd 0.1774 over 44,850
+    // uses `@graphnosis-app/core`'s `cosine`, which DOES normalize, and the
+    // stub's normalized noise measures mean -0.0003 / sd 0.1774 over 44,850
     // unrelated pairs — so AUTOLINK_MIN_SIM 0.78 sits 4.40 sigma out and the
     // scan finds nothing. That is a property of the numbers, not a guard:
     // lower the band (or re-dimension the stub) and unguarded garbage lands
@@ -2074,7 +2074,7 @@ export class BrainEngine {
     // minSim 0.5 -> 4 pairs, 0.4 -> 38, 0.3 -> 79, 0.2 -> 146.
     //
     // Shape is `buildGnnContext`'s: the map is simply never consulted, so
-    // every other per-run behaviour (bookkeeping, vitality, the healing
+    // every other per-run behavior (bookkeeping, vitality, the healing
     // review tail) is unchanged and `found` / `healActions` stay empty.
     const semanticAvailable = this.host.semanticSimilarityAvailable();
     if (!semanticAvailable) {
@@ -2146,7 +2146,7 @@ export class BrainEngine {
           });
           // Strongest matches first: the greedy per-node caps below keep
           // the most likely-genuine pairing / closest auto-links when a
-          // node could pair with several neighbours.
+          // node could pair with several neighbors.
           pairs.sort((p1, p2) => p2.similarity - p1.similarity);
 
           // Edge degree per node — the auto-link tier skips nodes that are
@@ -2657,7 +2657,7 @@ export class BrainEngine {
         //
         // Pick the node that actually carries the restored text; fall back to
         // the LAST id, which is where the chunker puts the content when an
-        // exact match fails (e.g. the chunker normalised whitespace).
+        // exact match fails (e.g. the chunker normalized whitespace).
         const restoredId =
           restoredIds.find(
             (nid) => this.host.getFullNodeContent(record.graphId, nid)
@@ -3007,7 +3007,7 @@ export class BrainEngine {
     if (status !== 'timeout') {
       if (engramsScanned === 0 && engramsSkippedNoData > 0) {
         status = 'no-data';
-        message = `All ${engramsSkippedNoData} engram(s) had fewer than 5 high-signal nodes — nothing to summarise yet. Save more memories first.`;
+        message = `All ${engramsSkippedNoData} engram(s) had fewer than 5 high-signal nodes — nothing to summarize yet. Save more memories first.`;
       } else if (newInsightsThisRun === 0 && parseFailures > 0) {
         status = 'parse-error';
         message = `LLM responded but ${parseFailures} engram(s) returned unparseable output. Try a more capable Ollama model (e.g. llama3.1:8b or larger).`;

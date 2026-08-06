@@ -1,5 +1,5 @@
 // @disclosure: (a) publishable — Spec only — asserts what joinPdfTextItems must produce for a
-//   given item stream. States a required behaviour; carries no defect mechanism, no reproduction
+//   given item stream. States a required behavior; carries no defect mechanism, no reproduction
 //   steps and no shipped-build claim.
 // @disclosure-src: added 2026-08-03 · class (a) by construction · enforced by scripts/check-disclosure-tags.sh
 /**

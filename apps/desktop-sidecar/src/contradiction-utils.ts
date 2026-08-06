@@ -18,7 +18,7 @@ const DATE_RE =
 // longer based here") — bare "always"/"never" anywhere in a snippet was a
 // false-positive source, so they no longer match standalone.
 // "live in" matches its third-person conjugations (lives/lived/living in) so a
-// stated location identity ("Nelu lives in Brașov") is recognised, not just the
+// stated location identity ("Nelu lives in Brașov") is recognized, not just the
 // first-person "I live in" form. ("based in" already covers is/are/was based in.)
 const IDENTITY_RE =
   /\b(?:i am|i'm|we are|we're|liv(?:e|es|ed|ing) in|based in|vegan|vegetarian|married|ceo|founder)\b|\b(?:i|we|i'm|we're)\s+(?:\w+\s+){0,2}(?:always|never|no longer)\b/i;
@@ -346,7 +346,7 @@ export function hasNumericValueConflict(snippetA: string, snippetB: string): boo
   // The numbers must actually differ.
   if (!numsA.some((n) => !numsB.includes(n)) && !numsB.some((n) => !numsA.includes(n))) return false;
   // …and the differing value must quantify the SAME attribute. Comparing the
-  // value-free, verb-normalised frames (not the raw subject) stops "X has 50
+  // value-free, verb-normalized frames (not the raw subject) stops "X has 50
   // engineers" vs "X has 200 customers" — same subject, different attribute —
   // from reading as a contradiction.
   return wordTokenJaccard(attrFrame(snippetA), attrFrame(snippetB)) >= NUMERIC_CONFLICT_MIN_ATTR_JACCARD;

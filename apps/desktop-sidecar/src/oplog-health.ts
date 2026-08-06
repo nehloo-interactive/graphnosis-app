@@ -18,12 +18,12 @@
  * ─────────────────────────────────
  *   1. DETECT   — stat-only. Cheap enough to run on every idle tick and at
  *                 unlock. See `measureOplogHealth`.
- *   2. AUTO-HEAL — only the subset that is provably behaviour-neutral. See
+ *   2. AUTO-HEAL — only the subset that is provably behavior-neutral. See
  *                 `archivable` below. Runs without asking.
  *   3. ASK      — everything else, in one plain sentence with one button. See
  *                 `describeOplogHealth`. Never automatic.
  *
- * What "provably behaviour-neutral" means here
+ * What "provably behavior-neutral" means here
  * ────────────────────────────────────────────
  * A v2 `.oplog` chunk is only decrypted after its signing device resolves to a
  * PINNED public key. Both readers in this codebase bail before decryption when
@@ -33,7 +33,9 @@
  *                                `if (!pub) { issue({kind:'unknown-device'}); return []; }`
  *   SDK oplog/index.ts:293-297   same check, `continue`
  *
- * and host.ts:8587 always supplies `getDevicePubKey`. So a v2 file whose device
+ * and host.ts always supplies `getDevicePubKey` (its `safeReadEventsSince` call
+ * site, `getDevicePubKey: (deviceId) => this.deviceIdentity.getPubKey(deviceId)`).
+ * So a v2 file whose device
  * id is in no pinned set yields ZERO events on every read today and every read
  * tomorrow, while still costing a full I/O walk. Moving it aside changes what
  * the app does exactly not at all — it only stops paying for it.
@@ -151,7 +153,7 @@ export interface OplogHealthReport {
   /** Machine-readable reasons, for logs and tests. */
   reasons: Array<'ceiling' | 'ratio'>;
   files: OplogFileInfo[];
-  /** Bytes in files that are behaviour-neutral to archive (auto-heal tier). */
+  /** Bytes in files that are behavior-neutral to archive (auto-heal tier). */
   autoReclaimBytes: number;
   autoReclaimFiles: string[];
   /** Bytes the user's one button would free (everything in `oplog/`). */
@@ -253,7 +255,7 @@ export interface MeasureOplogHealthOpts {
  * Stat-only health measurement. Safe to call on every idle tick.
  *
  * MUST run before `host.refreshAllCorrectionsFromOplog()`, never after: that
- * call materialises the entire op-log (host.ts:7870 `listOplogEvents()`), which
+ * call materialises the entire op-log (`GraphnosisHost.listOplogEvents()`), which
  * is the 24 GB resident this detector exists to prevent. On a cortex already
  * too large to materialise, a check placed after it never runs at all.
  */

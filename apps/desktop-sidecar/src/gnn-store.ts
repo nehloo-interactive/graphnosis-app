@@ -4,7 +4,7 @@
 //! graph. They live here, in a separate overlay, so the deterministic graph
 //! stays pure: core recall traverses only `.gai` and is always perfectly
 //! consistent. The GNN's predictions surface only through the clearly
-//! labelled recall-enrichment section and the 3D Engram's (toggleable)
+//! labeled recall-enrichment section and the 3D Engram's (toggleable)
 //! prediction layer — never silently inside a deterministic answer.
 //!
 //! Storage: `<cortexDir>/neural-network.gnn` — XChaCha20-Poly1305 encrypted

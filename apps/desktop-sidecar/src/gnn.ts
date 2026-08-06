@@ -17,7 +17,7 @@
 //! the MLP only learns how to weigh them.
 
 /** Deterministically-computed features for one candidate node pair. Each
- *  field is normalised to roughly [0, 1] by the caller. */
+ *  field is normalized to roughly [0, 1] by the caller. */
 export interface PairFeatures {
   /**
    * Cosine similarity of the two nodes' embedding vectors, or `null` when
@@ -39,11 +39,11 @@ export interface PairFeatures {
    * signal in the vector when the embedding axis is gone.
    */
   tfidfCosine: number;
-  /** Shared-neighbour count, normalised. */
+  /** Shared-neighbor count, normalized. */
   commonNeighbors: number;
   /** Preferential attachment — a function of the two nodes' degrees. */
   prefAttachment: number;
-  /** Shared named-entity count, normalised. */
+  /** Shared named-entity count, normalized. */
   sharedEntities: number;
   /** Cosine similarity of the two nodes' random-walk positional encodings —
    *  a deterministic, multi-hop structural-role match (RWPE; see
@@ -142,7 +142,7 @@ export class GnnLinkPredictor {
   }
 
   /**
-   * Train on labelled pair-features. Full-batch gradient descent, BCE loss.
+   * Train on labeled pair-features. Full-batch gradient descent, BCE loss.
    * Returns the final average loss (a caller can sanity-check it is finite).
    */
   train(

@@ -18,7 +18,7 @@
 //!     up to 101.2, against a threshold the tool schema caps at 1.0.
 //!   - 48.1% of UNRELATED text pairs score >= 1.0 — the strictest threshold
 //!     `check_duplicate` / `audit_memory` permit.
-//!   - on the true (normalised) cosine the stub is pure noise: mean 0.0003,
+//!   - on the true (normalized) cosine the stub is pure noise: mean 0.0003,
 //!     sd 0.176 over 44,850 unrelated pairs. A REAL paraphrase pair scores
 //!     0.231 and a pair differing by ONE CHARACTER scores 0.181 — both below
 //!     the .gll candidate floor of 0.55, while 16 arbitrary noise pairs sat
@@ -37,7 +37,7 @@
 //! --------------------
 //! - No id at all -> UNAVAILABLE. An absent provenance is not a claim that a
 //!   model exists; treating it as one is the same defect one level up.
-//! - A recognised placeholder id -> UNAVAILABLE.
+//! - A recognized placeholder id -> UNAVAILABLE.
 //! - Any other well-formed id -> AVAILABLE. We only assert "no semantics"
 //!   when we can positively identify a placeholder. Claiming a real adapter
 //!   is fake would be its own dishonesty, and would silently disable
@@ -47,8 +47,8 @@
  * Embedding adapter ids that are KNOWN not to carry meaning. Enumerated from
  * every construction site in this repo, not assumed to be one string:
  *
- *   main.ts:714, engram-cli.ts:32, recover.ts:32, skill-recover.ts:107,
- *   oplog-report.ts:66, host.ts:1287 (the `opts.embedAdapterId ?? …` default)
+ *   main.ts, engram-cli.ts, recover.ts, skill-recover.ts, oplog-report.ts,
+ *   and host.ts's constructor default (`opts.embedAdapterId ?? …`)
  *
  * all name the same adapter today. The token rule below is what keeps a
  * re-dimensioned or renamed stub from slipping past this list.

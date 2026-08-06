@@ -137,7 +137,7 @@ export async function startEvents(deps: EventsDeps): Promise<EventsHandle> {
       state.lastFiredAt = now;
       broadcast(event);
       // Arm a trailing timer to flush any events that come in during
-      // the window. Cancelled if we fire trailing with an empty buffer.
+      // the window. Canceled if we fire trailing with an empty buffer.
       state.trailingTimer = setTimeout(fireTrailing, THROTTLE_MS);
     } else {
       // Inside suppression window — coalesce by graphId, keeping latest ts.

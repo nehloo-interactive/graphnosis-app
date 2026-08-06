@@ -1,5 +1,5 @@
 /**
- * Forget all ghampus-tests sources labelled with the eval seed marker, then ingest once.
+ * Forget all ghampus-tests sources labeled with the eval seed marker, then ingest once.
  * Requires live sidecar on GRAPHNOSIS_CORTEX (app unlocked).
  *
  *   pnpm --filter @graphnosis-app/desktop-sidecar ghampus-eval:clean-seed

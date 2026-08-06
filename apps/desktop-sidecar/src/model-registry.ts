@@ -59,7 +59,7 @@ export type ModelProviderId =
   | 'vllm';
 
 /**
- * Pricing shape for a model. Three flavours so the cost estimator can
+ * Pricing shape for a model. Three flavors so the cost estimator can
  * speak the right language for each provider:
  *   - `per-token`           — the default; classic input/output rates.
  *   - `subscription-pool`   — GitHub Copilot's post-2026-06 model: flat

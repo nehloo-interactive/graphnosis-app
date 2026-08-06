@@ -1,7 +1,7 @@
 /**
  * skill-compiler — the deterministic Agempus layer under train_skill.
  *
- * These pin the behaviour that was missing entirely before: arbitrary prose in,
+ * These pin the behavior that was missing entirely before: arbitrary prose in,
  * Agempus shape out, with an honest score and a bounded caller loop. Several
  * cases are direct regressions of the Claude Cowork report — a well-written
  * markdown procedure that compiled to a 0/8 skill with no warning.

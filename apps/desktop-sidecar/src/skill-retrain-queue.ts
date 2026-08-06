@@ -41,7 +41,7 @@ export async function persistSkillCitedNodes(
  * clear.
  *
  * BATCHED ON PURPOSE — do not "simplify" this back to one call per edit.
- * `host.setSettings` is a full serialise + encrypt + fsync of settings.json
+ * `host.setSettings` is a full serialize + encrypt + fsync of settings.json
  * behind a write queue. `applyCorrection` takes a BATCH of edits and the brain
  * engine drives it in bulk, so a per-edit write would turn one correction batch
  * into N disk writes and N listener broadcasts. Every move in the batch is

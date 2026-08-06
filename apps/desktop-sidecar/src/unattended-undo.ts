@@ -142,7 +142,7 @@ export interface UndoHost {
  * Replay the inverse of an action from its undoToken. Goes through the same
  * indelible correction/snapshot machinery the forward action used, so the undo
  * is itself audited and re-reversible. Refuses (returns ok:false) for any token
- * that doesn't decode to a reversible kind — defence in depth behind the
+ * that doesn't decode to a reversible kind — defense in depth behind the
  * admission gate, which already never admits an irreversible action.
  */
 export async function applyUndo(

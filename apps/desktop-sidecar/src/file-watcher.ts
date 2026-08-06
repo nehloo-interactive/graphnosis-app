@@ -251,7 +251,7 @@ export class FileWatcher {
       // so the new record has the same sourceId — we still re-bind for
       // safety in case host implementation changes.
       const cleared = await this.host.forgetSource(key.graphId, key.sourceId, { triggeredBy: 'user:ingest' });
-      // A refused forget is not a licence to re-read. `forgetSource` reports a
+      // A refused forget is not a license to re-read. `forgetSource` reports a
       // declined delete by RETURNING `refusedNodeIds` — it never throws — so
       // the bare `await` here fell straight through into `ingestFile` and
       // appended a SECOND full copy of the file's chunks on top of the nodes

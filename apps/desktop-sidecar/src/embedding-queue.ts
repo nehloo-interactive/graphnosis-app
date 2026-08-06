@@ -16,7 +16,7 @@
  * task (ingest or recall). Queuing adds no overhead unless two operations
  * genuinely overlap (e.g., a multi-minute PDF ingest + a recall fired
  * before it finishes). In that case the recall blocks until the ingest
- * finishes — which is the correct behaviour.
+ * finishes — which is the correct behavior.
  */
 
 import { dbg } from './log-redact.js';

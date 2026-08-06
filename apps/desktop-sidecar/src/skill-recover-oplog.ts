@@ -90,8 +90,9 @@ export function recoverFromForgetTrail(
     if (TOMBSTONE_RE.test(preview)) continue;
 
     // ── Cross-version dedup ────────────────────────────────────────────────
-    // `makeSourceId` is deterministic on (kind, ref) — `host.ts:5254`, stated
-    // again at `file-watcher.ts:250` — so a watched file forgotten under a
+    // `makeSourceId` is deterministic on (kind, ref) — defined in
+    // `@graphnosis-app/core` `sources/index.ts`, stated again in
+    // `file-watcher.ts` — so a watched file forgotten under a
     // pre-1.35.0 build and again under this one keeps the SAME sourceId, and
     // one trail can hold BOTH shapes for the same node: the old capped
     // `S.slice(0,497)+'…'` and the new full `S`. They are different strings,

@@ -292,7 +292,7 @@ function checkSequenceContinuity(
   }
   for (const [deviceId, seqs] of byDevice) {
     seqs.sort((a, b) => a - b);
-    // Summarise per device rather than emitting one line per gap. A real cortex
+    // Summarize per device rather than emitting one line per gap. A real cortex
     // produced THOUSANDS of these in a single run, which buried the actual
     // output — and a wall of identical warnings reads as noise, so the one that
     // matters gets skimmed past too. The counts carry the same information.

@@ -31,7 +31,7 @@ export function clearGhampusTurn(turnId: string): void {
   }
 }
 
-export function isGhampusTurnCancelled(turnId: string, signal?: AbortSignal): boolean {
+export function isGhampusTurnCanceled(turnId: string, signal?: AbortSignal): boolean {
   if (signal?.aborted) return true;
   return activeTurns.get(turnId)?.signal.aborted ?? false;
 }
