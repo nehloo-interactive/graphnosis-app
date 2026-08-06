@@ -5,8 +5,16 @@ rem headless sidecar (browser UI on :3456) and open your browser to it.
 rem
 rem Config (optional): set these in the environment before running, or edit the
 rem defaults below.
-rem   GRAPHNOSIS_HOME, GRAPHNOSIS_CORTEX, GRAPHNOSIS_HTTP_UI_PORT,
-rem   GRAPHNOSIS_HTTP_UI_TOKEN, GRAPHNOSIS_PASSPHRASE (required to unlock).
+rem   GRAPHNOSIS_HOME, GRAPHNOSIS_STATE, GRAPHNOSIS_CORTEX,
+rem   GRAPHNOSIS_HTTP_UI_PORT, GRAPHNOSIS_HTTP_UI_TOKEN,
+rem   GRAPHNOSIS_PASSPHRASE (required to unlock).
+rem
+rem GRAPHNOSIS_STATE (default %USERPROFILE%\.graphnosis) holds this install's
+rem machine-local files: http-ui-token, passphrase, server.log, the license seed
+rem cache, catalog subscriptions and remote-MCP credentials. `set` below places
+rem it in this process's environment, so the sidecar started further down
+rem inherits it. Note it ALSO defaults the cortex (%GRAPHNOSIS_STATE%\cortex) —
+rem set GRAPHNOSIS_CORTEX explicitly if you want them to differ.
 
 if "%GRAPHNOSIS_HTTP_UI_PORT%"=="" set "GRAPHNOSIS_HTTP_UI_PORT=3456"
 if "%GRAPHNOSIS_STATE%"=="" set "GRAPHNOSIS_STATE=%USERPROFILE%\.graphnosis"

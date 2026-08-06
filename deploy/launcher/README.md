@@ -14,8 +14,10 @@ demand.
 
 Each one: starts the sidecar in the background (if not already running), waits
 for it to answer, and opens your browser to `http://127.0.0.1:3456/?token=…`.
-The access token is generated once and persisted to `~/.graphnosis/http-ui-token`
-(`%USERPROFILE%\.graphnosis` on Windows).
+The access token is generated once and persisted to
+`$GRAPHNOSIS_STATE/http-ui-token` — by default `~/.graphnosis/http-ui-token`
+(`%USERPROFILE%\.graphnosis\http-ui-token` on Windows). See
+[`GRAPHNOSIS_STATE`](#config-all-optional) to put it somewhere else.
 
 ## Requirements
 
@@ -30,7 +32,8 @@ A double-click can't prompt, so the cortex passphrase must be available
 non-interactively:
 
 - set `GRAPHNOSIS_PASSPHRASE` in the environment, **or**
-- put it in `~/.graphnosis/passphrase` with `chmod 600`.
+- put it in `$GRAPHNOSIS_STATE/passphrase` — by default `~/.graphnosis/passphrase`
+  — with `chmod 600`.
 
 Storing a passphrase in plaintext is a **conscious security tradeoff** — same as
 the systemd unit's `GRAPHNOSIS_PASSPHRASE`. Only do it on a machine you trust.
@@ -41,10 +44,20 @@ Without it, the sidecar starts but the cortex stays locked.
 | Var | Default | Meaning |
 |---|---|---|
 | `GRAPHNOSIS_HOME` | two levels above the script | Repo / install root. |
-| `GRAPHNOSIS_CORTEX` | `~/.graphnosis/cortex` | Cortex folder. |
+| `GRAPHNOSIS_STATE` | `~/.graphnosis` (`%USERPROFILE%\.graphnosis`) | Machine-local state folder. Holds `http-ui-token`, `passphrase`, `server.log`, the license seed cache, catalog subscriptions + install state, the MDM catalog bundle, and remote-MCP bearer credentials. Point it somewhere else to run two independent server instances on one host, or to keep server state off `$HOME`. |
+| `GRAPHNOSIS_CORTEX` | see note below | Cortex folder. |
 | `GRAPHNOSIS_HTTP_UI_PORT` | `3456` | Browser-UI port. |
 | `GRAPHNOSIS_HTTP_UI_TOKEN` | generated + persisted | Access token. |
 | `GRAPHNOSIS_PASSPHRASE` | — | Cortex passphrase (see above). |
+
+> **`GRAPHNOSIS_CORTEX` defaults differ by platform when `GRAPHNOSIS_STATE` is
+> relocated.** With `GRAPHNOSIS_STATE` unset both launchers default the cortex to
+> `~/.graphnosis/cortex`. With it set, `graphnosis-server.bat` derives the cortex
+> from it (`%GRAPHNOSIS_STATE%\cortex`) while `graphnosis-server.sh` does not
+> (`$HOME/.graphnosis/cortex`). Set `GRAPHNOSIS_CORTEX` explicitly whenever you
+> relocate the state folder, so the cortex lands where you intend on every
+> platform. Your cortex is your data — the launchers will not move it for you
+> based on a guess.
 
 ## Stopping it
 

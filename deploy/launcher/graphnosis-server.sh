@@ -8,15 +8,37 @@
 #
 # Config (all optional — sensible defaults):
 #   GRAPHNOSIS_HOME            repo/install root (default: two levels above this script)
+#   GRAPHNOSIS_STATE           machine-local state  (default: ~/.graphnosis)
 #   GRAPHNOSIS_CORTEX          cortex folder        (default: ~/.graphnosis/cortex)
 #   GRAPHNOSIS_HTTP_UI_PORT    UI port              (default: 3456)
 #   GRAPHNOSIS_HTTP_UI_TOKEN   access token         (default: generated + persisted)
 #   GRAPHNOSIS_PASSPHRASE      cortex passphrase    (REQUIRED to unlock; see below)
 #
+# GRAPHNOSIS_STATE holds this install's machine-local files: http-ui-token,
+# passphrase and server.log (written by THIS script), plus the license seed
+# cache, catalog subscriptions, MDM bundle and remote-MCP credentials (written
+# by the SIDECAR).
+#
+# It is forwarded EXPLICITLY below so those two halves can never disagree. The
+# script resolves STATE_DIR once; the sidecar is handed that exact string rather
+# than independently re-deriving its own default. Before, the two only agreed by
+# coincidence — and editing the STATE_DIR default here moved the token and the
+# log while silently leaving the sidecar's state in $HOME/.graphnosis.
+#
+# It does NOT rescue a caller that sets GRAPHNOSIS_STATE without exporting it:
+# an unexported shell variable never crosses the process boundary, so this
+# script cannot see it either and both fall back to the default. Export it.
+#
+# NOTE: relocating GRAPHNOSIS_STATE does NOT move the cortex — set
+# GRAPHNOSIS_CORTEX yourself if you want your data to follow. (The Windows .bat
+# does derive the cortex from GRAPHNOSIS_STATE; this script deliberately does
+# not change where an existing cortex is looked for.)
+#
 # Passphrase: a headless launch can't prompt, so the cortex passphrase must come
-# from the environment OR a 0600-perms file at ~/.graphnosis/passphrase. Storing
-# a passphrase in plaintext is a conscious tradeoff (same as the systemd unit) —
-# only do it on a machine you trust.
+# from the environment OR a 0600-perms file at $GRAPHNOSIS_STATE/passphrase
+# (default ~/.graphnosis/passphrase). Storing a passphrase in plaintext is a
+# conscious tradeoff (same as the systemd unit) — only do it on a machine you
+# trust.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -76,6 +98,7 @@ else
   GRAPHNOSIS_HTTP_UI_PORT="$PORT" \
   GRAPHNOSIS_HTTP_UI_TOKEN="$TOKEN" \
   GRAPHNOSIS_CORTEX="$CORTEX" \
+  GRAPHNOSIS_STATE="$STATE_DIR" \
   GRAPHNOSIS_PASSPHRASE="${GRAPHNOSIS_PASSPHRASE:-}" \
   nohup "$NODE_BIN" "$SIDECAR" >"$LOG" 2>&1 &
   # Wait up to ~30s for the UI to answer.
