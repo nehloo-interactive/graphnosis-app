@@ -122,7 +122,7 @@ export interface TrainSkillInput {
    * chunking (see skill-compiler.ts). Reorders into canonical shape, promotes a
    * bullet list into a numbered sequence, and marks unfilled contract fields.
    * Never invents semantics. Default true — it only ever improves shape, and
-   * the previous behaviour (prose in, prose out, 0/8 contract, no warning) was
+   * the previous behavior (prose in, prose out, 0/8 contract, no warning) was
    * the bug this exists to fix.
    */
   scaffold?: boolean;
@@ -426,7 +426,7 @@ function buildMemoryAugmented(memoriesPrompt: string): string[] {
   // Split on blank-line boundaries — every recalled paragraph becomes its
   // own chunk. Filter empties; preserve original phrasing. Tag each with the
   // attribution marker the structured parser (RECALLED_MARKER_RE) uses to
-  // recognise context nodes, so memory-augmented recalls are never
+  // recognize context nodes, so memory-augmented recalls are never
   // mis-classified as procedure steps.
   return cleanMemories.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
     .map((p) => `${p}\n_(from cortex recall)_`);
@@ -1935,7 +1935,7 @@ export class SkillTrainer {
   }
 
   /**
-   * Restore a skill to a prior snapshot. Behaviour:
+   * Restore a skill to a prior snapshot. Behavior:
    *   - `snapshotId` empty / missing  → no-op (the "current" entry was
    *     already current; rolling back to it is meaningless).
    *   - `snapshotId` matches an on-disk snapshot → clear the current
@@ -2127,13 +2127,13 @@ export class SkillTrainer {
 export const SKILL_SEQ_EVIDENCE = 'skill:seq';
 
 /**
- * Synchronise `precedes` directed edges between a skill source's live content
+ * Synchronize `precedes` directed edges between a skill source's live content
  * nodes so the graph always reflects the paragraph order the user sees in the
  * Trained Output editor.
  *
  * Steps:
  *  1. Read live nodeIds for `sourceId` in storage order.
- *  2. Strip metadata comment nodes (they're audit artefacts, not steps).
+ *  2. Strip metadata comment nodes (they're audit artifacts, not steps).
  *  3. Delete all existing `skill:seq` edges that touch any node in the source.
  *  4. Re-add `precedes` edges for each consecutive live pair.
  *
@@ -2581,8 +2581,15 @@ const BRANCH_PATTERNS: RegExp[] = [...BRANCH_EXPLICIT, ...BRANCH_EN, ...BRANCH_R
 // matched the token anywhere — including prose that merely quotes the syntax,
 // e.g. a note reading "cross-skill `@skill:` links are bound at train time" —
 // and captured the remainder of the sentence as a skill name.
+//
+// The hyphen in the name charset is allowed ONLY when it is not the head of an
+// `->` arrow. It used to be unconditional, so `@skill: A -> @skill: B` — the
+// form an author reaches for when one step hands off twice — captured `"A -"`,
+// a name no index can ever hold. The structured pattern above declines that
+// text (its terminator set has no `>`), so the fallback was the only thing
+// looking at it and it produced a permanently dead target.
 const SKILL_CALL_PATTERNS: RegExp[] = [
-  /@skill:\s*([A-Za-z0-9][A-Za-z0-9 _-]*)/i,
+  /@skill:\s*([A-Za-z0-9](?:-(?!>)|[A-Za-z0-9 _])*)/i,
   /\[\[skill:\s*([^\]]+)\]\]/i,
   /\b(?:run|use|apply|follow|execute|invoke)\s+the\s+"?([^"]+?)"?\s+skill\b/i,
   /\b(?:run|use|apply|follow|execute|invoke)\s+"?([^"]+?)"?\s+skill\b/i,
@@ -3008,9 +3015,9 @@ export interface ParsedSkillCall {
 }
 
 /**
- * Parse a node's text for the first structured `@skill:` call.
+ * Parse ONE call out of a text segment — the first match, richest form wins.
  *
- * Supported forms (richest match wins):
+ * Supported forms:
  *   `@skill: name`
  *   `@skill: name -> $capture`
  *   `@skill: name(arg=value, arg=$priorVar)`
@@ -3019,8 +3026,11 @@ export interface ParsedSkillCall {
  * Also matches the natural-language forms `[[skill: name]]` and
  * `use/run/follow/etc. the X skill` — though those don't carry args/capture.
  * Returns null when no call is found.
+ *
+ * Callers want `parseSkillCalls` (every call in a node); this is its per-segment
+ * worker and stays private so there is exactly one place that knows the syntax.
  */
-export function parseSkillCall(text: string): ParsedSkillCall | null {
+function parseOneSkillCall(text: string): ParsedSkillCall | null {
   // Prefer the full structured form. Anchored at start of line/word boundary.
   // Capture groups: 1=target, 2=arg-list (optional), 3=capture (optional)
   const structured = text.match(
@@ -3073,6 +3083,62 @@ export function parseSkillCall(text: string): ParsedSkillCall | null {
     return { target, args: [], explicit: i < EXPLICIT_CALL_PATTERN_COUNT };
   }
   return null;
+}
+
+/** Marker openers for deliberate call syntax, used to split a node into one
+ *  segment per call. `@parallel:` is NOT here — it owns its whole node and is
+ *  parsed by parseParallelCall. */
+const SKILL_CALL_MARKER_RE = /@skill:|\[\[skill:/gi;
+
+/**
+ * EVERY call written in a node, in source order — not just the first.
+ *
+ * A step routinely hands off more than once:
+ *
+ *   3. Route to the owning skill where one exists:
+ *      @skill: docs-maintenance-workflow (reference docs + bundle)
+ *      @skill: website-copy-workflow (landing/marketing copy)
+ *      @skill: changelog-management (changelog entry, at ship time)
+ *
+ * The line grouper stores that whole step as ONE node, and the old
+ * first-match-only parse meant four of those five handoffs were never seen —
+ * no edge, and no unresolved-call warning either, because the walk only
+ * warned when a node resolved ZERO calls. They simply were not there.
+ *
+ * The text is split at each explicit marker and each segment is parsed by the
+ * same worker, so the first target is byte-identical to what the old
+ * single-call parse produced and a segment can never reach past the next
+ * marker to claim a target that belongs to it.
+ *
+ * Natural-language phrasings ("run the X skill") are only consulted when the
+ * node carries NO explicit marker, and are returned with `explicit: false`.
+ * They are a display affordance, never a link: see linkSkillCalls.
+ */
+export function parseSkillCalls(text: string): ParsedSkillCall[] {
+  const starts: number[] = [];
+  SKILL_CALL_MARKER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SKILL_CALL_MARKER_RE.exec(text)) !== null) starts.push(m.index);
+
+  const out: ParsedSkillCall[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const segment = text.slice(starts[i]!, starts[i + 1] ?? text.length);
+    const parsed = parseOneSkillCall(segment);
+    if (parsed?.explicit && parsed.target) out.push(parsed);
+  }
+  if (out.length > 0) return out;
+
+  const nl = parseOneSkillCall(text);
+  return nl && nl.target ? [nl] : [];
+}
+
+/**
+ * The FIRST call in a node, or null. Retained for callers that genuinely want
+ * one — the `On failure:` recovery handler, which carries a single skill by
+ * design. Anything that links or counts calls must use `parseSkillCalls`.
+ */
+export function parseSkillCall(text: string): ParsedSkillCall | null {
+  return parseSkillCalls(text)[0] ?? null;
 }
 
 /** Encode parsed call metadata into the edge `evidence` string.
@@ -3144,6 +3210,79 @@ export function parseParallelCall(text: string): ParsedParallelCall | null {
     members.push({ target, args, ...(cap ? { captureAs: cap } : {}) });
   });
   return members.length > 0 ? { members } : null;
+}
+
+// ── Target-name matching ─────────────────────────────────────────────────────
+
+/**
+ * Words that are never a skill name, and must never reach the substring tier.
+ *
+ * This is not hypothetical tidying. `in-chat-skill-dispatch` step 8 reads "run
+ * the skill's On-failure handler exactly once" — ordinary prose, no `@skill:`
+ * anywhere in it. The natural-language pattern `run …the… skill` captured the
+ * target `"the"`, substring-matched it against every indexed name containing
+ * those three letters, took the longest, and persisted a cross-engram call into
+ * `graphnosis-trained-skills` pointing at a node whose text begins "DEPENDENCY
+ * ORDER (always release in this sequence)". The walk showed it as a real
+ * sub-skill call. Two guards close it: prose no longer creates edges at all
+ * (see linkSkillCalls), and a name this weak cannot match by substring.
+ */
+const CALL_TARGET_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'it', 'its', 'this', 'that', 'then', 'them',
+  'one', 'next', 'same', 'other', 'others', 'above', 'below', 'following',
+  'step', 'steps', 'skill', 'skills', 'any', 'each', 'all', 'new', 'own',
+]);
+
+/** Shortest name allowed to match by substring. Exact matches are exempt — a
+ *  genuinely 3-character skill still resolves, it just has to be named
+ *  precisely. */
+const MIN_SUBSTRING_MATCH_LEN = 4;
+
+/**
+ * How well a written target names an indexed skill: 0 = exact, 1 = substring,
+ * null = no match. Lower wins, and EXACT ALWAYS BEATS SUBSTRING — that ordering
+ * is the fix. The matcher used to be substring-only with a longest-name
+ * tiebreak, so an unrelated skill whose title merely contained the target could
+ * outrank the skill actually named.
+ *
+ * Exactness is judged on the normalized key (`skillNameMatchKey`), which folds
+ * case, punctuation, and the trailing `(trained YYYY-MM-DD)` stamp. Titles are
+ * stored WITH that stamp, so before normalization a bare `@skill: runtime-
+ * diagnosis` could only ever reach its target through the substring tier and
+ * competed on length with every other title containing those characters.
+ */
+function skillCallMatchRank(target: string, candidateName: string): 0 | 1 | null {
+  const t = target.trim().toLowerCase();
+  const c = candidateName.trim().toLowerCase();
+  if (!t || !c) return null;
+  if (t === c) return 0;
+
+  const tKey = skillNameMatchKey(t);
+  const cKey = skillNameMatchKey(c);
+  if (tKey && tKey === cKey) return 0;
+
+  // Substring tier — deliberately narrow. Everything below this line is a
+  // guess, and a wrong guess here becomes a persisted, dispatchable edge.
+  if (CALL_TARGET_STOPWORDS.has(tKey)) return null;
+  if (tKey.length < MIN_SUBSTRING_MATCH_LEN || cKey.length < MIN_SUBSTRING_MATCH_LEN) return null;
+  if (t.includes(c) || c.includes(t)) return 1;
+  return null;
+}
+
+/** Best entry for a target: the exact match if any exists, otherwise the
+ *  longest substring match (the linkers' historical tiebreak, kept so a name
+ *  that resolves today and has no exact match keeps resolving the same way). */
+function pickSkillMatch<T>(entries: readonly T[], nameOf: (e: T) => string, target: string): T | null {
+  let exact: T | null = null;
+  let substring: T | null = null;
+  let substringLen = 0;
+  for (const e of entries) {
+    const name = nameOf(e);
+    const rank = skillCallMatchRank(target, name);
+    if (rank === 0) { if (!exact) exact = e; }
+    else if (rank === 1 && name.length > substringLen) { substringLen = name.length; substring = e; }
+  }
+  return exact ?? substring;
 }
 
 // ── linkSkillCalls ────────────────────────────────────────────────────────────
@@ -3230,15 +3369,18 @@ export async function linkSkillCalls(
 
   const batch: Array<{ from: string; to: string; type: 'contains'; weight: number; evidence: string }> = [];
 
-  const resolveTarget = (captured: string): SkillRef | null => {
-    let best: SkillRef | null = null;
-    let bestLen = 0;
-    for (const ref of skillIndex) {
-      if (captured.includes(ref.name) || ref.name.includes(captured)) {
-        if (ref.name.length > bestLen) { bestLen = ref.name.length; best = ref; }
-      }
-    }
-    return best;
+  const resolveTarget = (captured: string): SkillRef | null =>
+    pickSkillMatch(skillIndex, (r) => r.name, captured);
+
+  /** Guard against emitting the identical edge twice when a node repeats an
+   *  annotation verbatim. Distinct arg/capture forms of the same target keep
+   *  their own edges — the evidence string differs, so they are distinct calls. */
+  const seenEdges = new Set<string>();
+  const pushEdge = (from: string, to: string, evidence: string): void => {
+    const key = `${from} -> ${to} :: ${evidence}`;
+    if (seenEdges.has(key)) return;
+    seenEdges.add(key);
+    batch.push({ from, to, type: 'contains', weight: 0.95, evidence });
   };
 
   for (const node of liveNodes) {
@@ -3249,36 +3391,34 @@ export async function linkSkillCalls(
       for (const member of parallel.members) {
         const target = resolveTarget(member.target);
         if (!target) continue;
-        batch.push({
-          from: node.id,
-          to: target.titleNodeId,
-          type: 'contains',
-          weight: 0.95,
-          evidence: encodeCallEvidence(
+        pushEdge(
+          node.id,
+          target.titleNodeId,
+          encodeCallEvidence(
             { target: member.target, args: member.args, ...(member.captureAs ? { captureAs: member.captureAs } : {}), explicit: true },
             { parallel: true },
           ),
-        });
+        );
       }
       continue;
     }
 
-    const parsed = parseSkillCall(node.content);
-    if (!parsed || !parsed.target) continue;
-    const target = resolveTarget(parsed.target);
-    if (!target) continue;
-
     // Detect whether this node is an `On failure:` goal (cross-skill recovery)
     const isFailureGoal = /^On failure:/i.test(node.content.trim());
-    const evidence = encodeCallEvidence(parsed, { onFailure: isFailureGoal });
 
-    batch.push({
-      from: node.id,
-      to: target.titleNodeId,
-      type: 'contains',
-      weight: 0.95,
-      evidence,
-    });
+    // ONE EDGE PER ANNOTATION. This loop used to be a single parse and a single
+    // edge, so a step that named five sub-skills compiled one and discarded the
+    // rest in silence.
+    for (const parsed of parseSkillCalls(node.content)) {
+      // PROSE IS NOT A CALL. A natural-language match ("run the X skill") may
+      // still be surfaced for display, but it must never become a persisted,
+      // dispatchable edge: those matches are how an ordinary sentence acquired
+      // a sub-skill it never asked for.
+      if (!parsed.explicit || !parsed.target) continue;
+      const target = resolveTarget(parsed.target);
+      if (!target) continue;
+      pushEdge(node.id, target.titleNodeId, encodeCallEvidence(parsed, { onFailure: isFailureGoal }));
+    }
   }
 
   let createdCount = 0;
@@ -3327,17 +3467,11 @@ function buildSkillIndex(host: GraphnosisHost, graphId: string, excludeSourceId?
   return out;
 }
 
-/** Longest-match resolve a target name against a skill index (same heuristic as
- *  linkSkillCalls.resolveTarget). */
+/** Resolve a target name against a skill index — exact first, then longest
+ *  substring (same matcher as linkSkillCalls.resolveTarget, so intra- and
+ *  cross-engram resolution can never disagree about a name). */
 function resolveInIndex(index: SkillIndexEntry[], target: string): SkillIndexEntry | null {
-  let best: SkillIndexEntry | null = null;
-  let bestLen = 0;
-  for (const e of index) {
-    if (target.includes(e.matchName) || e.matchName.includes(target)) {
-      if (e.matchName.length > bestLen) { bestLen = e.matchName.length; best = e; }
-    }
-  }
-  return best;
+  return pickSkillMatch(index, (e) => e.matchName, target);
 }
 
 /**
@@ -3376,12 +3510,19 @@ export async function linkCrossEngramCalls(
     // QUARANTINE CONTRACT: a cross-engram `@skill:` reference must NEVER resolve
     // INTO a quarantined (imported-but-unpromoted) engram — that would make an
     // un-adjudicated skill reachable via dispatch. Routed through host.isQuarantined.
-    .filter((g) => g !== callerGraphId && !host.isQuarantined(g))
+    // DISABLED-AGENT CONTRACT: the same refusal for an agent whose owner flipped
+    // the OFF switch — its skills are inert, so a link INTO it must never be
+    // persisted. Routed through host.skillsDisabled, the counterpart predicate.
+    .filter((g) => g !== callerGraphId && !host.isQuarantined(g) && !host.skillsDisabled(g))
     .map((g) => ({ graphId: g, index: buildSkillIndex(host, g) }));
 
   const links: SkillCallLink[] = [];
+  const seenLinks = new Set<string>();
   const record = (nodeId: string, targetName: string, args: string[], captureAs: string | undefined, onFailure: boolean, parallel: boolean): void => {
     if (resolveInIndex(ownIndex, targetName)) return; // same-engram → intra-graph edge already handles it
+    const dedupeKey = `${nodeId} ${targetName} ${args.join(',')} ${captureAs ?? ''} ${onFailure} ${parallel}`;
+    if (seenLinks.has(dedupeKey)) return;
+    seenLinks.add(dedupeKey);
     for (const oi of otherIndices) {
       const hit = resolveInIndex(oi.index, targetName);
       if (hit) {
@@ -3401,15 +3542,281 @@ export async function linkCrossEngramCalls(
       for (const m of parallel.members) record(node.id, m.target, m.args, m.captureAs, false, true);
       continue;
     }
-    const parsed = parseSkillCall(node.content);
-    if (parsed?.target) {
-      const isFailure = /^On failure:/i.test(node.content.trim());
+    const isFailure = /^On failure:/i.test(node.content.trim());
+    // Every annotation, and ONLY the deliberate ones — same two rules as
+    // linkSkillCalls. A cross-engram link is the most dangerous thing prose can
+    // conjure: it reaches into another engram and the walk dispatches it.
+    for (const parsed of parseSkillCalls(node.content)) {
+      if (!parsed.explicit || !parsed.target) continue;
       record(node.id, parsed.target, parsed.args, parsed.captureAs, isFailure, false);
     }
   }
 
   await store.setForSource(callerGraphId, callerSourceId, links);
   return { crossLinks: links.length };
+}
+
+// ── Unresolved-call detection (lint) ─────────────────────────────────────────
+
+/**
+ * Every EXPLICIT sub-skill target written in a node — not just the first.
+ *
+ * `parseSkillCall` deliberately returns only the richest FIRST match, and
+ * `linkSkillCalls` emits at most one edge per node from it. So a node carrying
+ * two `@skill:` annotations silently loses the second: no edge, and no
+ * `unresolvedCall` either, because the walk only computes that when a node
+ * resolved ZERO calls. This helper is the counting side of that comparison —
+ * it exists so lint can hold PARSED against RESOLVED per node and see the gap.
+ *
+ * Only deliberate call syntax counts (`@skill:`, `[[skill: …]]`, `@parallel:`).
+ * The natural-language fallbacks ("run the X skill") are excluded: prose that
+ * merely mentions a skill is not a call, and reporting it produced phantom
+ * unresolved entries on ordinary sentences.
+ */
+export function parseExplicitSkillCalls(text: string): string[] {
+  // Mirror linkSkillCalls: a `@parallel:` group owns the node, and any
+  // `@skill:` on the same node is ignored by the linker.
+  const parallel = parseParallelCall(text);
+  if (parallel) return parallel.members.map((m) => m.target).filter(Boolean);
+
+  // `parseSkillCalls` is now the linker's own parse, so lint counts exactly
+  // what training acts on rather than a parallel re-implementation of it.
+  return parseSkillCalls(text).filter((c) => c.explicit).map((c) => c.target).filter(Boolean);
+}
+
+/** Why one `@skill:` target failed to resolve. The three classes need three
+ *  DIFFERENT fixes, so lint must never collapse them into "unresolved". */
+export type SkillCallLintKind =
+  /** No skill by that name exists in any reachable engram — a typo, or the
+   *  target was deleted. Fix: correct the annotation, or retrain the target. */
+  | 'unknown-target'
+  /** A real skill matches the name, but nothing records the call: no
+   *  `skill:calls` edge, no cross-engram link. Resolution happens at TRAIN
+   *  time, so a missing edge is missing state that no read recomputes. This is
+   *  the stale-edge class. Fix: relink (retrain the caller). */
+  | 'missing-edge'
+  /** The node resolved at least one call but carries MORE explicit
+   *  annotations than the store holds calls for: the extra annotation was
+   *  dropped at train time with no warning, back when `linkSkillCalls` emitted
+   *  at most one edge per node.
+   *
+   *  That cap is gone — the linker now emits an edge per annotation — so this
+   *  class is now REPAIRABLE BY RELINK, exactly like 'missing-edge'. It stays a
+   *  distinct kind because it describes a different state (partially bound, not
+   *  wholly unbound) and because a cortex whose sidecar predates the fix will
+   *  keep re-creating it on every retrain. */
+  | 'silent-drop'
+  /** The only match sits in a quarantined (imported, unpromoted) engram, which
+   *  cross-engram resolution deliberately refuses to enter. Fix: promote the
+   *  import — NOT a retrain, and NOT a typo. */
+  | 'quarantined-target'
+  /** The only match sits in an agent whose skills are switched OFF
+   *  (`GraphMetadata.skillsDisabled`), which cross-engram resolution refuses to
+   *  enter for the same reason it refuses quarantine. Nothing is broken here:
+   *  the name is right and the caller is correctly linked-or-not — the agent is
+   *  simply inert. Fix: enable the agent — a retrain would relink nothing,
+   *  because the target is excluded from the resolution universe either way. */
+  | 'disabled-target';
+
+export interface SkillCallLintFinding {
+  nodeId: string;
+  /** The target name as parsed (lowercased), exactly as the linker saw it. */
+  target: string;
+  kind: SkillCallLintKind;
+  /** Leading text of the calling step, for locating it in the body. */
+  nodeExcerpt: string;
+  /** Where the named skill actually lives — set for every kind except
+   *  'unknown-target'. This is what makes "relink" vs "fix the typo"
+   *  distinguishable in the report. */
+  foundIn?: { graphId: string; sourceId: string; title: string };
+}
+
+export interface SkillCallLintReport {
+  graphId: string;
+  sourceId: string;
+  /** Explicit targets written in the skill's live nodes. */
+  parsed: number;
+  /** Of those, how many are backed by a persisted edge or cross-engram link. */
+  resolved: number;
+  findings: SkillCallLintFinding[];
+}
+
+/**
+ * Report every explicit `@skill:` target in one skill that PARSES but does not
+ * RESOLVE, classified by what would actually fix it.
+ *
+ * Read-only: it inspects the same persisted state the walk reads (intra-graph
+ * `skill:calls` edges + the cross-engram side-table) and never writes.
+ *
+ * Resolution is deliberately performed with the SAME index and matcher
+ * `linkSkillCalls` / `linkCrossEngramCalls` use, so lint and training can never
+ * disagree about whether a name is resolvable — the same reason the body
+ * checks score through `assessAgempus` rather than a private heuristic.
+ */
+export async function lintSkillCalls(
+  host: GraphnosisHost,
+  store: SkillCallLinkStore,
+  graphId: string,
+  sourceId: string,
+  candidateGraphIds: string[],
+): Promise<SkillCallLintReport> {
+  const empty: SkillCallLintReport = { graphId, sourceId, parsed: 0, resolved: 0, findings: [] };
+  const src = host.getSourceRecord(graphId, sourceId);
+  if (!src) return empty;
+
+  const now = Date.now();
+  const nodeMap = new Map(host.listNodes(graphId).map((n) => [n.id, n]));
+  const liveNodes = src.nodeIds
+    .filter((id) => {
+      const n = nodeMap.get(id);
+      return n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now)
+        && !n.contentPreview.trimStart().startsWith('<!--');
+    })
+    .map((id) => ({ id, content: host.getFullNodeContent(graphId, id) ?? nodeMap.get(id)!.contentPreview }));
+  if (liveNodes.length === 0) return empty;
+
+  // ── Resolution universe, identical to the linkers' ──────────────────────
+  const ownIndex = buildSkillIndex(host, graphId, sourceId);
+  const reachable = candidateGraphIds
+    .filter((g) => g !== graphId && !host.isQuarantined(g) && !host.skillsDisabled(g))
+    .map((g) => ({ graphId: g, index: buildSkillIndex(host, g) }));
+  // Quarantined engrams are NOT reachable, but a name that matches only there
+  // is a promote problem, not a typo — so track them separately rather than
+  // letting the target fall through to 'unknown-target'.
+  const quarantined = candidateGraphIds
+    .filter((g) => g !== graphId && host.isQuarantined(g))
+    .map((g) => ({ graphId: g, index: buildSkillIndex(host, g) }));
+  // Disabled agents are NOT reachable either, and a name that matches only
+  // there is an OFF-SWITCH problem — sending the owner to retrain or to fix a
+  // typo would be wrong twice over. Quarantine wins the label when an engram is
+  // both: adjudicating the import is the first decision, enabling it the second.
+  const disabled = candidateGraphIds
+    .filter((g) => g !== graphId && !host.isQuarantined(g) && host.skillsDisabled(g))
+    .map((g) => ({ graphId: g, index: buildSkillIndex(host, g) }));
+
+  type Hit = { graphId: string; sourceId: string; title: string; matchName: string };
+  const collect = (
+    scopes: Array<{ graphId: string; index: SkillIndexEntry[] }>,
+    target: string,
+  ): Hit[] => {
+    const out: Hit[] = [];
+    for (const s of scopes) {
+      for (const e of s.index) {
+        // Same predicate resolveInIndex uses — only the tiebreak differs.
+        if (skillCallMatchRank(target, e.matchName) !== null) {
+          out.push({ graphId: s.graphId, sourceId: e.sourceId, title: e.title, matchName: e.matchName });
+        }
+      }
+    }
+    return out;
+  };
+  /** The entry to POINT AT in the report. `resolveInIndex` breaks ties by
+   *  longest match name, which lets an unrelated skill whose indexed name
+   *  merely CONTAINS the target win — so prefer an exact name match when one
+   *  exists, and fall back to the linker's own tiebreak otherwise. This only
+   *  affects which skill lint names in `foundIn`; the linker is untouched. */
+  const pickFor = (hits: Hit[], targetName: string): Hit | null => {
+    if (hits.length === 0) return null;
+    return hits.find((h) => skillCallMatchRank(targetName, h.matchName) === 0)
+      ?? hits.reduce((a, b) => (b.matchName.length > a.matchName.length ? b : a));
+  };
+  const ownScope = [{ graphId, index: ownIndex }];
+  /** `blocked` names the REFUSAL that kept an otherwise-findable target out of
+   *  the resolution universe — it is the lint kind verbatim, so classification
+   *  below never has to re-derive which boundary was hit. */
+  const resolveAnywhere = (targetName: string): { hits: Hit[]; best: Hit; blocked: null | 'quarantined-target' | 'disabled-target' } | null => {
+    // Own engram first, then other reachable engrams — the order
+    // linkSkillCalls / linkCrossEngramCalls resolve in.
+    const near = [...collect(ownScope, targetName), ...collect(reachable, targetName)];
+    const best = pickFor(near, targetName);
+    if (best) return { hits: near, best, blocked: null };
+    const held = collect(quarantined, targetName);
+    const heldBest = pickFor(held, targetName);
+    if (heldBest) return { hits: held, best: heldBest, blocked: 'quarantined-target' };
+    const off = collect(disabled, targetName);
+    const offBest = pickFor(off, targetName);
+    if (offBest) return { hits: off, best: offBest, blocked: 'disabled-target' };
+    return null;
+  };
+
+  // ── Persisted state, exactly what walkSkillSequence reads ───────────────
+  const nodeSet = new Set(liveNodes.map((n) => n.id));
+  const { directed } = host.listEdges(graphId);
+  const allSources = host.listSources(graphId);
+  /** node id → target sourceIds the store actually holds a call for. Treated as
+   *  a MULTISET and consumed one per matched annotation, so a node with two
+   *  annotations and one edge shows the second as dropped. */
+  const persisted = new Map<string, string[]>();
+  const push = (nodeId: string, targetSourceId: string): void => {
+    const arr = persisted.get(nodeId) ?? [];
+    arr.push(targetSourceId);
+    persisted.set(nodeId, arr);
+  };
+  for (const e of directed) {
+    if (!e.evidence?.startsWith(SKILL_CALLS_EVIDENCE) || !nodeSet.has(e.from)) continue;
+    const owner = allSources.find((s) => s.nodeIds.includes(e.to));
+    if (owner) push(e.from, owner.sourceId);
+  }
+  for (const link of await store.getForSource(graphId, sourceId)) {
+    if (nodeSet.has(link.callerNodeId)) push(link.callerNodeId, link.targetSourceId);
+  }
+
+  const findings: SkillCallLintFinding[] = [];
+  let parsedTotal = 0;
+  let resolvedTotal = 0;
+
+  for (const node of liveNodes) {
+    const targets = parseExplicitSkillCalls(node.content);
+    if (targets.length === 0) continue;
+    parsedTotal += targets.length;
+
+    const remaining = [...(persisted.get(node.id) ?? [])];
+    // PASS 1 — match every annotation against the persisted calls first, so
+    // classification never depends on the order the annotations appear in.
+    //
+    // A persisted call counts for an annotation when it points at ANY skill the
+    // name matches — not only the one today's tiebreak would pick. An edge
+    // written by an earlier training run against a slightly different index is
+    // still a recorded call; the question here is "is this call bound?", not
+    // "would the matcher re-derive the same winner?".
+    const unmatched: Array<{ target: string; resolved: ReturnType<typeof resolveAnywhere> }> = [];
+    for (const target of targets) {
+      const r = resolveAnywhere(target);
+      // A blocked target (quarantined / disabled) can still have a persisted
+      // call pointing at it from before the boundary went up — but it is NOT
+      // resolvable today, so it must not count as resolved.
+      const idx = r && !r.blocked
+        ? remaining.findIndex((sid) => r.hits.some((h) => h.sourceId === sid))
+        : -1;
+      if (idx >= 0) { remaining.splice(idx, 1); resolvedTotal++; continue; }
+      unmatched.push({ target, resolved: r });
+    }
+    // PASS 2 — classify the leftovers. A node that resolved something and still
+    // has leftovers is the one-call-per-node cap; a node that resolved nothing
+    // is missing state.
+    const nodeResolvedSomething = remaining.length < (persisted.get(node.id) ?? []).length;
+    const excerpt = node.content.trim().replace(/\s+/g, ' ').slice(0, 120);
+    for (const u of unmatched) {
+      const kind: SkillCallLintKind = !u.resolved
+        ? 'unknown-target'
+        : u.resolved.blocked
+          ? u.resolved.blocked
+          : nodeResolvedSomething
+            ? 'silent-drop'
+            : 'missing-edge';
+      findings.push({
+        nodeId: node.id,
+        target: u.target,
+        kind,
+        nodeExcerpt: excerpt,
+        ...(u.resolved
+          ? { foundIn: { graphId: u.resolved.best.graphId, sourceId: u.resolved.best.sourceId, title: u.resolved.best.title } }
+          : {}),
+      });
+    }
+  }
+
+  return { graphId, sourceId, parsed: parsedTotal, resolved: resolvedTotal, findings };
 }
 
 /**
@@ -3550,9 +3957,11 @@ export interface StepNode {
   index: number;
   isBranchPoint: boolean;
   isLoopBack: boolean;
-  /** Resolved sub-skill call. `targetGraphId` is set only for a cross-engram
-   *  call (D1 — target lives in another engram, resolved via the side-table);
-   *  absent for same-engram calls. */
+  /** FIRST resolved sub-skill call — the historical single-call view, kept so
+   *  existing consumers keep working. A step may name several; read
+   *  `callsSkills` to see all of them. `targetGraphId` is set only for a
+   *  cross-engram call (D1 — target lives in another engram, resolved via the
+   *  side-table); absent for same-engram calls. */
   callsSkill?: {
     targetSourceId: string;
     targetTitle: string;
@@ -3562,6 +3971,17 @@ export interface StepNode {
     /** Variable name to store the call's return under (from `-> $capture`). */
     captureAs?: string;
   };
+  /** EVERY resolved sequential sub-skill call, in source order — invoke them in
+   *  order. Present whenever there is at least one; `callsSkill` is its first
+   *  element. A step that hands off three times is three calls, and the walk
+   *  used to expose only the first because only the first was ever linked. */
+  callsSkills?: Array<{
+    targetSourceId: string;
+    targetTitle: string;
+    targetGraphId?: string;
+    args: string[];
+    captureAs?: string;
+  }>;
   /** Resolved concurrent sub-skill calls (D4 — from `@parallel: [a, b] -> [$x,
    *  $y]`). When present, the executor dispatches all members concurrently.
    *  Mutually exclusive with callsSkill. Members may be cross-engram (D1). */
@@ -3572,10 +3992,30 @@ export interface StepNode {
     args: string[];
     captureAs?: string;
   }>;
-  /** Skill-call reference text that did not resolve to any existing skill.
-   *  Surfaces in the JSON plan so the AI executor knows there's an
-   *  unfulfillable reference (sub-skill not found / typo / cross-engram). */
+  /** FIRST unresolved skill-call reference — the historical single-value view.
+   *  Read `unresolvedCalls` for all of them. */
   unresolvedCall?: string;
+  /** EVERY skill-call reference in this step that no persisted call backs.
+   *  Surfaces in the JSON plan so the AI executor knows there's an
+   *  unfulfillable reference (sub-skill not found / typo / cross-engram).
+   *
+   *  Previously computed only when a step resolved ZERO calls, so a step whose
+   *  FIRST annotation resolved reported nothing about the rest — the silent
+   *  half of the one-call-per-node cap. */
+  unresolvedCalls?: string[];
+  /** Cross-engram calls this step SKIPS because the target agent's skills are
+   *  switched off (`GraphMetadata.skillsDisabled`). They resolved — the link is
+   *  intact and the name is right — they just will not run, so they appear here
+   *  instead of in `callsSkills` / `parallelCalls`, and NEVER in
+   *  `unresolvedCalls`: the fix is the owner's OFF switch, not a retrain.
+   *
+   *  An executor must skip these steps and say why; the walk itself is not
+   *  failed, so one disabled agent cannot brick every skill that calls it. */
+  disabledCalls?: Array<{
+    targetSourceId: string;
+    targetTitle: string;
+    targetGraphId: string;
+  }>;
 }
 
 export interface FailureHandler {
@@ -3611,11 +4051,60 @@ export interface WalkedSkill {
 const RECALLED_MARKER_RE = /_\(from [^)]+\)_\s*$/;
 
 /**
+ * Map whatever a caller is holding for a skill onto its CANONICAL sourceId,
+ * or null if it names nothing in this engram.
+ *
+ * A skill has two public identifiers and callers legitimately arrive with
+ * either one:
+ *   1. `skill:<24-hex>`             — the canonical sourceId. `makeSourceId`
+ *                                     hashes (kind, ref), so this is what
+ *                                     `sourceIndex` is keyed by.
+ *   2. `skill:<timestamp>:<name>`   — the source REF. This is the string every
+ *                                     human-readable surface prints, the one
+ *                                     `baseSkillName` exists to normalize, and
+ *                                     the one an AI client copies back out of a
+ *                                     label it just read.
+ *
+ * `getSourceRecord` is a strict Map.get on (1). Handing it (2) returns
+ * undefined — which reads downstream as "this skill has nothing in it" rather
+ * than "I could not find this skill" (AG.31). Resolving here means the walk and
+ * everything that pre-loads state alongside it agree on ONE id.
+ *
+ * The two-pass shape (canonical id, then exact ref) is the strategy already
+ * established by `recall_source`'s tolerant resolver in mcp-server.ts — see the
+ * comment there for why AI clients pass refs in the first place. This is a
+ * separate, skill-scoped implementation rather than a call into that one: it
+ * lives below the MCP layer so in-process walkers get it too, and it must not
+ * inherit that resolver's truncated-prefix pass, which can pick a source the
+ * caller did not name.
+ *
+ * PASS 1 IS KIND-AGNOSTIC ON PURPOSE. It is exactly today's lookup, so nothing
+ * that resolves now stops resolving. Only the ref fallback is restricted to
+ * `kind === 'skill'`, so a clip that happens to share a skill's ref can never
+ * be walked as one.
+ */
+export function resolveSkillSourceId(
+  host: GraphnosisHost,
+  graphId: string,
+  idOrRef: string,
+): string | null {
+  if (host.getSourceRecord(graphId, idOrRef)) return idOrRef;
+  const byRef = host.listSources(graphId)
+    .find((s) => s.kind === 'skill' && s.ref === idOrRef);
+  return byRef ? byRef.sourceId : null;
+}
+
+/**
  * Walk a skill source as an SOP, returning steps in source order annotated
  * with loop, branch, and sub-skill metadata derived from the edge graph.
  *
  * The linear chain is always reconstructed from `nodeIds` source order
  * (not by traversing edges), so loop back-edges never cause infinite recursion.
+ *
+ * `sourceId` may be the canonical id or the source ref — see
+ * `resolveSkillSourceId`. Callers that ALSO pre-load per-source state (cross-
+ * engram call links, cited-node persistence) must resolve it themselves first,
+ * so their lookups key off the same id this one walks.
  */
 export function walkSkillSequence(
   host: GraphnosisHost,
@@ -3623,7 +4112,8 @@ export function walkSkillSequence(
   sourceId: string,
   opts: { recursive?: boolean; crossEngramLinks?: SkillCallLink[] } = {},
 ): WalkedSkill {
-  const src = host.getSourceRecord(graphId, sourceId);
+  const resolvedId = resolveSkillSourceId(host, graphId, sourceId);
+  const src = resolvedId ? host.getSourceRecord(graphId, resolvedId) : undefined;
   if (!src) return { steps: [], goals: [], contextNodes: [], loops: [], branches: [], failureHandlers: [] };
 
   const now = Date.now();
@@ -3714,7 +4204,22 @@ export function walkSkillSequence(
 
   // Cross-engram side-table hits (D1) scoped to this caller node. These carry a
   // targetGraphId; in-engram edge calls don't.
-  const crossLinks = opts.crossEngramLinks ?? [];
+  //
+  // DISABLED-AGENT CONTRACT, walk half. `linkCrossEngramCalls` already refuses
+  // to PERSIST a link into a disabled agent, but that only bites on the caller's
+  // NEXT retrain — links written before the owner flipped the switch keep
+  // dispatching until someone retrains, so without this second check the OFF
+  // switch would not take effect when it is flipped.
+  //
+  // PARTITION, not filter, for two reasons. The step is SKIPPED and the cause is
+  // named (`disabledCalls`) rather than failing the walk: one switched-off
+  // utility agent must not brick every skill across the cortex that calls it.
+  // And dropping the link outright would be worse than silent — the call would
+  // reappear as an `unresolvedCall`, sending the owner to hunt a typo or retrain
+  // to relink, when the only fix is the switch.
+  const allCrossLinks = opts.crossEngramLinks ?? [];
+  const crossLinks     = allCrossLinks.filter((l) => !host.skillsDisabled(l.targetGraphId));
+  const disabledLinks  = allCrossLinks.filter((l) =>  host.skillsDisabled(l.targetGraphId));
   interface UnifiedCall { targetSourceId: string; targetTitle: string; args: string[]; captureAs?: string; parallel: boolean; targetGraphId?: string }
 
   const steps: StepNode[] = bodyIds.map((id, i) => {
@@ -3728,19 +4233,51 @@ export function walkSkillSequence(
       ...(l.captureAs ? { captureAs: l.captureAs } : {}), parallel: l.parallel, targetGraphId: l.targetGraphId,
     }));
     const calls: UnifiedCall[] = [...inEngram, ...cross];
+    // Resolved, but inert: reported on the step, never dispatched. Sequential or
+    // parallel makes no difference — a disabled agent runs neither.
+    const skippedDisabled = disabledLinks.filter((l) => l.callerNodeId === id);
     const parallelMembers = calls.filter((c) => c.parallel);
-    const single = calls.find((c) => !c.parallel);
-    // Detect unresolved calls: text references a sub-skill (@skill: or
-    // @parallel:) but neither an edge nor a cross-engram link resolved.
-    const parsedFromText = parseSkillCall(text);
-    const parsedParallel = parseParallelCall(text);
+    const sequentialCalls = calls.filter((c) => !c.parallel);
+    const single = sequentialCalls[0];
+
+    // ── Unresolved detection ────────────────────────────────────────────
     // Only DELIBERATE call syntax can be "unresolved". A step that merely
     // mentions a skill in prose ("run the retrain queue skill later") is not a
     // call, and reporting it made ordinary sentences look like broken links.
-    const unresolvedName = calls.length === 0
-      ? (parsedParallel?.members[0]?.target
-        ?? (parsedFromText?.explicit ? parsedFromText.target : undefined))
-      : undefined;
+    //
+    // The comparison is PARSED COUNT vs RESOLVED COUNT. The old test was
+    // `calls.length === 0`, which asked only "did this step bind anything?" —
+    // so a step naming five sub-skills and binding one reported a clean bill of
+    // health for the four that were dropped.
+    const parsedParallel = parseParallelCall(text);
+    const explicitTargets = parsedParallel
+      ? parsedParallel.members.map((m) => m.target).filter(Boolean)
+      : parseSkillCalls(text).filter((c) => c.explicit).map((c) => c.target).filter(Boolean);
+
+    // Never report more than the arithmetic gap. Which annotation went
+    // unbound is inferred by matching names against resolved titles, but that
+    // inference can be wrong (a title may be worded unlike its own name), while
+    // the COUNT cannot be: N annotations against M persisted calls leaves
+    // exactly N-M unbacked. Capping at the gap keeps a resolved call from ever
+    // being reported as broken.
+    //
+    // A skipped disabled call is BOUND, not unresolved — the annotation found
+    // its skill. It counts against the gap and claims its own name in the match
+    // pass, so a step calling one disabled agent and one typo'd name reports the
+    // typo, not whichever of the two happened to be written first.
+    const gap = explicitTargets.length - calls.length - skippedDisabled.length;
+    let unresolvedNames: string[] = [];
+    if (gap > 0) {
+      const unclaimed = [...calls.map((c) => c.targetTitle), ...skippedDisabled.map((l) => l.targetTitle)];
+      const unmatched: string[] = [];
+      for (const target of explicitTargets) {
+        const idx = unclaimed.findIndex((title) => skillCallMatchRank(target, title) !== null);
+        if (idx >= 0) unclaimed.splice(idx, 1);
+        else unmatched.push(target);
+      }
+      unresolvedNames = (unmatched.length >= gap ? unmatched : explicitTargets).slice(0, gap);
+    }
+    const unresolvedName = unresolvedNames[0];
     return {
       nodeId: id,
       text,
@@ -3763,8 +4300,23 @@ export function walkSkillSequence(
           ...(single.captureAs ? { captureAs: single.captureAs } : {}),
           ...(single.targetGraphId ? { targetGraphId: single.targetGraphId } : {}),
         },
+        callsSkills: sequentialCalls.map((c) => ({
+          targetSourceId: c.targetSourceId,
+          targetTitle: c.targetTitle,
+          args: c.args,
+          ...(c.captureAs ? { captureAs: c.captureAs } : {}),
+          ...(c.targetGraphId ? { targetGraphId: c.targetGraphId } : {}),
+        })),
       } : {}),
       ...(unresolvedName ? { unresolvedCall: unresolvedName } : {}),
+      ...(unresolvedNames.length > 0 ? { unresolvedCalls: unresolvedNames } : {}),
+      ...(skippedDisabled.length > 0 ? {
+        disabledCalls: skippedDisabled.map((l) => ({
+          targetSourceId: l.targetSourceId,
+          targetTitle: l.targetTitle,
+          targetGraphId: l.targetGraphId,
+        })),
+      } : {}),
     };
   });
 
@@ -3919,14 +4471,12 @@ export function formatSkillForRecall(walked: WalkedSkill): string {
       for (const ctx of walked.contextNodes) {
         if (ctx.anchorStepIndex === step.index) lines.push(`    → Context: ${ctx.text}`);
       }
-      if (step.callsSkill) {
-        const argsPart = step.callsSkill.args.length > 0
-          ? ` with $${step.callsSkill.args.join(', $')}`
-          : '';
-        const capturePart = step.callsSkill.captureAs
-          ? `, capture result as $${step.callsSkill.captureAs}`
-          : '';
-        lines.push(`    → INVOKES SKILL: ${step.callsSkill.targetTitle}${argsPart}${capturePart}`);
+      // Every call the step makes, in order — a step that hands off three times
+      // reads as three lines, not one.
+      for (const call of step.callsSkills ?? (step.callsSkill ? [step.callsSkill] : [])) {
+        const argsPart = call.args.length > 0 ? ` with $${call.args.join(', $')}` : '';
+        const capturePart = call.captureAs ? `, capture result as $${call.captureAs}` : '';
+        lines.push(`    → INVOKES SKILL: ${call.targetTitle}${argsPart}${capturePart}`);
       }
       if (step.parallelCalls && step.parallelCalls.length > 0) {
         const names = step.parallelCalls.map((p) => {
@@ -3936,8 +4486,8 @@ export function formatSkillForRecall(walked: WalkedSkill): string {
         });
         lines.push(`    → INVOKES IN PARALLEL: ${names.join(' | ')}`);
       }
-      if (step.unresolvedCall) {
-        lines.push(`    → ⚠ UNRESOLVED CALL: "${step.unresolvedCall}" — sub-skill not found in this engram`);
+      for (const name of step.unresolvedCalls ?? (step.unresolvedCall ? [step.unresolvedCall] : [])) {
+        lines.push(`    → ⚠ UNRESOLVED CALL: "${name}" — sub-skill not found in this engram`);
       }
       if (step.isBranchPoint) {
         const targets = walked.branches.filter(([f]) => f === step.index).map(([, t]) => `step ${t + 1}`);
@@ -4193,14 +4743,12 @@ export function formatSkillForGhampusPreview(walked: WalkedSkill, title?: string
       for (const ctx of walked.contextNodes) {
         if (ctx.anchorStepIndex === step.index) subBullets.push(`Context: ${ctx.text}`);
       }
-      if (step.callsSkill) {
-        const argsPart = step.callsSkill.args.length > 0
-          ? ` with ${step.callsSkill.args.map((a) => `$${a}`).join(', ')}`
+      for (const call of step.callsSkills ?? (step.callsSkill ? [step.callsSkill] : [])) {
+        const argsPart = call.args.length > 0
+          ? ` with ${call.args.map((a) => `$${a}`).join(', ')}`
           : '';
-        const capturePart = step.callsSkill.captureAs
-          ? `, capture as $${step.callsSkill.captureAs}`
-          : '';
-        subBullets.push(`Invokes skill: ${step.callsSkill.targetTitle}${argsPart}${capturePart}`);
+        const capturePart = call.captureAs ? `, capture as $${call.captureAs}` : '';
+        subBullets.push(`Invokes skill: ${call.targetTitle}${argsPart}${capturePart}`);
       }
       if (step.parallelCalls && step.parallelCalls.length > 0) {
         const names = step.parallelCalls.map((p) => {
@@ -4210,8 +4758,8 @@ export function formatSkillForGhampusPreview(walked: WalkedSkill, title?: string
         });
         subBullets.push(`Invokes in parallel: ${names.join(' | ')}`);
       }
-      if (step.unresolvedCall) {
-        subBullets.push(`Unresolved call: "${step.unresolvedCall}" — sub-skill not found in this engram`);
+      for (const name of step.unresolvedCalls ?? (step.unresolvedCall ? [step.unresolvedCall] : [])) {
+        subBullets.push(`Unresolved call: "${name}" — sub-skill not found in this engram`);
       }
       if (step.isBranchPoint) {
         const targets = walked.branches.filter(([f]) => f === step.index).map(([, t]) => `step ${t + 1}`);
@@ -4280,6 +4828,8 @@ export interface SkillExecutionPlan {
     /** 1-based step number for human reference. */
     index: number;
     text: string;
+    /** The step's FIRST sub-skill call. When the step makes several, this is
+     *  `callsSequence[0]` — read `callsSequence` and invoke all of them. */
     calls?: {
       targetSourceId: string;
       targetTitle: string;
@@ -4288,6 +4838,17 @@ export interface SkillExecutionPlan {
       args: string[];
       captureAs?: string;
     };
+    /** Every sequential sub-skill call this step makes, in order — present only
+     *  when there is MORE than one, so the common single-call shape is
+     *  unchanged. Invoke them one after another (contrast `parallel`, which is
+     *  concurrent). */
+    callsSequence?: Array<{
+      targetSourceId: string;
+      targetTitle: string;
+      targetGraphId?: string;
+      args: string[];
+      captureAs?: string;
+    }>;
     /** Concurrent sub-skill calls (D4). When present, dispatch all members in
      *  parallel and capture each return under its captureAs. Members may be
      *  cross-engram (targetGraphId set). */
@@ -4298,8 +4859,11 @@ export interface SkillExecutionPlan {
       args: string[];
       captureAs?: string;
     }>;
-    /** Sub-skill name that didn't resolve to any skill in the same engram. */
+    /** First sub-skill name that didn't resolve to any skill in the same engram. */
     unresolvedCall?: string;
+    /** Every unresolved sub-skill name in this step — present only when there
+     *  is more than one. */
+    unresolvedCalls?: string[];
     /** 1-based step indices the branch may go to. */
     branchesTo?: number[];
     /** 1-based step indices this step loops back to. */
@@ -4438,6 +5002,15 @@ export function walkSkillToJson(
           ...(s.callsSkill.captureAs ? { captureAs: s.callsSkill.captureAs } : {}),
         },
       } : {}),
+      ...(s.callsSkills && s.callsSkills.length > 1 ? {
+        callsSequence: s.callsSkills.map((c) => ({
+          targetSourceId: c.targetSourceId,
+          targetTitle: c.targetTitle,
+          ...(c.targetGraphId ? { targetGraphId: c.targetGraphId } : {}),
+          args: c.args,
+          ...(c.captureAs ? { captureAs: c.captureAs } : {}),
+        })),
+      } : {}),
       ...(s.parallelCalls && s.parallelCalls.length > 0 ? {
         parallel: s.parallelCalls.map((p) => ({
           targetSourceId: p.targetSourceId,
@@ -4448,6 +5021,7 @@ export function walkSkillToJson(
         })),
       } : {}),
       ...(s.unresolvedCall ? { unresolvedCall: s.unresolvedCall } : {}),
+      ...(s.unresolvedCalls && s.unresolvedCalls.length > 1 ? { unresolvedCalls: s.unresolvedCalls } : {}),
       ...(branchesTo.length > 0 ? { branchesTo } : {}),
       ...(loopsBackTo.length > 0 ? { loopsBackTo } : {}),
       ...(maxIterations !== undefined ? { maxIterations } : {}),
@@ -4615,7 +5189,7 @@ function parseSkillProvenance(text: string): import('./skill-trainer.js').SkillP
 /**
  * The 8 authored goal-header keywords, in their canonical surface form. These
  * are the prefixes `classifyChunkRole` / `GOAL_NODE_RE` / `goalRoleForLine`
- * recognise; keep this list in sync with them.
+ * recognize; keep this list in sync with them.
  */
 const GOAL_HEADER_KEYWORDS = [
   'Trigger',
@@ -4755,7 +5329,7 @@ export function classifyChunkRole(content: string, index: number, classified: nu
 export function formatTrainedOutputAsMarkdown(chunks: string[], format: ExportFormat): string {
   if (format === 'raw') {
     // Plain text, no markdown — but still strip metadata comments since
-    // those are an internal audit artefact.
+    // those are an internal audit artifact.
     return chunks
       .filter((c) => !c.trim().startsWith('<!--'))
       .join('\n\n')
