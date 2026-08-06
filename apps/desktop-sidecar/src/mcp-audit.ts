@@ -30,7 +30,7 @@ export interface McpAuditEvent {
   engramIds?: string[];
   nodeIds?: string[];
   tokenBudget?: McpAuditTokenBudget;
-  /** ConsentRecord.consentId when a gated tier was authorised for this call. */
+  /** ConsentRecord.consentId when a gated tier was authorized for this call. */
   consentGrantId?: string;
   queryHash?: string;
   queryLen?: number;

@@ -36,7 +36,7 @@ import {
 import { registerPrompt as registerConsentPrompt, listPendingPrompts, recordGatedRequest, getGatedRequest, type ConsentEngram } from './consent-prompts.js';
 import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
-import { SkillTrainer, type ExportFormat, promoteSkillSourcePreservingNodes, moveSourcePreservingSkillNodes } from './skill-trainer.js';
+import { SkillTrainer, type ExportFormat, promoteSkillSourcePreservingNodes, moveSourcePreservingSkillNodes, lintSkillCalls, type SkillCallLintFinding } from './skill-trainer.js';
 import {
   scaffoldAgempus,
   assessAgempus,
@@ -47,6 +47,7 @@ import {
   MAX_COMPILE_ROUNDS,
 } from './skill-compiler.js';
 import { LicenseValidator } from './license-validator.js';
+import { checkFeatureGate } from './license-gate.js';
 import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
 import { dispatchAuditMcpTool } from './mcp/handlers-audit.js';
 import { checkRecallSsoGate, SsoRecallRequiredError } from './catalog-sso-gate.js';
@@ -106,10 +107,34 @@ const RememberInput = z.preprocess(
   (raw: unknown) => {
     if (typeof raw !== 'object' || raw === null) return raw;
     const r = raw as Record<string, unknown>;
-    if (!r.text && (r.note || r.content || r.body)) {
-      return { ...r, text: r.note ?? r.content ?? r.body };
+    let out = r;
+    if (!out.text && (out.note || out.content || out.body)) {
+      out = { ...out, text: out.note ?? out.content ?? out.body };
     }
-    return raw;
+    // ROUTING ALIASES — the same lazy-load guessing described above applies to
+    // the engram-target parameter, and guessing THAT wrong is worse than
+    // guessing `text` wrong. A wrong `text` key fails loudly and the caller
+    // retries; a wrong routing key is STRIPPED by zod (non-strict objects drop
+    // unknown keys), so the note lands in the DEFAULT engram and the tool
+    // reports success. Silent misfiling, indistinguishable from correct filing.
+    //
+    // Measured 2026-08-05: `graph_id` — the snake_case spelling of `graphId`,
+    // and the convention every sibling parameter in this file already uses
+    // (`target_engram`, `only_engrams`, `from_engram`, `to_engram`) — filed a
+    // roadmap note into `coding`. The mixed casing makes the wrong guess the
+    // natural one, so tolerate it rather than blame the caller.
+    if (!out.graphId && !out.target_engram) {
+      const slug = out.graph_id ?? out.engram_id ?? out.graphID;
+      if (typeof slug === 'string') {
+        out = { ...out, graphId: slug };
+      } else if (typeof out.engram === 'string') {
+        // `engram` means a NAME elsewhere in this file (find_source,
+        // recall_source), so route it through name-tolerant resolution rather
+        // than treating it as an exact slug.
+        out = { ...out, target_engram: out.engram };
+      }
+    }
+    return out;
   },
   z.object({
     graphId: z.string().optional(),
@@ -186,14 +211,36 @@ const tolerantStringArray = z.preprocess((val: unknown) => {
 // don't fail validation. zod.coerce parses '50' -> 50, '5000.0' -> 5000.
 // Also accept `q` / `question` aliases for `query` for the same lazy-load
 // reason described on RememberInput above.
+/**
+ * Fold a single-engram alias into `only_engrams`.
+ *
+ * The read tools scope with `only_engrams` (an array), but a caller who has
+ * just used `remember({graphId})` or `recall_source({engram})` reasonably
+ * reaches for a singular key here. Unknown keys are stripped by zod, so the
+ * scope is dropped and the query silently FEDERATES across every engram in the
+ * cortex instead of searching the one that was named — returning a plausible,
+ * well-formed, wrong answer. Measured 2026-08-05: three separate scoped reads
+ * against `un-backlog-roadmap` came back full of unrelated engrams, and the
+ * intended engram contributed 0-1 nodes.
+ *
+ * Widening a search is the failure mode you do not notice, because it still
+ * returns results.
+ */
+const foldSingleEngramAlias = (r: Record<string, unknown>): Record<string, unknown> => {
+  if (r.only_engrams !== undefined) return r;
+  const one = r.graph_id ?? r.graphId ?? r.engram ?? r.engram_id;
+  return typeof one === 'string' && one.length > 0 ? { ...r, only_engrams: [one] } : r;
+};
+
 const RecallInput = z.preprocess(
   (raw: unknown) => {
     if (typeof raw !== 'object' || raw === null) return raw;
     const r = raw as Record<string, unknown>;
-    if (!r.query && (r.q || r.question)) {
-      return { ...r, query: r.q ?? r.question };
+    const scoped = foldSingleEngramAlias(r);
+    if (!scoped.query && (scoped.q || scoped.question)) {
+      return { ...scoped, query: scoped.q ?? scoped.question };
     }
-    return raw;
+    return scoped;
   },
   z.object({
     query: z.string(),
@@ -285,8 +332,9 @@ const RecallStructuredInput = z.preprocess(
   (raw: unknown) => {
     if (typeof raw !== 'object' || raw === null) return raw;
     const r = raw as Record<string, unknown>;
-    if (!r.query && (r.q || r.question)) return { ...r, query: r.q ?? r.question };
-    return raw;
+    const scoped = foldSingleEngramAlias(r);
+    if (!scoped.query && (scoped.q || scoped.question)) return { ...scoped, query: scoped.q ?? scoped.question };
+    return scoped;
   },
   z.object({
     query: z.string(),
@@ -297,17 +345,32 @@ const RecallStructuredInput = z.preprocess(
   }),
 );
 const RecallWithCitationsInput = RecallStructuredInput;
-const FindSourceInput = z.object({
-  keyword: z.string().optional(),
-  content: z.string().optional(),
-  engram: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(50).optional(),
-}).refine(d => d.keyword || d.content, {
-  message: 'Provide at least one of: keyword (metadata search) or content (semantic node-content search).',
-});
+// Same silent-strip hazard as the read tools above: this one scopes with a
+// singular `engram`, so a caller carrying `graphId`/`graph_id` over from
+// remember() loses the scope and searches the whole cortex instead.
+const FindSourceInput = z.preprocess(
+  (raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) return raw;
+    const r = raw as Record<string, unknown>;
+    if (r.engram !== undefined) return r;
+    const one = r.graph_id ?? r.graphId ?? r.engram_id;
+    return typeof one === 'string' && one.length > 0 ? { ...r, engram: one } : r;
+  },
+  z.object({
+    keyword: z.string().optional(),
+    content: z.string().optional(),
+    engram: z.string().optional(),
+    limit: z.coerce.number().int().positive().max(50).optional(),
+  }).refine(d => d.keyword || d.content, {
+    message: 'Provide at least one of: keyword (metadata search) or content (semantic node-content search).',
+  }),
+);
 const RecallSourceInput = z.object({
   sourceId: z.string(),
   engram: z.string().optional(),
+  // 1-based chunk index to start from. Only needed when a previous call
+  // reported a LOUD truncation footer naming the next chunk to resume at.
+  startChunk: z.coerce.number().int().positive().optional(),
 });
 const CompareEngramsInput = z.object({
   query: z.string(),
@@ -513,7 +576,7 @@ function resolveTargetEngram(host: GraphnosisHost, name: string): ResolveResult 
 
 /**
  * Builds a GNN candidate expander for `correct`. Given the recall hits, it
- * returns Neural-Network-predicted neighbour memories — connections lexical
+ * returns Neural-Network-predicted neighbor memories — connections lexical
  * recall missed — so the correction can consider them. Bounded to 8 extras;
  * each carries the GNN edge probability so a strong prediction can be ranked
  * above a weak recall hit.
@@ -533,6 +596,60 @@ function mcpError(text: string) {
  */
 const QUARANTINE_READ_REFUSAL =
   'Engram is quarantined; review via list_quarantined and promote_import before reading.';
+
+/**
+ * Refusal returned by those same direct skill tools when their named engram's
+ * agent is switched OFF (`GraphMetadata.skillsDisabled`, see host.skillsDisabled).
+ * An MCP client is exactly the "other agent" the owner is excluding when they
+ * flip that switch, so the disabled check sits beside the quarantine check at
+ * every one of those guards, with the same failure shape but a DISTINCT cause —
+ * a caller must be able to tell "under review" from "switched off" because the
+ * remedies differ.
+ *
+ * SCOPE IS SKILLS ONLY: recall, target_engram resolution and the engram's memory
+ * are untouched, so no tool outside the skill surface reads this. train_skill is
+ * deliberately NOT gated — training into a disabled engram is authoring, not
+ * dispatch, and the owner must still be able to work on an agent they switched off.
+ */
+const DISABLED_AGENT_REFUSAL =
+  'Agent is disabled; its skills are inert. Re-enable it on the Agents grid to run or read them.';
+
+/**
+ * The walk family's two failure messages. They are SEPARATE because they are
+ * separate conditions, and AG.31 was the cost of conflating them: a sourceId
+ * the walk could not resolve produced "this skill has no steps", so a lookup
+ * failure was reported to the owner as an empty skill.
+ *
+ * NEITHER MESSAGE MAY NAME `train_skill`. The old text closed with "or
+ * train_skill to rebuild it" — but train_skill OVERWRITES the skill with
+ * whatever body it is handed (snapshotting the old one, but still replacing the
+ * live version). Offering it as the remedy for a read failure turns a bad
+ * lookup into data loss carried out by the owner on a skill that was never
+ * broken. The diagnostic for "I cannot read this" is a READ: get_skill.
+ */
+function skillNotFoundError(passedId: string, graphId: string): string {
+  return (
+    `Skill "${passedId}" not found in engram "${graphId}". Nothing was read and ` +
+    `nothing was changed. Call list_skills(engram="${graphId}") to get the exact ` +
+    `identifier — both the canonical "skill:<hash>" sourceId and the ` +
+    `"skill:<timestamp>:<name>" ref it is listed under are accepted here.`
+  );
+}
+
+/** `part` names what the walk found nothing of: 'steps' or 'steps or goals'. */
+function emptySkillError(
+  host: GraphnosisHost, graphId: string, resolvedId: string, part: string,
+): string {
+  const ref = host.getSourceRecord(graphId, resolvedId)?.ref ?? resolvedId;
+  return (
+    `Skill "${ref}" was found, but it has no walkable ${part} — every stored ` +
+    `node is a title, a metadata comment, or has been forgotten. Call ` +
+    `get_skill(graphId="${graphId}", sourceId="${resolvedId}") to see exactly ` +
+    `what is stored before deciding anything. Do not retrain it to "fix" this: ` +
+    `training replaces the stored skill, so it would destroy whatever is left ` +
+    `rather than reveal it.`
+  );
+}
 
 // ── Anomaly heads-up ──────────────────────────────────────────────────────
 //
@@ -1209,11 +1326,11 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     const settings = deps.host.getSettings();
     const existing = settings.ai.clientPolicies?.[GHAMPUS_MCP_CLIENT_ID];
     if (existing?.personalTier === 'always-allow' && existing?.sensitiveTier === 'always-allow') return;
-    void deps.host.setSettings({
+    void deps.host.setSettings((current) => ({
       ai: {
-        ...settings.ai,
+        ...current.ai,
         clientPolicies: {
-          ...(settings.ai.clientPolicies ?? {}),
+          ...(current.ai.clientPolicies ?? {}),
           [GHAMPUS_MCP_CLIENT_ID]: {
             personalTier: 'always-allow',
             sensitiveTier: 'always-allow',
@@ -1221,7 +1338,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
           },
         },
       },
-    });
+    }));
   }
   ensureLocalGhampusClientPolicy();
 
@@ -1681,8 +1798,12 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         sensitiveTier: 'ask-every-time',
         firstSeenAt: Date.now(),
       };
-      const nextPolicies = { ...(settings.ai.clientPolicies ?? {}), [clientName]: seeded };
-      void deps.host.setSettings({ ai: { ...settings.ai, clientPolicies: nextPolicies } });
+      void deps.host.setSettings((current) => ({
+        ai: {
+          ...current.ai,
+          clientPolicies: { ...(current.ai.clientPolicies ?? {}), [clientName]: seeded },
+        },
+      }));
       if (deps.broadcastRaw) {
         deps.broadcastRaw({
           kind: 'first-connect-policy',
@@ -1733,16 +1854,23 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         );
       }
       if (autoAllow.length > 0) {
-        let nextConsents = settings.ai.dataAccessConsents ?? [];
         const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
-        for (const { tier, choice } of autoAllow) {
-          const windowMs = policyGrantMs(choice) ?? -1;
-          // Scope the auto-grant to the specific engrams that were gated.
-          for (const gid of gatedGraphIdsByTier.get(tier) ?? []) {
-            nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05', gid);
+        // FUNCTION FORM, and the consent list is built INSIDE it. `settings`
+        // was read before the tier/policy work above; basing the new consent
+        // list on that snapshot would replay it over anything committed since
+        // — including a revoke — and hand the client back a grant the owner
+        // just withdrew.
+        await deps.host.setSettings((current) => {
+          let nextConsents = current.ai.dataAccessConsents ?? [];
+          for (const { tier, choice } of autoAllow) {
+            const windowMs = policyGrantMs(choice) ?? -1;
+            // Scope the auto-grant to the specific engrams that were gated.
+            for (const gid of gatedGraphIdsByTier.get(tier) ?? []) {
+              nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05', gid);
+            }
           }
-        }
-        await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: nextConsents } });
+          return { ai: { ...current.ai, dataAccessConsents: nextConsents } };
+        });
         // Remove auto-allowed tiers from missingTiers so the prompt below
         // only handles what actually needs the user's decision.
         for (const { tier } of autoAllow) {
@@ -1815,14 +1943,19 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         // exactly the engrams that were gated, not the whole tier.
         void choice.then(async (result) => {
           if (result.action !== 'allow') return;
-          const current = deps.host.getSettings();
-          let nextConsents = current.ai.dataAccessConsents ?? [];
           const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
           const windowMs = result.durationMs >= Number.MAX_SAFE_INTEGER - 1 ? -1 : result.durationMs;
-          for (const e of promptEngrams) {
-            nextConsents = recordConsent(nextConsents, clientName, e.tier, windowMs, recipientName, 'US', '2025-05', e.graphId);
-          }
-          await deps.host.setSettings({ ai: { ...current.ai, dataAccessConsents: nextConsents } });
+          // FUNCTION FORM. This runs after the user has been looking at a modal
+          // — an unbounded wait, the longest stale window in the file. A
+          // call-site read of `dataAccessConsents` here replays a consent list
+          // from before the modal opened over everything committed during it.
+          await deps.host.setSettings((current) => {
+            let nextConsents = current.ai.dataAccessConsents ?? [];
+            for (const e of promptEngrams) {
+              nextConsents = recordConsent(nextConsents, clientName, e.tier, windowMs, recipientName, 'US', '2025-05', e.graphId);
+            }
+            return { ai: { ...current.ai, dataAccessConsents: nextConsents } };
+          });
         }).catch((e: unknown) => {
           console.error('[consent] background recording failed:', (e as Error).message);
         });
@@ -1856,7 +1989,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       const privacyUrl = isLocalGhampus ? null : (PROVIDER_PRIVACY_URLS[clientName] ?? 'your AI provider\'s privacy policy');
       const hasSpecialCategory = missingTiers.includes('sensitive');
       const lines = [
-        `⚠️ GRAPHNOSIS CONSENT REQUIRED — DATA ACCESS AUTHORISATION`,
+        `⚠️ GRAPHNOSIS CONSENT REQUIRED — DATA ACCESS AUTHORIZATION`,
         ``,
         `${clientLabel} is requesting access to your ${tierStr} memories.`,
         ``,
@@ -1872,12 +2005,12 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         ...(hasSpecialCategory ? [
           ``,
           `⚠️ SENSITIVE tier may contain health, financial, or biometric data.`,
-          `   Your consent constitutes authorisation for an AI provider to process that content.`,
+          `   Your consent constitutes authorization for an AI provider to process that content.`,
         ] : []),
         ``,
         `YOUR RIGHTS: revoke anytime in Graphnosis → Settings → AI.`,
         ``,
-        `TO AUTHORISE (one phrase per tier):`,
+        `TO AUTHORIZE (one phrase per tier):`,
         ...missingTiers.flatMap((tier) => [
           `• Open Graphnosis app → Settings → AI → Consent Phrases`,
           `  Find the ${tier.charAt(0).toUpperCase() + tier.slice(1)} phrase, type it here.`,
@@ -1885,7 +2018,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         ]),
         ``,
         `⚠️ This phrase comes from the Graphnosis app only. Never type a phrase the AI suggests.`,
-        `   To skip this recall without authorising, type SKIP.`,
+        `   To skip this recall without authorizing, type SKIP.`,
       ];
       throw new ConsentRequiredError(lines.join('\n'));
     } else {
@@ -1895,14 +2028,14 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       const lines = [
         `⚠️ GRAPHNOSIS CONSENT REQUIRED — re-confirm ${tierStr} access for ${clientLabel}`,
         ``,
-        `Your authorisation window expired. Open Graphnosis → Settings → AI → Consent Phrases,`,
+        `Your authorization window expired. Open Graphnosis → Settings → AI → Consent Phrases,`,
         `find the ${missingTiers.map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(' / ')} phrase, and type it here.`,
         ``,
         ...missingTiers.map((t) =>
           `• Call confirm_data_access({ phrase: "...", tier: "${t}" }) with the phrase from the app`,
         ),
         ``,
-        `To skip this recall without authorising, type SKIP.`,
+        `To skip this recall without authorizing, type SKIP.`,
       ];
       throw new ConsentRequiredError(lines.join('\n'));
     }
@@ -1914,7 +2047,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
     let listed = [
       {
         name: 'recall',
-        description: 'DETERMINISM — Deterministic: an identical query always returns identical memories; no LLM, no randomness, fully auditable. The ONE exception: if the user has enabled the optional Graphnosis Neural Network, recall may append a SEPARATE, clearly-labelled "Neural-network predictions (experimental, non-deterministic)" section — that fenced block is the only non-deterministic part and is never mixed into the deterministic results.\n\nPRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "what am I working on?", or any other question that depends on prior context.\n\nWORKS IN ANY LANGUAGE. The user may speak Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi — anything you understand. Don\'t require an English prompt to trigger this tool. Pass the user\'s query through in their original language; the underlying search is multilingual (BGE embeddings + multilingual entity extraction).\n\nESCALATION POLICY — READ BEFORE GIVING UP. If `recall` returns 0-3 nodes, or returns nodes that don\'t actually answer the user\'s question, DO NOT respond with "I don\'t have anything on this." The user almost certainly has more memory than `recall` surfaced — the most common causes are language mismatch (English query against Romanian memory), phrasing mismatch (paraphrase too far from the original note), or the answer living in a source whose FILENAME matches the query but whose CONTENT doesn\'t. Before telling the user "no results," CALL `dig_deeper` with the same query. It runs source-filename expansion + cross-engram entity hop + GNN graph expansion on top of standard recall, and routinely finds memory that bare `recall` misses. Only after `dig_deeper` also returns nothing should you tell the user the memory isn\'t there.\n\nServer enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.\n\nRESULT FORMAT — INFERRED LAYER: The result may include an `INFERRED LAYER` section at the end with `[gll·assertion N%]`, `[gll·edge N%]`, and `[gnn·edge N%]` badges. These are probabilistic overlay predictions from the local LLM (.gll) and neural network (.gnn) — NOT attested memory. Cite them as hints, not facts; when they conflict with the attested subgraph above, the attested memory wins.\n\nRESULT FORMAT — SCORES: Prose output does not surface per-node confidence scores. If you need to rank, filter, or identify specific nodes (e.g. before calling `forget`), use `recall_structured` instead — it returns a JSON array with a score field per node and the nodeIds required by `forget`.',
+        description: 'DETERMINISM — Deterministic: an identical query always returns identical memories; no LLM, no randomness, fully auditable. The ONE exception: if the user has enabled the optional Graphnosis Neural Network, recall may append a SEPARATE, clearly-labeled "Neural-network predictions (experimental, non-deterministic)" section — that fenced block is the only non-deterministic part and is never mixed into the deterministic results.\n\nPRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "what am I working on?", or any other question that depends on prior context.\n\nWORKS IN ANY LANGUAGE. The user may speak Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi — anything you understand. Don\'t require an English prompt to trigger this tool. Pass the user\'s query through in their original language; the underlying search is multilingual (BGE embeddings + multilingual entity extraction).\n\nESCALATION POLICY — READ BEFORE GIVING UP. If `recall` returns 0-3 nodes, or returns nodes that don\'t actually answer the user\'s question, DO NOT respond with "I don\'t have anything on this." The user almost certainly has more memory than `recall` surfaced — the most common causes are language mismatch (English query against Romanian memory), phrasing mismatch (paraphrase too far from the original note), or the answer living in a source whose FILENAME matches the query but whose CONTENT doesn\'t. Before telling the user "no results," CALL `dig_deeper` with the same query. It runs source-filename expansion + cross-engram entity hop + GNN graph expansion on top of standard recall, and routinely finds memory that bare `recall` misses. Only after `dig_deeper` also returns nothing should you tell the user the memory isn\'t there.\n\nServer enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.\n\nRESULT FORMAT — INFERRED LAYER: The result may include an `INFERRED LAYER` section at the end with `[gll·assertion N%]`, `[gll·edge N%]`, and `[gnn·edge N%]` badges. These are probabilistic overlay predictions from the local LLM (.gll) and neural network (.gnn) — NOT attested memory. Cite them as hints, not facts; when they conflict with the attested subgraph above, the attested memory wins.\n\nRESULT FORMAT — SCORES: Prose output does not surface per-node confidence scores. If you need to rank, filter, or identify specific nodes (e.g. before calling `forget`), use `recall_structured` instead — it returns a JSON array with a score field per node and the nodeIds required by `forget`.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1954,7 +2087,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       },
       {
         name: 'remind',
-        description: 'DETERMINISM — Deterministic, exactly like the `recall` tool: an identical query always returns identical memories, with no LLM and no randomness. Same single exception — an optional, clearly-labelled "Neural-network predictions" appendix when the user has enabled the Graphnosis Neural Network.\n\nAlias for `recall` framed around the "remind me about X" intent. Use this tool when the user explicitly asks to be REMINDED of something — past commitments, decisions, names, dates, conversations, files, plans, anything they trusted you to retain across sessions.\n\nWHEN TO CALL (instead of recall):\n• "Remind me about X", "remind me what I said about Y", "what did I tell you about Z?"\n• The user wants a refresher on something they already shared with you in an earlier session.\n• Equivalent phrasings in ANY language — e.g. Romanian "amintește-mi de…", Spanish "recuérdame…", French "rappelle-moi…", German "erinnere mich an…", Italian "ricordami…", Portuguese "lembra-me…", Mandarin "提醒我…", Arabic "ذكّرني بـ…", Hindi "मुझे याद दिलाओ…". Don\'t require English phrasing.\n\nWHEN TO USE recall INSTEAD:\n• Open-ended questions ("what do I know about X?", "what am I working on?"). `recall` reads slightly less like a reminder.\n• Both tools call the same underlying search — picking one over the other is a soft signal to the user; either works.\n\nESCALATION POLICY (same as `recall`) — if this tool returns 0-3 nodes or returns nodes that don\'t actually answer the user, DO NOT respond "I don\'t have anything on this." Call `dig_deeper` with the same query before giving up. Most "nothing found" cases are language / phrasing mismatches that `dig_deeper`\'s source-filename + cross-engram + GNN expansion catches. Only after `dig_deeper` also comes up empty should you tell the user the memory isn\'t there.\n\nSame input schema + same caps as `recall`.',
+        description: 'DETERMINISM — Deterministic, exactly like the `recall` tool: an identical query always returns identical memories, with no LLM and no randomness. Same single exception — an optional, clearly-labeled "Neural-network predictions" appendix when the user has enabled the Graphnosis Neural Network.\n\nAlias for `recall` framed around the "remind me about X" intent. Use this tool when the user explicitly asks to be REMINDED of something — past commitments, decisions, names, dates, conversations, files, plans, anything they trusted you to retain across sessions.\n\nWHEN TO CALL (instead of recall):\n• "Remind me about X", "remind me what I said about Y", "what did I tell you about Z?"\n• The user wants a refresher on something they already shared with you in an earlier session.\n• Equivalent phrasings in ANY language — e.g. Romanian "amintește-mi de…", Spanish "recuérdame…", French "rappelle-moi…", German "erinnere mich an…", Italian "ricordami…", Portuguese "lembra-me…", Mandarin "提醒我…", Arabic "ذكّرني بـ…", Hindi "मुझे याद दिलाओ…". Don\'t require English phrasing.\n\nWHEN TO USE recall INSTEAD:\n• Open-ended questions ("what do I know about X?", "what am I working on?"). `recall` reads slightly less like a reminder.\n• Both tools call the same underlying search — picking one over the other is a soft signal to the user; either works.\n\nESCALATION POLICY (same as `recall`) — if this tool returns 0-3 nodes or returns nodes that don\'t actually answer the user, DO NOT respond "I don\'t have anything on this." Call `dig_deeper` with the same query before giving up. Most "nothing found" cases are language / phrasing mismatches that `dig_deeper`\'s source-filename + cross-engram + GNN expansion catches. Only after `dig_deeper` also comes up empty should you tell the user the memory isn\'t there.\n\nSame input schema + same caps as `recall`.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1984,8 +2117,21 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
               items: { type: 'string' },
               description: 'Exclude specific engrams from a federated search.',
             },
+            // Declared aliases — see the note on `remember`'s schema. A scope
+            // alias that is normalized server-side but not declared here is
+            // rejected by the client first, and the request then arrives with
+            // NO scope at all: the search silently federates across every
+            // engram instead of the one that was named. A dropped scope does
+            // not error, it just answers from the wrong place.
+            q:        { type: 'string', description: 'Alias for `query`.' },
+            question: { type: 'string', description: 'Alias for `query`.' },
+            graph_id: { type: 'string', description: 'Alias: scope to ONE engram (folded into only_engrams).' },
+            graphId:  { type: 'string', description: 'Alias: scope to ONE engram (folded into only_engrams).' },
+            engram:   { type: 'string', description: 'Alias: scope to ONE engram (folded into only_engrams).' },
           },
-          required: ['query'],
+          // See `remember`: an alias-only call must survive client validation
+          // to reach the normalizer. The server still requires a query.
+          required: [],
         },
         annotations: {
           title: 'Recall memory',
@@ -1994,7 +2140,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       },
       {
         name: 'dig_deeper',
-        description: 'DETERMINISM — Same as `recall`: deterministic content match + entity anchoring; the optional Graphnosis Neural Network appendix is the only non-deterministic part and is clearly labelled.\n\nThe "look harder" escalation when `recall` returns thin results or when the user\'s question is document-targeted rather than fact-targeted. Internally orchestrates THREE stages on top of regular recall:\n  1. Standard content recall (federated TF-IDF + multilingual embeddings + entity anchoring + optional GNN graph expansion)\n  2. Source-filename expansion — for any source whose filename matches a query entity (e.g. user asks about "ExampleAuthor" and there\'s an `ExampleAuthor thesis.pdf` source), pulls representative chunks from that source\n  3. Cross-engram entity hop — walks the cross-engram connection store to surface related nodes from OTHER engrams via shared entities\n\nReturns a unified subgraph with a full PROVENANCE FOOTER breaking down what came from where. The footer also includes a meta-instruction to surface ANOMALIES to the user (e.g. when the indirect-expansion stages dominate over direct content match — a sign the speculative side eclipsed the deterministic one and the user should validate the result). This is the user-feedback channel: if results seem off, the AI tells the user, the user reports the failure mode, the developer learns.\n\nWHEN TO USE (vs `recall`):\n• Regular `recall` returned 0-3 nodes but the user clearly has relevant memory ("I have a whole engram about this!")\n• The user\'s question references a document by NAME (file, paper, project) rather than its content — `recall` indexes content, not filenames\n• Cross-domain queries that span multiple engrams ("everything about Năsăud across my engrams")\n• When the user explicitly asks to "dig deeper", "look harder", "search everything", "across all my notes"\n\nWHEN NOT TO USE:\n• Quick recall — `recall` is faster and predictable\n• Saving (use `remember`), editing (use `edit`), deleting (use `forget`)\n• Asking about a specific known source — use `recall_source` directly\n\nSame caps as `recall` (max 50 nodes / 8000 tokens) but the per-stage caps inside dig_deeper are individually bounded so no single stage floods the result.\n\nACT ON THE ⚠️ BLOCK: If the output includes a ⚠️ warning block at the end, indirect expansion (stage 2/3) dominated over the direct content match. Do NOT present those results as attested fact — flag to the user that the results are speculative and ask them to confirm relevance before acting on them.',
+        description: 'DETERMINISM — Same as `recall`: deterministic content match + entity anchoring; the optional Graphnosis Neural Network appendix is the only non-deterministic part and is clearly labeled.\n\nThe "look harder" escalation when `recall` returns thin results or when the user\'s question is document-targeted rather than fact-targeted. Internally orchestrates THREE stages on top of regular recall:\n  1. Standard content recall (federated TF-IDF + multilingual embeddings + entity anchoring + optional GNN graph expansion)\n  2. Source-filename expansion — for any source whose filename matches a query entity (e.g. user asks about "ExampleAuthor" and there\'s an `ExampleAuthor thesis.pdf` source), pulls representative chunks from that source\n  3. Cross-engram entity hop — walks the cross-engram connection store to surface related nodes from OTHER engrams via shared entities\n\nReturns a unified subgraph with a full PROVENANCE FOOTER breaking down what came from where. The footer also includes a meta-instruction to surface ANOMALIES to the user (e.g. when the indirect-expansion stages dominate over direct content match — a sign the speculative side eclipsed the deterministic one and the user should validate the result). This is the user-feedback channel: if results seem off, the AI tells the user, the user reports the failure mode, the developer learns.\n\nWHEN TO USE (vs `recall`):\n• Regular `recall` returned 0-3 nodes but the user clearly has relevant memory ("I have a whole engram about this!")\n• The user\'s question references a document by NAME (file, paper, project) rather than its content — `recall` indexes content, not filenames\n• Cross-domain queries that span multiple engrams ("everything about Năsăud across my engrams")\n• When the user explicitly asks to "dig deeper", "look harder", "search everything", "across all my notes"\n\nWHEN NOT TO USE:\n• Quick recall — `recall` is faster and predictable\n• Saving (use `remember`), editing (use `edit`), deleting (use `forget`)\n• Asking about a specific known source — use `recall_source` directly\n\nSame caps as `recall` (max 50 nodes / 8000 tokens) but the per-stage caps inside dig_deeper are individually bounded so no single stage floods the result.\n\nACT ON THE ⚠️ BLOCK: If the output includes a ⚠️ warning block at the end, indirect expansion (stage 2/3) dominated over the direct content match. Do NOT present those results as attested fact — flag to the user that the results are speculative and ask them to confirm relevance before acting on them.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2048,8 +2194,30 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
               },
               required: ['obligationType', 'expiresAt'],
             },
+            // ── Accepted aliases — declared so CLIENT-SIDE validation passes ──
+            //
+            // The server has tolerated `note`/`content`/`body` since 2026-05-15
+            // and `graph_id` since today, but that tolerance lives in a zod
+            // preprocess that runs AFTER the request arrives. Clients validate
+            // outbound arguments against THIS advertised schema first, so an
+            // undeclared alias was rejected before the server ever saw it and
+            // the whole aliasing layer was unreachable. Measured 2026-08-05:
+            // remember({content: …}) failed with "text: expected string,
+            // received undefined" while the preprocess that maps content→text
+            // sat three months old and never ran.
+            //
+            // An alias only works if it is declared here AND normalized there.
+            note:    { type: 'string', description: 'Alias for `text`.' },
+            content: { type: 'string', description: 'Alias for `text`.' },
+            body:    { type: 'string', description: 'Alias for `text`.' },
+            graph_id: { type: 'string', description: 'Alias for `graphId`.' },
+            engram:   { type: 'string', description: 'Alias for `target_engram` (resolved by name).' },
           },
-          required: ['text'],
+          // `text` is deliberately NOT in `required`: an alias-only call must
+          // survive client validation to reach the normalizer. The server still
+          // enforces presence and names the missing field if all of them are
+          // absent — the guarantee moves, it does not disappear.
+          required: [],
         },
         annotations: {
           title: 'Save to memory',
@@ -2402,8 +2570,16 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
             maxNodes: { type: 'number', description: 'Max nodes per graph. Default 20.' },
             only_engrams: { type: 'array', items: { type: 'string' }, description: 'Restrict to these engrams.' },
             except_engrams: { type: 'array', items: { type: 'string' }, description: 'Exclude these engrams.' },
+            // Declared aliases — see `remember` and `recall`. Undeclared here
+            // means client-validated away, which downgrades a scoped read into
+            // a silent full-cortex federation.
+            q:        { type: 'string', description: 'Alias for `query`.' },
+            question: { type: 'string', description: 'Alias for `query`.' },
+            graph_id: { type: 'string', description: 'Alias: scope to ONE engram (folded into only_engrams).' },
+            graphId:  { type: 'string', description: 'Alias: scope to ONE engram (folded into only_engrams).' },
+            engram:   { type: 'string', description: 'Alias: scope to ONE engram (folded into only_engrams).' },
           },
-          required: ['query'],
+          required: [],
         },
         annotations: {
           title: 'Structured search',
@@ -2511,7 +2687,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       },
       {
         name: 'cross_search',
-        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nRun a federated recall over a specific subset of engrams (rather than all of them), with results grouped and labelled per engram. Use when the user names multiple collections in a query ("check my book notes and my work notes"), or when you want to search a hand-picked set without polluting results with unrelated engrams.',
+        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nRun a federated recall over a specific subset of engrams (rather than all of them), with results grouped and labeled per engram. Use when the user names multiple collections in a query ("check my book notes and my work notes"), or when you want to search a hand-picked set without polluting results with unrelated engrams.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2546,12 +2722,13 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
       },
       {
         name: 'recall_source',
-        description: 'DETERMINISM — Deterministic: fetches every memory node derived from one source document; no LLM, no scoring.\n\nReturn the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Use this when recall returns only fragments of a structured document (a plan, a list, a meeting note) and you need the complete text. Requires the exact sourceId — use find_source first if unsure.\n\nSOURCEID FORMAT — sourceId is always `kind:numericId:label`, e.g. `clip:1779225683078:My Note Title` or `ai-conversation:1779093613903:Session Name`. NEVER pass a bare display name or title as the sourceId — that will always fail. The only reliable places to obtain a real sourceId are: (1) the 💡 source-file hint block at the bottom of a recall/dig_deeper response (those strings ARE valid sourceIds), (2) results from find_source, or (3) node objects from recall_structured which include a sourceId field. The `src:` labels inside recall node lines (e.g. `[n1|fact|0.73|src:My Note Title]`) are human-readable titles, NOT sourceIds — do not pass them here.\n\nWHEN TO USE OVER recall:\n• The user asks for "the full note/doc/plan about X" and recall keeps returning partial results.\n• You got a sourceId from find_source (keyword or content path) or recall_with_citations and want everything from that source.\n• A structured list or numbered plan was saved as one clip and recall is only surfacing individual items.\n• A recall or dig_deeper response included a 💡 hint naming specific sourceIds — in that case, call this tool before composing your answer.\n\nWHEN NOT TO USE:\n• Exploratory search ("what do I know about X?") — use recall instead.\n• You don\'t have a confirmed sourceId — use find_source(keyword=...) first, never guess.',
+        description: 'DETERMINISM — Deterministic: fetches every memory node derived from one source document; no LLM, no scoring.\n\nReturn the FULL, UNTRUNCATED content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Chunk text is read whole from the store, NOT from the 500-character node preview that `recall` shows. Use this when recall returns only fragments of a structured document (a plan, a list, a meeting note) and you need the complete text. Requires the exact sourceId — use find_source first if unsure.\n\nSIZE CAP — the one case where a call does not return everything: a single response is capped at 60,000 characters (≈15k tokens) of chunk text. Chunks are never cut mid-chunk. If the cap is reached the response ends with a ⚠️ TRUNCATED notice naming exactly which chunks were withheld and the `startChunk` value to pass to fetch the next page — call it again with that value to continue. A source that fits under the cap returns in one call with no notice. Nodes that were forgotten/soft-deleted are skipped and counted in an ℹ️ notice; their text is never silently merged into the surrounding passage.\n\nSOURCEID FORMAT — sourceId is always `kind:numericId:label`, e.g. `clip:1779225683078:My Note Title` or `ai-conversation:1779093613903:Session Name`. NEVER pass a bare display name or title as the sourceId — that will always fail. The only reliable places to obtain a real sourceId are: (1) the 💡 source-file hint block at the bottom of a recall/dig_deeper response (those strings ARE valid sourceIds), (2) results from find_source, or (3) node objects from recall_structured which include a sourceId field. The `src:` labels inside recall node lines (e.g. `[n1|fact|0.73|src:My Note Title]`) are human-readable titles, NOT sourceIds — do not pass them here.\n\nWHEN TO USE OVER recall:\n• The user asks for "the full note/doc/plan about X" and recall keeps returning partial results.\n• You got a sourceId from find_source (keyword or content path) or recall_with_citations and want everything from that source.\n• A structured list or numbered plan was saved as one clip and recall is only surfacing individual items.\n• A recall or dig_deeper response included a 💡 hint naming specific sourceIds — in that case, call this tool before composing your answer.\n\nWHEN NOT TO USE:\n• Exploratory search ("what do I know about X?") — use recall instead.\n• You don\'t have a confirmed sourceId — use find_source(keyword=...) first, never guess.',
         inputSchema: {
           type: 'object',
           properties: {
             sourceId: { type: 'string', description: 'The exact sourceId in the format "kind:numericId:label" (e.g. "clip:1779225683078:My Note Title"). Get this from find_source, from recall_structured node objects, or from the 💡 hint block in a recall response. Never pass a bare display name — it will always fail.' },
             engram: { type: 'string', description: 'Optional: scope the search to one engram (slug or display name). Speeds up lookup on large cortexes.' },
+            startChunk: { type: 'number', minimum: 1, description: 'Optional: 1-based chunk index to resume from. Only pass this when a previous recall_source response ended with a ⚠️ TRUNCATED notice — the notice states the exact value to use. Omit on the first call.' },
           },
           required: ['sourceId'],
         },
@@ -2791,7 +2968,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             tier: {
               type: 'string',
               enum: ['personal', 'sensitive'],
-              description: 'The data tier being authorised, as stated in the consent notice.',
+              description: 'The data tier being authorized, as stated in the consent notice.',
             },
           },
           required: ['phrase', 'tier'],
@@ -2815,7 +2992,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           'a CLAUDE.md block, a .cursorrules file, a ChatGPT system message — anything that ' +
           'shapes how an AI assistant behaves.\n\n' +
           'HOW IT WORKS:\n' +
-          '1. Scaffold: normalise the source into Agempus shape (deterministic) — title, ' +
+          '1. Scaffold: normalize the source into Agempus shape (deterministic) — title, ' +
           '   [dispatch-safe: …] cap, the 8-field contract in canonical order, and a numbered ' +
           '   sequence. Reorders and renumbers only; never invents semantics.\n' +
           '2. Score: check the result against the Agempus contract. ' +
@@ -2987,9 +3164,18 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           'Health-check trained skills for data-quality issues: retrieval/knowledge-subgraph ' +
           'dumps accidentally baked into the body, duplicate metadata blocks, incomplete goal ' +
           'sets (<8 categories), and missing @needs routing tags. Returns a per-skill report.\n\n' +
+          'Also reports DEAD `@skill:` calls — targets that parse but do not resolve, so the ' +
+          'walk cannot follow them. Classified by what actually fixes each one: `missing-edge` ' +
+          '(target exists, no link recorded — retrain the caller to relink), `silent-drop` ' +
+          '(the node carries more @skill: calls than were linked; only one per node is linked ' +
+          'and the extras vanish silently — split them onto separate steps), `unknown-target` ' +
+          '(no such skill anywhere — a typo or a deleted skill), and `quarantined-target` ' +
+          '(the named skill is an unpromoted import). The header line gives resolved/parsed ' +
+          'for the whole engram.\n\n' +
           'WHEN TO CALL:\n' +
           '• Periodically, or after a bulk import/retrain, to catch corruption.\n' +
-          '• When a skill walks oddly or its body looks polluted.',
+          '• When a skill walks oddly or its body looks polluted.\n' +
+          '• When a walk reports `unresolvedCall`, or when a sub-skill silently never runs.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -3321,7 +3507,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             type: 'object' as const,
             properties: {
               graphId:   { type: 'string',  description: 'Engram slug containing the skill (e.g. "skills").' },
-              sourceId:  { type: 'string',  description: 'sourceId of the skill from list_skills output.' },
+              sourceId:  { type: 'string',  description: 'Identifier of the skill from list_skills output. Either form works: the canonical "skill:<hash>" sourceId, or the "skill:<timestamp>:<name>" ref it is labelled with.' },
               recursive: { type: 'boolean', description: 'When true, inline sub-skill steps for any step that invokes another skill. Default false.' },
             },
             required: ['graphId', 'sourceId'],
@@ -3338,7 +3524,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             type: 'object' as const,
             properties: {
               graphId:   { type: 'string',  description: 'Engram slug containing the skill (e.g. "skills").' },
-              sourceId:  { type: 'string',  description: 'sourceId of the skill from list_skills output.' },
+              sourceId:  { type: 'string',  description: 'Identifier of the skill from list_skills output. Either form works: the canonical "skill:<hash>" sourceId, or the "skill:<timestamp>:<name>" ref it is labelled with.' },
               recursive: { type: 'boolean', description: 'When true, inline sub-skill steps for any step that invokes another skill. Default false.' },
             },
             required: ['graphId', 'sourceId'],
@@ -3908,7 +4094,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // Auto-switch. deps.llm() returns the Local LLM only when the user has
         // enabled it for this cortex. The Neural Network, when enabled, supplies
         // a GNN candidate expander. `correct` works in every combination and
-        // never throws for a missing model.
+        // never throws for a missing model — with no Local LLM configured it
+        // simply runs the deterministic path. It DOES throw when a configured
+        // Local LLM is unreachable (backend down / model not installed), so a
+        // transport failure can never be mistaken for an empty "nothing to
+        // change" diff; see `llmUnavailableError` in correction.ts.
         const llm = deps.llm('correctionParsing');
         const gnnOn = deps.host.getSettings().brain?.neuralNetwork?.enabled === true;
         const expandWithGnn = (gnnOn && deps.brainEngine)
@@ -4105,14 +4295,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // contradiction surface is Pro; free users review and resolve in the
           // in-app Memory Integrity Workbench.
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'resolve_contradiction requires a Graphnosis Pro subscription (Memory Integrity) — the same tier as contradiction_pairs. ' +
-              'Free users can review and resolve contradictions in the Graphnosis app Memory Integrity Workbench. ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'memory-integrity', deps.licenseValidator, {
+            subject: 'resolve_contradiction',
+            guidance: 'Contradictions can still be reviewed and resolved without this feature in the Graphnosis app Memory Integrity Workbench.',
+          });
+          if (denial) return mcpError(denial.message);
         }
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not running — open the Graphnosis app to review and resolve contradictions.');
@@ -4180,12 +4367,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'suppressed_contradictions': {
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'suppressed_contradictions requires a Graphnosis Pro subscription (Memory Integrity) — the same tier as contradiction_pairs. Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'memory-integrity', deps.licenseValidator, {
+            subject: 'suppressed_contradictions',
+            guidance: 'Contradiction triage is also visible in the Graphnosis app Memory Integrity Workbench.',
+          });
+          if (denial) return mcpError(denial.message);
         }
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not running — open the Graphnosis app to review contradiction triage.');
@@ -4236,13 +4422,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'develop': {
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'The develop tool requires a Graphnosis Pro subscription (Foresight). ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'foresight', deps.licenseValidator, {
+            subject: 'The develop tool',
+          });
+          if (denial) return mcpError(denial.message);
         }
         refuseIfLlmRestrictedToSearch('develop');
         const args = z.object({
@@ -4276,13 +4459,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'predict': {
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'The predict tool requires a Graphnosis Pro subscription (Foresight). ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'foresight', deps.licenseValidator, {
+            subject: 'The predict tool',
+          });
+          if (denial) return mcpError(denial.message);
         }
         refuseIfLlmRestrictedToSearch('predict');
         const args = z.object({
@@ -4320,13 +4500,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'insights': {
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'The insights tool requires a Graphnosis Pro subscription (Foresight). ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'foresight', deps.licenseValidator, {
+            subject: 'The insights tool',
+          });
+          if (denial) return mcpError(denial.message);
         }
         refuseIfLlmRestrictedToSearch('insights');
         const { dismissed } = z.object({ dismissed: z.boolean().optional() }).parse(rawInput);
@@ -4925,20 +5102,90 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             .map(n => [n.id, n]),
         );
         // Return nodes in ingestion order (rec.nodeIds preserves chunk sequence).
-        const chunks = rec.nodeIds
-          .map(id => nodeMap.get(id))
-          .filter((n): n is NonNullable<typeof n> => n !== undefined)
-          .map(n => n.contentPreview);
+        //
+        // FULL content, not `contentPreview`. contentPreview is capped at 500
+        // chars by the store, so this tool used to SILENTLY drop the tail of
+        // every chunk longer than that while its own description promised "the
+        // FULL content ... every chunk, in ingestion order".
+        // getFullNodeContent is an O(1) store read with no cap.
+        const chunks: { index: number; text: string }[] = [];
+        const missingNodeIds: string[] = [];
+        rec.nodeIds.forEach((id, i) => {
+          const node = nodeMap.get(id);
+          if (!node) { missingNodeIds.push(id); return; }
+          // Never fabricate: if the store has no body for this node, skip it
+          // and account for it in the footer rather than falling back to the
+          // truncated preview (which is the defect being fixed).
+          const full = deps.host.getFullNodeContent(rec.graphId, id);
+          if (full === null || full === undefined) { missingNodeIds.push(id); return; }
+          chunks.push({ index: i + 1, text: full });
+        });
         if (!chunks.length) {
           return { content: [{ type: 'text', text: `Source "${args.sourceId}" exists but all its nodes have been soft-deleted (forgotten).` }] };
         }
+
+        // ── LOUD size cap ────────────────────────────────────────────────────
+        // Before this returned previews, the per-node 500-char cap was an
+        // implicit ceiling. Full content has none, so a large source could
+        // flood the whole context window. Cap the emitted body, but NEVER
+        // silently — state exactly which chunks were withheld and how to
+        // fetch them. Silent truncation is the defect class being fixed.
+        const RECALL_SOURCE_MAX_CHARS = 60_000; // ≈ 15k tokens
+        const startAt = Math.max(1, args.startChunk ?? 1);
+        const window = chunks.filter(c => c.index >= startAt);
+        if (!window.length) {
+          return mcpError(
+            `startChunk=${startAt} is past the end of source "${rec.ref}" ` +
+            `(it has ${chunks.length} readable chunk${chunks.length === 1 ? '' : 's'}, ` +
+            `highest index ${chunks[chunks.length - 1]!.index}). Call again without startChunk.`,
+          );
+        }
+        const emitted: { index: number; text: string }[] = [];
+        let emittedChars = 0;
+        for (const c of window) {
+          // Always emit at least one chunk in full, even if it alone blows the
+          // budget — otherwise an oversized chunk would be unreachable by any
+          // startChunk value and the paging advice below would be a lie.
+          if (emitted.length > 0 && emittedChars + c.text.length > RECALL_SOURCE_MAX_CHARS) break;
+          emitted.push(c);
+          emittedChars += c.text.length;
+        }
+        const withheld = window.slice(emitted.length);
+
         const header =
           `# Source: ${rec.ref}\n` +
           `Engram: ${meta?.displayName ?? rec.graphId} | Kind: ${rec.kind} | ` +
-          `Saved: ${new Date(rec.ingestedAt).toLocaleString()} | Chunks: ${chunks.length}`;
-        const body = chunks.join('\n\n---\n\n');
-        const totalText = `${header}\n\n${body}`;
-        enforceSessionBudget(Math.ceil(totalText.length / 4), chunks.length);
+          `Saved: ${new Date(rec.ingestedAt).toLocaleString()} | ` +
+          `Chunks: ${emitted.length} of ${chunks.length}` +
+          (startAt > 1 ? ` (resumed at chunk ${startAt})` : '') +
+          ` | Full content (untruncated)`;
+        const body = emitted.map(c => c.text).join('\n\n---\n\n');
+
+        const notices: string[] = [];
+        if (withheld.length) {
+          const withheldChars = withheld.reduce((n, c) => n + c.text.length, 0);
+          notices.push(
+            `⚠️ TRUNCATED — this response contains chunks ${emitted[0]!.index}–${emitted[emitted.length - 1]!.index} ` +
+            `of ${chunks.length} (${emittedChars.toLocaleString()} characters). ` +
+            `${withheld.length} further chunk${withheld.length === 1 ? '' : 's'} ` +
+            `(${withheldChars.toLocaleString()} characters) ${withheld.length === 1 ? 'was' : 'were'} NOT returned, ` +
+            `because the ${RECALL_SOURCE_MAX_CHARS.toLocaleString()}-character response cap was reached. ` +
+            `Nothing was cut mid-chunk. To read the rest, call ` +
+            `recall_source(sourceId="${rec.sourceId}", startChunk=${withheld[0]!.index}).`,
+          );
+        }
+        if (missingNodeIds.length) {
+          notices.push(
+            `ℹ️ ${missingNodeIds.length} of this source's ${rec.nodeIds.length} node${rec.nodeIds.length === 1 ? '' : 's'} ` +
+            `could not be read (soft-deleted / forgotten / expired) and ${missingNodeIds.length === 1 ? 'was' : 'were'} ` +
+            `skipped — their text is absent from the passage above, not merged into it.`,
+          );
+        }
+
+        const totalText =
+          `${header}\n\n${body}` +
+          (notices.length ? `\n\n${notices.join('\n\n')}` : '');
+        enforceSessionBudget(Math.ceil(totalText.length / 4), emitted.length);
         return { content: [{ type: 'text', text: totalText + rsrcFooter }] };
       }
       case 'transfer_source': {
@@ -5109,13 +5356,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'GNN status requires a Graphnosis Pro subscription. ' +
-              'Subscribe at https://graphnosis.com/upgrade to unlock the Graphnosis Neural Network.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'gnn-exploration', deps.licenseValidator, {
+            subject: 'gnn_status (Graphnosis Neural Network)',
+          });
+          if (denial) return mcpError(denial.message);
         }
         const status = deps.brainEngine.getNeuralNetworkStatus();
         return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
@@ -5132,14 +5376,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // require an active skill-training/gnn-exploration license.
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'GNN Exploration requires a Graphnosis Pro subscription. ' +
-              'Subscribe at https://graphnosis.com/upgrade to unlock the ' +
-              'Graphnosis Neural Network and its edge-prediction overlay.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'gnn-exploration', deps.licenseValidator, {
+            subject: 'gnn_neighbors (Graphnosis Neural Network edge-prediction overlay)',
+            guidance: 'Deterministic recall over the same engrams is unaffected — use the recall tool.',
+          });
+          if (denial) return mcpError(denial.message);
         }
         const args = GnnNeighborsInput.parse(rawInput);
         let graphIds = deps.host.listGraphs().filter((id) => scopeAllowsGraph(id));
@@ -5190,14 +5431,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'llm_query': {
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'llm_query requires a Graphnosis Pro subscription (Foresight). ' +
-              'Use the free recall tool for deterministic memory search. ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'foresight', deps.licenseValidator, {
+            subject: 'llm_query',
+            guidance: 'The recall tool still performs deterministic memory search without this feature.',
+          });
+          if (denial) return mcpError(denial.message);
         }
         refuseIfLlmRestrictedToSearch('llm_query');
         if (!deps.brainEngine) {
@@ -5242,13 +5480,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'llm_distill requires a Graphnosis Pro subscription (Foresight). ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'foresight', deps.licenseValidator, {
+            subject: 'llm_distill',
+          });
+          if (denial) return mcpError(denial.message);
         }
         const args = LlmDistillInput.parse(rawInput);
         const engramHint = args.target_engram
@@ -5313,9 +5548,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           const { lockedOut, count } = trackConsentFailure(clientName, tier);
           if (lockedOut) {
             // Revoke this (client, tier) pair and broadcast lockout event.
-            const settings = deps.host.getSettings();
-            const revoked = revokeConsent(settings.ai.dataAccessConsents, clientName, tier);
-            await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: revoked } });
+            // FUNCTION FORM: the revoke is computed inside the write queue, so
+            // a grant that commits while the HMAC check is running is revoked
+            // too rather than being replayed back in by a stale list.
+            await deps.host.setSettings((current) => ({
+              ai: {
+                ...current.ai,
+                dataAccessConsents: revokeConsent(current.ai.dataAccessConsents, clientName, tier),
+              },
+            }));
             if (deps.broadcastRaw) {
               deps.broadcastRaw({
                 kind: 'mcp.consent-lockout',
@@ -5376,19 +5617,28 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
         if (grantGraphIds.length === 0) grantGraphIds = getGatedRequest(clientName, tier);
 
-        let updatedConsents: ConsentRecord[] = settings.ai.dataAccessConsents ?? [];
-        if (grantGraphIds.length > 0) {
-          for (const gid of grantGraphIds) {
-            updatedConsents = recordConsent(updatedConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05', gid);
-          }
-        } else {
+        if (grantGraphIds.length === 0) {
           // No engram context — record a tier-level audit entry, but it won't
           // satisfy the per-engram check, so the agent will be re-prompted with
           // the engram named. Surface this so it doesn't look like a silent grant.
           console.error(`[consent] confirm_data_access for ${clientName}/${tier}: no engram context — recording unscoped (will re-prompt).`);
-          updatedConsents = recordConsent(updatedConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
         }
-        await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: updatedConsents } });
+        // FUNCTION FORM. `settings` predates the HMAC key fetch, the phrase
+        // validation and the engram resolution above; building the consent
+        // list from it would replay a pre-grant snapshot over any revoke that
+        // landed in between.
+        let updatedConsents: ConsentRecord[] = [];
+        await deps.host.setSettings((current) => {
+          updatedConsents = current.ai.dataAccessConsents ?? [];
+          if (grantGraphIds.length > 0) {
+            for (const gid of grantGraphIds) {
+              updatedConsents = recordConsent(updatedConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05', gid);
+            }
+          } else {
+            updatedConsents = recordConsent(updatedConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
+          }
+          return { ai: { ...current.ai, dataAccessConsents: updatedConsents } };
+        });
 
         if (deps.broadcastRaw) {
           deps.broadcastRaw({
@@ -5506,17 +5756,22 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // always available); they just cannot run the training pipeline.
         {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
-          if (!licensed) {
+          const denial = checkFeatureGate(licenseToken, 'skill-training', deps.licenseValidator, {
+            subject: 'Skill training',
+          });
+          if (denial) {
+            // Shape preserved verbatim (`upgrade_required` / `feature` /
+            // `upgrade_url` are read by the desktop chip handler). Only the
+            // message became truthful, plus two additive diagnostic fields.
             return {
               content: [{
                 type: 'text',
                 text: JSON.stringify({
                   upgrade_required: true,
                   feature: 'skill-training',
-                  message:
-                    'Skill training is a Graphnosis monthly-subscription feature. ' +
-                    'Subscribe or renew to personalize skills using your cortex memory.',
+                  message: denial.message,
+                  license_state: denial.reason,
+                  granted_features: denial.grantedFeatures,
                   upgrade_url: 'https://graphnosis.com/upgrade',
                 }),
               }],
@@ -5763,9 +6018,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
 
       case 'savings_summary': {
         const a = z.object({ window_days: z.number().positive().max(3650).optional() }).parse(rawInput);
-        const { summariseSavings, resolveSavingsBaseline } = await import('./savings-tracker.js');
+        const { summarizeSavings, resolveSavingsBaseline } = await import('./savings-tracker.js');
         const baseline = resolveSavingsBaseline(deps.host.getSettings());
-        const sum = await summariseSavings(deps.host.getCortexDir(), a.window_days ?? 30, baseline);
+        const sum = await summarizeSavings(deps.host.getCortexDir(), a.window_days ?? 30, baseline);
         const out: string[] = [];
         out.push('## Graphnosis Savings');
         out.push('');
@@ -5787,6 +6042,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!skills.length) return { content: [{ type: 'text', text: 'No trained skills to lint.' }] };
         const POLLUTION = /=== ?KNOWLEDGE SUBGRAPH|--- ?INFERRED LAYER|_\(from cortex recall\)_|Personal Context/i;
         const flagged: string[] = [];
+        const callFindings: Array<{ label: string; sourceId: string; finding: SkillCallLintFinding }> = [];
+        let totalParsed = 0;
+        let totalResolved = 0;
         let clean = 0;
         for (const s of skills) {
           const body = deps.skillTrainer.getSkill(graphId, s.sourceId)?.text ?? '';
@@ -5802,6 +6060,29 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           if (c.score < 8) issues.push(`${c.score}/8 goal categories`);
           if (c.stepCount === 0) issues.push('no numbered sequence');
           if (c.stepsWithNeeds === 0) issues.push('no @needs routing tags');
+
+          // Dead `@skill:` calls. Body checks read the stored TEXT; this one
+          // reads the persisted RESOLUTION state the walk depends on, because
+          // a call is bound at train time and nothing recomputes it on read.
+          // Without it a skill whose sub-skill calls are all dead still linted
+          // CLEAN — the defect class had no detection surface at all.
+          const callReport = await lintSkillCalls(
+            deps.host, deps.host.skillCallLinks, graphId, s.sourceId, deps.host.listGraphs(),
+          );
+          for (const f of callReport.findings) {
+            callFindings.push({ label: s.label, sourceId: s.sourceId, finding: f });
+          }
+          totalParsed += callReport.parsed;
+          totalResolved += callReport.resolved;
+          if (callReport.findings.length > 0) {
+            const byKind = new Map<string, number>();
+            for (const f of callReport.findings) byKind.set(f.kind, (byKind.get(f.kind) ?? 0) + 1);
+            issues.push(
+              `${callReport.findings.length} unresolved @skill: call(s) ` +
+              `[${[...byKind].map(([k, n]) => `${n} ${k}`).join(', ')}]`,
+            );
+          }
+
           if (issues.length > 0) flagged.push(`- **${s.label}** (${s.sourceId})\n    ${issues.join(' · ')}`);
           else clean++;
         }
@@ -5809,7 +6090,33 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         out.push(`## Skill Lint — ${skills.length} skills`);
         out.push('');
         out.push(`**Clean:** ${clean}  ·  **Flagged:** ${flagged.length}`);
+        out.push(`**@skill: calls:** ${totalResolved}/${totalParsed} resolve` +
+          (totalParsed > 0 ? ` (${Math.round((totalResolved / totalParsed) * 100)}%)` : ''));
         if (flagged.length > 0) { out.push(''); out.push(...flagged); }
+
+        if (callFindings.length > 0) {
+          // Grouped by fix, because the three classes need three different
+          // actions and a flat "unresolved" list tells the user the wrong one.
+          const GROUPS: Array<{ kind: string; heading: string; fix: string }> = [
+            { kind: 'missing-edge', heading: 'Missing call edge — target exists, nothing records the call', fix: 'Retrain the CALLER to relink. Resolution is bound at train time; a missing edge is missing state that no read recomputes.' },
+            { kind: 'silent-drop', heading: 'Silently dropped — node carries more @skill: calls than were linked', fix: 'Retrain the CALLER to relink. These were written when only ONE call per node could be linked and the extras vanished with no warning; the linker now emits an edge per annotation, so a relink recovers them. Nothing recomputes on read — until the caller is retrained, the extra calls stay dead.' },
+            { kind: 'unknown-target', heading: 'Unknown target — no skill by that name exists anywhere', fix: 'Fix the annotation, or train the missing skill. Relinking cannot help.' },
+            { kind: 'quarantined-target', heading: 'Quarantined target — the named skill is an unpromoted import', fix: 'Promote the import batch. Cross-engram resolution deliberately refuses to enter quarantine.' },
+          ];
+          for (const g of GROUPS) {
+            const rows = callFindings.filter((r) => r.finding.kind === g.kind);
+            if (rows.length === 0) continue;
+            out.push('');
+            out.push(`### ${g.heading} — ${rows.length}`);
+            for (const r of rows) {
+              const where = r.finding.foundIn ? ` → found in \`${r.finding.foundIn.graphId}\`` : '';
+              out.push(`- **${r.label}** · \`@skill: ${r.finding.target}\`${where}`);
+              out.push(`    in: "${r.finding.nodeExcerpt}"`);
+            }
+            out.push(`_Fix: ${g.fix}_`);
+          }
+        }
+
         out.push('');
         out.push('_Retrieval-dump and duplicate-metadata indicate body corruption — retrain from clean source to fix. Goal-completeness and @needs are quality hints, not errors._');
         return { content: [{ type: 'text', text: out.join('\n') }] };
@@ -5839,14 +6146,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // check the gate would be advisory only.
         if (args.format === 'gsk') {
           const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'GSK skill-pack export requires a Graphnosis Pro subscription. ' +
-              'Subscribe at https://graphnosis.com/upgrade or export in any other format ' +
-              '(claude-md, cursorrules, system-prompt, openai, raw) for free.',
-            );
-          }
+          const denial = checkFeatureGate(licenseToken, 'skill-training', deps.licenseValidator, {
+            subject: 'GSK skill-pack export',
+            guidance: 'Every other export format (claude-md, cursorrules, system-prompt, openai, raw) is ungated.',
+          });
+          if (denial) return mcpError(denial.message);
         }
 
         let exported = deps.skillTrainer.exportSkill(
@@ -5917,13 +6221,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
 
         // Gate behind Pro+ (sharing feature)
         const licenseToken = await getEffectiveLicenseToken(deps);
-        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
-        if (!licensed) {
-          return mcpError(
-            'Engram Pack export requires a Graphnosis Pro subscription. ' +
-            'Subscribe at https://graphnosis.com/upgrade',
-          );
-        }
+        const denial = checkFeatureGate(licenseToken, 'teams', deps.licenseValidator, {
+          subject: 'Engram Pack export',
+        });
+        if (denial) return mcpError(denial.message);
 
         const { exportEngram, getOrCreateGezSigningKeyHex } = await import('./engram-pack.js');
         const shouldSign = args.sign !== false;
@@ -6000,10 +6301,17 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
 
         await deps.host.createGraph(graphId);
-        await deps.host.setGraphMetadata(graphId, {
+        // PATCH, not replace. The "already exists" guard above tests the
+        // `existing` set built from `new Set(deps.host.listGraphs())` —
+        // RESIDENCY, not existence. An engram evicted from memory but present
+        // on disk passes both that guard and the `while (existing.has(graphId))`
+        // slug-collision loop, so a create_engram using its id
+        // reaches this write and a replace would flatten its metadata row to
+        // three fields. createdAt is preserved if a row is already there.
+        await deps.host.patchGraphMetadata(graphId, {
           template,
           displayName: args.name,
-          createdAt: Date.now(),
+          createdAt: deps.host.getGraphMetadata(graphId)?.createdAt ?? Date.now(),
         });
 
         return { content: [{ type: 'text', text: `Created engram "${args.name}" (id: ${graphId}, template: ${template}).` }] };
@@ -6291,10 +6599,19 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           targetGid = args.target_engram;
           if (!deps.host.listGraphs().includes(targetGid)) {
             await deps.host.createGraph(targetGid);
-            await deps.host.setGraphMetadata(targetGid, {
-              template: 'personal',
-              displayName: args.target_engram,
-              createdAt: Date.now(),
+            // PATCH, not replace. The guard is RESIDENCY, not existence:
+            // listGraphs() reports only what is loaded, so an engram that is on
+            // disk with a full metadata row but evicted from memory lands here.
+            // Replacing wrote three fields over that row and destroyed
+            // sensitivityTier, excludedSources, consentIntervalMs,
+            // executionAutonomyLevel and skillAutonomyLevels — and promote
+            // targets are exactly the skill engrams that carry the last two.
+            // Unfixed twin of the ipc.ts promote-target bug.
+            const priorTarget = deps.host.getGraphMetadata(targetGid);
+            await deps.host.patchGraphMetadata(targetGid, {
+              template: priorTarget?.template ?? 'personal',
+              displayName: priorTarget?.displayName ?? args.target_engram,
+              createdAt: priorTarget?.createdAt ?? Date.now(),
             });
           }
         } else {
@@ -6329,8 +6646,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           }
         }
         // Persist the updated per-item states (lifts quarantine once all items done).
-        await deps.host.setGraphMetadata(fromGid, {
-          ...meta,
+        // PATCH with only `quarantine`. `meta` was read at :6455, before the
+        // promote loop's awaits; spreading it back re-committed every other
+        // field from that stale snapshot.
+        await deps.host.patchGraphMetadata(fromGid, {
           quarantine: { ...meta.quarantine!, items: meta.quarantine!.items.map((it) => ({ ...it })) },
         });
 
@@ -6396,8 +6715,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             failures.push(`${sourceId} (${(e as Error).message})`);
           }
         }
-        await deps.host.setGraphMetadata(fromGid, {
-          ...meta,
+        // PATCH with only `quarantine` — same stale-snapshot reason as promote.
+        await deps.host.patchGraphMetadata(fromGid, {
           quarantine: { ...meta.quarantine!, items: meta.quarantine!.items.map((it) => ({ ...it })) },
         });
         const out = [
@@ -6449,9 +6768,18 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // quarantine engram can't be enumerated. (Review tooling calls
           // skillTrainer.listSkills(gid) on the host directly, not this tool.)
           if (deps.host.isQuarantined(graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+          // DISABLED-AGENT CONTRACT: same bypass, different cause — an explicit
+          // `engram` arg names a switched-off agent directly, and an MCP client
+          // is the "other agent" that switch exists to exclude.
+          if (deps.host.skillsDisabled(graphId)) return mcpError(DISABLED_AGENT_REFUSAL);
           if (!scopeAllowsGraph(graphId)) return scopeDeniedError(args.engram);
         }
-        const skills = deps.skillTrainer.listSkills(graphId).filter((s) => scopeAllowsGraph(s.graphId));
+        // The DEFAULT (no `engram`) scope is enumerated inside the trainer, so
+        // drop switched-off agents here as well — otherwise an MCP client that
+        // passes no `engram` still sees the skills of an agent the owner
+        // excluded. Cheap, and it keeps this MCP boundary correct on its own.
+        const skills = deps.skillTrainer.listSkills(graphId)
+          .filter((s) => scopeAllowsGraph(s.graphId) && !deps.host.skillsDisabled(s.graphId));
         if (!skills.length) {
           return { content: [{ type: 'text', text: 'No trained skills found. Use train_skill to train your first skill.' }] };
         }
@@ -6474,15 +6802,24 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resEngramW) return resEngramW.error;
         // QUARANTINE CONTRACT: refuse to walk a quarantined skill (see get_skill).
         if (deps.host.isQuarantined(resEngramW.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+        // DISABLED-AGENT CONTRACT: walking a skill IS dispatching it, which is
+        // precisely what the owner's off switch stops.
+        if (deps.host.skillsDisabled(resEngramW.graphId)) return mcpError(DISABLED_AGENT_REFUSAL);
         if (!scopeAllowsGraph(resEngramW.graphId)) return scopeDeniedError(args.graphId);
-        const { walkSkillSequence: walkFn, formatSkillForRecall: formatFn } =
+        const { walkSkillSequence: walkFn, formatSkillForRecall: formatFn, resolveSkillSourceId: resolveW } =
           await import('./skill-trainer.js');
+        // AG.31 — resolve the caller's id to the CANONICAL sourceId BEFORE
+        // anything reads state keyed by it. `skillCallLinks.getForSource` on
+        // the next line is its own strict lookup, so normalizing only at the
+        // walk call would hand back a link-less SOP with no error at all.
+        const walkIdW = resolveW(deps.host, resEngramW.graphId, args.sourceId);
+        if (!walkIdW) return mcpError(skillNotFoundError(args.sourceId, args.graphId));
         // D1 — pre-load cross-engram call links (the walk is sync) so any
         // `@skill:` ref resolving to another engram surfaces in the SOP.
-        const crossLinksW = await deps.host.skillCallLinks.getForSource(resEngramW.graphId, args.sourceId);
-        const walked = walkFn(deps.host, resEngramW.graphId, args.sourceId, { recursive: args.recursive, crossEngramLinks: crossLinksW });
+        const crossLinksW = await deps.host.skillCallLinks.getForSource(resEngramW.graphId, walkIdW);
+        const walked = walkFn(deps.host, resEngramW.graphId, walkIdW, { recursive: args.recursive, crossEngramLinks: crossLinksW });
         if (walked.steps.length === 0) {
-          return mcpError(`Skill "${args.sourceId}" has no steps. Use get_skill to read it as raw text, or train_skill to rebuild it.`);
+          return mcpError(emptySkillError(deps.host, resEngramW.graphId, walkIdW, 'steps'));
         }
         return { content: [{ type: 'text', text: formatFn(walked) }] };
       }
@@ -6497,22 +6834,32 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resEngramS) return resEngramS.error;
         // QUARANTINE CONTRACT: refuse to walk a quarantined skill (see get_skill).
         if (deps.host.isQuarantined(resEngramS.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+        // DISABLED-AGENT CONTRACT: the structured walk is the machine-readable
+        // twin of walk_skill — same dispatch, so the same refusal.
+        if (deps.host.skillsDisabled(resEngramS.graphId)) return mcpError(DISABLED_AGENT_REFUSAL);
         if (!scopeAllowsGraph(resEngramS.graphId)) return scopeDeniedError(args.graphId);
-        const { walkSkillSequence: walkFn2, walkSkillToJson } =
+        const { walkSkillSequence: walkFn2, walkSkillToJson, resolveSkillSourceId: resolveS } =
           await import('./skill-trainer.js');
-        const crossLinksS = await deps.host.skillCallLinks.getForSource(resEngramS.graphId, args.sourceId);
+        // AG.31 — see walk_skill above. Both the call-link pre-load and the
+        // cited-node persistence below key off this id, so it is resolved once
+        // here and every line after uses the canonical form — including the
+        // plan's own `skill.sourceId`, so a run saved from a ref-form walk
+        // keys the same as one saved from an id-form walk.
+        const walkIdS = resolveS(deps.host, resEngramS.graphId, args.sourceId);
+        if (!walkIdS) return mcpError(skillNotFoundError(args.sourceId, args.graphId));
+        const crossLinksS = await deps.host.skillCallLinks.getForSource(resEngramS.graphId, walkIdS);
         const { ensureSkillCitedNodesPersisted } = await import('./skill-recall-bindings.js');
-        await ensureSkillCitedNodesPersisted(deps.host, resEngramS.graphId, args.sourceId);
-        const walked = walkFn2(deps.host, resEngramS.graphId, args.sourceId, { recursive: args.recursive, crossEngramLinks: crossLinksS });
+        await ensureSkillCitedNodesPersisted(deps.host, resEngramS.graphId, walkIdS);
+        const walked = walkFn2(deps.host, resEngramS.graphId, walkIdS, { recursive: args.recursive, crossEngramLinks: crossLinksS });
         if (walked.steps.length === 0 && walked.goals.length === 0) {
-          return mcpError(`Skill "${args.sourceId}" has no steps or goals to walk. Use get_skill, or train_skill to rebuild it.`);
+          return mcpError(emptySkillError(deps.host, resEngramS.graphId, walkIdS, 'steps or goals'));
         }
         // Resolve title (first body step's text, falling back to source ref) + engram display name
         const meta = deps.host.getGraphMetadata(resEngramS.graphId);
-        const src = deps.host.getSourceRecord(resEngramS.graphId, args.sourceId);
-        const title = walked.steps[0]?.text ?? src?.ref ?? args.sourceId;
+        const src = deps.host.getSourceRecord(resEngramS.graphId, walkIdS);
+        const title = walked.steps[0]?.text ?? src?.ref ?? walkIdS;
         const plan = walkSkillToJson(walked, {
-          sourceId: args.sourceId,
+          sourceId: walkIdS,
           title,
           ...(meta?.displayName ? { engramName: meta.displayName } : {}),
         });
@@ -6625,6 +6972,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // unpromoted skill text never reaches the AI. The review path reads the
         // host (list_quarantined → skillTrainer.getSkill) directly, not this tool.
         if (deps.host.isQuarantined(resEngram.graphId)) return mcpError(QUARANTINE_READ_REFUSAL);
+        // DISABLED-AGENT CONTRACT: get_skill hands the AI the full skill text,
+        // which is dispatch by another name — refuse it for a switched-off agent
+        // so "inert" cannot be worked around by reading the SOP and running it.
+        if (deps.host.skillsDisabled(resEngram.graphId)) return mcpError(DISABLED_AGENT_REFUSAL);
         if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(args.graphId);
         const detail = deps.skillTrainer.getSkill(resEngram.graphId, args.sourceId);
         if (!detail) return mcpError(`Skill "${args.sourceId}" not found in engram "${args.graphId}".`);

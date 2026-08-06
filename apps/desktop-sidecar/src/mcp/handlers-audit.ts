@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { GraphnosisHost } from '../host.js';
 import type { BrainEngine } from '../brain-engine.js';
 import type { LicenseValidator } from '../license-validator.js';
+import { checkFeatureGate } from '../license-gate.js';
 import { withEmbedding } from '../embedding-queue.js';
 import { scopeCoversEngram, type SharingScope } from '@graphnosis-app/core/settings';
 import { isDegenerateDuplicateCandidate } from '../memory-hygiene.js';
@@ -214,13 +215,10 @@ export async function dispatchAuditMcpTool(
     }
     case 'audit_memory': {
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
-      if (!licensed) {
-        return mcpError(
-          'audit_memory requires a Graphnosis Pro subscription. ' +
-          'Subscribe at https://graphnosis.com/upgrade.',
-        );
-      }
+      const denial = checkFeatureGate(licenseToken, 'memory-integrity', deps.licenseValidator, {
+        subject: 'audit_memory',
+      });
+      if (denial) return mcpError(denial.message);
       const args = AuditMemoryInput.parse(rawInput);
       const threshold = args.threshold ?? 0.85;
       let graphIds = deps.host.listGraphs().filter((id) => {
@@ -303,13 +301,11 @@ export async function dispatchAuditMcpTool(
         return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
       }
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
-      if (!licensed) {
-        return mcpError(
-          'duplicate_pairs requires a Graphnosis Pro subscription. ' +
-          'Subscribe at https://graphnosis.com/upgrade.',
-        );
-      }
+      const denial = checkFeatureGate(licenseToken, 'memory-integrity', deps.licenseValidator, {
+        subject: 'duplicate_pairs',
+        guidance: 'Duplicate review is also available in the Graphnosis app Memory Integrity Workbench.',
+      });
+      if (denial) return mcpError(denial.message);
       const args = DuplicatePairsInput.parse(rawInput);
       // Scoped sessions only see pairs from engrams their share covers
       // (duplicate pairs are always same-engram — DuplicatePair.graphId).
@@ -338,13 +334,11 @@ export async function dispatchAuditMcpTool(
         return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
       }
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
-      if (!licensed) {
-        return mcpError(
-          'contradiction_pairs requires a Graphnosis Pro subscription. ' +
-          'Subscribe at https://graphnosis.com/upgrade.',
-        );
-      }
+      const denial = checkFeatureGate(licenseToken, 'memory-integrity', deps.licenseValidator, {
+        subject: 'contradiction_pairs',
+        guidance: 'Contradictions can still be reviewed and resolved in the Graphnosis app Memory Integrity Workbench.',
+      });
+      if (denial) return mcpError(denial.message);
       const args = ContradictionPairsInput.parse(rawInput);
       const getter = (deps.brainEngine as { getContradictionPairs?: () => unknown[] }).getContradictionPairs?.bind(deps.brainEngine);
       const pairs = ((getter ? getter() : []) as Array<{
@@ -384,13 +378,10 @@ export async function dispatchAuditMcpTool(
         return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
       }
       const licenseToken = await helpers.getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'memory-integrity') ?? false;
-      if (!licensed) {
-        return mcpError(
-          'compare_sources requires a Graphnosis Pro subscription. ' +
-          'Subscribe at https://graphnosis.com/upgrade.',
-        );
-      }
+      const denial = checkFeatureGate(licenseToken, 'memory-integrity', deps.licenseValidator, {
+        subject: 'compare_sources',
+      });
+      if (denial) return mcpError(denial.message);
       const args = CompareSourcesInput.parse(rawInput);
       const req = helpers.requireEngram(deps.host, args.engram);
       if ('error' in req) return req.error;

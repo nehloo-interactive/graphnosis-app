@@ -144,7 +144,7 @@ class McpRegistry {
   }
 
   /**
-   * Attach metadata to a connection after the MCP session is initialised.
+   * Attach metadata to a connection after the MCP session is initialized.
    * Currently used to tag the sharing token ID for Team Admin accounting.
    */
   setConnectionMeta(id: string, meta: { sharingTokenId?: string }): void {
