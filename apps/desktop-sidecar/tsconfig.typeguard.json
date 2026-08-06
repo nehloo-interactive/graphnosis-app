@@ -1,0 +1,13 @@
+{
+  "//": "Type-only config for the DEFECT B compile-time guard fixtures in typeguard/. Additive: the app build config (tsconfig.json) is untouched and never sees these files. Driven by tests/defect-b-proof.ts, which asserts defect-b.reject.ts FAILS and defect-b.accept.ts is clean.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "typeguard/*.ts"],
+  "exclude": ["src/smoketest.ts", "src/smoketest*.ts"]
+}
