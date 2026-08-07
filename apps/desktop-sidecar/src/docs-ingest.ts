@@ -23,10 +23,28 @@ export type DocsIngestProgress = {
 /** Fixed slug for the engram holding ingested Graphnosis documentation. */
 export const DOCS_ENGRAM_ID = 'graphnosis-docs';
 
-/** Bundled system engrams — product docs and demo packs, never user data.
- * Personal-state recall (todos, tasks, deadlines) must exclude these so
- * website copy can't masquerade as the user's own memories. */
-export const SYSTEM_ENGRAM_IDS = new Set([DOCS_ENGRAM_ID, 'graphnosis-skill-demos']);
+/**
+ * Bundled system engrams — product docs and default Agempi packs, never user
+ * data. Personal-state recall (todos, tasks, deadlines) must exclude these so
+ * website copy can't masquerade as the user's own memories.
+ *
+ * Also excluded from Memory Integrity *attention* (contradiction / duplicate
+ * queues): changelog history and skill demos generate hundreds of false
+ * "Needs attention" pairs on every fresh cortex.
+ *
+ * Ids match DEFAULT_AGEMPI in ipc.ts — keep in sync when packs change.
+ */
+export const SYSTEM_ENGRAM_IDS = new Set([
+  DOCS_ENGRAM_ID,
+  'graphnosis-skill-demos', // legacy single-pack id
+  'graphnosis-onboarding',
+  'graphnosis-ghampus-hush',
+  'graphnosis-coach',
+]);
+
+export function isSystemEngram(graphId: string): boolean {
+  return SYSTEM_ENGRAM_IDS.has(graphId);
+}
 
 /** Settings row without .gai/.aikg on disk (any engram). */
 export function isGhostMetadataEngram(host: GraphnosisHost, graphId: string): boolean {

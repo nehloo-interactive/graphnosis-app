@@ -11,6 +11,61 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.36.0 — Your agents get faces, and a home for the conversations you've had with them
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-06</p>
+
+**Agents are now Agempi — tiles with an avatar, a name, and an on/off switch.** The old Agents page is gone. In its place: a tile grid where each agent has a shape, a color, and (for agents with a personality) a hat. Drag tiles together into a crew and set one autonomy level for the whole group. Every agent gets its own switch — turn one off and its skills go inert everywhere, including for the AI clients connected over MCP.
+
+**Every new cortex now ships with three trained agents.** Onboarding teaches you how to use Graphnosis — recall, save, correct, keep private things private, and what to do when recall comes back thin — and is active from the start. Ghampus Hush (chat protocol, consent, memory capture) and Coach (session habits, delegation, cortex upkeep) install alongside it, switched off, so you can turn either on when you want it.
+
+**Your chat history with Ghampus is now a list, not a black box.** The left rail shows every past conversation, newest first, titled by your local model when you have one configured (or by the opening line, when you don't). Click one to pick it back up.
+
+### Added
+
+- **Chats list** in the rail — every Ghampus session on disk, titled and timestamped, one click to reopen.
+- **Pin chats** in the rail — hover a thread for the pin control; the first pin opens a Pins section above Chats. Works against a remote cortex too (pins stay on that cortex once the server build includes pin IPC; against an older remote build they are kept on this device for that server URL).
+- **Skill Role** — a short focus line (max 40 characters) under each skill title. Set it when training, or later via the `set_skill_role` / `set_skill_roles` tools. Shown in the skill library.
+- **Three default agents** (Onboarding, Ghampus Hush, Coach) install automatically on a new cortex; the two off-by-default ones are also published as downloadable, signed packs.
+- **Crews**: drag agent tiles together and set one autonomy dial for the group.
+- **A "create a new skill from this chat" flow** in Ghampus — offers to turn a conversation into a trained skill, with a draft you review before it's saved.
+- **Proposed SOPs** — one inbox for new-skill drafts and retrain proposals; Accept shows a structured field diff before anything writes to your skills library.
+- **Evolve dial** per agent — Ask first / Notify / Auto for how far automatic skill updates may go (meta skills and open contradictions still block silent writes).
+- **Scheduled check-ins** from Ghampus (optional) — idle pulses on cortex health and inbound activity, with read-only skill previews when you allow them.
+- **A "Teams & Enterprise" page**, split out of Get Connected: engram sharing, compliance operations, the classification schema, and the org engram catalog now have their own destination.
+- **A license re-check button** for subscribers whose token needs refreshing without starting a new checkout.
+- Sources, Activity, and MCP Tools open as overlays now instead of full page switches, reachable from the toolbar and Get Connected.
+
+### Changed
+
+- **Get Connected's client and connector lists are now card grids**, each with clear connected/live status, instead of chip rows.
+- The top navigation is renamed: MemoryStudio → **Job Memory**, Autonomous Skills → **Train Skills**, Job Memory Kits → **Skill Packs**.
+- **Skill Packs**: each pack's contents collapse behind a single "This pack includes" toggle that expands every card at once.
+- The Home dashboard's per-engram health gauge is replaced by an agent tile; recovery from a failed scan is automatic now rather than a manual retry.
+- The old "add starter skill demos?" banner and its language picker are gone — the three default agents install silently, and you turn the ones you want on from the agent grid.
+
+### Fixed
+
+- **Pinning a chat in the rail could look like a no-op** while the chat list was still loading titles — the pin wrote, then the refresh was dropped. The list now queues a second render so Pins appears. Pin icons also no longer stick after hover, and invisible pin hit-targets no longer steal clicks from the title. A remote thin client also learns whether the host cortex supports pin IPC up front (instead of guessing from errors), and migrates any laptop-only pins onto the host when that support appears.
+- **Recall answers no longer cut a memory off mid-sentence.** Long memories are chunked for storage, and recall used to hand your AI the raw chunks — fragments that could start or end mid-word. Recall now stitches adjacent chunks from the same memory back into one coherent passage before handing it over.
+- **A memory tool that claimed to return full content was capped at 500 characters** without saying so. It now returns the full text (paginated past 60,000 characters, with a clear notice), and no longer silently includes memories you'd already deleted.
+- **Some AI tools ignored their own documented parameter names.** `note`/`content`/`body`, `q`/`question`, and similar aliases are now honored instead of silently rejected or, worse, silently misfiled into the wrong place.
+- **A skill referencing another skill in its instructions could create a link to the wrong skill entirely**, if an ordinary word in the instructions happened to match another skill's title. Skill-to-skill references are now matched precisely.
+- **A skill that called more than one other skill in the same step only ever ran the first one**, with nothing said about the rest. All of them run now.
+- **Turning an agent off didn't fully take** — its skills could still be read or run through some paths. The switch is now enforced everywhere: chat, automatic skill routing, and every AI tool that reads or runs skills.
+- **A setting you just changed could revert on its own** — a background save landing at the wrong moment could silently overwrite it with stale data. Settings writes are now race-safe.
+- **Renaming, archiving, or otherwise touching one property of an engram could reset unrelated ones** — its privacy tier, its autonomy level, its exclusion list — back to default. These writes now change only what they mean to.
+- **The "hidden skills" filter also showed skills that weren't hidden.**
+- **A failed skill-list load in the skill picker showed "no skills in your library"** instead of a retriable error.
+- Local-model errors now name what actually happened (model not installed vs. backend unreachable vs. something else) instead of a bare failure code.
+- The download page could serve an out-of-date installer link if the version lookup that feeds it failed silently; that failure is now loud instead of quiet.
+
+### Security
+
+- **The remote-access bearer token is no longer passed as a command-line argument** to the process that connects Claude Desktop (or another MCP client) to a remote Graphnosis instance — any local process could previously read it. It's now stored in a permission-restricted file instead. If your remote-access config predates this release, reconnect it once to pick up the new, safer form.
+- **Added an alternative sign-in for the remote-access bridge**, for setups reached over Tailscale: your Tailscale identity, verified independently rather than trusted from a header alone, instead of the shared access token.
+- Subscribers whose plan was activated in a narrow window during late May/June 2026 could be missing a feature or two their plan entitles them to; this is now corrected for new token issuance.
+
 ## v1.35.0 — Nothing you delete comes back shorter than it was
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-08-05</p>

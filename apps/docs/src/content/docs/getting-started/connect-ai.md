@@ -127,7 +127,7 @@ If you prefer to edit by hand, the wizard produces JSON shaped like this (paths 
 On Windows, the config file is `%USERPROFILE%\.cursor\mcp.json` and the relay is `graphnosis-mcp-relay.exe` next to the sidecar in the Graphnosis install folder.
 
 :::tip[Dev builds (`pnpm dev:desktop`)]
-Sidecar rebuilds kill the synapse while Cursor keeps the relay process running. The relay reconnects automatically when you unlock, but Cursor may stay on **Loading tools** until you reload the window or toggle Graphnosis in **Settings → MCP**. The Graphnosis app **Connections → Reconnect** button bounces the MCP socket without restarting Cursor.
+Sidecar rebuilds kill the synapse while Cursor keeps the relay process running. The relay reconnects automatically when you unlock. Graphnosis advertises `tools.listChanged` and pushes `notifications/tools/list_changed` after **Connections → Reconnect** and when the MCP tool allowlist changes, so clients that honor that notification re-fetch tools without a full IDE restart. If a client still shows **Loading tools**, reload the window or toggle Graphnosis in **Settings → MCP**.
 :::
 
 ## GitHub Copilot (VS Code)
