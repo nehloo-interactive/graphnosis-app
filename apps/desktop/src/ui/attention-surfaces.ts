@@ -61,6 +61,12 @@ function hideAttentionSurfaces(): void {
   bubble?.classList.add('hidden');
 }
 
+/**
+ * Sticky / bubble copy — corrections + high-severity contradictions only.
+ * Duplicates are omitted on purpose: self-heal + the Home coherence banner
+ * already cover them; stacking "60 duplicates" here AND in the yellow
+ * coherence note is the double-spam new installs were seeing.
+ */
 function formatAttentionParts(counts: AttentionCounts): string[] {
   const parts: string[] = [];
   if (counts.corrections > 0) {
@@ -69,10 +75,11 @@ function formatAttentionParts(counts: AttentionCounts): string[] {
   if (counts.contradictions > 0) {
     parts.push(`${counts.contradictions} contradiction${counts.contradictions === 1 ? '' : 's'}`);
   }
-  if (counts.duplicates > 0) {
-    parts.push(`${counts.duplicates} duplicate${counts.duplicates === 1 ? '' : 's'}`);
-  }
   return parts;
+}
+
+function nagAttentionTotal(counts: AttentionCounts): number {
+  return counts.corrections + counts.contradictions;
 }
 
 function wireAttentionBubble(d: AttentionSurfaceDeps): void {
@@ -119,15 +126,16 @@ function renderFloatingBubble(counts: AttentionCounts, d: AttentionSurfaceDeps):
   const bubble = document.getElementById('ghampus-attention-bubble');
   if (!bubble) return;
   const parts = formatAttentionParts(counts);
+  const nagTotal = nagAttentionTotal(counts);
   const headline = parts[0] ?? 'items need review';
   const textEl = bubble.querySelector('.ghampus-attention-bubble-text');
   if (textEl) {
-    textEl.textContent = counts.total === 1
+    textEl.textContent = nagTotal === 1
       ? `1 ${headline} waiting — review in Memory Integrity`
-      : `${counts.total} items need attention — ${parts.join(', ')}`;
+      : `${nagTotal} items need attention — ${parts.join(', ')}`;
   }
   const badge = bubble.querySelector('.ghampus-attention-bubble-badge');
-  if (badge) badge.textContent = String(counts.total);
+  if (badge) badge.textContent = String(nagTotal);
   const correctionsBtn = bubble.querySelector<HTMLElement>('[data-attention-bubble-corrections]');
   if (correctionsBtn) correctionsBtn.classList.toggle('hidden', counts.corrections <= 0);
   bubble.classList.remove('hidden');
@@ -137,11 +145,12 @@ function renderFloatingBubble(counts: AttentionCounts, d: AttentionSurfaceDeps):
 export function syncAttentionSurfaces(counts: AttentionCounts): void {
   if (!deps) return;
   lastCounts = { ...counts };
-  counts.total = counts.corrections + counts.duplicates + counts.contradictions;
+  const nagTotal = nagAttentionTotal(counts);
+  counts.total = nagTotal;
 
-  if (counts.total <= 0) {
+  if (nagTotal <= 0) {
     hideAttentionSurfaces();
-    syncGhampusAttentionNudge(counts, false);
+    syncGhampusAttentionNudge({ ...counts, total: 0, duplicates: 0 }, false);
     clearAttentionDismiss();
     return;
   }
@@ -165,5 +174,6 @@ export function syncAttentionSurfaces(counts: AttentionCounts): void {
     document.getElementById('ghampus-attention-bubble')?.classList.add('hidden');
   }
 
-  syncGhampusAttentionNudge(counts, true);
+  // In-chat nudge uses the same nag set (no duplicate spam).
+  syncGhampusAttentionNudge({ ...counts, duplicates: 0, total: nagTotal }, true);
 }

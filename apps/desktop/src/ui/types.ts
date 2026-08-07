@@ -29,6 +29,11 @@ export interface GraphMetadata {
    */
   executionAutonomyLevel?: 'L0' | 'L1' | 'L2' | 'L3';
   /**
+   * Per-Agempu Evolve dial — Praxis / train promotion ceiling.
+   * Distinct from executionAutonomyLevel (L0–L3). Absent → preview-first.
+   */
+  evolveAutonomyLevel?: 'preview-first' | 'notify' | 'auto-accept';
+  /**
    * Agent OFF SWITCH — mirrors the core `GraphMetadata.skillsDisabled`. True =
    * this engram's un-ganglia is meant to be INERT: no skill of its dispatches
    * by any route and none appear in a listing.

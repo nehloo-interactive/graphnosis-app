@@ -2120,7 +2120,8 @@ function render(status: StatusSnapshot): void {
       // Chats list: populate as soon as the cortex unlocks, not only on first
       // visit to the Inbox — the rail is visible immediately, so its content
       // should not wait for a tab switch that may never happen this session.
-      void renderRailChats();
+      // Capabilities first so pin routing / migrate need not guess via errors.
+      void refreshHostCapabilities().then(() => renderRailChats());
       await revealApp();
     }).catch(() => void revealApp()); // show the app even if metadata fetch fails
   } else {
@@ -2162,8 +2163,16 @@ function render(status: StatusSnapshot): void {
     // the previous cortex's chat history, even for the instant before the
     // next unlock's renderRailChats() call repopulates it.
     document.body.classList.remove('rail-has-chats');
+    // Re-probe pin IPC / host capabilities on the next unlock (Mini may have been upgraded).
+    railPinsServerSupported = null;
+    railPinMigrateAttempted = false;
+    hostCapabilities = null;
     const railChatsList = document.getElementById('rail-chats-list');
     if (railChatsList) railChatsList.innerHTML = '';
+    const railPinsList = document.getElementById('rail-pins-list');
+    if (railPinsList) railPinsList.innerHTML = '';
+    document.getElementById('rail-pins')?.classList.add('hidden');
+    document.getElementById('rail-chats-section')?.classList.remove('hidden');
     document.getElementById('rail-chats')?.classList.add('hidden');
     // Hide the needs-review overlay so it doesn't bleed into the next unlock.
     els.needsReviewOverlay?.classList.add('hidden');
@@ -3747,45 +3756,254 @@ function activateMode(mode: Mode): void {
 // truncated — so a machine with no local model still gets real titles rather
 // than placeholders. Clicking a row makes that thread active and shows it in
 // the Inbox; the thread being left stays on disk and stays listed.
+// Pinned threads move into a "Pins" section above "Chats"; both sections share
+// one scrollbar. First pin creates the Pins heading; unpinning the last pin
+// removes it.
 interface RailChatSummary {
   sessionId: string;
   title: string;
   turnCount: number;
   updatedAt: number;
   active: boolean;
+  pinned?: boolean;
 }
 
-/** Guards against two in-flight renders racing (rail click + mode switch). */
+/**
+ * Guards against two in-flight renders racing (rail click + mode switch).
+ * A second call while one is in flight must NOT be dropped — pin/unpin and
+ * "start fresh" both write then re-render; if the unlock-time list (slow when
+ * the local LLM titles threads) is still running, a dropped refresh leaves the
+ * rail showing the pre-write snapshot forever.
+ */
 let railChatsInFlight = false;
+let railChatsQueued = false;
+
+/**
+ * null = not probed yet; true = cortex sidecar has ghampus:chats:pin/unpin
+ * (writes session-pins.json on the server); false = older remote/local build
+ * — pins live in this client's localStorage until the cortex is upgraded.
+ */
+let railPinsServerSupported: boolean | null = null;
+/** One migrate attempt per unlock once the cortex advertises pin support. */
+let railPinMigrateAttempted = false;
+
+/** Last `cortex:capabilities` report from the host (null if host is too old). */
+type HostCapabilitiesReport = {
+  schemaVersion: number;
+  appVersion: string;
+  shellVersion: string | null;
+  sdkVersion: string | null;
+  secureSyncVersion: string | null;
+  capabilities: string[];
+  reportedAt: number;
+};
+let hostCapabilities: HostCapabilitiesReport | null = null;
+
+/**
+ * Ask the host what it supports. Older sidecars lack this method — leave
+ * pin support as "unknown" so the existing Unknown-IPC fallback still works.
+ */
+async function refreshHostCapabilities(): Promise<void> {
+  try {
+    const report = await ipcCall<HostCapabilitiesReport>('cortex:capabilities', {});
+    if (!report || !Array.isArray(report.capabilities)) {
+      hostCapabilities = null;
+      return;
+    }
+    hostCapabilities = report;
+    railPinsServerSupported = report.capabilities.includes('ghampus.chats.pin');
+    if (document.body.classList.contains('remote-cortex')) {
+      console.info(
+        `[cortex] host capabilities app=${report.appVersion}`
+        + ` sdk=${report.sdkVersion ?? '?'} ss=${report.secureSyncVersion ?? '?'}`
+        + ` pins=${railPinsServerSupported ? 'yes' : 'no'}`,
+      );
+    }
+  } catch (err) {
+    hostCapabilities = null;
+    if (isUnknownIpcMethodError(err)) {
+      // Pre-capabilities host — pin path will probe on first click.
+      railPinsServerSupported = null;
+      return;
+    }
+    console.warn('[cortex] capabilities probe failed', err);
+  }
+}
+
+const RAIL_PIN_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"'
+  + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+  + '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>'
+  + '</svg>';
+
+/** Scope client-fallback pins per cortex (remote URL, or "local"). */
+function railPinStorageKey(): string {
+  let scope = 'local';
+  try {
+    if (document.body.classList.contains('remote-cortex')) {
+      const url = (localStorage.getItem('graphnosis:remote-url') ?? '').trim();
+      scope = url || 'remote';
+    }
+  } catch { /* private mode */ }
+  return `graphnosis:ghampus-chat-pins:${scope}`;
+}
+
+function readClientRailPins(): string[] {
+  try {
+    const raw = localStorage.getItem(railPinStorageKey());
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === 'string' && id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function writeClientRailPins(pins: string[]): void {
+  try {
+    localStorage.setItem(railPinStorageKey(), JSON.stringify(pins));
+  } catch { /* private mode / quota */ }
+}
+
+function applyClientRailPin(sessionId: string, pin: boolean): string[] {
+  const prev = readClientRailPins().filter((id) => id !== sessionId);
+  if (pin) prev.unshift(sessionId);
+  writeClientRailPins(prev);
+  return prev;
+}
+
+/** Merge server list with client-fallback pins (older remote sidecars). */
+function withRailPinState(chats: RailChatSummary[]): RailChatSummary[] {
+  const clientPins = readClientRailPins();
+  const clientRank = new Map(clientPins.map((id, i) => [id, i]));
+  const serverAware = chats.some((c) => typeof c.pinned === 'boolean');
+  if (serverAware) railPinsServerSupported = true;
+  const enriched = chats.map((c) => ({
+    ...c,
+    pinned: !!(c.pinned || clientRank.has(c.sessionId)),
+  }));
+  enriched.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    if (a.pinned && b.pinned) {
+      const ap = clientRank.get(a.sessionId) ?? Number.POSITIVE_INFINITY;
+      const bp = clientRank.get(b.sessionId) ?? Number.POSITIVE_INFINITY;
+      if (ap !== bp) return ap - bp;
+    }
+    return b.updatedAt - a.updatedAt;
+  });
+  return enriched;
+}
+
+/**
+ * When the cortex gains pin IPC (e.g. Mini upgraded), push any laptop-only
+ * fallback pins into session-pins.json once, then clear the ones that landed.
+ * Order: walk local list last→first so server prepends restore original order.
+ */
+async function migrateClientPinsToServer(): Promise<boolean> {
+  if (railPinsServerSupported !== true) return false;
+  const local = readClientRailPins();
+  if (local.length === 0) return false;
+  const remaining: string[] = [];
+  for (const id of [...local].reverse()) {
+    try {
+      const res = await ipcCall<{ ok?: boolean }>('ghampus:chats:pin', { sessionId: id });
+      if (!res?.ok) remaining.push(id);
+    } catch (err) {
+      if (isUnknownIpcMethodError(err)) {
+        railPinsServerSupported = false;
+        return false;
+      }
+      remaining.push(id);
+    }
+  }
+  writeClientRailPins(remaining);
+  const moved = remaining.length < local.length;
+  if (moved) {
+    console.info(
+      `[rail-chats] migrated ${local.length - remaining.length} client pin(s) to cortex`
+      + (remaining.length ? ` (${remaining.length} still local)` : ''),
+    );
+  }
+  return moved;
+}
+
+function railChatRowHtml(c: RailChatSummary): string {
+  const full = escapeHtml(c.title);
+  const when = new Date(c.updatedAt).toLocaleString();
+  const pinned = !!c.pinned;
+  const pinLabel = pinned ? 'Unpin chat' : 'Pin chat';
+  return `<div class="rail-chat-row">`
+    + `<button type="button" class="rail-chat-btn${c.active ? ' active' : ''}"`
+    + ` data-session-id="${escapeHtml(c.sessionId)}"`
+    + ` title="${full} — ${escapeHtml(when)}">${full}</button>`
+    + `<button type="button" class="rail-chat-pin${pinned ? ' is-pinned' : ''}"`
+    + ` data-session-id="${escapeHtml(c.sessionId)}"`
+    + ` data-pinned="${pinned ? '1' : '0'}"`
+    + ` title="${pinLabel}" aria-label="${pinLabel}" aria-pressed="${pinned ? 'true' : 'false'}">`
+    + RAIL_PIN_ICON
+    + `</button>`
+    + `</div>`;
+}
 
 export async function renderRailChats(): Promise<void> {
   const wrap = document.getElementById('rail-chats');
+  const pinsWrap = document.getElementById('rail-pins');
+  const pinsList = document.getElementById('rail-pins-list');
   const list = document.getElementById('rail-chats-list');
-  if (!wrap || !list || railChatsInFlight) return;
+  if (!wrap || !list || !pinsWrap || !pinsList) return;
+  if (railChatsInFlight) {
+    railChatsQueued = true;
+    return;
+  }
   railChatsInFlight = true;
   try {
-    const res = await ipcCall<{ chats?: RailChatSummary[] }>('ghampus:chats:list', {})
-      .catch(() => null);
-    const chats = res?.chats ?? [];
-    // No history yet — hide the whole block rather than show an empty heading,
-    // and drop the body class so Settings goes back to being the sticky anchor.
-    wrap.classList.toggle('hidden', chats.length === 0);
-    document.body.classList.toggle('rail-has-chats', chats.length > 0);
-    if (chats.length === 0) {
-      list.innerHTML = '';
-      return;
-    }
-    list.innerHTML = chats.map((c) => {
-      // The FULL title goes in the title attribute; CSS clips the visible line
-      // with an ellipsis at whatever the rail's real width turns out to be.
-      const full = escapeHtml(c.title);
-      const when = new Date(c.updatedAt).toLocaleString();
-      return `<button class="rail-chat-btn${c.active ? ' active' : ''}"`
-        + ` data-session-id="${escapeHtml(c.sessionId)}"`
-        + ` title="${full} — ${escapeHtml(when)}">${full}</button>`;
-    }).join('');
+    do {
+      railChatsQueued = false;
+      const res = await ipcCall<{ chats?: RailChatSummary[] }>('ghampus:chats:list', {})
+        .catch(() => null);
+      const chats = withRailPinState(res?.chats ?? []);
+      // No history yet — hide the whole block rather than show an empty heading,
+      // and drop the body class so Settings goes back to being the sticky anchor.
+      wrap.classList.toggle('hidden', chats.length === 0);
+      document.body.classList.toggle('rail-has-chats', chats.length > 0);
+      const chatsSection = document.getElementById('rail-chats-section');
+      if (chats.length === 0) {
+        list.innerHTML = '';
+        pinsList.innerHTML = '';
+        pinsWrap.classList.add('hidden');
+        chatsSection?.classList.remove('hidden');
+        continue;
+      }
+      const pinned = chats.filter((c) => c.pinned);
+      const unpinned = chats.filter((c) => !c.pinned);
+      // First pin creates Pins; last unpin removes it. Hide empty Chats heading
+      // when every thread is pinned so we don't show a barren section.
+      pinsWrap.classList.toggle('hidden', pinned.length === 0);
+      chatsSection?.classList.toggle('hidden', unpinned.length === 0);
+      pinsList.innerHTML = pinned.map(railChatRowHtml).join('');
+      list.innerHTML = unpinned.map(railChatRowHtml).join('');
+      // Cortex just grew pin support (or we reconnected to a newer Mini) —
+      // flush laptop-only pins onto the host once per unlock.
+      if (
+        !railPinMigrateAttempted
+        && railPinsServerSupported === true
+        && readClientRailPins().length > 0
+      ) {
+        railPinMigrateAttempted = true;
+        void migrateClientPinsToServer().then((moved) => {
+          if (moved) void renderRailChats();
+        });
+      }
+    } while (railChatsQueued);
   } finally {
     railChatsInFlight = false;
+    // A queue flag set after the loop condition but before finally — rare —
+    // still needs one more pass.
+    if (railChatsQueued) {
+      railChatsQueued = false;
+      void renderRailChats();
+    }
   }
 }
 
@@ -3794,22 +4012,108 @@ document.addEventListener('graphnosis:ghampus-sessions-changed', () => {
   void renderRailChats();
 });
 
-document.getElementById('rail-chats-list')?.addEventListener('click', (ev) => {
-  const btn = (ev.target as HTMLElement | null)?.closest<HTMLButtonElement>('.rail-chat-btn');
-  const sessionId = btn?.dataset.sessionId;
-  if (!sessionId) return;
-  void (async () => {
-    const res = await ipcCall<{ ok?: boolean }>('ghampus:chats:open', { sessionId })
-      .catch(() => null);
-    if (!res?.ok) return;
-    // The cached thread is the one we just left — clear it before the Inbox
-    // re-reads, or the old conversation renders under the new session.
-    resetGhampusThreadCache();
-    activateMode('ghampus');
-    await refreshGhampusThread();
-    await renderRailChats();
-  })();
-});
+async function openRailChat(sessionId: string): Promise<void> {
+  const res = await ipcCall<{ ok?: boolean }>('ghampus:chats:open', { sessionId })
+    .catch(() => null);
+  if (!res?.ok) return;
+  // The cached thread is the one we just left — clear it before the Inbox
+  // re-reads, or the old conversation renders under the new session.
+  resetGhampusThreadCache();
+  activateMode('ghampus');
+  await refreshGhampusThread();
+  await renderRailChats();
+}
+
+async function toggleRailChatPin(sessionId: string, currentlyPinned: boolean): Promise<void> {
+  const wantPin = !currentlyPinned;
+  const method = currentlyPinned ? 'ghampus:chats:unpin' : 'ghampus:chats:pin';
+
+  // Prefer cortex-side pins when the sidecar knows the method (local OR remote
+  // after the Mini/server is upgraded). Older remotes get a client fallback so
+  // the rail still works without waiting on a server ship.
+  if (railPinsServerSupported !== false) {
+    try {
+      const res = await ipcCall<{ ok?: boolean }>(method, { sessionId });
+      if (res?.ok) {
+        railPinsServerSupported = true;
+        // Drop any client-fallback copy so we don't double-count after upgrade.
+        applyClientRailPin(sessionId, false);
+        await renderRailChats();
+        return;
+      }
+      // Server ran the handler and refused (bad id, missing session file).
+      // Do not silently fall back to a client pin that the cortex rejected.
+      console.warn(`[rail-chats] ${method} failed`, res);
+      return;
+    } catch (err) {
+      if (isUnknownIpcMethodError(err)) {
+        railPinsServerSupported = false;
+        console.info(
+          '[rail-chats] cortex has no pin IPC yet — storing pins on this client '
+          + '(works for remote thin-client against an older Mini build)',
+        );
+      } else {
+        console.warn(`[rail-chats] ${method} error`, err);
+        return;
+      }
+    }
+  }
+
+  applyClientRailPin(sessionId, wantPin);
+  await renderRailChats();
+}
+
+function wireRailChatsClicks(): void {
+  const scroll = document.getElementById('rail-chats-scroll');
+  if (!scroll || scroll.dataset.pinWired === '1') return;
+  scroll.dataset.pinWired = '1';
+
+  /** Clear row hover class — defeats sticky :hover on WKWebView / guest shells. */
+  const clearRailChatHover = (): void => {
+    scroll.querySelectorAll('.rail-chat-row.is-hover').forEach((el) => {
+      el.classList.remove('is-hover');
+    });
+  };
+
+  scroll.addEventListener('pointerover', (ev) => {
+    const row = (ev.target as HTMLElement | null)?.closest<HTMLElement>('.rail-chat-row');
+    if (!row || row.classList.contains('is-hover')) return;
+    clearRailChatHover();
+    row.classList.add('is-hover');
+  });
+  scroll.addEventListener('pointerout', (ev) => {
+    const row = (ev.target as HTMLElement | null)?.closest<HTMLElement>('.rail-chat-row');
+    if (!row) return;
+    const next = ev.relatedTarget as Node | null;
+    // Leaving the row (not moving into the pin / title inside it).
+    if (next && row.contains(next)) return;
+    row.classList.remove('is-hover');
+  });
+  scroll.addEventListener('pointerleave', clearRailChatHover);
+
+  scroll.addEventListener('click', (ev) => {
+    const target = ev.target as HTMLElement | null;
+    const pinBtn = target?.closest<HTMLButtonElement>('.rail-chat-pin');
+    if (pinBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      // Drop sticky :hover/:focus on WKWebView so the affordance hides when
+      // the pointer leaves (or after a successful pin moves the row).
+      pinBtn.blur();
+      pinBtn.closest('.rail-chat-row')?.classList.remove('is-hover');
+      const sessionId = pinBtn.dataset.sessionId;
+      if (!sessionId) return;
+      void toggleRailChatPin(sessionId, pinBtn.dataset.pinned === '1');
+      return;
+    }
+    const btn = target?.closest<HTMLButtonElement>('.rail-chat-btn');
+    const sessionId = btn?.dataset.sessionId;
+    if (!sessionId) return;
+    btn.blur();
+    void openRailChat(sessionId);
+  });
+}
+wireRailChatsClicks();
 
 // Wire the rail buttons once on module load.
 document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
@@ -8385,14 +8689,17 @@ async function refreshUnifiedAttentionBadge(correctionCount?: number): Promise<v
   try {
     const counts = await fetchAttentionCounts({ ipcCall });
     if (typeof correctionCount === 'number') counts.corrections = correctionCount;
-    counts.total = counts.corrections + counts.duplicates + counts.contradictions;
-    if (counts.total > 0) {
+    // Rail badge = human-urgent only (corrections + high contradictions).
+    // Duplicates are self-heal / Check-in — including them made Stats/Cortex
+    // show "245" on a fresh docs install.
+    const nagTotal = counts.corrections + counts.contradictions;
+    counts.total = nagTotal;
+    if (nagTotal > 0) {
       els.railCorrectionsBadge.classList.remove('hidden');
-      els.railCorrectionsBadge.textContent = String(counts.total);
+      els.railCorrectionsBadge.textContent = String(nagTotal);
       const tip: string[] = [];
       if (counts.corrections > 0) tip.push(`${counts.corrections} correction${counts.corrections === 1 ? '' : 's'}`);
       if (counts.contradictions > 0) tip.push(`${counts.contradictions} contradiction${counts.contradictions === 1 ? '' : 's'}`);
-      if (counts.duplicates > 0) tip.push(`${counts.duplicates} duplicate${counts.duplicates === 1 ? '' : 's'}`);
       els.railCorrectionsBadge.title = tip.join(' · ') || 'Items need your review';
     } else {
       els.railCorrectionsBadge.classList.add('hidden');
@@ -9204,7 +9511,11 @@ function renderHomeCoherenceBanner(): void {
   if (!banner) return;
   const dupes = brainVitalityBreakdown?.pendingDuplicatePairs ?? 0;
   const coherence = brainVitalityBreakdown?.cortexFactors?.coherence ?? 1;
-  const significantDrag = dupes > 5 || (dupes > 0 && coherence < 0.75);
+  // Don't stack with the sticky "Needs attention" strip — that used to repeat
+  // the same "60 duplicates" line twice on first unlock.
+  const attentionStrip = document.getElementById('home-attention-strip');
+  const attentionVisible = !!attentionStrip && !attentionStrip.classList.contains('hidden');
+  const significantDrag = !attentionVisible && (dupes > 5 || (dupes > 0 && coherence < 0.75));
   let dismissed = false;
   try { dismissed = sessionStorage.getItem(COHERENCE_BANNER_DISMISSED_KEY) === '1'; } catch { /* private mode */ }
   if (!significantDrag || dismissed) {
@@ -9651,8 +9962,10 @@ async function refreshHomeNeeds(): Promise<void> {
   type NeedRow = { n: number; label: string; tip: string; kind: 'corrections' | 'duplicates' | 'contradictions' };
   const rows: NeedRow[] = [];
   if (corrections > 0) rows.push({ n: corrections, label: corrections === 1 ? 'pending correction' : 'pending corrections', tip: 'AI-proposed edits awaiting your approval', kind: 'corrections' });
-  if (duplicates > 0) rows.push({ n: duplicates, label: duplicates === 1 ? 'duplicate pair' : 'duplicate pairs', tip: 'near-identical memories to merge or keep', kind: 'duplicates' });
-  if (contradictions > 0) rows.push({ n: contradictions, label: contradictions === 1 ? 'contradiction' : 'contradictions', tip: 'memories that conflict — keep the current one, retire the outdated one', kind: 'contradictions' });
+  // Soft threshold: a handful of near-duplicates is normal after ingest;
+  // self-heal handles them. Only surface a Needs row when the pile is real.
+  if (duplicates > 5) rows.push({ n: duplicates, label: duplicates === 1 ? 'duplicate pair' : 'duplicate pairs', tip: 'near-identical memories to merge or keep', kind: 'duplicates' });
+  if (contradictions > 0) rows.push({ n: contradictions, label: contradictions === 1 ? 'contradiction' : 'contradictions', tip: 'Hard conflicts that need your call — soft overlaps stay in Memory Integrity → Filtered', kind: 'contradictions' });
 
   if (rows.length === 0 && (dupesFailed || contraFailed)) {
     card.style.display = '';
@@ -18115,9 +18428,14 @@ async function refreshNeedsReviewBadge(): Promise<void> {
       ipcCall<BrainDuplicatePair[]>('brain:getDuplicatePairs', {}),
       ipcCall<BrainContradictionPair[]>('brain:getContradictionPairs', {}),
     ]);
-    const total = pairs.length + contra.length;
+    // Human deck only — system/docs zombies are purged server-side; if any
+    // slip through with a docs display name, don't badge them.
+    const userPairs = pairs.filter((p) => !isSystemEngramId(p.graphId));
+    const userContra = contra.filter((p) => !isSystemEngramId(p.graphId));
+    const total = userPairs.length + userContra.length;
     if (total === 0) {
       els.btnNeedsReview.classList.add('hidden');
+      els.needsReviewOverlay?.classList.add('hidden');
     } else {
       els.needsReviewCount.textContent = String(total);
       els.btnNeedsReview.classList.remove('hidden');
@@ -18126,6 +18444,15 @@ async function refreshNeedsReviewBadge(): Promise<void> {
   } catch {
     els.btnNeedsReview.classList.add('hidden');
   }
+}
+
+/** Mirror of sidecar SYSTEM_ENGRAM_IDS — client belt-and-suspenders for Check-in. */
+function isSystemEngramId(graphId: string): boolean {
+  return graphId === 'graphnosis-docs'
+    || graphId === 'graphnosis-skill-demos'
+    || graphId === 'graphnosis-onboarding'
+    || graphId === 'graphnosis-ghampus-hush'
+    || graphId === 'graphnosis-coach';
 }
 
 /**
@@ -18176,6 +18503,7 @@ async function renderNeedsReview(): Promise<void> {
     overlay.classList.add('hidden');
     return;
   }
+  pairs = pairs.filter((p) => !isSystemEngramId(p.graphId));
   if (pairs.length === 0) {
     overlay.classList.add('hidden');
     host.innerHTML = '<p class="lb-empty">No pairs to review — everything looks good.</p>';

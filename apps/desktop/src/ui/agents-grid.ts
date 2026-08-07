@@ -42,6 +42,7 @@ import {
   agentVitality, agentLastTrainedAt, getSkillsHiddenSet,
   fetchSkillsLibrary, skillsLibraryStatus, skillsLibraryError, warmAgentVitality,
   setSkillsSaveTargetAgent, createSkillsEngramQuiet, showSkillsComposeMode,
+  pendingSopCountForEngram,
 } from './skills';
 import { gPrompt } from './dialogs';
 import { ipcCall, isUnknownIpcMethodError } from './ipc';
@@ -228,6 +229,16 @@ export async function freezeDefaultAvatars(): Promise<void> {
  */
 const disabledEcho = new Map<string, boolean>();
 
+/**
+ * Same role as `disabledEcho`, for tile visibility (`AgentRecord.hidden`).
+ *
+ * Guest / remote shells race `agents.list` and `crews.list` against hide
+ * upserts — a slower list response can replace `agentRecords` with a snapshot
+ * taken before the write and put the tile straight back. Echo closes that
+ * window. Also covers optimistic paint before the IPC round-trip returns.
+ */
+const hiddenEcho = new Map<string, boolean>();
+
 /** The off switch for one engram: the stored flag, or the sidecar's echo of a
  *  write the local engram list has not caught up with yet. */
 function isAgentDisabled(graphId: string): boolean {
@@ -237,6 +248,15 @@ function isAgentDisabled(graphId: string): boolean {
   if (echo === undefined) return stored;
   // Caught up — the echo has nothing left to say, so stop shadowing metadata.
   if (echo === stored) { disabledEcho.delete(graphId); return stored; }
+  return echo;
+}
+
+/** Tile hidden: stored record, or a hide/unhide the list reload has not caught. */
+function isAgentHidden(graphId: string): boolean {
+  const stored = agentRecords.get(graphId)?.hidden === true;
+  const echo = hiddenEcho.get(graphId);
+  if (echo === undefined) return stored;
+  if (echo === stored) { hiddenEcho.delete(graphId); return stored; }
   return echo;
 }
 
@@ -295,7 +315,7 @@ export function agentRoster(): RosterEntry[] {
       skillCount,
       record,
       disabled: isAgentDisabled(graphId),
-      hidden: record?.hidden === true,
+      hidden: isAgentHidden(graphId),
     });
   }
   return out.sort((a, b) => {
@@ -532,11 +552,13 @@ function tile(e: RosterEntry, index = 0, draggable = true): string {
   // second — an animation the user has to WAIT through stops being delight and
   // becomes latency.
   const enter = gridHasPainted ? '' : `--enter-delay:${Math.min(index * 55, 900)}ms;`;
+  const pendingSops = pendingSopCountForEngram(e.graphId);
   const vitTitle = vit === undefined ? '' : ` · vitality ${vit}`;
   const stateTitle = (e.disabled ? ' · OFF' : '') + (e.hidden ? ' · hidden' : '');
+  const pendingTitle = pendingSops > 0 ? ` · ${pendingSops} Proposed SOP${pendingSops === 1 ? '' : 's'}` : '';
   return (
     `<button type="button" class="${cls}" style="${life}${enter}" draggable="${draggable}" data-agent-engram="${escapeHtml(e.graphId)}"` +
-    ` title="${escapeHtml(e.name)} — ${e.skillCount} skill${e.skillCount === 1 ? '' : 's'}${vitTitle}${asleep ? ' · asleep' : ''}${stateTitle}">` +
+    ` title="${escapeHtml(e.name)} — ${e.skillCount} skill${e.skillCount === 1 ? '' : 's'}${vitTitle}${pendingTitle}${asleep ? ' · asleep' : ''}${stateTitle}">` +
       tileControls(e, draggable) +
       `<span class="agempus-tile-av">` +
         ring +
@@ -553,6 +575,9 @@ function tile(e: RosterEntry, index = 0, draggable = true): string {
             ? 'off'
             : `${e.skillCount} skill${e.skillCount === 1 ? '' : 's'}`) +
         `</span>` +
+        (pendingSops > 0
+          ? `<span class="agempus-tile-sops" title="${pendingSops} Proposed SOP${pendingSops === 1 ? '' : 's'} awaiting Accept">${pendingSops}</span>`
+          : '') +
         (asleep ? `<span class="agempus-zzz" aria-hidden="true">z</span>` : '') +
       `</span>` +
       `<span class="agempus-tile-name">${escapeHtml(e.name)}</span>` +
@@ -649,23 +674,43 @@ async function createAgentFromGrid(): Promise<void> {
 // ── The default agent, and its tile on the Stats / Cortex home card ─────────
 
 /**
- * Which agent the home card shows, BY NAME.
+ * Which agent the home card prefers, BY NAME (not graphId — ids are minted
+ * per cortex). New cortexes ship Ghampus Hush present-but-OFF; Onboarding is
+ * live from day one. Legacy cortexes may still use "Ghampus Skills".
  *
- * A name and not a graphId: the bundled agent's engram id is minted per cortex,
- * so any id written here would resolve on exactly one machine and silently show
- * nothing everywhere else. Everything the home card knows about the default
- * agent comes through this one constant, so pointing it at a different agent
- * later — or adding a second card — is a change here, not a rewrite.
+ * Resolution order is in `resolveHomeAgentEntry()`: powered-on Ghampus first,
+ * else Onboarding so first-run Home is never an empty "no agent named…" box.
  */
-const DEFAULT_AGENT_ENGRAM_NAME = 'Ghampus Skills';
+const HOME_AGENT_GHAMPUS_NAMES = ['Ghampus Hush', 'Ghampus Skills'] as const;
+const HOME_AGENT_ONBOARDING_NAME = 'Onboarding';
 
 /**
  * Loose key for name matching: case, spacing, punctuation and the engram-kind
- * emoji `formatEngramLabel` prefixes all fall out, so "🔧 Ghampus Skills",
- * "Ghampus skills" and "ghampus-skills" are one name.
+ * emoji `formatEngramLabel` prefixes all fall out, so "🔧 Ghampus Hush",
+ * "Ghampus hush" and "ghampus-hush" are one name.
  */
 function nameKey(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Home-card agent: powered-on Ghampus when the owner has flipped it on;
+ * otherwise Onboarding (the default Agempi that installs live). If Onboarding
+ * is missing too, fall through to a powered-off Ghampus tile rather than a
+ * blank absent note — the power switch is the recovery path.
+ */
+function resolveHomeAgentEntry(): RosterEntry | undefined {
+  for (const name of HOME_AGENT_GHAMPUS_NAMES) {
+    const ghampus = findAgentByName(name);
+    if (ghampus && !ghampus.disabled) return ghampus;
+  }
+  const onboarding = findAgentByName(HOME_AGENT_ONBOARDING_NAME);
+  if (onboarding) return onboarding;
+  for (const name of HOME_AGENT_GHAMPUS_NAMES) {
+    const ghampus = findAgentByName(name);
+    if (ghampus) return ghampus;
+  }
+  return undefined;
 }
 
 /**
@@ -696,10 +741,11 @@ export function findAgentByName(name: string): RosterEntry | undefined {
  * caption an agent that has been used all week as "no recorded use" — a
  * fabricated line, which is worse than showing nothing.
  */
-let homeAgentMetaRequested = false;
+/** Last graphId we warmed meta for — re-run when Home switches Onboarding ↔ Ghampus. */
+let homeAgentMetaRequestedFor: string | null = null;
 function ensureHomeAgentMeta(entry: RosterEntry): void {
-  if (homeAgentMetaRequested) return;
-  homeAgentMetaRequested = true;
+  if (homeAgentMetaRequestedFor === entry.graphId) return;
+  homeAgentMetaRequestedFor = entry.graphId;
   // Both loaders swallow their own failures and fall back to empty maps, so a
   // sidecar without these IPCs degrades the caption instead of the tile.
   //
@@ -734,10 +780,10 @@ function ensureHomeAgentMeta(entry: RosterEntry): void {
  * WHEN: on the card's own render rather than at app init. `initAgentsGrid()`
  * runs while the cortex may still be locked, and `skill:list` against a locked
  * or not-yet-connected sidecar answers with an error or an empty list — which
- * this card would then render as a confident "no agent named Ghampus Skills",
- * a false clean. The unlock gate below defers to the first render after the app
- * shell is visible; `renderHomeDashboard()` re-runs on every Home refresh, so
- * no extra plumbing is needed to retry.
+ * this card would then render as a confident "no default agent", a false clean.
+ * The unlock gate below defers to the first render after the app shell is
+ * visible; `renderHomeDashboard()` re-runs on every Home refresh, so no extra
+ * plumbing is needed to retry.
  */
 let homeLibraryRequested = false;
 function ensureHomeAgentLibrary(): void {
@@ -770,9 +816,9 @@ function ensureHomeAgentLibrary(): void {
  *   present  — the real tile.
  *   loading  — the skills library has not come back yet. The roster is derived
  *              from it, so "no agent" is not yet knowable.
- *   absent   — the library loaded and this agent is genuinely not in it. Named,
- *              explained, and offered a way to the Agents page. Never a tile
- *              with invented numbers, and never a bare empty box.
+ *   absent   — the library loaded and neither Ghampus nor Onboarding is in it.
+ *              Explained, with a door to the Agents page. Never a tile with
+ *              invented numbers, and never a bare empty box.
  *   error    — the library FAILED to load. Split out of `loading` because they
  *              used to share a branch (`!skillsLibraryLoadOk`), which meant a
  *              failed skill:list showed a spinner that could never resolve. A
@@ -788,7 +834,7 @@ export function renderHomeAgentTile(): void {
   // still be allowed to kick it. Latched internally, so it is one IPC per
   // session, not one per Home repaint.
   ensureHomeAgentLibrary();
-  const entry = findAgentByName(DEFAULT_AGENT_ENGRAM_NAME);
+  const entry = resolveHomeAgentEntry();
   const status = skillsLibraryStatus();
   let html: string;
   let sig: string;
@@ -804,7 +850,10 @@ export function renderHomeAgentTile(): void {
     // the same agent. (The card still SHOWS a hidden agent, deliberately:
     // hiding suppresses the grid tile, and reporting a present agent as absent
     // here would be a different and false claim.)
-    sig = `at:${entry.graphId}:${entry.skillCount}:${agentVitality(entry.graphId) ?? '-'}`
+    //
+    // Which name we resolved (Ghampus vs Onboarding fallback) is also in the
+    // sig so powering Ghampus on/off swaps the tile instead of sticking.
+    sig = `at:${entry.graphId}:${entry.name}:${entry.skillCount}:${agentVitality(entry.graphId) ?? '-'}`
       + `:${entry.disabled ? 'off' : 'on'}:${entry.hidden ? 'hid' : 'vis'}`
       + `:${captionLines(entry.graphId).join(' · ')}`;
   } else if (status === 'error') {
@@ -816,8 +865,8 @@ export function renderHomeAgentTile(): void {
     sig = `error:${why ?? ''}`;
   } else if (status === 'ok') {
     html =
-      `<p class="home-agent-tile-note subtitle">No agent named “${escapeHtml(DEFAULT_AGENT_ENGRAM_NAME)}” ` +
-      `in this cortex — its engram may be unloaded or archived.</p>` +
+      `<p class="home-agent-tile-note subtitle">No Onboarding or Ghampus agent in this cortex yet — ` +
+      `open Agents / Agempi to install the defaults, or turn Ghampus Hush on.</p>` +
       `<button type="button" class="home-agent-tile-link" data-home-agents-open>Open Agents / Agempi</button>`;
     sig = 'absent';
   } else {
@@ -904,14 +953,48 @@ async function setAgentDisabled(graphId: string, disabled: boolean): Promise<voi
  * under a user who is working through several of them.
  */
 async function setAgentHidden(graphId: string, hidden: boolean): Promise<void> {
+  // Paint immediately — remote IPC can take hundreds of ms, and a toast that
+  // says "hidden" while the tile is still sitting there is the bug report.
+  hiddenEcho.set(graphId, hidden);
+  const prev = agentRecords.get(graphId);
+  if (prev) {
+    const next: AgentRecord = { ...prev };
+    if (hidden) next.hidden = true;
+    else delete next.hidden;
+    agentRecords.set(graphId, next);
+  } else if (hidden) {
+    agentRecords.set(graphId, {
+      agentId: `pending:${graphId}`,
+      engramId: graphId,
+      createdAt: Date.now(),
+      hidden: true,
+    });
+  }
+  renderAgentsGrid();
+  renderHomeAgentTile();
+
   try {
     const res = await ipcCall<{ ok?: boolean; agent?: AgentRecord }>(
       'agents.upsert', { engramId: graphId, hidden },
     );
-    if (res?.agent) agentRecords.set(res.agent.engramId, res.agent);
-    else await loadAgentRecords();
+    // Older host sidecars strip unknown fields and still return ok — treat a
+    // missing/mismatched `hidden` as failure so we never toast a no-op.
+    const storedHidden = res?.agent?.hidden === true;
+    if (storedHidden !== hidden) {
+      throw new Error(
+        res?.agent
+          ? 'hide flag not persisted on agent record'
+          : 'no stored agent returned',
+      );
+    }
+    agentRecords.set(res.agent!.engramId, res.agent!);
+    hiddenEcho.set(graphId, hidden);
   } catch (e) {
     console.warn('[agents] could not change tile visibility', e);
+    hiddenEcho.delete(graphId);
+    await loadAgentRecords();
+    renderAgentsGrid();
+    renderHomeAgentTile();
     showSkillsToast(
       `Could not ${hidden ? 'hide' : 'unhide'} that agent — the sidecar may need a rebuild.`,
       'error',
@@ -1059,6 +1142,43 @@ function hiddenFoot(hiddenCount: number): string {
   );
 }
 
+/**
+ * Stable fingerprint of what the grid would paint. Used to skip no-op
+ * rebuilds — first open fires renderAgentsGrid several times (mountSkillsPane
+ * → library-changed → records/activity/crews), and each wipe+fill restarts
+ * the entrance animation (opacity 0) while `is-entering` is still on the host.
+ */
+function agentsGridSignature(
+  roster: RosterEntry[],
+  hiddenCount: number,
+  emptyKey: string | null,
+): string {
+  if (emptyKey !== null) return emptyKey;
+  const crewPart = [...crews.values()]
+    .map((c) => `${c.crewId}:${c.name}:${c.autonomy ?? ''}:${c.brief ?? ''}`)
+    .sort()
+    .join('|');
+  const tiles = roster.map((e) => {
+    const r = e.record;
+    return [
+      e.graphId,
+      e.skillCount,
+      e.disabled ? 1 : 0,
+      e.hidden ? 1 : 0,
+      agentVitality(e.graphId) ?? '-',
+      captionLines(e.graphId).join('·'),
+      r?.group ?? '',
+      r?.shape ?? '',
+      r?.color ?? '',
+      dispatching.has(e.graphId) ? 1 : 0,
+      agentActivity.get(e.graphId)?.activeCount ?? 0,
+      agentActivity.get(e.graphId)?.lastRunAt ?? 0,
+      agentActivity.get(e.graphId)?.lastUsedAt ?? 0,
+    ].join(':');
+  }).join(';');
+  return `g:${revealHidden ? 1 : 0}:${hiddenCount}:${crewPart}::${tiles}`;
+}
+
 export function renderAgentsGrid(): void {
   const host = document.getElementById('skills-agents-grid');
   if (!host) return;
@@ -1101,6 +1221,10 @@ export function renderAgentsGrid(): void {
             ? `Every agent here is hidden — ${hiddenCount} of them. Nothing was deleted and their skills are unaffected; use the control below to bring them back.`
             : 'No agents yet — start one with + New agent, or train a skill into any Skills engram and its agent appears here.')
           : 'Loading agents…';
+    const emptySig = `empty:${status}:${hiddenCount}:${revealHidden ? 1 : 0}:${message}`;
+    if (host.dataset['sig'] === emptySig) return;
+    host.dataset['sig'] = emptySig;
+    host.classList.remove('is-entering');
     // The tile renders in every empty state, including `error`: creating an
     // engram does not depend on the skills library having loaded, so withholding
     // the only action on the page because a LIST failed would be a false gate.
@@ -1153,26 +1277,29 @@ export function renderAgentsGrid(): void {
     html += `<div class="agempus-grid" data-crew-drop="${escapeHtml(crewId)}">${members.map((e, i) => tile(e, i)).join('')}</div>`;
   }
   html += hiddenFoot(hiddenCount);
-  // The entrance animation is gated on the host carrying `is-entering` — the
-  // class the CSS rule keys off. It was never applied, so `--enter-delay` was
-  // emitted for a selector that never matched and the tiles simply appeared at
-  // full opacity in one frame. That pop is the "flicker".
-  //
-  // The class goes on BEFORE the markup lands, in this same synchronous block:
-  // the tiles therefore never exist for a frame without the rule applying, and
-  // `animation-fill-mode: both` holds them at the from-state (opacity 0) for
-  // the duration of their stagger delay. Adding it after innerHTML would paint
-  // them opaque first and reintroduce exactly the flash being fixed.
+  const sig = agentsGridSignature(roster, hiddenCount, null);
+  if (host.dataset['sig'] === sig) return;
+  host.dataset['sig'] = sig;
+  // The entrance animation is gated on the host carrying `is-entering`.
+  // First-open also fires several follow-up renders (library-changed,
+  // records/activity/crews) while that class is still live (~1.4s). Those
+  // rebuilds create new tiles WITHOUT --enter-delay, so they all match the
+  // still-active rule at delay 0 and restart from opacity 0 — the flicker.
+  // Skip identical paints above; for real changes, drop the entrance class
+  // so remounted tiles stay opaque.
   const firstPaint = !gridHasPainted;
   gridHasPainted = true;
   if (firstPaint) host.classList.add('is-entering');
+  else host.classList.remove('is-entering');
+  // Class before markup so first-paint tiles never exist a frame without the
+  // rule; `animation-fill-mode: both` holds them at opacity 0 through stagger.
   host.innerHTML = html;
   if (firstPaint) {
-    // Drop the class once the last tile has landed. Without this, any later
-    // repaint (a rename, a crew drop) would hand freshly-created tiles a
-    // matching rule and replay the entrance mid-session.
+    // Drop the class once the last tile has landed.
     // Longest delay (900ms, the cap in `tile`) + duration (420ms) + margin.
-    window.setTimeout(() => host.classList.remove('is-entering'), 1400);
+    window.setTimeout(() => {
+      if (host.dataset['sig'] === sig) host.classList.remove('is-entering');
+    }, 1400);
   }
 }
 

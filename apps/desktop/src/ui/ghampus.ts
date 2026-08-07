@@ -17,6 +17,23 @@ import { openMemoryIntegrityWorkbench } from './memory-integrity-workbench';
 import type { AttentionCounts } from './memory-integrity-workbench';
 import { ipcCall } from './ipc';
 import { escapeHtml, presEngramAttr, presSkillAttr, presSurfaceAttr, PRES_GHAMPUS_CHAT, PRES_GHAMPUS_PANELS } from './util';
+import {
+  actionChipSeed,
+  buildThreadRememberText,
+  countThreadReplies,
+  getThreadMeta,
+  isThreadReply,
+  listThreadReplies,
+  parseMentions,
+  renderMentions,
+  renderReplyBadge,
+  renderThreadSidebarHtml,
+  resolveMessageId,
+  rootThreadId,
+  setThreadMeta,
+  type GhampusCitationAttach,
+  type ThreadableMsg,
+} from './ghampus-threads';
 
 function sweepGhampusPres(root?: ParentNode | null): void {
   if (!app().presActive()) return;
@@ -45,6 +62,7 @@ export function initGhampus(): void {
   wireGhampusThreadTimestamps();
   wireGhampusThreadScrollPin();
   initGhampusNewChatModal();
+  wireGhampusReplyThreads();
 }
 
 export function isGhampusEnabled(): boolean { return ghampusEnabled; }
@@ -1073,8 +1091,29 @@ export async function refreshGhampusSharingPanel(): Promise<void> {
 // ── Ghampus chat surface ──────────────────────────────────────────────────
 
 type GhampusChatMessage =
-  | { kind: 'user'; text: string; ts: number; turnId?: string }
-  | { kind: 'ghampus'; text: string; ts: number; turnId?: string; trace?: GhampusTurnTrace; handledBy?: HandledByChip }
+  | {
+      kind: 'user';
+      text: string;
+      ts: number;
+      turnId?: string;
+      messageId?: string;
+      threadId?: string;
+      parentId?: string;
+      mentions?: string[];
+    }
+  | {
+      kind: 'ghampus';
+      text: string;
+      ts: number;
+      turnId?: string;
+      messageId?: string;
+      threadId?: string;
+      parentId?: string;
+      mentions?: string[];
+      citations?: GhampusCitationAttach[];
+      trace?: GhampusTurnTrace;
+      handledBy?: HandledByChip;
+    }
   | { kind: 'skill-match'; skill: SkillMatchPayload; ts: number }
   | { kind: 'walk-plan'; plan: WalkPlan; ts: number }
   | { kind: 'walk-progress'; steps: WalkStep[]; ts: number }
@@ -1179,10 +1218,10 @@ function isAttentionSnoozed(counts: AttentionCounts): boolean {
 }
 
 function attentionNudgeBody(counts: AttentionCounts): string {
+  // Match sticky banner: corrections + high contradictions only (no dup spam).
   const parts: string[] = [];
   if (counts.corrections > 0) parts.push(`${counts.corrections} correction${counts.corrections === 1 ? '' : 's'}`);
   if (counts.contradictions > 0) parts.push(`${counts.contradictions} contradiction${counts.contradictions === 1 ? '' : 's'}`);
-  if (counts.duplicates > 0) parts.push(`${counts.duplicates} duplicate${counts.duplicates === 1 ? '' : 's'}`);
   return parts.join(' · ') || 'items need review';
 }
 
@@ -1222,7 +1261,8 @@ export function syncGhampusAttentionNudge(counts: AttentionCounts, visible: bool
   document.querySelectorAll('.ghampus-thread-entry .ghampus-attention-nudge-card')
     .forEach((el) => el.closest('.ghampus-thread-entry')?.remove());
 
-  if (!visible || counts.total <= 0 || isProactiveCardDismissed('attention', ATTENTION_NUDGE_ID) || isAttentionSnoozed(counts)) return;
+  const nagTotal = counts.corrections + counts.contradictions;
+  if (!visible || nagTotal <= 0 || isProactiveCardDismissed('attention', ATTENTION_NUDGE_ID) || isAttentionSnoozed(counts)) return;
 
   const msg: GhampusChatMessage = { kind: 'attention-nudge', counts: { ...counts }, ts: Date.now() };
   appendToThread(msg);
@@ -1696,11 +1736,20 @@ function copyBtn(plainText: string): string {
   return `<button class="chat-msg-copy" data-copy="${escapeHtml(plainText)}" title="Copy">${COPY_ICON}</button>`;
 }
 
+function threadableMessages(): ThreadableMsg[] {
+  return ghampusThreadMessages.filter(
+    (m): m is ThreadableMsg => m.kind === 'user' || m.kind === 'ghampus',
+  );
+}
+
 function renderChatMessage(msg: GhampusChatMessage): string {
   switch (msg.kind) {
-    case 'user':
-      return `<div class="chat-msg user">
+    case 'user': {
+      const msgId = resolveMessageId(msg);
+      return `<div class="chat-msg user" data-msg-id="${escapeHtml(msgId)}"${msg.turnId ? ` data-turn-id="${escapeHtml(msg.turnId)}"` : ''}>
+        <div class="chat-msg-avatar" aria-hidden="true">You</div>
         <div class="chat-msg-wrap">
+          ${renderMentions(msg.mentions)}
           <div class="chat-msg-bubble">${escapeHtml(msg.text)}</div>
           <div class="chat-msg-meta">
             <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
@@ -1708,9 +1757,10 @@ function renderChatMessage(msg: GhampusChatMessage): string {
           </div>
         </div>
       </div>`;
+    }
     case 'ghampus': {
       const turnAttr = msg.turnId ? ` data-turn-id="${escapeHtml(msg.turnId)}"` : '';
-      const msgId = String(msg.turnId ?? msg.ts);
+      const msgId = resolveMessageId(msg);
       const traceMeta = msg.trace ? renderTraceMetaSummary(msg.trace) : '';
       const traceSteps = msg.trace ? renderTraceStepsOnly(msg.trace) : '';
       // Routing-legibility chip — only when this turn was dispatched to a
@@ -1725,6 +1775,7 @@ function renderChatMessage(msg: GhampusChatMessage): string {
         </div>
         <div class="chat-msg-wrap">
           ${handledByChip}
+          ${renderMentions(msg.mentions)}
           <div class="chat-msg-bubble chat-msg-bubble--markdown">${app().renderMarkdownLite(msg.text)}</div>
           <div class="chat-msg-meta">
             <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
@@ -2704,7 +2755,22 @@ async function drainGhampusSendQueue(): Promise<void> {
 function enqueueGhampusSend(item: PendingGhampusSend): void {
   trackGhampusSendActivity();
   if (item.turnId) locallyRenderedUserTurns.add(item.turnId);
-  appendToThread({ kind: 'user', text: item.userText, ts: item.ts, turnId: item.turnId });
+  const reply = item.ipcPayload['replyContext'] as {
+    threadId?: string;
+    parentId?: string;
+    mentions?: string[];
+  } | undefined;
+  const messageId = String(item.ipcPayload['messageId'] ?? `user-${item.turnId}`);
+  appendToThread({
+    kind: 'user',
+    text: item.userText,
+    ts: item.ts,
+    turnId: item.turnId,
+    messageId,
+    ...(reply?.threadId ? { threadId: reply.threadId } : {}),
+    ...(reply?.parentId ? { parentId: reply.parentId } : {}),
+    ...(reply?.mentions?.length ? { mentions: reply.mentions } : {}),
+  });
   ghampusSendQueue.push(item);
   void drainGhampusSendQueue();
 }
@@ -3227,16 +3293,18 @@ function hideGhampusThreadLoading(): void {
 function paintGhampusHistoryMessages(messages: GhampusChatMessage[]): void {
   const container = ghampusChatMessagesEl();
   if (!container || messages.length === 0) return;
-  ghampusThreadMessages = [];
+  // Load cache first so reply badges can count the full thread.
+  ghampusThreadMessages = messages.filter((m) => !shouldSkipGhampusThreadMessage(m));
   hideGhampusThreadLoading();
   document.getElementById('ghampus-thread-empty')?.remove();
   container.innerHTML = '';
-  for (const msg of messages) {
-    if (!shouldSkipGhampusThreadMessage(msg)) appendToThread(msg);
+  for (const msg of ghampusThreadMessages) {
+    appendToThread(msg, { skipCache: true });
   }
   applyGhampusFragmentMarks();
   scrollGhampusThreadToBottomIfPinned({ instant: true });
   sweepGhampusPres(container);
+  if (activeThreadId) openGhampusThreadSidebar(activeThreadId);
 }
 
 /** Drop thread cache on lock / cortex switch — next unlock prefetches fresh history. */
@@ -3519,6 +3587,9 @@ function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean })
   if (empty) empty.remove();
   const node = document.createElement('div');
   node.className = 'ghampus-thread-entry';
+  if ((msg.kind === 'user' || msg.kind === 'ghampus') && isThreadReply(msg)) {
+    node.classList.add('is-thread-reply');
+  }
   node.innerHTML = renderChatMessage(msg);
   container.appendChild(node);
   wireThreadNodeActions(node, msg);
@@ -3527,6 +3598,308 @@ function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean })
   node.querySelectorAll<HTMLTimeElement>('.chat-msg-time time').forEach(updateLiveTimeEl);
   scrollGhampusThreadToBottomIfPinned();
   sweepGhampusPres(node);
+  // Keep open sidebar live when a reply lands.
+  if (
+    activeThreadId
+    && (msg.kind === 'user' || msg.kind === 'ghampus')
+    && (msg.threadId === activeThreadId || resolveMessageId(msg) === activeThreadId)
+  ) {
+    openGhampusThreadSidebar(activeThreadId);
+  }
+  // Refresh root badge counts cheaply when a reply arrives.
+  if ((msg.kind === 'user' || msg.kind === 'ghampus') && msg.threadId) {
+    refreshRootReplyBadge(msg.threadId);
+  }
+}
+
+/** Open reply thread id in the right sidebar (null = closed). */
+let activeThreadId: string | null = null;
+/** When nesting a reply-to-reply, the immediate parent id. */
+let activeReplyParentId: string | null = null;
+
+function refreshRootReplyBadge(threadId: string): void {
+  const count = countThreadReplies(threadableMessages(), threadId);
+  const meta = getThreadMeta(threadId);
+  const rootEl = document.querySelector<HTMLElement>(`.chat-msg[data-msg-id="${CSS.escape(threadId)}"]`);
+  if (!rootEl) return;
+  const wrap = rootEl.querySelector('.chat-msg-wrap');
+  if (!wrap) return;
+  let badge = wrap.querySelector<HTMLButtonElement>('.ghampus-reply-badge');
+  const html = renderReplyBadge(count, threadId, meta);
+  if (!html) {
+    badge?.remove();
+    return;
+  }
+  if (badge) {
+    badge.outerHTML = html;
+  } else {
+    wrap.insertAdjacentHTML('beforeend', html);
+  }
+  wrap.querySelector<HTMLButtonElement>('.ghampus-reply-badge')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openGhampusThreadSidebar(threadId);
+  });
+}
+
+function closeGhampusThreadSidebar(): void {
+  activeThreadId = null;
+  activeReplyParentId = null;
+  const aside = document.getElementById('ghampus-thread-sidebar');
+  if (!aside) return;
+  aside.classList.add('hidden');
+  aside.hidden = true;
+  aside.removeAttribute('data-thread-id');
+}
+
+function openGhampusThreadSidebar(threadId: string, replyToParentId?: string): void {
+  const aside = document.getElementById('ghampus-thread-sidebar');
+  const body = document.getElementById('ghampus-thread-sidebar-body');
+  if (!aside || !body) return;
+  const msgs = threadableMessages();
+  const root = msgs.find((m) => resolveMessageId(m) === threadId)
+    ?? msgs.find((m) => rootThreadId(m) === threadId && !m.parentId);
+  if (!root) return;
+  activeThreadId = threadId;
+  activeReplyParentId = replyToParentId ?? threadId;
+  const meta = getThreadMeta(threadId);
+  if (meta.muted) {
+    // Still allow opening — user may unmute from toolbar.
+  }
+  body.innerHTML = renderThreadSidebarHtml({
+    root,
+    replies: listThreadReplies(msgs, threadId),
+    meta,
+    fmtTime,
+    renderMarkdown: (t) => app().renderMarkdownLite(t),
+  });
+  aside.classList.remove('hidden');
+  aside.hidden = false;
+  aside.dataset.threadId = threadId;
+  wireGhampusThreadSidebar(body, threadId, root);
+  const target = body.querySelector<HTMLElement>('#ghampus-thread-reply-target');
+  if (target && activeReplyParentId && activeReplyParentId !== threadId) {
+    target.dataset.parentId = activeReplyParentId;
+    target.textContent = 'Replying to nested message';
+  }
+  sweepGhampusPres(body);
+}
+
+function findThreadableById(id: string): ThreadableMsg | undefined {
+  return threadableMessages().find((m) => resolveMessageId(m) === id);
+}
+
+function buildReplyContextPayload(parentId: string, threadId: string, mentions: string[]) {
+  const msgs = threadableMessages();
+  const root = msgs.find((m) => resolveMessageId(m) === threadId) ?? findThreadableById(threadId);
+  const parent = findThreadableById(parentId) ?? root;
+  if (!root || !parent) return null;
+  const replies = listThreadReplies(msgs, threadId).map(({ msg }) => ({
+    kind: msg.kind as 'user' | 'ghampus',
+    text: msg.text,
+    messageId: resolveMessageId(msg),
+  }));
+  return {
+    threadId,
+    parentId,
+    rootText: root.text,
+    parentText: parent.text,
+    threadReplies: replies.slice(-20),
+    ...(mentions.length ? { mentions } : {}),
+  };
+}
+
+async function sendThreadReply(text: string): Promise<void> {
+  if (!activeThreadId) return;
+  const parentId = activeReplyParentId ?? activeThreadId;
+  const mentions = parseMentions(text);
+  const replyContext = buildReplyContextPayload(parentId, activeThreadId, mentions);
+  if (!replyContext) return;
+  const meta = getThreadMeta(activeThreadId);
+  if (meta.muted) {
+    await gAlert('Thread muted', 'Unmute it to send replies, or open a new chat.');
+    return;
+  }
+  if (meta.resolved) {
+    setThreadMeta(activeThreadId, { resolved: false });
+  }
+  const ts = Date.now();
+  const turnId = newGhampusTurnId();
+  const messageId = `user-${turnId}`;
+  enqueueGhampusSend({
+    turnId,
+    ts,
+    userText: text,
+    ipcPayload: { text, turnId, messageId, replyContext },
+  });
+  const input = document.getElementById('ghampus-thread-input') as HTMLTextAreaElement | null;
+  if (input) input.value = '';
+}
+
+async function promoteThreadToChat(threadId: string): Promise<void> {
+  const msgs = threadableMessages();
+  const root = msgs.find((m) => resolveMessageId(m) === threadId);
+  if (!root) return;
+  const replies = listThreadReplies(msgs, threadId);
+  const lines = [
+    `Promoted thread from ${new Date(root.ts).toLocaleString()}`,
+    '',
+    root.text,
+    ...replies.map(({ msg }) => msg.text),
+  ];
+  const seed = lines.join('\n\n').slice(0, 4000);
+  await ipcCall('ghampus:session:clear', {}).catch(() => {});
+  await clearGhampusSessionUi();
+  closeGhampusThreadSidebar();
+  fillGhampusPrompt(
+    `Continue this thread as its own chat:\n\n${seed}\n\n(What should we do next?)`,
+  );
+}
+
+async function rememberThread(threadId: string): Promise<void> {
+  const msgs = threadableMessages();
+  const root = msgs.find((m) => resolveMessageId(m) === threadId);
+  if (!root) return;
+  const replies = listThreadReplies(msgs, threadId);
+  const text = buildThreadRememberText(root, replies);
+  const engrams = await loadGhampusEngramOptions();
+  const personal = engrams.find((e) => /coding|personal|notes/i.test(e.displayName)) ?? engrams[0];
+  if (!personal) {
+    await gAlert('No engram', 'No engram available to remember into.');
+    return;
+  }
+  const ok = await gConfirm(
+    'Remember thread?',
+    `Save this thread summary into “${personal.displayName}”? Sensitive engrams still require consent.`,
+  );
+  if (!ok) return;
+  try {
+    await ipcCall('studio.remember', {
+      text,
+      graphId: personal.graphId,
+      label: `Ghampus thread ${new Date(root.ts).toISOString().slice(0, 10)}`,
+      kind: 'ai-conversation',
+    });
+    await gAlert('Saved', 'Thread saved to memory.');
+  } catch (e) {
+    await gAlert('Remember failed', e instanceof Error ? e.message : String(e));
+  }
+}
+
+function wireGhampusThreadSidebar(body: HTMLElement, threadId: string, root: ThreadableMsg): void {
+  body.querySelector('#btn-ghampus-thread-close')?.addEventListener('click', () => closeGhampusThreadSidebar());
+  body.querySelector('#btn-ghampus-thread-cancel-nest')?.addEventListener('click', () => {
+    activeReplyParentId = threadId;
+    const target = body.querySelector<HTMLElement>('#ghampus-thread-reply-target');
+    if (target) {
+      target.dataset.parentId = threadId;
+      target.textContent = 'Replying to thread';
+    }
+  });
+  body.querySelector('#btn-ghampus-thread-send')?.addEventListener('click', () => {
+    const input = body.querySelector<HTMLTextAreaElement>('#ghampus-thread-input');
+    const text = input?.value.trim() ?? '';
+    if (text) void sendThreadReply(text);
+  });
+  body.querySelector<HTMLTextAreaElement>('#ghampus-thread-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      const text = (e.currentTarget as HTMLTextAreaElement).value.trim();
+      if (text) void sendThreadReply(text);
+    }
+  });
+
+  body.querySelectorAll<HTMLButtonElement>('[data-thread-tool]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tool = btn.dataset.threadTool;
+      if (tool === 'promote') void promoteThreadToChat(threadId);
+      if (tool === 'remember') void rememberThread(threadId);
+      if (tool === 'resolve') {
+        const cur = getThreadMeta(threadId);
+        setThreadMeta(threadId, { resolved: !cur.resolved });
+        openGhampusThreadSidebar(threadId);
+        refreshRootReplyBadge(threadId);
+      }
+      if (tool === 'mute') {
+        const cur = getThreadMeta(threadId);
+        setThreadMeta(threadId, { muted: !cur.muted });
+        openGhampusThreadSidebar(threadId);
+        refreshRootReplyBadge(threadId);
+      }
+      if (tool === 'jump') {
+        const el = document.querySelector<HTMLElement>(`.chat-msg[data-msg-id="${CSS.escape(threadId)}"]`);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el?.classList.add('is-hover');
+        setTimeout(() => el?.classList.remove('is-hover'), 1200);
+      }
+    });
+  });
+
+  body.querySelectorAll<HTMLButtonElement>('[data-thread-action]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const action = btn.dataset.threadAction ?? '';
+      const msgId = btn.dataset.msgId ?? '';
+      if (!msgId) return;
+      if (action === 'reply') {
+        activeReplyParentId = msgId;
+        const target = body.querySelector<HTMLElement>('#ghampus-thread-reply-target');
+        if (target) {
+          target.dataset.parentId = msgId;
+          target.textContent = 'Replying to nested message';
+        }
+        body.querySelector<HTMLTextAreaElement>('#ghampus-thread-input')?.focus();
+        return;
+      }
+      const parent = findThreadableById(msgId) ?? root;
+      const seed = actionChipSeed(action, parent.text);
+      if (seed) {
+        activeReplyParentId = msgId;
+        const input = body.querySelector<HTMLTextAreaElement>('#ghampus-thread-input');
+        if (input) {
+          input.value = seed;
+          input.focus();
+        }
+      }
+    });
+  });
+}
+
+function handleThreadActionFromMain(action: string, msgId: string): void {
+  const msg = findThreadableById(msgId);
+  if (!msg) return;
+  const threadId = rootThreadId(msg);
+  if (getThreadMeta(threadId).muted && action === 'reply') {
+    void gAlert('Thread muted', 'Unmute it from the thread sidebar to reply.');
+    return;
+  }
+  openGhampusThreadSidebar(threadId, msgId);
+  if (action === 'reply') return;
+  const seed = actionChipSeed(action, msg.text);
+  if (!seed) return;
+  const input = document.getElementById('ghampus-thread-input') as HTMLTextAreaElement | null;
+  if (input) {
+    input.value = seed;
+    input.focus();
+  }
+}
+
+function wireGhampusReplyThreads(): void {
+  // Event delegation on the main chat column for badges / chips.
+  const wrap = document.getElementById('ghampus-chat-wrap');
+  wrap?.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement | null;
+    const badge = t?.closest<HTMLButtonElement>('.ghampus-reply-badge');
+    if (badge?.dataset.openThread) {
+      e.preventDefault();
+      openGhampusThreadSidebar(badge.dataset.openThread);
+      return;
+    }
+    const actionBtn = t?.closest<HTMLButtonElement>('[data-thread-action]');
+    if (actionBtn?.dataset.threadAction && actionBtn.dataset.msgId) {
+      e.preventDefault();
+      handleThreadActionFromMain(actionBtn.dataset.threadAction, actionBtn.dataset.msgId);
+    }
+  });
 }
 
 function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void {
@@ -5215,13 +5588,19 @@ function wireGhampusChat(): void {
     if (val.includes(' ') && !val.match(/^\/\w+$/)) { hidePalette(); return; }
     paletteActive = 0;
     buildPalette(filter);
-    composeRail.update();
+    // composeRail.update() is already called from the input handler — don't double-fire.
   }
 
   // ── Auto-grow textarea ─────────────────────────────────────────────────────
+  let autoGrowRaf = 0;
   function autoGrow(): void {
-    input!.style.height = 'auto';
-    input!.style.height = `${Math.min(input!.scrollHeight, 140)}px`;
+    if (autoGrowRaf) return;
+    autoGrowRaf = requestAnimationFrame(() => {
+      autoGrowRaf = 0;
+      const el = input!;
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+    });
   }
 
   function handleSkillPickerInputSync(): void {
@@ -5235,6 +5614,7 @@ function wireGhampusChat(): void {
   }
 
   input.addEventListener('input', () => {
+    // Keep the keystroke path cheap: layout once per frame, debounce assist.
     autoGrow();
     handleSkillPickerInputSync();
     updatePalette();
@@ -5399,10 +5779,11 @@ function wireGhampusControls(): void {
     const t = e.target as HTMLElement;
     if (t.closest('#btn-ghampus-llm-open-setup')) {
       e.preventDefault();
-      app.activateMode('goals');
-      setTimeout(() => {
-        document.getElementById('fcard-llm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 50);
+      // Same path as Foresight "Set up" / openNonDeterministic: mode alone is a
+      // no-op when already on goals, and setup lives in the llm lane modal —
+      // scrolling #fcard-llm does nothing useful. Also must call app(), not app.
+      app().activateMode('goals');
+      openForesightLaneModal('llm');
       return;
     }
     if (t.closest('#btn-ghampus-llm-recheck')) {

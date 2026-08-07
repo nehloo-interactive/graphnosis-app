@@ -346,6 +346,10 @@
         <!-- Body: rail + canvas -->
         <div class="app-body">
           <nav class="app-rail">
+            <!-- Mode buttons + logo scroll in this pane when the viewport is
+                 short; the Chats list below has its own scrollbar so a long
+                 history never pushes Settings / nav out of reach. -->
+            <div class="rail-nav-scroll">
             <!-- Graphnosis identity mark at the top of the sidebar.
                  margin:0 auto on a display:block img is the most cross-browser-
                  reliable centering technique — avoids flexbox quirks on Windows. -->
@@ -511,6 +515,7 @@
               <span class="rail-label">Settings</span>
               <span></span>
             </button>
+            </div><!-- /.rail-nav-scroll -->
             <!-- CHATS — every Ghampus thread on disk (cortex/ghampus/sessions/*.jsonl),
                  newest first. Sits below Settings as the rail's last block: it is a
                  history list, not a destination, so it must not compete with the
@@ -520,8 +525,18 @@
                  renderRailChats() in main.ts — empty until then, and it stays
                  hidden while the cortex has no chat history at all. -->
             <div class="rail-chats hidden" id="rail-chats">
-              <div class="rail-chats-head">Chats</div>
-              <div class="rail-chats-list" id="rail-chats-list"></div>
+              <!-- Pins + Chats share one scrollport so a long history moves as
+                   one list. The Pins block is hidden until the first pin. -->
+              <div class="rail-chats-scroll" id="rail-chats-scroll">
+                <div class="rail-pins hidden" id="rail-pins">
+                  <div class="rail-chats-head">Pins</div>
+                  <div class="rail-chats-list" id="rail-pins-list"></div>
+                </div>
+                <div class="rail-chats-section" id="rail-chats-section">
+                  <div class="rail-chats-head">Chats</div>
+                  <div class="rail-chats-list" id="rail-chats-list"></div>
+                </div>
+              </div>
             </div>
           </nav>
           <div class="app-canvas">
@@ -1073,6 +1088,10 @@
                                   <span class="skills-field-label">Skill name</span>
                                   <input id="skills-input-name" class="studio-text-input" type="text" placeholder="e.g. graphnosis-helper" />
                                 </label>
+                                <label class="skills-field" id="skills-role-field">
+                                  <span class="skills-field-label">Role <span class="skills-field-hint">(optional, max 40 — focus line under the title)</span></span>
+                                  <input id="skills-input-role" class="studio-text-input" type="text" maxlength="40" placeholder="e.g. One constraint / 2 weeks" />
+                                </label>
                                 <!-- Goals section — what success looks like, what's out of scope,
                                      what's expected when the skill completes. Drives goal-aligned
                                      recall during training so Ghampus surfaces memories that
@@ -1227,13 +1246,17 @@
                                   </div>
                                 </div>
                                 <div id="skills-degraded-note" class="skills-degraded-note hidden"></div>
-                                <!-- Pending auto-retrain proposal card. Shown only when the
-                                     scheduler is running this skill under `preview-first`
-                                     autonomy and has produced a proposal awaiting review. -->
+                                <!-- Pending proposal card (Train this? / Proposed SOPs).
+                                     Shown for Praxis retrains, MCP drafts, and new-skill
+                                     drafts (draft:* keys). Structured field diff first. -->
                                 <div id="skills-pending-card" class="skills-pending-card hidden">
-                                  <h4>📝 New auto-retrain version waiting for review</h4>
+                                  <h4 id="skills-pending-title">📝 Proposed SOP waiting for review</h4>
                                   <p class="subtitle" id="skills-pending-meta" style="margin: 0;"></p>
-                                  <pre id="skills-pending-preview" class="skills-output" style="max-height: 200px; margin-top: 8px;"></pre>
+                                  <pre id="skills-pending-structured" class="skills-pending-structured hidden" style="max-height: 140px; margin-top: 8px;"></pre>
+                                  <details class="skills-pending-body-details" style="margin-top: 8px;">
+                                    <summary>Full proposed text</summary>
+                                    <pre id="skills-pending-preview" class="skills-output" style="max-height: 200px; margin-top: 6px;"></pre>
+                                  </details>
                                   <div class="skills-pending-actions">
                                     <button id="btn-skills-pending-accept" class="primary">Accept &amp; promote</button>
                                     <button id="btn-skills-pending-reject" class="btn-ghost">Reject</button>
@@ -1301,16 +1324,16 @@
                                   <div class="skills-retrain-row" style="margin-top: 6px;">
                                     <span class="skills-field-label" style="margin: 0;">When it fires</span>
                                     <label class="skills-checkbox-row" style="margin: 0;">
-                                      <input type="radio" name="skills-retrain-autonomy" value="auto-accept" checked disabled />
-                                      Auto-accept (replace silently)
+                                      <input type="radio" name="skills-retrain-autonomy" value="preview-first" checked disabled />
+                                      Preview first (approve before write)
                                     </label>
                                     <label class="skills-checkbox-row" style="margin: 0;">
                                       <input type="radio" name="skills-retrain-autonomy" value="notify" disabled />
-                                      Notify me
+                                      Draft + notify me
                                     </label>
                                     <label class="skills-checkbox-row" style="margin: 0;">
-                                      <input type="radio" name="skills-retrain-autonomy" value="preview-first" disabled />
-                                      Preview first
+                                      <input type="radio" name="skills-retrain-autonomy" value="auto-accept" disabled />
+                                      Auto-accept (opt-in; capped by Evolve dial + contradictions)
                                     </label>
                                   </div>
                                   <div id="skills-retrain-meta" class="skills-field-hint" style="margin-top: 6px;"></div>
@@ -2455,6 +2478,11 @@ ollama list</code></pre>
                     </div>
 
                     </div><!-- /#ghampus-chat-wrap -->
+
+                    <!-- Reply thread sidebar (Slack-style) -->
+                    <aside id="ghampus-thread-sidebar" class="ghampus-thread-sidebar hidden" aria-label="Message thread" hidden>
+                      <div id="ghampus-thread-sidebar-body" class="ghampus-thread-sidebar-body"></div>
+                    </aside>
 
                   <!-- Annotation modal lives outside the chat wrap so it can cover the full pane -->
                   <div id="annotation-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 1000; display: flex; flex-direction: column; padding: 20px;">

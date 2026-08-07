@@ -71,6 +71,40 @@ export function renderAgempusDial(graphId: string): string {
   </div>`;
 }
 
+// ── Evolve dial (per-Agempu Praxis / train promotion ceiling) ────────────────
+// Distinct from execution Autonomy (L0–L3). Controls how far auto-retrain /
+// MCP drafts may promote without you Accepting in Proposed SOPs.
+export type EvolveAutonomyLevel = 'preview-first' | 'notify' | 'auto-accept';
+export const DEFAULT_EVOLVE_AUTONOMY_LEVEL: EvolveAutonomyLevel = 'preview-first';
+
+export const EVOLVE_LEVELS: ReadonlyArray<{ level: EvolveAutonomyLevel; label: string; title: string }> = [
+  { level: 'preview-first', label: 'Ask first', title: 'Ask first — every Praxis / MCP draft lands in Proposed SOPs until you Accept (default).' },
+  { level: 'notify', label: 'Notify', title: 'Notify — drafts + badge; still no silent write. Open Proposed SOPs to promote.' },
+  { level: 'auto-accept', label: 'Auto', title: 'Auto — may promote when Praxis is opted in, the skill is not meta, and Memory Integrity has no open contradictions. Still capped per skill.' },
+];
+
+export function currentEvolveLevel(graphId: string): EvolveAutonomyLevel {
+  const g = getLoadedGraphs().find((x) => x.graphId === graphId);
+  const lvl = g?.metadata.evolveAutonomyLevel;
+  return lvl === 'preview-first' || lvl === 'notify' || lvl === 'auto-accept'
+    ? lvl
+    : DEFAULT_EVOLVE_AUTONOMY_LEVEL;
+}
+
+/** Per-Agempu Evolve dial — ceiling for skill train / retrain promotion. */
+export function renderEvolveDial(graphId: string): string {
+  const active = currentEvolveLevel(graphId);
+  const segs = EVOLVE_LEVELS.map((s) => {
+    const isActive = s.level === active;
+    const cls = `agempus-dial-seg evolve-dial-seg${isActive ? ' active' : ''}`;
+    return `<button class="${cls}" data-evolve-level="${s.level}" title="${escape(s.title)}">${escape(s.label)}</button>`;
+  }).join('');
+  return `<div class="agempus-dial evolve-dial" data-evolve-engram="${escape(graphId)}">
+    <span class="agempus-dial-label" title="How far this Agempu may evolve its SOPs without you. Ask first = every draft waits in Proposed SOPs. Auto still refuses meta skills and open contradictions.">Evolve</span>
+    <span class="agempus-dial-track">${segs}</span>
+  </div>`;
+}
+
 // ── Vitality grade ───────────────────────────────────────────────────────────
 export function vitalityGrade(score: number): 'a' | 'b' | 'c' | 'd' {
   if (score >= 85) return 'a';

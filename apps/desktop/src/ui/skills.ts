@@ -12,12 +12,15 @@ import {
   AGEMPUS_LEVELS,
   currentAgempusLevel,
   renderAgempusDial,
+  currentEvolveLevel,
+  renderEvolveDial,
   vitalityGrade,
   levelRankUi,
   perSkillReadout,
   fetchDispatchReadout,
   skillsDispatchReadoutCache,
   type AutonomyLevel,
+  type EvolveAutonomyLevel,
   type DispatchSafety,
   type PerSkillDispatchSafe,
   type DispatchSafeReadout,
@@ -99,6 +102,8 @@ interface SkillListEntry {
   trainedAt?: string;
   mode?: string;
   recallBreadth?: number;
+  /** Per-skill focus line (max 40 chars) — not the Agempus/engram name. */
+  role?: string;
   /** Present only for skills imported from a .gsk pack (author/sig metadata
    *  parsed from the imported-provenance node). Locally-trained skills:
    *  undefined → renderer omits the author badge. */
@@ -888,6 +893,8 @@ export async function fetchSkillsLibrary(): Promise<void> {
     skillsLibraryLoadError = null;
     skillsLibrary = (await ipcCallTimeout<SkillListEntry[]>('skill:list', {}, 45_000)) ?? [];
     skillsLibraryLoadOk = true;
+    // Proposed SOPs inbox / Agempu tile badges share this map — refresh with the library.
+    await fetchPendingProposals().catch(() => {});
   } catch (e) {
     console.warn('[skills] skill:list failed', e);
     skillsLibraryLoadError = e instanceof Error ? e.message : String(e);
@@ -1829,7 +1836,8 @@ export function renderSkillsLibrary(): void {
   // + shown even when the library itself is empty (a cortex whose only skills
   // are still quarantined lists zero rows in skill:list).
   bindQuarantineReviewOnce(listEl);
-  const reviewHtml = renderQuarantineReview();
+  bindProposedSopsInboxOnce(listEl);
+  const reviewHtml = renderQuarantineReview() + renderProposedSopsInbox();
   if (list.length === 0) {
     let msg: string;
     if (skillsLibraryLoadError) {
@@ -1941,6 +1949,7 @@ export function renderSkillsLibrary(): void {
     if (scoped) {
       return `<div class="skill-engram-group expanded is-scoped" data-engram-id="${escape(gid)}">
         ${renderAgempusDial(gid)}
+        ${renderEvolveDial(gid)}
         <div class="skill-engram-group-children">${childrenHtml}</div>
       </div>`;
     }
@@ -1953,6 +1962,7 @@ export function renderSkillsLibrary(): void {
         <span class="skill-engram-group-count">${count}</span>
       </button>
       ${renderAgempusDial(gid)}
+      ${renderEvolveDial(gid)}
       <div class="skill-engram-group-children">${childrenHtml}</div>
     </div>`;
   }).join('');
@@ -1967,14 +1977,25 @@ export function renderSkillsLibrary(): void {
   listEl.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
 
+    // Evolve dial — per-Agempu Praxis / train promotion ceiling.
+    const evolveSeg = target.closest<HTMLButtonElement>('.evolve-dial-seg');
+    if (evolveSeg) {
+      e.stopPropagation();
+      const dialEl = evolveSeg.closest<HTMLElement>('.evolve-dial');
+      const gid = dialEl?.dataset['evolveEngram'] ?? '';
+      const level = evolveSeg.dataset['evolveLevel'] as EvolveAutonomyLevel | undefined;
+      if (gid && level) void setEvolveLevel(gid, level);
+      return;
+    }
+
     // Agempus autonomy dial segment — set this engram's executionAutonomyLevel.
     // Checked BEFORE the group toggle so clicking the dial never collapses the
     // section. Disabled (L3) segments are inert.
-    const dialSeg = target.closest<HTMLButtonElement>('.agempus-dial-seg');
+    const dialSeg = target.closest<HTMLButtonElement>('.agempus-dial-seg:not(.evolve-dial-seg)');
     if (dialSeg) {
       e.stopPropagation();
       if (dialSeg.disabled) return;
-      const dialEl = dialSeg.closest<HTMLElement>('.agempus-dial');
+      const dialEl = dialSeg.closest<HTMLElement>('.agempus-dial:not(.evolve-dial)');
       const gid = dialEl?.dataset['agempusEngram'] ?? '';
       const level = dialSeg.dataset['agempusLevel'] as 'L0' | 'L1' | 'L2' | 'L3' | undefined;
       if (gid && level) void setAgempusLevel(gid, level);
@@ -2330,6 +2351,21 @@ async function setAgempusLevel(graphId: string, level: 'L0' | 'L1' | 'L2' | 'L3'
   }
 }
 
+/** Persist per-Agempu Evolve dial (Praxis / train promotion ceiling). */
+async function setEvolveLevel(graphId: string, level: EvolveAutonomyLevel): Promise<void> {
+  if (currentEvolveLevel(graphId) === level) return;
+  try {
+    await ipcCall('graphs.setEvolveAutonomy', { graphId, level });
+    await app().reloadGraphsMetadata();
+    renderSkillsLibrary();
+    const label = level === 'preview-first' ? 'Ask first' : level === 'notify' ? 'Notify' : 'Auto';
+    showSkillsToast(`Evolve set to ${label} for ${engramDisplayName(graphId)}`, 'success');
+  } catch (e) {
+    console.warn('[agempus] set evolve failed', e);
+    showSkillsToast('Could not update Evolve dial. Try again.', 'error');
+  }
+}
+
 /**
  * Render a skill tree node recursively.
  *
@@ -2439,9 +2475,14 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
   // raw slug stays in the tooltip as the canonical identifier for power users.
   const displayName = skillFriendlyName(s.label);
 
+  const roleLine = s.role
+    ? `<div class="skill-row-role" title="${escape(s.role)}"${offDim}>${escape(s.role)}</div>`
+    : '';
+
   return `
     <div class="skill-row${activeClass}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}">
       <div class="skill-row-title" title="${escape(skillDisplayName(s.label))}">${toggle}<span${offDim} data-pres="skill:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(displayName)}</span></div>
+      ${roleLine}
       <div class="skill-row-top">
         <span class="skill-row-engram" title="${escape(s.engramName)}" data-pres="engram:${escape(s.graphId)}">${escape(s.engramName)}</span>
         ${offChip}
@@ -3648,57 +3689,108 @@ function renderLineDiff(a: string, b: string): { html: string; hunkCount: number
   return { html, hunkCount: hunks.length, addedLines, removedLines };
 }
 
-function paintPendingProposal(): void {
+function resolvePendingInboxKey(): string | null {
+  if (skillsPendingInboxKey && skillsRetrainPending[skillsPendingInboxKey]) {
+    return skillsPendingInboxKey;
+  }
+  const sid = skillsActiveResult?.skillId;
+  if (sid && skillsRetrainPending[sid]) return sid;
+  return null;
+}
+
+async function paintPendingProposal(): Promise<void> {
   const card = document.getElementById('skills-pending-card');
   const metaEl = document.getElementById('skills-pending-meta');
   const previewEl = document.getElementById('skills-pending-preview');
+  const structuredEl = document.getElementById('skills-pending-structured');
+  const titleEl = document.getElementById('skills-pending-title');
   if (!card || !metaEl || !previewEl) return;
-  const sourceId = skillsActiveResult?.skillId;
-  if (!sourceId) {
+  const inboxKey = resolvePendingInboxKey();
+  if (!inboxKey) {
     card.classList.add('hidden');
     return;
   }
-  const proposal = skillsRetrainPending[sourceId];
+  const proposal = skillsRetrainPending[inboxKey];
   if (!proposal) {
     card.classList.add('hidden');
     return;
   }
+  skillsPendingInboxKey = inboxKey;
+  const isNew = proposal.kind === 'new' || inboxKey.startsWith('draft:');
+  const label = proposalDisplayLabel(inboxKey, proposal);
+  if (titleEl) {
+    titleEl.textContent = isNew
+      ? `📝 New SOP proposed — "${label}"`
+      : `📝 Retrain proposed — "${label}"`;
+  }
   const when = new Date(proposal.proposedAt).toLocaleString();
-  metaEl.textContent = `Proposed ${when} via ${proposal.triggerReason}. The current saved version is untouched until you accept this proposal.`;
+  metaEl.textContent = isNew
+    ? `Proposed ${when} via ${proposal.triggerReason}. Not saved until you Accept.`
+    : `Proposed ${when} via ${proposal.triggerReason}. The current saved version is untouched until you Accept.`;
   previewEl.textContent = proposal.trained;
+  if (structuredEl) {
+    structuredEl.textContent = 'Loading field diff…';
+    structuredEl.classList.remove('hidden');
+    try {
+      const diff = await ipcCall<{
+        ok?: boolean;
+        summaryText?: string;
+        structuredDiff?: { summary?: string };
+      }>('skill:diffProposal', { sourceId: inboxKey });
+      if (diff?.ok) {
+        structuredEl.textContent = diff.summaryText
+          ?? (diff.structuredDiff?.summary ? `Changes: ${diff.structuredDiff.summary}` : 'No structured field changes.');
+      } else {
+        structuredEl.textContent = 'Could not load structured diff — full text is below.';
+      }
+    } catch {
+      structuredEl.textContent = 'Could not load structured diff — full text is below.';
+    }
+  }
   card.classList.remove('hidden');
 }
 
 async function acceptPendingProposal(): Promise<void> {
-  const sourceId = skillsActiveResult?.skillId;
-  if (!sourceId) return;
+  const inboxKey = resolvePendingInboxKey();
+  if (!inboxKey) return;
+  const wasNew = skillsRetrainPending[inboxKey]?.kind === 'new' || inboxKey.startsWith('draft:');
   try {
-    const result = await ipcCall<{ ok?: boolean; reason?: string; message?: string }>('skill:acceptProposal', { sourceId });
+    const result = await ipcCall<{ ok?: boolean; reason?: string; message?: string; kind?: string }>(
+      'skill:acceptProposal',
+      { sourceId: inboxKey },
+    );
     if (!result?.ok) {
       showSkillsToast(`Accept failed: ${result?.reason ?? 'unknown'}`, 'error');
       return;
     }
-    delete skillsRetrainPending[sourceId];
-    paintPendingProposal();
-    // Refresh library so badges + the trained-version are current.
+    delete skillsRetrainPending[inboxKey];
+    skillsPendingInboxKey = null;
+    await paintPendingProposal();
+    await fetchPendingProposals();
     await fetchSkillsLibrary();
     renderSkillsLibrary();
-    showSkillsToast('Auto-retrain accepted — new version live.', 'success');
+    showSkillsToast(
+      wasNew || result.kind === 'new'
+        ? 'New SOP accepted — skill is live.'
+        : 'Retrain accepted — new version live.',
+      'success',
+    );
   } catch (e) {
     console.warn('[skills] acceptProposal failed', e);
     showSkillsToast('Accept failed.', 'error');
   }
 }
 
-async function rejectPendingProposal(): Promise<void> {
-  const sourceId = skillsActiveResult?.skillId;
-  if (!sourceId) return;
+async function rejectPendingProposal(explicitKey?: string): Promise<void> {
+  const inboxKey = explicitKey ?? resolvePendingInboxKey();
+  if (!inboxKey) return;
   try {
-    await ipcCall<{ ok?: boolean }>('skill:rejectProposal', { sourceId });
-    delete skillsRetrainPending[sourceId];
-    paintPendingProposal();
+    await ipcCall<{ ok?: boolean }>('skill:rejectProposal', { sourceId: inboxKey });
+    delete skillsRetrainPending[inboxKey];
+    if (skillsPendingInboxKey === inboxKey) skillsPendingInboxKey = null;
+    await paintPendingProposal();
     renderSkillsLibrary();
-    showSkillsToast('Proposal rejected — current version unchanged.', 'success');
+    showSkillsToast('Proposal rejected — nothing written.', 'success');
   } catch (e) {
     console.warn('[skills] rejectProposal failed', e);
     showSkillsToast('Reject failed.', 'error');
@@ -3991,6 +4083,7 @@ function readSkillsComposeForm(): {
   skill: string;
   graphId: string;
   skillName?: string;
+  role?: string;
   focusGraphIds?: string[];
   modelTarget?: string;
   save?: boolean;
@@ -4035,6 +4128,7 @@ function readSkillsComposeForm(): {
     return null;
   }
   const skillName = (document.getElementById('skills-input-name') as HTMLInputElement | null)?.value.trim() || undefined;
+  const role = (document.getElementById('skills-input-role') as HTMLInputElement | null)?.value.trim() || undefined;
   const focusContainer = document.getElementById('skills-input-focus') as HTMLDivElement | null;
   const focusGraphIds = focusContainer
     ? Array.from(focusContainer.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked'))
@@ -4067,6 +4161,7 @@ function readSkillsComposeForm(): {
     : undefined;
   const result: ReturnType<typeof readSkillsComposeForm> = { skill, graphId };
   if (skillName !== undefined) (result as { skillName?: string }).skillName = skillName;
+  if (role !== undefined) (result as { role?: string }).role = role.slice(0, 40);
   if (focusGraphIds.length > 0) (result as { focusGraphIds?: string[] }).focusGraphIds = focusGraphIds;
   if (modelTarget !== undefined) (result as { modelTarget?: string }).modelTarget = modelTarget;
   (result as { save?: boolean }).save = save;
@@ -4299,6 +4394,7 @@ function showTrainingBanner(): void {
   if (ta) ta.readOnly = true;
   ([
     'skills-input-name',
+    'skills-input-role',
     'skills-input-engram',
     'skills-input-model',
     'skills-input-breadth',
@@ -4391,6 +4487,7 @@ function hideTrainingBanner(): void {
   if (ta) ta.readOnly = false;
   ([
     'skills-input-name',
+    'skills-input-role',
     'skills-input-engram',
     'skills-input-model',
     'skills-input-breadth',
@@ -4681,6 +4778,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
           recallBreadth: params.recallBreadth,
           addedBy: 'desktop-ui',
           ...(params.goals !== undefined ? { goals: params.goals } : {}),
+          ...(params.role !== undefined ? { role: params.role } : {}),
         });
         if (saved?.warning) saveWarning = saved.warning;
         if (saved?.ok && saved.skillId) {
@@ -4948,7 +5046,19 @@ interface SkillRetrainConfig {
 
 const skillsRetrainCache = new Map<string, SkillRetrainConfig | null>();
 let skillsRetrainNotifications: Set<string> = new Set();
-let skillsRetrainPending: Record<string, { graphId: string; proposedAt: number; trained: string; diffNotes?: string; triggerReason: string }> = {};
+interface SkillPendingProposal {
+  graphId: string;
+  proposedAt: number;
+  trained: string;
+  diffNotes?: string;
+  triggerReason: string;
+  kind?: 'retrain' | 'new';
+  proposedLabel?: string;
+  sourceId?: string;
+}
+let skillsRetrainPending: Record<string, SkillPendingProposal> = {};
+/** Inbox key currently shown in the pending card (sourceId or draft:*). */
+let skillsPendingInboxKey: string | null = null;
 
 async function fetchRetrainNotifications(): Promise<void> {
   try {
@@ -4962,6 +5072,113 @@ async function fetchPendingProposals(): Promise<void> {
     const res = await ipcCall<{ proposals: typeof skillsRetrainPending }>('skill:listPendingProposals', {});
     skillsRetrainPending = res?.proposals ?? {};
   } catch { /* non-fatal */ }
+}
+
+/** Pending Proposed SOP count for one Agempu — used by the Agents grid badge. */
+export function pendingSopCountForEngram(graphId: string): number {
+  let n = 0;
+  for (const p of Object.values(skillsRetrainPending)) {
+    if (p.graphId === graphId) n++;
+  }
+  return n;
+}
+
+function proposalDisplayLabel(key: string, p: SkillPendingProposal): string {
+  if (p.proposedLabel?.trim()) return p.proposedLabel.trim();
+  if (p.kind === 'new' || key.startsWith('draft:')) return p.proposedLabel?.trim() || 'New skill draft';
+  const fromLib = skillsLibrary.find((s) => s.sourceId === key || s.sourceId === p.sourceId);
+  if (fromLib) return humanizeSkillName(fromLib.label) || skillDisplayName(fromLib.label) || fromLib.label;
+  return (p.sourceId ?? key).replace(/^skill:\d+:/, '').replace(/-/g, ' ');
+}
+
+/**
+ * Unified Proposed SOPs inbox — MCP new-skill drafts + Praxis / staleness
+ * retrain proposals. Rendered above the library (like quarantine review).
+ */
+function renderProposedSopsInbox(): string {
+  const entries = Object.entries(skillsRetrainPending);
+  if (entries.length === 0) return '';
+  // When scoped to one Agempu, only show that engram's proposals.
+  const scoped = skillsFilterEngram !== 'all' ? skillsFilterEngram : null;
+  const filtered = scoped
+    ? entries.filter(([, p]) => p.graphId === scoped)
+    : entries;
+  if (filtered.length === 0) return '';
+  filtered.sort((a, b) => (b[1].proposedAt ?? 0) - (a[1].proposedAt ?? 0));
+  const rows = filtered.map(([key, p]) => {
+    const isNew = p.kind === 'new' || key.startsWith('draft:');
+    const name = proposalDisplayLabel(key, p);
+    const when = new Date(p.proposedAt).toLocaleString();
+    const engram = engramDisplayName(p.graphId);
+    return `<li class="sops-inbox-row" data-sops-key="${escape(key)}">
+      <span class="sops-inbox-kind${isNew ? ' is-new' : ''}">${isNew ? 'new' : 'retrain'}</span>
+      <span class="sops-inbox-name" title="${escape(name)}">${escape(name)}</span>
+      <span class="sops-inbox-meta">${escape(p.triggerReason)} · ${escape(engram)} · ${escape(when)}</span>
+      <span class="sops-inbox-actions">
+        <button type="button" class="btn-sm primary" data-sops-act="review" data-sops-key="${escape(key)}">Review</button>
+        <button type="button" class="btn-sm btn-ghost" data-sops-act="reject" data-sops-key="${escape(key)}">Reject</button>
+      </span>
+    </li>`;
+  }).join('');
+  return `<section class="sops-inbox" aria-label="Proposed SOPs awaiting review">
+    <div class="sops-inbox-head">
+      <span class="sops-inbox-title">📝 ${filtered.length} Proposed SOP${filtered.length === 1 ? '' : 's'}</span>
+    </div>
+    <p class="sops-inbox-note">MCP drafts, Praxis retrains, and Ghampus “Train this?” candidates — nothing is live until you Accept.</p>
+    <ul class="sops-inbox-list">${rows}</ul>
+  </section>`;
+}
+
+function bindProposedSopsInboxOnce(listEl: HTMLElement): void {
+  if (listEl.dataset['sopsInboxBound']) return;
+  listEl.dataset['sopsInboxBound'] = '1';
+  listEl.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-sops-act]');
+    if (!btn) return;
+    e.stopPropagation();
+    const act = btn.dataset['sopsAct'];
+    const key = btn.dataset['sopsKey'];
+    if (!key || !act) return;
+    if (act === 'review') void openProposedSop(key);
+    else if (act === 'reject') void rejectPendingProposal(key);
+  });
+}
+
+/** Open a Proposed SOP in the trainer review card (retrain or new draft). */
+async function openProposedSop(inboxKey: string): Promise<void> {
+  const proposal = skillsRetrainPending[inboxKey];
+  if (!proposal) {
+    showSkillsToast('Proposal no longer available.', 'error');
+    return;
+  }
+  skillsPendingInboxKey = inboxKey;
+  const isNew = proposal.kind === 'new' || inboxKey.startsWith('draft:');
+  if (!isNew) {
+    const sid = proposal.sourceId ?? inboxKey;
+    await openSkillInTrainer(sid, proposal.graphId);
+    skillsPendingInboxKey = inboxKey;
+    void paintPendingProposal();
+    return;
+  }
+  // New-skill draft — synthetic review mode (no saved sourceId yet).
+  // Do NOT pass skillId/sourceId as draft:* — that would hit the source-driven
+  // editor against a non-existent node. Accept/Reject use skillsPendingInboxKey.
+  const title = proposalDisplayLabel(inboxKey, proposal);
+  skillsActiveSourceId = null;
+  showSkillsReviewMode(title);
+  paintSkillsReview({
+    original: '',
+    trained: proposal.trained,
+    influentialNodes: [],
+    mode: 'source-only',
+    ...(proposal.diffNotes !== undefined ? { diffNotes: proposal.diffNotes } : {}),
+  }, {
+    graphId: proposal.graphId,
+    engramName: engramDisplayName(proposal.graphId),
+    baselineText: '',
+    baselineLabel: 'new skill (not saved)',
+  });
+  void paintPendingProposal();
 }
 
 async function fetchRetrainConfig(sourceId: string): Promise<SkillRetrainConfig | null> {
@@ -5067,7 +5284,7 @@ async function saveRetrainScheduleFromUI(): Promise<void> {
   const cortexGrowthThreshold = Math.max(1, parseInt(growthEl.value || '50', 10) || 50);
   const vitalityThreshold = Math.max(1, Math.min(100, parseInt(vitalityEl.value || '60', 10) || 60));
   const selectedAutonomy = (Array.from(document.querySelectorAll<HTMLInputElement>('input[name="skills-retrain-autonomy"]'))
-    .find((r) => r.checked)?.value ?? 'auto-accept') as 'auto-accept' | 'notify' | 'preview-first';
+    .find((r) => r.checked)?.value ?? 'preview-first') as 'auto-accept' | 'notify' | 'preview-first';
 
   const config: SkillRetrainConfig | null = enabled
     ? {

@@ -37,30 +37,48 @@
       button {
         font: inherit; padding: 8px 14px; border-radius: 6px; cursor: pointer;
         border: 1px solid var(--border); background: var(--bg-elev); color: var(--fg);
-        transition: background 80ms;
+        transition: background 120ms, border-color 120ms, color 120ms;
       }
-      button:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
-      button.primary { background: color-mix(in oklab, var(--accent) 72%, white); color: white; border-color: transparent; }
-      button.primary:hover { background: color-mix(in oklab, var(--accent) 88%, white); }
-      :root[data-theme="dark"] button.primary,
-      :root[data-theme="dark"] button.primary:hover { background: var(--accent); color: #000; }
-      @media (prefers-color-scheme: dark) {
-        :root:not([data-theme="light"]) button.primary,
-        :root:not([data-theme="light"]) button.primary:hover { background: var(--accent); color: #000; }
+      /* Default control hover: a readable gray lift (accent-tint was ~invisible
+         on dark rail/chrome). Primary / AI / danger keep their own hovers. */
+      @media (hover: hover) and (pointer: fine) {
+        button:hover:not(:disabled):not(.primary):not(.ai):not(.ai-outline):not(.danger) {
+          background: color-mix(in oklab, var(--fg) 12%, var(--bg-elev));
+          border-color: color-mix(in oklab, var(--fg) 18%, var(--border));
+        }
+      }
+      /* Turquoise / purple fills use theme fill tokens so dark hover LIGHTENS
+         (see --accent-fill-hover). The old dark rule set hover = same as rest
+         and killed the feedback entirely. */
+      button.primary {
+        background: var(--accent-fill, var(--accent));
+        color: var(--accent-contrast, #fff);
+        border-color: transparent;
+      }
+      button.ai {
+        background: var(--ai-accent);
+        color: var(--ai-accent-contrast);
+        border-color: transparent;
+      }
+      @media (hover: hover) and (pointer: fine) {
+        button.primary:hover:not(:disabled) {
+          background: var(--accent-fill-hover, color-mix(in oklab, var(--accent) 62%, #fff));
+        }
+        button.ai:hover:not(:disabled) {
+          background: color-mix(in oklab, var(--ai-accent) 72%, #fff);
+        }
+        button.ai-outline:hover:not(:disabled) {
+          background: color-mix(in oklab, var(--ai-accent) 22%, var(--bg-elev));
+          border-color: color-mix(in oklab, var(--ai-accent) 55%, var(--border));
+        }
       }
       /* Secondary brand: purple for AI/inferred/non-deterministic actions
          (e.g. "Synthesize answer", Local-LLM-driven things). Used sparingly
          so the semantic split between turquoise and purple stays readable. */
-      button.ai { background: var(--ai-accent); color: var(--ai-accent-contrast); border-color: transparent; }
-      button.ai:hover { background: color-mix(in oklab, var(--ai-accent) 85%, black); }
       button.ai-outline {
         background: var(--ai-accent-soft);
         color: var(--ai-accent);
         border-color: color-mix(in oklab, var(--ai-accent) 35%, var(--border));
-      }
-      button.ai-outline:hover {
-        background: color-mix(in oklab, var(--ai-accent) 18%, transparent);
-        border-color: color-mix(in oklab, var(--ai-accent) 55%, var(--border));
       }
       /* Destructive / cortex-management style — visibly red so it reads as
          "careful, this opens engram delete & quarantine cleanup". Not full
@@ -2849,20 +2867,44 @@
 
       /* Left navigation rail. */
       .app-rail {
-        background: var(--bg-elev);
-        border-right: 1px solid var(--border);
+        /* Soft vertical wash that barely resolves to brand turquoise → purple.
+           Tiny mixes only — should read as atmosphere, not a tinted panel. */
+        background:
+          linear-gradient(
+            185deg,
+            color-mix(in oklab, var(--accent) 4%, var(--bg-elev)) 0%,
+            var(--bg-elev) 48%,
+            color-mix(in oklab, var(--ai-accent) 3.5%, var(--bg-elev)) 100%
+          );
+        border-right: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
         /* No bottom padding — the sticky Settings button sits flush against the
            status bar so scrolled Memory-trace rows can't peek beneath it. */
         padding: 8px 6px 0;
         display: flex;
         flex-direction: column;
         gap: 2px;
-        /* The whole rail scrolls as one (single scrollbar) so every item stays
-           reachable at small window heights; Settings stays pinned at the
-           bottom via position:sticky. */
-        overflow-y: auto;
+        /* Two independent scroll panes: .rail-nav-scroll (logo + modes +
+           Settings) and .rail-chats-list. The rail itself does not scroll —
+           otherwise a long chat history would drag the nav buttons away. */
+        overflow: hidden;
+        min-height: 0;
+      }
+      .rail-nav-scroll {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        flex: 1 1 auto;
+        min-height: 0;
         overflow-x: hidden;
+        overflow-y: auto;
         scrollbar-width: thin;
+      }
+      /* When chat history is present, the nav sizes to its content (not a
+         fixed/percentage height). Pins/Chats take whatever space remains and
+         scroll. Nav only shrinks+scrolls if the window is too short for the
+         button stack itself. */
+      body.rail-has-chats .rail-nav-scroll {
+        flex: 0 1 auto;
       }
       .rail-btn {
         display: grid;
@@ -2872,21 +2914,37 @@
         padding: 7px 10px;
         border-radius: 6px;
         background: transparent;
+        /* Always borderless — global `button` + hover rules otherwise draw a
+           hard edge that reads as a second selected state. */
         border: 1px solid transparent;
         color: var(--fg-dim);
         text-align: left;
         font-size: 15.5px;
         cursor: pointer;
-        transition: background 80ms, color 80ms;
+        transition: background 120ms, color 120ms;
       }
-      .rail-btn:hover {
-        background: color-mix(in oklab, var(--accent) 8%, transparent);
-        color: var(--fg);
+      @media (hover: hover) and (pointer: fine) {
+        button.rail-btn:hover:not(:disabled) {
+          background: color-mix(in oklab, var(--fg) 5%, transparent);
+          border-color: transparent;
+          color: var(--fg);
+        }
+        button.rail-btn.active:hover:not(:disabled) {
+          background: color-mix(in oklab, var(--fg) 7%, transparent);
+          border-color: transparent;
+        }
       }
+      /* Active: near-background gray wash, slightly transparent — no accent tint. */
       .rail-btn.active {
-        background: color-mix(in oklab, var(--accent) 18%, transparent);
+        background: color-mix(in oklab, var(--fg) 6%, transparent);
+        border-color: transparent;
         color: var(--fg);
         font-weight: 500;
+      }
+      .rail-btn:focus,
+      .rail-btn:focus-visible {
+        outline: none;
+        border-color: transparent;
       }
       .rail-btn .rail-icon {
         font-size: 14px; line-height: 1; text-align: center;
@@ -2951,9 +3009,11 @@
         padding: 0;
         transition: background 80ms, color 80ms, transform 120ms;
       }
-      .rail-collapse-toggle:hover {
-        background: color-mix(in oklab, var(--accent) 12%, transparent);
-        color: var(--fg);
+      @media (hover: hover) and (pointer: fine) {
+        .rail-collapse-toggle:hover {
+          background: color-mix(in oklab, var(--fg) 12%, transparent);
+          color: var(--fg);
+        }
       }
       .rail-collapse-toggle svg {
         transition: transform 160ms ease;
@@ -3180,35 +3240,96 @@
       /* ── Chats (rail) ──────────────────────────────────────────────────
          Ghampus chat history, newest first, below Settings. Deliberately
          quieter than the mode buttons above: smaller type, dimmer, no icon
-         column — it is a list of past threads, not a set of destinations. */
+         column — it is a list of past threads, not a set of destinations.
+         Pins + Chats share one scrollport (.rail-chats-scroll). */
       .rail-chats {
         display: flex;
         flex-direction: column;
         gap: 1px;
-        padding: 6px 0 12px;
-        border-top: 1px solid var(--border);
-        margin-top: 4px;
+        /* Recessed panel vs the nav rail above — darker base + faint brand wash
+           so Pins/Chats read as their own surface, not more of the menu. */
+        --rail-chats-bg: color-mix(in oklab, var(--bg) 72%, var(--bg-elev));
+        background:
+          linear-gradient(
+            180deg,
+            color-mix(in oklab, var(--accent) 2.5%, var(--rail-chats-bg)) 0%,
+            var(--rail-chats-bg) 45%,
+            color-mix(in oklab, var(--ai-accent) 2.2%, var(--rail-chats-bg)) 100%
+          );
+        border-top: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+        margin-top: 6px;
+        padding: 10px 0 10px;
+        border-radius: 10px 10px 0 0;
+        flex: 1 1 0;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .rail-chats-scroll {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        /* Keep pin buttons clear of the vertical scrollbar — without this the
+           icon sits under the track and clicks never reach pin/unpin. */
+        padding: 2px 10px 8px 0;
+        box-sizing: border-box;
+      }
+      .rail-pins,
+      .rail-chats-section {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        flex-shrink: 0;
+      }
+      /* Natural break between Pins and Chats when both are present. */
+      .rail-pins:not(.hidden) + .rail-chats-section:not(.hidden) {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
       }
       .rail-chats-head {
-        font-size: 11px;
+        font-size: 10.5px;
         font-weight: 600;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
         color: var(--fg-dim);
-        opacity: 0.75;
-        padding: 4px 10px 6px;
+        opacity: 0.7;
+        padding: 2px 10px 4px;
+        margin: 0 0 2px;
+        flex-shrink: 0;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        /* Stick to the chats panel tone, not the brighter nav rail above. */
+        background: color-mix(in oklab, var(--rail-chats-bg, var(--bg)) 92%, transparent);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .rail-pins > .rail-chats-head {
+        padding-top: 4px;
       }
       .rail-chats-list {
         display: flex;
         flex-direction: column;
-        gap: 1px;
+        gap: 2px;
+      }
+      .rail-chat-row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        min-width: 0;
+        padding-right: 2px;
       }
       .rail-chat-btn {
-        /* Single column: the title is the whole row, so it gets the full width
-           to spend before the ellipsis bites. */
+        /* Title takes remaining width; pin control sits beside it. */
+        flex: 1 1 auto;
+        min-width: 0;
         display: block;
-        width: 100%;
-        padding: 5px 10px;
+        padding: 6px 4px 6px 10px;
         border: 1px solid transparent;
         border-radius: 6px;
         background: transparent;
@@ -3224,14 +3345,92 @@
         text-overflow: ellipsis;
         transition: background 80ms, color 80ms;
       }
-      .rail-chat-btn:hover {
-        background: color-mix(in oklab, var(--accent) 8%, transparent);
-        color: var(--fg);
+      @media (hover: hover) {
+        button.rail-chat-btn:hover:not(:disabled) {
+          background: color-mix(in oklab, var(--fg) 5%, transparent);
+          border-color: transparent;
+          color: var(--fg);
+        }
+        button.rail-chat-btn.active:hover:not(:disabled) {
+          background: color-mix(in oklab, var(--fg) 7%, transparent);
+          border-color: transparent;
+        }
       }
       .rail-chat-btn.active {
-        background: color-mix(in oklab, var(--accent) 18%, transparent);
+        background: color-mix(in oklab, var(--fg) 6%, transparent);
+        border-color: transparent;
         color: var(--fg);
         font-weight: 500;
+      }
+      .rail-chat-pin {
+        flex: 0 0 auto;
+        width: 26px;
+        height: 26px;
+        margin-right: 2px;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: color-mix(in oklab, var(--fg) 45%, transparent);
+        opacity: 0;
+        /* Hidden pins must not steal clicks (or sticky :hover) from the title
+           or the scrollbar. Revealed state turns pointer-events back on. */
+        pointer-events: none;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: opacity 80ms, background 80ms, color 80ms;
+      }
+      .rail-chat-pin svg {
+        width: 13px;
+        height: 13px;
+        display: block;
+        pointer-events: none;
+      }
+      /*
+       * Hover-capable devices: hide unpinned affordances until the row is hot.
+       * Do NOT key off (pointer: coarse) — touchscreen laptops report coarse
+       * as primary and would keep every pin permanently visible.
+       * `.is-hover` is set from pointer events so sticky WKWebView :hover
+       * cannot leave icons painted after the cursor leaves.
+       */
+      @media (hover: hover) {
+        .rail-chat-pin:not(.is-pinned) {
+          opacity: 0;
+          pointer-events: none;
+        }
+        .rail-chat-row:hover .rail-chat-pin:not(.is-pinned),
+        .rail-chat-row.is-hover .rail-chat-pin:not(.is-pinned) {
+          opacity: 0.85;
+          pointer-events: auto;
+        }
+        button.rail-chat-pin:hover:not(:disabled),
+        button.rail-chat-pin:focus-visible {
+          background: color-mix(in oklab, var(--fg) 6%, transparent);
+          border-color: transparent;
+          color: var(--fg);
+          opacity: 1;
+        }
+      }
+      /* True touch / no-hover: always show a dim pin (no hover to reveal). */
+      @media (hover: none) {
+        .rail-chat-pin {
+          opacity: 0.5;
+          pointer-events: auto;
+        }
+      }
+      .rail-chat-pin.is-pinned {
+        opacity: 1;
+        pointer-events: auto;
+        color: var(--accent);
+        border-color: transparent;
+        background: transparent;
+      }
+      .rail-chat-pin:focus:not(:focus-visible) {
+        outline: none;
+        background: transparent;
+        border-color: transparent;
       }
       /* Collapsed rail has no room for titles at all — hide the block rather
          than render a column of unreadable stubs. */
@@ -3330,7 +3529,14 @@
       .app-canvas {
         overflow-y: auto;
         padding: 10px 24px 20px;
-        background: var(--bg);
+        /* Diagonal wash: turquoise upper-left → purple lower-right, very faint. */
+        background:
+          linear-gradient(
+            155deg,
+            color-mix(in oklab, var(--accent) 3.2%, var(--bg)) 0%,
+            var(--bg) 50%,
+            color-mix(in oklab, var(--ai-accent) 2.8%, var(--bg)) 100%
+          );
         /* min-height:0 is required for overflow-y:auto to work inside a grid
            cell. Without it, grid items use min-height:auto and expand to fit
            content instead of scrolling. macOS WebKit is lenient; WebView2
@@ -4669,6 +4875,9 @@
       }
       body.skills-studio-mode #studio-section {
         display: flex !important;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
       }
       /* Inside studio-section the default chip is Remember (module init).
          Force the skills library/trainer — hide every other studio tool. */
@@ -5926,6 +6135,16 @@
          other if a class is left behind. */
       body.agents-grid-mode .skills-pane { display: none; }
       body:not(.agents-grid-mode) #skills-agents-grid { display: none; }
+      /* Grid view: the skills lb-section is overflow:hidden (so the scoped
+         library/trainer can manage their own scroll). Without a scrollport
+         here the roster is clipped at the fold — tall crews never scroll. */
+      body.agents-grid-mode .lb-section[data-studio-tool="skills"] .agempus-grid-host {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
       /* In agent view the header names the agent, so the name/engram filters
          below it are redundant — and filtering to a DIFFERENT engram would
          contradict the header. */
@@ -6045,7 +6264,10 @@
         .skills-praxis-strip .skills-praxis-dot { display: none; }
       }
 
-      .agempus-grid-host { padding: 4px 2px 24px; }
+      .agempus-grid-host {
+        padding: 4px 2px 24px;
+        box-sizing: border-box;
+      }
       .agempus-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
@@ -6174,6 +6396,20 @@
       /* Grouped agents sit on the elevated surface on hover — keep the cut-out
          matching, or the blob shows a hairline of the wrong background. */
       .agempus-tile:hover .agempus-tile-count { border-color: var(--bg-elev); }
+      /* Proposed SOPs awaiting Accept — small badge opposite the skill-count blob. */
+      .agempus-tile-sops {
+        position: absolute; left: -6px; top: -4px;
+        min-width: 22px; height: 22px; padding: 0 6px;
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--color-status-warn-gold) 92%, #000);
+        color: #1d2433;
+        font-size: 11px; font-weight: 800;
+        display: flex; align-items: center; justify-content: center;
+        border: 2px solid var(--bg);
+        box-shadow: 0 1px 4px rgba(0,0,0,.28);
+        z-index: 2;
+      }
+      .agempus-tile:hover .agempus-tile-sops { border-color: var(--bg-elev); }
       .agempus-tile-name {
         font-size: 13.5px; font-weight: 600; text-align: center; line-height: 1.25;
         max-width: 152px;
@@ -6819,6 +7055,9 @@
         padding: 7px 8px 4px 22px; font-size: 11px; color: var(--fg-dim);
       }
       .skill-engram-group.expanded > .agempus-dial { display: flex; }
+      .skill-engram-group.expanded > .evolve-dial { display: flex; }
+      .skill-engram-group.is-scoped > .agempus-dial,
+      .skill-engram-group.is-scoped > .evolve-dial { display: flex; }
       .agempus-dial-label { font-weight: 600; color: var(--fg); }
       .agempus-dial-track {
         display: inline-flex; border: 1px solid var(--border);
@@ -7007,6 +7246,17 @@
       .skill-row-title {
         font-weight: 700; font-size: 13px; line-height: 1.3;
         word-break: break-word;
+      }
+      /* Per-skill Role focus line — under the title; same size, lighter/dimmer */
+      .skill-row-role {
+        font-size: 13px;
+        font-weight: 400;
+        color: var(--fg-dim);
+        line-height: 1.3;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
       }
       .skill-row-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
       .skill-row-engram {
@@ -7515,15 +7765,169 @@
         padding: 0; /* remove default studio-section padding */
       }
       #ghampus-shell {
-        display: flex; flex-direction: column; flex: 1; min-height: 0;
+        display: flex; flex-direction: row; flex: 1; min-height: 0;
+        align-items: stretch;
       }
       #ghampus-chat-wrap {
         display: flex; flex-direction: column;
-        flex: 1; min-height: 0;
+        flex: 1; min-width: 0; min-height: 0;
         position: relative;
         --ghampus-chat-zoom: 1;
         --ghampus-chat-avatar-size: 40px;
         --ghampus-chat-avatar-gap: 10px;
+      }
+
+      /* Reply thread sidebar */
+      .ghampus-thread-sidebar {
+        display: flex; flex-direction: column;
+        width: min(380px, 42vw);
+        flex: 0 0 min(380px, 42vw);
+        min-height: 0;
+        border-left: 1px solid var(--g-border, rgba(255,255,255,.12));
+        background: var(--bg-elev, rgba(0,0,0,.18));
+      }
+      .ghampus-thread-sidebar.hidden,
+      .ghampus-thread-sidebar[hidden] { display: none !important; }
+      .ghampus-thread-sidebar-body {
+        display: flex; flex-direction: column;
+        flex: 1; min-height: 0; overflow: hidden;
+      }
+      .ghampus-thread-sidebar-head {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 12px; border-bottom: 1px solid var(--g-border, rgba(255,255,255,.1));
+        flex-shrink: 0;
+      }
+      .ghampus-thread-sidebar-title { font-size: 13px; font-weight: 650; }
+      .ghampus-thread-sidebar-close {
+        background: transparent; border: none; color: var(--fg-dim); font-size: 20px;
+        line-height: 1; cursor: pointer; padding: 0 4px;
+      }
+      .ghampus-thread-sidebar-parent {
+        padding: 12px; border-bottom: 1px solid var(--g-border, rgba(255,255,255,.08));
+        flex-shrink: 0; max-height: 28%; overflow: auto;
+      }
+      .ghampus-thread-sidebar-parent-meta {
+        display: flex; gap: 8px; align-items: center; font-size: 11px;
+        opacity: .7; margin-bottom: 6px; flex-wrap: wrap;
+      }
+      .ghampus-thread-flag {
+        font-size: 10px; padding: 1px 6px; border-radius: 999px;
+        background: rgba(20,184,166,.15); color: var(--accent, #14b8a6);
+      }
+      .ghampus-thread-sidebar-parent-body { font-size: 13px; line-height: 1.45; }
+      .ghampus-thread-sidebar-toolbar {
+        display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
+        border-bottom: 1px solid var(--g-border, rgba(255,255,255,.08));
+        flex-shrink: 0;
+      }
+      .ghampus-thread-sidebar-replies {
+        flex: 1; min-height: 0; overflow: auto; padding: 8px 12px 12px;
+      }
+      .ghampus-thread-sidebar-empty { font-size: 12px; opacity: .55; margin: 8px 0; }
+      .ghampus-sidebar-reply {
+        margin: 8px 0 10px; padding: 8px 10px;
+        border-left: 2px solid var(--g-border, rgba(255,255,255,.14));
+        margin-left: calc(var(--reply-depth, 0) * 12px);
+        background: rgba(255,255,255,.02); border-radius: 0 8px 8px 0;
+      }
+      .ghampus-sidebar-reply-head {
+        display: flex; align-items: center; gap: 8px; font-size: 11px;
+        margin-bottom: 4px; opacity: .85;
+      }
+      .ghampus-sidebar-reply-time { opacity: .55; margin-right: auto; }
+      .ghampus-sidebar-reply-body { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+      .ghampus-thread-sidebar-compose {
+        flex-shrink: 0; padding: 10px 12px 12px;
+        border-top: 1px solid var(--g-border, rgba(255,255,255,.1));
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .ghampus-thread-reply-target { font-size: 11px; opacity: .6; }
+      .ghampus-thread-input {
+        width: 100%; resize: vertical; min-height: 52px; max-height: 140px;
+        font: inherit; font-size: 13px; padding: 8px 10px;
+        border-radius: 8px; border: 1px solid var(--g-border, rgba(255,255,255,.14));
+        background: var(--bg, #111); color: var(--fg, #fff);
+      }
+      .ghampus-thread-compose-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+      /* Action strip — gated off in TS (GHAMPUS_MSG_ACTIONS_VISIBLE); styles
+         kept neutral gray for when the toolbelt returns. */
+      .ghampus-msg-actions {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+        margin-top: 8px; padding: 6px;
+        border-radius: 12px;
+        background: color-mix(in oklab, var(--bg-elev, #1a1a1e) 88%, transparent);
+        border: 1px solid color-mix(in oklab, var(--border, rgba(255,255,255,.12)) 70%, transparent);
+      }
+      .ghampus-msg-action {
+        appearance: none;
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 12.5px; font-weight: 600; letter-spacing: .01em;
+        line-height: 1.2; padding: 7px 12px; border-radius: 10px;
+        cursor: pointer; white-space: nowrap;
+        border: 1px solid color-mix(in oklab, var(--border, rgba(255,255,255,.14)) 80%, transparent);
+        color: var(--fg-dim, rgba(255,255,255,.72));
+        background: color-mix(in oklab, var(--bg-elev, #1a1a1e) 70%, transparent);
+        transition: transform .12s ease, background .12s ease, border-color .12s ease, color .12s ease;
+      }
+      .ghampus-msg-action-icon {
+        width: 15px; height: 15px; flex-shrink: 0; display: block;
+        opacity: .85;
+      }
+      .ghampus-msg-action-label { pointer-events: none; }
+      .ghampus-msg-action:hover {
+        transform: translateY(-1px);
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--fg-dim, rgba(255,255,255,.45)) 55%, transparent);
+        background: color-mix(in oklab, var(--bg-elev, #1a1a1e) 92%, transparent);
+      }
+      .ghampus-msg-action:active { transform: translateY(0); }
+      .ghampus-msg-action:focus { outline: none; }
+      .ghampus-msg-action:focus-visible {
+        outline: 2px solid var(--accent, #14b8a6); outline-offset: 2px;
+      }
+      .ghampus-msg-action--reply { font-weight: 700; }
+      .ghampus-reply-badge {
+        margin-top: 6px; font-size: 12px; font-weight: 700; cursor: pointer;
+        padding: 5px 12px; border-radius: 10px; border: none;
+        background: color-mix(in oklab, var(--accent, #14b8a6) 16%, transparent);
+        color: var(--accent, #14b8a6);
+        transition: background .12s ease, transform .12s ease;
+      }
+      .ghampus-reply-badge:hover {
+        background: color-mix(in oklab, var(--accent, #14b8a6) 26%, transparent);
+        transform: translateY(-1px);
+      }
+      .ghampus-cite-attach {
+        margin-top: 6px; font-size: 11px; opacity: .85;
+        border: 1px solid var(--g-border, rgba(255,255,255,.1));
+        border-radius: 8px; padding: 4px 8px;
+        background: rgba(255,255,255,.03);
+      }
+      .ghampus-cite-attach summary { cursor: pointer; font-weight: 600; }
+      .ghampus-cite-list { list-style: none; margin: 6px 0 2px; padding: 0; }
+      .ghampus-cite-row {
+        display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
+        padding: 3px 0; border-top: 1px solid rgba(255,255,255,.06);
+      }
+      .ghampus-cite-kind {
+        font-size: 9px; text-transform: uppercase; letter-spacing: .04em;
+        opacity: .55; min-width: 4.5rem;
+      }
+      .ghampus-cite-label { font-weight: 550; }
+      .ghampus-cite-detail { opacity: .55; width: 100%; padding-left: 4.5rem; }
+      .ghampus-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 4px; }
+      .ghampus-mention {
+        font-size: 10px; padding: 1px 6px; border-radius: 999px;
+        background: rgba(168,85,247,.15); color: #c4b5fd;
+      }
+      .chat-msg.user .chat-msg-avatar {
+        width: var(--ghampus-chat-avatar-size, 40px);
+        height: var(--ghampus-chat-avatar-size, 40px);
+        border-radius: 10px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 700;
+        background: rgba(255,255,255,.08); color: var(--fg-dim);
       }
       /* Chat text zoom — keyboard only: ⌘/Ctrl + +/−/0 (no scroll-wheel zoom).
          Never apply CSS zoom inside .ghampus-thread (the scrollport) — WebKit/Chromium
@@ -7841,20 +8245,23 @@
         -webkit-user-select: text !important;
         user-select: text !important;
       }
+      /* Ghampus left; user right (classic chat). */
       .chat-msg.ghampus {
         align-self: flex-start;
         width: fit-content;
-        max-width: 85%;
+        max-width: 88%;
         align-items: flex-end;
       }
-      /* Right-align user bubbles; pad-left mirrors avatar+gap offset on Ghampus side */
       .chat-msg.user {
         align-self: flex-end;
         flex-direction: row-reverse;
+        /* Mirror avatar+gap inset on the Ghampus side so columns feel balanced. */
         padding-left: calc(var(--ghampus-chat-avatar-size, 40px) + var(--ghampus-chat-avatar-gap, 10px));
         width: fit-content;
-        max-width: 85%;
+        max-width: 82%;
       }
+      /* Thread replies stay out of the main feed (shown in sidebar). */
+      .ghampus-thread-entry.is-thread-reply { display: none; }
 
       .chat-msg-wrap { display: flex; flex-direction: column; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
       .chat-msg.ghampus .chat-msg-wrap { flex: 1 1 auto; }
@@ -7864,14 +8271,15 @@
         display: flex; align-items: center; gap: 6px;
         margin-top: 3px; opacity: 0;
         transition: opacity .15s;
-        height: 20px; /* reserve space so layout doesn't shift */
+        min-height: 20px; /* reserve space so layout doesn't shift */
+        flex-wrap: wrap;
       }
       /* Pointer-driven class — :hover sticks on clicked buttons and keeps meta visible. */
       .chat-msg.is-hover .chat-msg-meta,
       .chat-msg.trace-expanded .chat-msg-meta,
       .chat-msg-meta:has(.chat-msg-copy:focus-visible),
       .chat-msg-meta:has(.ghampus-trace-toggle:focus-visible) { opacity: 1; }
-      /* User: reverse so copy is on the left, time on the right */
+      /* User: reverse so copy sits inward, time toward the right edge. */
       .chat-msg.user .chat-msg-meta { flex-direction: row-reverse; justify-content: flex-start; }
 
       .chat-msg-time {
@@ -9915,9 +10323,57 @@
         font-size: 13px;
         color: var(--color-status-warn-gold);
       }
+      .skills-pending-structured {
+        font-family: var(--font-mono, ui-monospace, monospace);
+        font-size: 11px; line-height: 1.45;
+        white-space: pre-wrap; word-break: break-word;
+        padding: 8px 10px; border-radius: 6px;
+        background: color-mix(in oklab, var(--bg) 70%, transparent);
+        border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+        color: var(--fg);
+        margin: 0;
+      }
+      .skills-pending-structured.hidden { display: none; }
+      .skills-pending-body-details > summary {
+        cursor: pointer; font-size: 12px; color: var(--fg-dim);
+        user-select: none;
+      }
       .skills-pending-actions {
         display: flex; gap: 8px; margin-top: 10px;
       }
+      /* Proposed SOPs inbox — MCP drafts + Praxis proposals above the library */
+      .sops-inbox {
+        margin: 0 0 12px; padding: 10px 12px;
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold) 32%, transparent);
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--color-status-warn-gold) 7%, transparent);
+      }
+      .sops-inbox-head {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        margin-bottom: 4px;
+      }
+      .sops-inbox-title { font-size: 13px; font-weight: 700; color: var(--color-status-warn-gold); }
+      .sops-inbox-note { margin: 0 0 8px; font-size: 11px; color: var(--fg-dim); line-height: 1.4; }
+      .sops-inbox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+      .sops-inbox-row {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 6px 8px; border-radius: 6px;
+        background: color-mix(in oklab, var(--bg-elev) 85%, transparent);
+        border: 1px solid var(--border);
+      }
+      .sops-inbox-name { flex: 1 1 120px; font-size: 12px; font-weight: 600; color: var(--fg); min-width: 0; }
+      .sops-inbox-meta { font-size: 11px; color: var(--fg-dim); }
+      .sops-inbox-kind {
+        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+        padding: 1px 6px; border-radius: 4px;
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        color: var(--fg);
+      }
+      .sops-inbox-kind.is-new {
+        background: color-mix(in oklab, var(--color-status-warn-gold) 22%, transparent);
+        color: var(--color-status-warn-gold);
+      }
+      .sops-inbox-actions { display: flex; gap: 6px; flex-wrap: wrap; }
       /* Dark mode override — black text on the turquoise active chip for the
          same reason button.primary uses #000 in dark mode (the desaturated
          dark turquoise vs. white reads as low contrast). The GNN chip keeps
@@ -13242,9 +13698,9 @@
          the button is not a flex container. */
       .atlas-title-line .engram-picker-chevron {
         display: inline-block;
-        font-size: 16px;
+        font-size: 20px;
         color: var(--fg);
-        margin-left: 10px;
+        margin-left: 16px;
         transition: transform 140ms ease, color 140ms ease;
       }
       .atlas-title-line .header-engram-picker:hover .engram-picker-chevron {
@@ -13738,7 +14194,12 @@
         color: var(--fg-dim);
         cursor: pointer;
       }
-      .activity-segment-btn:hover { color: var(--fg); }
+      @media (hover: hover) and (pointer: fine) {
+        .activity-segment-btn:hover {
+          color: var(--fg);
+          background: color-mix(in oklab, var(--fg) 10%, transparent);
+        }
+      }
       .activity-segment-btn.active {
         background: var(--bg-elev);
         color: var(--fg);

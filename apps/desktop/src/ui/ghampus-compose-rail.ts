@@ -63,7 +63,19 @@ export interface GhampusComposeAssist {
   llmConfidence?: number | null;
 }
 
-const ASSIST_DEBOUNCE_MS = 180;
+/**
+ * Wait for a real typing pause before any compose IPC. Shorter values made
+ * every slow keystroke fire assist → DOM rebuild and felt like ~½s input lag.
+ */
+const ASSIST_DEBOUNCE_MS = 700;
+/**
+ * Heavy enrich (dup/recall searchNodes) only after a longer pause.
+ */
+const ASSIST_ENRICH_DEBOUNCE_MS = 1400;
+/**
+ * Local-LLM intent refine is expensive (Ollama). Only after a long idle.
+ */
+const ASSIST_LLM_REFINE_DEBOUNCE_MS = 2500;
 
 function engramHintMatches(hint: string, e: ComposeEngramOption): boolean {
   const h = hint.toLowerCase();
@@ -169,23 +181,59 @@ export function wireGhampusComposeRail(
   }
 
   let assistTimer: ReturnType<typeof setTimeout> | null = null;
+  let enrichTimer: ReturnType<typeof setTimeout> | null = null;
+  let refineTimer: ReturnType<typeof setTimeout> | null = null;
   let assistSeq = 0;
   let refineSeq = 0;
   let lastAssist: GhampusComposeAssist | null = null;
+  let lastRenderSig = '';
   let newEngramGuideOpen = false;
   let newEngramDraftName = '';
   let dismissedCreateOfferId: string | null = null;
   let pinnedEngramGraphId: string | null = null;
 
+  function assistSignature(assist: GhampusComposeAssist): string {
+    return [
+      assist.primaryIntent,
+      assist.intentLabel,
+      assist.intentSource ?? '',
+      assist.saveIntent ? '1' : '0',
+      assist.selectedEngramId ?? '',
+      assist.selectedEngramHint ?? '',
+      assist.chipEngramIds.join(','),
+      assist.createEngramOffer?.graphId ?? '',
+      assist.suggestedEngram?.graphId ?? '',
+      assist.duplicateWarning
+        ? `${assist.duplicateWarning.graphId}:${assist.duplicateWarning.score}`
+        : '',
+      assist.recallPrefetch?.matchCount ?? '',
+      assist.skillMatches.map((s) => s.slug).join(','),
+      assist.foresightHint?.kind ?? '',
+      assist.awayDigest ? `${assist.awayDigest.contradictions}:${assist.awayDigest.duplicates}` : '',
+      assist.selectionBridge?.quotedText?.slice(0, 40) ?? '',
+      newEngramGuideOpen ? 'g1' : 'g0',
+      newEngramDraftName,
+    ].join('|');
+  }
+
   function hide(): void {
     rail.classList.add('hidden');
     lastAssist = null;
+    lastRenderSig = '';
     newEngramGuideOpen = false;
     dismissedCreateOfferId = null;
     pinnedEngramGraphId = null;
     if (assistTimer) {
       clearTimeout(assistTimer);
       assistTimer = null;
+    }
+    if (enrichTimer) {
+      clearTimeout(enrichTimer);
+      enrichTimer = null;
+    }
+    if (refineTimer) {
+      clearTimeout(refineTimer);
+      refineTimer = null;
     }
   }
 
@@ -197,7 +245,12 @@ export function wireGhampusComposeRail(
     </div>`;
   }
 
-  function renderStrips(assist: GhampusComposeAssist): void {
+  function renderStrips(assist: GhampusComposeAssist, force = false): void {
+    const sig = assistSignature(assist);
+    if (!force && sig === lastRenderSig && !rail.classList.contains('hidden')) {
+      return;
+    }
+    lastRenderSig = sig;
     const parts: string[] = [];
 
     if (assist.intentLabel) {
@@ -394,7 +447,7 @@ export function wireGhampusComposeRail(
           if (assist.createEngramOffer && !newEngramDraftName) {
             newEngramDraftName = assist.createEngramOffer.displayName;
           }
-          renderStrips(assist);
+          renderStrips(assist, true);
           return;
         }
         const id = btn.dataset.graphId ?? '';
@@ -488,7 +541,7 @@ export function wireGhampusComposeRail(
             if (assist.createEngramOffer) {
               dismissedCreateOfferId = assist.createEngramOffer.graphId;
             }
-            if (lastAssist) renderStrips(lastAssist);
+            if (lastAssist) renderStrips(lastAssist, true);
             break;
           case 'edit-instead':
             ctx.onFillPrompt(val ? `/edit ${val.replace(/^(save|remember)\s+/i, '')}` : '/edit ');
@@ -541,41 +594,105 @@ export function wireGhampusComposeRail(
       || Boolean(assist.selectionBridge);
   }
 
+  function composeCtxPayload(): Record<string, unknown> {
+    return {
+      selectedText: ctx.getSelectedText(),
+      lastGhampusSnippet: ctx.getLastGhampusSnippet(),
+      threadTurnCount: ctx.getThreadTurnCount(),
+      hoursSinceActive: ctx.getHoursSinceActive(),
+      pinnedEngramGraphId,
+    };
+  }
+
+  function applyAssistResult(assist: GhampusComposeAssist, text: string): void {
+    lastAssist = assist;
+    if (assist.selectedEngramId && !pinnedEngramGraphId) {
+      pinnedEngramGraphId = assist.selectedEngramId;
+    }
+    if (
+      assist.createEngramOffer
+      && assist.createEngramOffer.graphId !== dismissedCreateOfferId
+      && !assist.selectedEngramId
+      && newEngramGuideOpen
+      && !newEngramDraftName
+    ) {
+      newEngramDraftName = assist.createEngramOffer.displayName;
+    }
+    if (!shouldShowRail(assist, text)) {
+      rail.classList.add('hidden');
+      lastRenderSig = '';
+      return;
+    }
+    rail.classList.remove('hidden');
+    renderStrips(assist);
+  }
+
+  function scheduleRefineAssist(text: string, seq: number): void {
+    if (refineTimer) clearTimeout(refineTimer);
+    refineTimer = setTimeout(() => {
+      refineTimer = null;
+      void maybeRefineAssist(text, seq);
+    }, ASSIST_LLM_REFINE_DEBOUNCE_MS);
+  }
+
+  function scheduleEnrichAssist(text: string, seq: number): void {
+    if (enrichTimer) clearTimeout(enrichTimer);
+    enrichTimer = setTimeout(() => {
+      enrichTimer = null;
+      void maybeEnrichAssist(text, seq);
+    }, ASSIST_ENRICH_DEBOUNCE_MS - ASSIST_DEBOUNCE_MS);
+  }
+
+  async function maybeEnrichAssist(text: string, seq: number): Promise<void> {
+    if (seq !== assistSeq || input.value !== text) return;
+    if (!lastAssist || (!lastAssist.saveIntent && lastAssist.primaryIntent !== 'recall')) return;
+    const t0 = performance.now();
+    try {
+      const assist = await ipcCall<GhampusComposeAssist>('ghampus:input:assist', {
+        text,
+        ...composeCtxPayload(),
+        light: false,
+      });
+      if (import.meta.env.DEV) {
+        console.debug(
+          `[ghampus-compose] assist-enrich ${Math.round(performance.now() - t0)}ms intent=${assist.primaryIntent}`,
+        );
+      }
+      if (seq !== assistSeq || input.value !== text) return;
+      applyAssistResult(assist, text);
+    } catch {
+      /* keep light assist */
+    }
+  }
+
   async function maybeRefineAssist(text: string, seq: number): Promise<void> {
     if (seq !== assistSeq || input.value !== text) return;
     if (!lastAssist || lastAssist.primaryIntent !== 'idle') return;
     const rSeq = ++refineSeq;
+    const t0 = performance.now();
     try {
       const refine = await ipcCall<{ refined: boolean; assist?: GhampusComposeAssist }>(
         'ghampus:input:assist-refine',
         {
           text,
-          selectedText: ctx.getSelectedText(),
-          lastGhampusSnippet: ctx.getLastGhampusSnippet(),
-          threadTurnCount: ctx.getThreadTurnCount(),
-          hoursSinceActive: ctx.getHoursSinceActive(),
-          pinnedEngramGraphId,
+          ...composeCtxPayload(),
         },
       );
+      if (import.meta.env.DEV) {
+        console.debug(
+          `[ghampus-compose] assist-refine ${Math.round(performance.now() - t0)}ms refined=${Boolean(refine.refined)}`,
+        );
+      }
       if (rSeq !== refineSeq || seq !== assistSeq || input.value !== text) return;
       if (!refine.refined || !refine.assist) return;
-      lastAssist = refine.assist;
-      if (refine.assist.selectedEngramId && !pinnedEngramGraphId) {
-        pinnedEngramGraphId = refine.assist.selectedEngramId;
-      }
-      if (!shouldShowRail(refine.assist, text)) {
-        hide();
-        return;
-      }
-      rail.classList.remove('hidden');
-      renderStrips(refine.assist);
+      applyAssistResult(refine.assist, text);
     } catch {
       /* keep heuristic assist */
     }
   }
 
-  async function refreshAssist(): Promise<void> {
-    const text = input.value;
+  async function runAssist(text: string, seq: number): Promise<void> {
+    if (seq !== assistSeq || input.value !== text) return;
     if (!text.trim()) {
       hide();
       return;
@@ -585,61 +702,59 @@ export function wireGhampusComposeRail(
       return;
     }
 
-    const seq = ++assistSeq;
-    const localSlash = text.trimStart().startsWith('/save');
-    if (localSlash && text.trim().length >= 5) {
-      rail.classList.remove('hidden');
-    }
-
-    await new Promise<void>((resolve) => {
-      if (assistTimer) clearTimeout(assistTimer);
-      assistTimer = setTimeout(() => {
-        assistTimer = null;
-        resolve();
-      }, localSlash ? 0 : ASSIST_DEBOUNCE_MS);
-    });
-
-    if (seq !== assistSeq) return;
-
     try {
+      const t0 = performance.now();
       const assist = await ipcCall<GhampusComposeAssist>('ghampus:input:assist', {
         text,
-        selectedText: ctx.getSelectedText(),
-        lastGhampusSnippet: ctx.getLastGhampusSnippet(),
-        threadTurnCount: ctx.getThreadTurnCount(),
-        hoursSinceActive: ctx.getHoursSinceActive(),
-        pinnedEngramGraphId,
+        ...composeCtxPayload(),
+        light: true,
       });
+      if (import.meta.env.DEV) {
+        console.debug(
+          `[ghampus-compose] assist ${Math.round(performance.now() - t0)}ms light intent=${assist.primaryIntent}`,
+        );
+      }
       if (seq !== assistSeq || input.value !== text) return;
-      lastAssist = assist;
-      if (assist.selectedEngramId && !pinnedEngramGraphId) {
-        pinnedEngramGraphId = assist.selectedEngramId;
+      applyAssistResult(assist, text);
+      if (assist.saveIntent || assist.primaryIntent === 'recall') {
+        scheduleEnrichAssist(text, seq);
       }
-      if (
-        assist.createEngramOffer
-        && assist.createEngramOffer.graphId !== dismissedCreateOfferId
-        && !assist.selectedEngramId
-        && newEngramGuideOpen
-        && !newEngramDraftName
-      ) {
-        newEngramDraftName = assist.createEngramOffer.displayName;
-      }
-      if (!shouldShowRail(assist, text)) {
-        hide();
-        return;
-      }
-      rail.classList.remove('hidden');
-      renderStrips(assist);
-      if (assist.primaryIntent === 'idle' && text.trim().length >= 3) {
-        void maybeRefineAssist(text, seq);
+      if (assist.primaryIntent === 'idle' && text.trim().length >= 8) {
+        scheduleRefineAssist(text, seq);
       }
     } catch {
       hide();
     }
   }
 
+  function scheduleAssist(): void {
+    const text = input.value;
+    if (!text.trim()) {
+      hide();
+      return;
+    }
+    const seq = ++assistSeq;
+    if (refineTimer) {
+      clearTimeout(refineTimer);
+      refineTimer = null;
+    }
+    if (enrichTimer) {
+      clearTimeout(enrichTimer);
+      enrichTimer = null;
+    }
+    const localSlash = text.trimStart().startsWith('/save');
+    if (localSlash && text.trim().length >= 5) {
+      rail.classList.remove('hidden');
+    }
+    if (assistTimer) clearTimeout(assistTimer);
+    assistTimer = setTimeout(() => {
+      assistTimer = null;
+      void runAssist(text, seq);
+    }, localSlash ? 120 : ASSIST_DEBOUNCE_MS);
+  }
+
   return {
-    update: () => { void refreshAssist(); },
+    update: () => { scheduleAssist(); },
     hide,
   };
 }

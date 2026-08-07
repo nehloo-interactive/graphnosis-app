@@ -305,7 +305,7 @@ async function renderQueue(d: WorkbenchDeps): Promise<void> {
           ? `<p class="brain-subtitle" style="margin-top:8px;">${pairs.length - QUEUE_PREVIEW} more in queue — scroll to review or resolve these first.</p>`
           : '')
       : (corrections.length === 0
-        ? '<p class="brain-subtitle">No verified contradiction pairs queued — only entity-linked conflicts that pass deterministic checks appear here. '
+        ? '<p class="brain-subtitle">No high-confidence contradictions need you right now — only hard conflicts (not docs noise or soft overlaps) appear here. '
           + 'See Foresight Insights for LLM conflict hints.</p>'
         : '<p class="brain-subtitle">No verified contradiction pairs queued.</p>'));
   }
@@ -463,6 +463,7 @@ interface SuppressedPair {
 const REASON_LABEL: Record<string, string> = {
   'insufficient-entities': 'Too few shared anchors',
   'low-severity': 'Low severity',
+  'medium-severity': 'Medium — held for audit (not urgent)',
   'negation-artifact': 'Negation artifact',
   'temporal-supersession': 'Superseded over time',
   'ingest-gate': 'Held at ingest',
