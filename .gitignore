@@ -8,6 +8,7 @@ target/
 *.log
 .DS_Store
 .env
+.graphnosis-host.env
 
 # Scratch / working space for AI-assistant design docs, audit prompts, and other
 # non-shipping notes. Always ignored — never committed.
