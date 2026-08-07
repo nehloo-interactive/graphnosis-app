@@ -73,6 +73,12 @@ export interface ProactiveWatcherDeps {
    * ever walks. Absent (default) → today's behavior: surface only, never execute.
    */
   onAutoEligible?: (card: ProactiveCard) => void;
+  /**
+   * Optional safe auto-preview for allowlisted integrity/gardening skills.
+   * Read-only SOP walk into the thread — never mutates memory. Wired from
+   * main.ts to `runSafeSkillPreview`.
+   */
+  onSafePreview?: (card: ProactiveCard) => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -562,6 +568,13 @@ export class ProactiveWatcher {
           try { this.deps.onAutoEligible(card); }
           catch { /* non-fatal — surfacing already happened */ }
         }
+      }
+
+      // Safe preview lane: for allowlisted skills, also emit a read-only SOP
+      // into the thread (suggest/preview/auto). Never mutates; cooldown inside.
+      if (this.deps.onSafePreview) {
+        try { this.deps.onSafePreview(card); }
+        catch { /* non-fatal */ }
       }
 
       try {

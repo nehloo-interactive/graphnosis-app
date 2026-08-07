@@ -206,12 +206,18 @@ export interface RetrainQueuedSkillResult {
   label?: string;
 }
 
+export interface RetrainQueuedSkillOpts {
+  /** Open contradictions on the target skill engram (Memory Integrity). */
+  hasOpenContradictions?: boolean;
+}
+
 /** Retrain one queued skill — at most one per Ghampus idle window unless batch-confirmed. */
 export async function retrainSingleQueuedSkill(
   host: GraphnosisHost,
   skillTrainer: SkillTrainer,
   sourceId: string,
   totalActiveNodes: number,
+  opts?: RetrainQueuedSkillOpts,
 ): Promise<RetrainQueuedSkillResult> {
   const settings = host.getSettings();
   const entry = settings.skillRetrainQueue?.[sourceId];
@@ -228,13 +234,31 @@ export async function retrainSingleQueuedSkill(
   }
 
   try {
-    const autonomy = cfg?.autonomyLevel ?? 'notify';
-    const willSave = autonomy !== 'preview-first';
+    const { decideTrainAdmission } = await import('./skill-train-admission.js');
+    const { resolveEvolveAutonomyLevel, capPraxisByEvolve } = await import('@graphnosis-app/core/settings');
+    // Staleness without Praxis opt-in → draft only. Never silent-save.
+    const praxisEnabled = !!cfg?.enabled;
+    const hasOpenContradictions = opts?.hasOpenContradictions === true;
+    const engramEvolve = resolveEvolveAutonomyLevel(host.getGraphMetadata(entry.graphId));
+    const rawAutonomy = cfg?.autonomyLevel ?? 'preview-first';
+    const praxisAutonomy = capPraxisByEvolve(rawAutonomy, engramEvolve);
+    const admission = decideTrainAdmission({
+      caller: 'staleness-queue',
+      skillLabel: detail.label,
+      isNewSkill: false,
+      requestedSave: true,
+      praxisEnabled,
+      praxisAutonomy,
+      hasOpenContradictions,
+    });
+    if (admission.refuse) {
+      return { ok: false, reason: admission.reason };
+    }
     const result = await skillTrainer.trainSkill({
       skill: detail.text,
       graphId: entry.graphId,
       skillName: detail.label,
-      save: willSave,
+      save: admission.save,
       ...(detail.recallBreadth !== undefined ? { recallBreadth: detail.recallBreadth } : {}),
       addedBy: 'graphnosis-staleness-queue',
     });
@@ -250,25 +274,29 @@ export async function retrainSingleQueuedSkill(
       };
       patch.skillAutoRetrain = next;
     }
-    if (autonomy === 'notify') {
+    if (admission.notify) {
       const notifs = new Set(settings.skillRetrainNotifications ?? []);
       notifs.add(sourceId);
       patch.skillRetrainNotifications = [...notifs];
     }
-    if (autonomy === 'preview-first') {
+    if (admission.stashAsProposal && !admission.save) {
       patch.skillRetrainPending = {
         ...(settings.skillRetrainPending ?? {}),
         [sourceId]: {
           graphId: entry.graphId,
           proposedAt: Date.now(),
           trained: result.trained,
+          kind: 'retrain',
+          sourceId,
           ...(result.diffNotes !== undefined ? { diffNotes: result.diffNotes } : {}),
           triggerReason: `source-changes:${entry.reason}`,
         },
       };
     }
     if (Object.keys(patch).length > 0) await host.setSettings(patch);
-    console.log(`[skill-maintenance] retrained ${detail.label} (${sourceId}) — ${entry.reason}`);
+    console.log(
+      `[skill-maintenance] ${admission.save ? 'saved' : 'drafted'} ${detail.label} (${sourceId}) — ${entry.reason} (${admission.reason})`,
+    )
 
     // Re-bind cited nodes from recall recipes (empty-engram train contract).
     try {

@@ -45,6 +45,12 @@ import {
   buildSopRewriteUserPrompt,
   validateSopPreservation,
 } from './skill-sop-rewrite.js';
+import {
+  normalizeSkillRole,
+  buildSkillMetadataComment,
+  parseSkillMetadata,
+  type ParsedSkillMeta,
+} from './skill-role.js';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -76,7 +82,8 @@ export interface TrainSkillInput {
   modelTarget?: string;
   /**
    * Whether to save the trained version into the Skills engram.
-   * Default true. Pass false to get a preview without persisting.
+   * Callers should default to false (draft) and only pass true after
+   * human approval or a Praxis auto-accept admission decision.
    */
   save?: boolean;
   /** The resolved graphId of the Skills engram to write into. */
@@ -133,6 +140,13 @@ export interface TrainSkillInput {
    * honest N/8 rather than one padded with filler that lints as complete.
    */
   keepPlaceholders?: boolean;
+  /**
+   * Optional per-skill Role — a short focus line (max 40 chars) shown under
+   * the skill title in the library. Stored in the training metadata comment.
+   * On retrain, an omitted `role` preserves the previously stored value;
+   * pass an empty string to clear.
+   */
+  role?: string;
 }
 
 export interface InfluentialNode {
@@ -280,6 +294,11 @@ export interface SkillListEntry {
   trainedAt?: string;
   mode?: string;
   recallBreadth?: number;
+  /**
+   * Per-skill focus line from the training metadata comment (max 40 chars).
+   * Not the Agempus/engram name — each skill carries its own Role.
+   */
+  role?: string;
   /** Concatenated node previews for keyword search (title/trigger/body). */
   searchPreview?: string;
   /** Present only for skills imported from a .gsk pack (parsed from the
@@ -764,7 +783,7 @@ export class SkillTrainer {
       skillName,
       focusGraphIds,
       modelTarget,
-      save = true,
+      save = false,
       graphId,
       addedBy,
       recallBreadth: inputBreadth,
@@ -947,16 +966,6 @@ export class SkillTrainer {
       // in-place retrain instead of silently forking a duplicate.
       const baseNameKey = skillNameMatchKey(baseName);
 
-      const metadataComment = [
-        `<!-- Graphnosis skill training metadata`,
-        `     trainedAt: ${new Date().toISOString()}`,
-        `     mode: ${mode}`,
-        `     influentialNodes: ${topNodes.length}`,
-        `     modelTarget: ${modelTarget ?? 'generic'}`,
-        `     recallBreadth: ${tunedBreadth}`,
-        `-->`,
-      ].join('\n');
-
       // Body paragraphs come from the LLM output (LLM mode) or the user's
       // original skill text (memory-augmented mode). Recalled memories are
       // separately tracked in recalledParagraphs.
@@ -1089,6 +1098,11 @@ export class SkillTrainer {
         .sort((a, b) => b.ingestedAt - a.ingestedAt);
       const existingSource = matchingSkills[0];
       let inPlaceRenameRef: string | undefined;
+      // Role resolution: explicit input wins (empty string clears); otherwise
+      // preserve whatever the prior metadata comment carried on retrain.
+      let preservedRole: string | undefined;
+      let resolvedRole: string | undefined =
+        input.role !== undefined ? normalizeSkillRole(input.role) : undefined;
 
       // Snapshot + clear before in-place mutation.
       if (existingSource) {
@@ -1115,8 +1129,10 @@ export class SkillTrainer {
             const parsed = parseSkillMetadata(content);
             if (parsed.trainedAt !== undefined) snapTrainedAt = parsed.trainedAt;
             if (parsed.mode === 'llm' || parsed.mode === 'memory-augmented') snapMode = parsed.mode;
+            if (parsed.role !== undefined) preservedRole = parsed.role;
           }
         }
+        if (input.role === undefined) resolvedRole = preservedRole;
         const snapshotTs = Date.now();
         const snapshotId = SkillSnapshotStore.idFromTs(snapshotTs);
         inPlaceRenameRef = `skill:${snapshotTs}:${baseName}`;
@@ -1177,7 +1193,18 @@ export class SkillTrainer {
         // Rename AFTER inserts succeed — renaming before insertNodeAt left
         // hollow sources (TRAINED label, zero nodes) when an insert failed
         // after clearSourceNodes (SDK dedup / appendText edge cases).
-      } else {
+      }
+
+      const metadataComment = buildSkillMetadataComment({
+        trainedAt: new Date().toISOString(),
+        mode,
+        influentialNodes: topNodes.length,
+        modelTarget: modelTarget ?? 'generic',
+        recallBreadth: tunedBreadth,
+        ...(resolvedRole !== undefined ? { role: resolvedRole } : {}),
+      });
+
+      if (!existingSource) {
         // First-time train for this skill name → create a fresh source.
         // ingestClip seeds the source with the metadata comment as the first
         // node; the title + body + goals follow via insertNodeAt below. The
@@ -1196,14 +1223,19 @@ export class SkillTrainer {
         skillId = rec.sourceId;
       }
 
+      if (!skillId) {
+        throw new Error('train_skill: skill sourceId was not established before insert');
+      }
+      const savedSkillId: string = skillId;
+
       // ── Insert content into `skillId` (works for both paths) ─────────────
       // For the in-place path: source.nodeIds is empty after clearSourceNodes;
       //   we insert metadata + title + body + goals from scratch.
       // For the first-time path: source already has the metadata seed from
       //   ingestClip; we insert title + body + goals only.
       const insertAtEnd = async (text: string, role: string): Promise<void> => {
-        const len = this.host.getSourceRecord(graphId, skillId!)?.nodeIds.length ?? 0;
-        await this.host.insertNodeAt(graphId, skillId!, len, text, {
+        const len = this.host.getSourceRecord(graphId, savedSkillId)?.nodeIds.length ?? 0;
+        await this.host.insertNodeAt(graphId, savedSkillId, len, text, {
           skipRelink: true, role, triggeredBy: 'mcp:train_skill', singleNode: true,
         });
       };
@@ -1243,40 +1275,40 @@ export class SkillTrainer {
         }
       }
 
-      if (inPlaceRenameRef && skillId) {
-        await this.host.renameSource(graphId, skillId, inPlaceRenameRef, {
+      if (inPlaceRenameRef) {
+        await this.host.renameSource(graphId, savedSkillId, inPlaceRenameRef, {
           triggeredBy: 'mcp:train_skill:in-place',
         });
       }
 
       this.host.triggerRelink(graphId);
-      await linkSkillSequence(this.host, graphId, skillId);
-      await linkSkillGoals(this.host, graphId, skillId);
-      await linkSkillLoopsAndBranches(this.host, graphId, skillId);
-      await linkSkillContextEdges(this.host, graphId, skillId);
-      await linkSkillCalls(this.host, graphId, skillId, graphId);
+      await linkSkillSequence(this.host, graphId, savedSkillId);
+      await linkSkillGoals(this.host, graphId, savedSkillId);
+      await linkSkillLoopsAndBranches(this.host, graphId, savedSkillId);
+      await linkSkillContextEdges(this.host, graphId, savedSkillId);
+      await linkSkillCalls(this.host, graphId, savedSkillId, graphId);
       // D1 — resolve any `@skill:` refs that DON'T match a skill in this engram
       // against other skill engrams, persisting hits in the cross-engram table.
-      await linkCrossEngramCalls(this.host, this.host.skillCallLinks, graphId, skillId, skillEngramIds(this.host));
+      await linkCrossEngramCalls(this.host, this.host.skillCallLinks, graphId, savedSkillId, skillEngramIds(this.host));
       // Phase 5 — Decision 7: edges FROM other skills TO this skill's title
       // node may have become stale (title nodeId likely changed on retrain).
       // Re-run linkSkillCalls on every OTHER skill so any `@skill: <this>`
       // reference gets re-pointed to the new title node.
-      await refreshIncomingCallsToSkill(this.host, graphId, skillId);
+      await refreshIncomingCallsToSkill(this.host, graphId, savedSkillId);
       // Bind cited memory nodes from recall recipes (empty-engram train contract).
       {
         const { syncSkillCitedNodesFromRecipes } = await import('./skill-recall-bindings.js');
-        await syncSkillCitedNodesFromRecipes(this.host, graphId, skillId);
+        await syncSkillCitedNodesFromRecipes(this.host, graphId, savedSkillId);
         // Legacy: train-time influential nodes (when ENABLE_CORTEX_RECALL_AT_TRAIN is on).
         if (topNodes.length > 0) {
           const settings = this.host.getSettings();
-          const prior = settings.skillCitedNodes?.[skillId]?.nodes ?? {};
+          const prior = settings.skillCitedNodes?.[savedSkillId]?.nodes ?? {};
           const merged: Record<string, string> = { ...prior };
           for (const n of topNodes) merged[n.nodeId] = n.graphId ?? graphId;
           await this.host.setSettings({
             skillCitedNodes: {
               ...(settings.skillCitedNodes ?? {}),
-              [skillId]: { graphId, nodes: merged },
+              [savedSkillId]: { graphId, nodes: merged },
             },
           });
         }
@@ -1284,7 +1316,7 @@ export class SkillTrainer {
       // Post-retrain dispatch registry sync for routing skills.
       try {
         const { scheduleDispatchSyncAfterRetrain } = await import('./skill-dispatch-sync.js');
-        await scheduleDispatchSyncAfterRetrain(this.host, this, graphId, skillId);
+        await scheduleDispatchSyncAfterRetrain(this.host, this, graphId, savedSkillId);
       } catch { /* non-fatal */ }
 
       // ── Baseline snapshot for a FIRST train ──────────────────────────────
@@ -1826,6 +1858,7 @@ export class SkillTrainer {
           ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
           ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
           ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),
+          ...(parsed.role !== undefined ? { role: parsed.role } : {}),
           ...(provenance !== undefined ? { provenance } : {}),
         });
       }
@@ -1879,9 +1912,95 @@ export class SkillTrainer {
       ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
       ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
       ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),
+      ...(parsed.role !== undefined ? { role: parsed.role } : {}),
       ...(goals !== undefined ? { goals } : {}),
       ...(provenance !== undefined ? { provenance } : {}),
     };
+  }
+
+  /**
+   * Patch the per-skill Role in the training metadata comment without a
+   * full retrain. Empty / null clears the Role. Caps at SKILL_ROLE_MAX_CHARS.
+   */
+  async setSkillRole(
+    graphId: string,
+    sourceId: string,
+    role: string | null,
+  ): Promise<{ role?: string }> {
+    const src = this.host.listSources(graphId).find((s) => s.sourceId === sourceId && s.kind === 'skill');
+    if (!src) throw new Error(`Skill "${sourceId}" not found in engram "${graphId}".`);
+
+    const normalized = normalizeSkillRole(role);
+    let metaIndex = -1;
+    let metaNodeId: string | undefined;
+    let parsed: ParsedSkillMeta = {};
+    for (let i = 0; i < src.nodeIds.length; i++) {
+      const nid = src.nodeIds[i]!;
+      const content = this.host.getFullNodeContent(graphId, nid) ?? '';
+      if (!/<!--\s*Graphnosis skill training metadata/u.test(content)) continue;
+      metaIndex = i;
+      metaNodeId = nid;
+      parsed = parseSkillMetadata(content);
+      break;
+    }
+
+    const nextComment = buildSkillMetadataComment({
+      trainedAt: parsed.trainedAt ?? new Date().toISOString(),
+      mode: parsed.mode ?? 'source-only',
+      ...(parsed.influentialNodes !== undefined ? { influentialNodes: parsed.influentialNodes } : {}),
+      ...(parsed.modelTarget !== undefined ? { modelTarget: parsed.modelTarget } : {}),
+      ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),
+      ...(normalized !== undefined ? { role: normalized } : {}),
+    });
+
+    if (metaNodeId !== undefined && metaIndex >= 0) {
+      await this.host.removeNodeFromSource(graphId, sourceId, metaNodeId, {
+        triggeredBy: 'skill:setRole',
+        reason: 'replace skill role metadata',
+      });
+      await this.host.insertNodeAt(graphId, sourceId, metaIndex, nextComment, {
+        skipRelink: true,
+        role: 'metadata',
+        triggeredBy: 'skill:setRole',
+        singleNode: true,
+      });
+    } else {
+      await this.host.insertNodeAt(graphId, sourceId, 0, nextComment, {
+        skipRelink: true,
+        role: 'metadata',
+        triggeredBy: 'skill:setRole',
+        singleNode: true,
+      });
+    }
+
+    return normalized !== undefined ? { role: normalized } : {};
+  }
+
+  /**
+   * Batch Role patch — same as setSkillRole, for cortex-wide backfill.
+   * Continues on per-skill errors; returns ok/fail counts.
+   */
+  async setSkillRoles(
+    items: Array<{ graphId: string; sourceId: string; role: string }>,
+  ): Promise<{
+    applied: number;
+    failed: Array<{ graphId: string; sourceId: string; error: string }>;
+  }> {
+    let applied = 0;
+    const failed: Array<{ graphId: string; sourceId: string; error: string }> = [];
+    for (const item of items) {
+      try {
+        await this.setSkillRole(item.graphId, item.sourceId, item.role);
+        applied += 1;
+      } catch (e) {
+        failed.push({
+          graphId: item.graphId,
+          sourceId: item.sourceId,
+          error: (e as Error).message,
+        });
+      }
+    }
+    return { applied, failed };
   }
 
   /**
@@ -5102,7 +5221,14 @@ export function skillNameMatchKey(label: string): string {
     .replace(/^-+|-+$/gu, '');
 }
 
-interface ParsedSkillMeta { trainedAt?: string; mode?: string; recallBreadth?: number; }
+export {
+  SKILL_ROLE_MAX_CHARS,
+  normalizeSkillRole,
+  buildSkillMetadataComment,
+  parseSkillMetadata,
+  type ParsedSkillMeta,
+  type SkillMetadataFields,
+} from './skill-role.js';
 
 /**
  * Parse the structured Goals block from stored skill text.
@@ -5130,22 +5256,6 @@ function parseSkillGoals(text: string): import('./gsk-format.js').SkillGoals | u
     outOfScope: scope ?? '',
     expectedOnCompletion: done ?? '',
   };
-}
-
-function parseSkillMetadata(text: string): ParsedSkillMeta {
-  const result: ParsedSkillMeta = {};
-  const match = text.match(/<!--\s*Graphnosis skill training metadata([\s\S]*?)-->/u);
-  if (!match) return result;
-  const block = match[1]!;
-  const get = (key: string): string | undefined => {
-    const m = block.match(new RegExp(`${key}:\\s*(.+)`, 'u'));
-    return m?.[1]?.trim();
-  };
-  const ta = get('trainedAt'); if (ta !== undefined) result.trainedAt = ta;
-  const mo = get('mode'); if (mo !== undefined) result.mode = mo;
-  const rb = get('recallBreadth');
-  if (rb !== undefined && rb !== 'undefined') result.recallBreadth = Number(rb);
-  return result;
 }
 
 /**

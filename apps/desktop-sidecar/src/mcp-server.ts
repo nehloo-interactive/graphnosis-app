@@ -36,7 +36,8 @@ import {
 import { registerPrompt as registerConsentPrompt, listPendingPrompts, recordGatedRequest, getGatedRequest, type ConsentEngram } from './consent-prompts.js';
 import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
-import { SkillTrainer, type ExportFormat, promoteSkillSourcePreservingNodes, moveSourcePreservingSkillNodes, lintSkillCalls, type SkillCallLintFinding } from './skill-trainer.js';
+import { SkillTrainer, type ExportFormat, promoteSkillSourcePreservingNodes, moveSourcePreservingSkillNodes, lintSkillCalls, type SkillCallLintFinding, baseSkillName, skillNameMatchKey } from './skill-trainer.js';
+import { decideTrainAdmission } from './skill-train-admission.js';
 import {
   scaffoldAgempus,
   assessAgempus,
@@ -1429,7 +1430,11 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
   const server = new Server(
     { name: 'graphnosis', version: '0.0.1' },
     {
-      capabilities: { tools: {} },
+      // listChanged: clients that honor notifications/tools/list_changed
+      // re-fetch tools/list when we push (disabled-tools toggle, listener
+      // bounce). Without this flag, Cursor/Claude cache the first schema
+      // and ignore mid-session catalog changes.
+      capabilities: { tools: { listChanged: true } },
       // Surfaces via the `initialize` response → Claude treats as system-
       // prompt-level. The strongest legitimate lever MCP gives us for
       // nudging tool use; combined with the per-tool descriptions below,
@@ -3011,7 +3016,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           '   skip the loop deliberately.\n' +
           '4. Optional Pro rewrite: if use_llm_rewrite=true and the Local LLM is on, polish the prose ' +
           '   from source only (preserves structure; still no cortex recall at train time).\n' +
-          '5. Save: store the trained version in the Skills engram.\n\n' +
+          '5. Draft / save: by default this tool DRAFTS (does not persist). A skill is procedural ' +
+          'authority — silent train is closer to installing code than saving a note. ' +
+          'Pass `save: true` only together with `approved: true` after the user confirms in Graphnosis ' +
+          '(Train this? / Accept proposal). Otherwise the response includes `approval_required` and ' +
+          'the drafted body for review. Retrains may also land in the in-app review queue.\n\n' +
           'DERIVE the contract from the procedure the user gave you — do not invent requirements the ' +
           'source does not support, and ask the user when a field is genuinely underdetermined. ' +
           'A wrong `Trigger:` fires the skill on the wrong context, which is worse than an absent one.\n\n' +
@@ -3051,7 +3060,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             save: {
               type: 'boolean',
-              description: 'Whether to save the trained version into the Skills engram. Default true. Pass false to preview without persisting.',
+              description:
+                'Request persistence into the Skills engram. Default false (draft). ' +
+                'Even when true, admission requires `approved: true` (or an in-app Accept) before writing — ' +
+                'new skills and meta/dispatch skills never silent-save.',
+            },
+            approved: {
+              type: 'boolean',
+              description:
+                'Set true only after the human approved this train/retrain in Graphnosis ' +
+                '(Train this? card or Accept proposal). Without it, save requests become drafts.',
             },
             recall_breadth: {
               type: 'integer',
@@ -3079,6 +3097,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               type: 'string',
               enum: ['L0', 'L1', 'L2', 'L3'],
               description: 'Optional per-skill execution-autonomy override to set AFTER the skill is saved (L0 manual · L1 suggest · L2 preview · L3 auto). Omit to leave the skill INHERITING the engram default — no override is written. CLAMPED to the skill\'s authored dispatch-safe cap (a requested level above the cap is lowered to the cap, with a note in the response). Stored in metadata (not the skill body), so it survives future retraining.',
+            },
+            role: {
+              type: 'string',
+              description: 'Optional per-skill Role — a short focus line (max 40 chars) shown under the skill title. Not the Agempus/engram name. On retrain, omit to preserve the prior Role; pass "" to clear.',
             },
           },
           required: ['skill'],
@@ -3385,7 +3407,56 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         },
         annotations: { title: 'Set skill autonomy' },
       },
-
+      {
+        name: 'set_skill_role',
+        description:
+          'DETERMINISM — Deterministic: patches the skill\'s training-metadata comment; no LLM, no retrain.\n\n' +
+          'Set (or clear) a single skill\'s Role — a short focus line (max 40 chars) shown under the skill title. ' +
+          'This is NOT the Agempus/engram name; each skill carries its own Role. ' +
+          'Pass an empty string to clear. Survives future retrains unless train_skill is given a new role.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Set the role on plateau-breakthrough to One constraint / 2 weeks"\n' +
+          '• Backfilling Roles across a skills engram after Role support ships',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram ID or display name the skill lives in.' },
+            sourceId: { type: 'string', description: 'The skill\'s sourceId (stable across retrain).' },
+            role: { type: 'string', description: 'Focus line (max 40 chars). Empty string clears the Role.' },
+          },
+          required: ['engram', 'sourceId', 'role'],
+        },
+        annotations: { title: 'Set skill role' },
+      },
+      {
+        name: 'set_skill_roles',
+        description:
+          'DETERMINISM — Deterministic: batch-patches training-metadata Role lines; no LLM.\n\n' +
+          'Set Roles on many skills at once (max 40 chars each). Used for cortex-wide backfill. ' +
+          'Continues on per-skill errors and reports applied/failed counts.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• Backfilling Roles across every skill after Role support ships',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              description: 'Array of { engram, sourceId, role }.',
+              items: {
+                type: 'object',
+                properties: {
+                  engram: { type: 'string' },
+                  sourceId: { type: 'string' },
+                  role: { type: 'string' },
+                },
+                required: ['engram', 'sourceId', 'role'],
+              },
+            },
+          },
+          required: ['items'],
+        },
+        annotations: { title: 'Set skill roles (batch)' },
+      },
       {
         name: 'import_engram',
         description:
@@ -3494,7 +3565,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       },
         {
           name: 'list_skills',
-          description: 'List all trained skills stored in the user\'s Skills engram(s). Returns sourceId, label, engram name, training date, mode, recallBreadth, and active node count for each skill. Use this before get_skill, skill_history, rollback_skill, or delete_skill to discover available skills and their sourceIds. Optionally scope to a specific engram slug.',
+          description: 'List all trained skills stored in the user\'s Skills engram(s). Returns sourceId, label, engram name, role (per-skill focus line), training date, mode, recallBreadth, and active node count for each skill. Use this before get_skill, skill_history, rollback_skill, or delete_skill to discover available skills and their sourceIds. Optionally scope to a specific engram slug.',
           inputSchema: {
             type: 'object' as const,
             properties: {
@@ -3578,7 +3649,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         },
         {
           name: 'get_skill',
-          description: 'Retrieve the full text and metadata of a specific trained skill by its sourceId. Returns the skill text (metadata header + trained content), training mode, recallBreadth, and node count. Use list_skills first to find the sourceId.',
+          description: 'Retrieve the full text and metadata of a specific trained skill by its sourceId. Returns the skill text (metadata header + trained content), role (per-skill focus line), training mode, recallBreadth, and node count. Use list_skills first to find the sourceId.',
           inputSchema: {
             type: 'object' as const,
             properties: {
@@ -5677,6 +5748,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           focus_engrams: z.array(z.string()).optional(),
           model_target: z.enum(['generic', 'claude', 'cursor', 'openai', 'copilot']).optional(),
           save: z.boolean().optional(),
+          approved: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
           recall_breadth: z.number().int().min(0).max(100).optional(),
           // Accept boolean or "true"/"false" string — some MCP clients stringify
           // booleans for params absent from their cached tool schema.
@@ -5685,6 +5757,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           autonomy_level: z.enum(['L0', 'L1', 'L2', 'L3']).optional(),
           scaffold: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
           accept_incomplete: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
+          role: z.string().optional(),
         });
         const args = TrainSkillInput.parse(rawInput);
         const asBool = (v: boolean | 'true' | 'false' | undefined): boolean =>
@@ -5835,13 +5908,40 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
 
         const clientName = resolveActingClientName();
+
+        // ── Train admission (approval-first stance) ──────────────────────────
+        // Skills are procedural authority. Agents draft by default; writes need
+        // human approval (or a narrow Praxis opt-in lane handled elsewhere).
+        const skillLabel = args.skill_name?.trim() || baseSkillName(args.skill.split('\n')[0] ?? 'skill');
+        const matchKey = skillNameMatchKey(skillLabel);
+        const existingSkill = deps.host.listSources(engramRes.graphId)
+          .filter((s) => s.kind === 'skill')
+          .find((s) => skillNameMatchKey(s.ref) === matchKey);
+        const isNewSkill = !existingSkill;
+        const requestedSave = args.save === undefined ? false : args.save;
+        const approved = asBool(args.approved);
+        const hasOpenContradictions = (deps.brainEngine?.getContradictionPairs() ?? [])
+          .some((p) => p.graphId === engramRes.graphId);
+        const admission = decideTrainAdmission({
+          caller: 'mcp',
+          skillLabel,
+          isNewSkill,
+          requestedSave,
+          approved,
+          hasOpenContradictions,
+        });
+        if (admission.refuse) {
+          return mcpError(admission.reason);
+        }
+        const effectiveSave = admission.save;
+
         const trainInput: import('./skill-trainer.js').TrainSkillInput = {
           skill: args.skill,
           graphId: engramRes.graphId,
           ...(args.skill_name !== undefined ? { skillName: args.skill_name } : {}),
           ...(focusGraphIds !== null ? { focusGraphIds } : {}),
           ...(args.model_target !== undefined ? { modelTarget: args.model_target } : {}),
-          ...(args.save !== undefined ? { save: args.save } : {}),
+          save: effectiveSave,
           ...(clientName !== undefined ? { addedBy: clientName } : {}),
           ...(args.recall_breadth !== undefined ? { recallBreadth: args.recall_breadth } : {}),
           ...(args.use_llm_rewrite !== undefined ? { useLlmRewrite: args.use_llm_rewrite === true || args.use_llm_rewrite === 'true' } : {}),
@@ -5849,9 +5949,53 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // Optional per-skill autonomy override applied (clamped to the authored
           // cap) AFTER the skill is saved — omitted = keep inheriting the engram.
           ...(args.autonomy_level !== undefined ? { autonomyLevel: args.autonomy_level } : {}),
+          ...(args.role !== undefined ? { role: args.role } : {}),
           scaffold: wantsScaffold,
         };
         const result = await deps.skillTrainer.trainSkill(trainInput);
+
+        // Stash drafts in the unified "Train this?" inbox (retrain or new).
+        let inboxKey: string | null = null;
+        if (!effectiveSave && admission.stashAsProposal) {
+          try {
+            const settingsNow = deps.host.getSettings();
+            const pending = { ...(settingsNow.skillRetrainPending ?? {}) };
+            if (existingSkill) {
+              inboxKey = existingSkill.sourceId;
+              pending[inboxKey] = {
+                graphId: engramRes.graphId,
+                proposedAt: Date.now(),
+                trained: result.trained,
+                kind: 'retrain',
+                sourceId: existingSkill.sourceId,
+                ...(result.diffNotes !== undefined ? { diffNotes: result.diffNotes } : {}),
+                triggerReason: 'mcp-draft',
+              };
+            } else {
+              inboxKey = `draft:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+              pending[inboxKey] = {
+                graphId: engramRes.graphId,
+                proposedAt: Date.now(),
+                trained: result.trained,
+                kind: 'new',
+                proposedLabel: skillLabel,
+                ...(result.diffNotes !== undefined ? { diffNotes: result.diffNotes } : {}),
+                triggerReason: 'mcp-new-skill',
+              };
+            }
+            const patch: Parameters<typeof deps.host.setSettings>[0] = {
+              skillRetrainPending: pending,
+            };
+            if (admission.notify && inboxKey) {
+              const notifs = new Set(settingsNow.skillRetrainNotifications ?? []);
+              notifs.add(inboxKey);
+              patch.skillRetrainNotifications = [...notifs];
+            }
+            await deps.host.setSettings(patch);
+          } catch (e) {
+            console.warn('[train_skill] failed to stash draft proposal:', e);
+          }
+        }
         const autonomyNote = result.autonomyNote;
         // The skill landed (or was explicitly accepted incomplete) — reset the
         // round counter so a later edit of the same skill gets a fresh loop.
@@ -5863,8 +6007,28 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           'source-only': '📎 Source-only compile (no LLM)',
         };
         const lines: string[] = [];
-        lines.push(`## Skill Training Complete`);
+        lines.push(effectiveSave ? `## Skill Training Complete` : `## Skill Draft Ready — approval required`);
         lines.push('');
+        if (!effectiveSave) {
+          lines.push(
+            `**Approval required:** ${admission.reason}. ` +
+            `Nothing was written to the Skills engram. Ask the user to accept in Graphnosis ` +
+            `(pending proposal / Train this?), then retry with \`save: true\` and \`approved: true\`.`,
+          );
+          lines.push('');
+          lines.push('```json');
+          lines.push(JSON.stringify({
+            approval_required: true,
+            forced_draft: admission.forcedDraft,
+            promotion: admission.promotion,
+            is_new_skill: isNewSkill,
+            source_id: existingSkill?.sourceId ?? null,
+            inbox_key: inboxKey,
+            inbox_hint: 'Open Graphnosis → Skills → Proposed SOPs to Accept / Reject / Edit.',
+          }));
+          lines.push('```');
+          lines.push('');
+        }
         lines.push(`**Mode:** ${MODE_LABEL[result.mode] ?? result.mode}`);
         if (result.conformance) {
           const c = result.conformance;
@@ -6442,6 +6606,65 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         };
         return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
       }
+      case 'set_skill_role': {
+        const args = z.object({
+          engram: z.string().min(1),
+          sourceId: z.string().min(1),
+          role: z.string(),
+        }).parse(rawInput);
+        if (deps.sharingScope) {
+          return mcpError('⛔ Setting skill role is only available to the cortex owner.');
+        }
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        const resEngram = requireEngram(deps.host, args.engram);
+        if ('error' in resEngram) return resEngram.error;
+        if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(args.engram);
+        try {
+          const result = await deps.skillTrainer.setSkillRole(resEngram.graphId, args.sourceId, args.role);
+          const payload = {
+            sourceId: args.sourceId,
+            engram: resEngram.graphId,
+            role: result.role ?? null,
+            set: true,
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+        } catch (e) {
+          return mcpError((e as Error).message);
+        }
+      }
+      case 'set_skill_roles': {
+        const args = z.object({
+          items: z.array(z.object({
+            engram: z.string().min(1),
+            sourceId: z.string().min(1),
+            role: z.string(),
+          })).min(1),
+        }).parse(rawInput);
+        if (deps.sharingScope) {
+          return mcpError('⛔ Setting skill roles is only available to the cortex owner.');
+        }
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        const resolved: Array<{ graphId: string; sourceId: string; role: string }> = [];
+        for (const item of args.items) {
+          const resEngram = requireEngram(deps.host, item.engram);
+          if ('error' in resEngram) {
+            return mcpError(`Engram "${item.engram}" not found for sourceId ${item.sourceId}.`);
+          }
+          if (!scopeAllowsGraph(resEngram.graphId)) return scopeDeniedError(item.engram);
+          resolved.push({ graphId: resEngram.graphId, sourceId: item.sourceId, role: item.role });
+        }
+        const result = await deps.skillTrainer.setSkillRoles(resolved);
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              applied: result.applied,
+              failed: result.failed,
+              total: resolved.length,
+            }, null, 2),
+          }],
+        };
+      }
       case 'import_engram': {
         const args = z.object({
           pack_base64: z.string().min(1),
@@ -6791,6 +7014,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `**${s.label}**`,
           `  sourceId: ${s.sourceId}`,
           `  Engram: ${s.engramName} | Nodes: ${s.nodeCount} | Mode: ${s.mode ?? 'unknown'}`,
+          ...(s.role ? [`  Role: ${s.role}`] : []),
           `  Trained: ${s.trainedAt ?? new Date(s.ingestedAt).toISOString()} | recallBreadth: ${s.recallBreadth ?? 'unknown'}`,
         ].join('\n'));
         return { content: [{ type: 'text', text: `## Skills (${skills.length})\n\n${lines.join('\n\n')}` }] };
@@ -6987,6 +7211,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `# ${detail.label}\n` +
           `Engram: ${detail.engramName} | Mode: ${detail.mode ?? 'unknown'} | ` +
           `recallBreadth: ${detail.recallBreadth ?? 'unknown'} | Nodes: ${detail.nodeCount}\n` +
+          (detail.role ? `Role: ${detail.role}\n` : '') +
           `Trained: ${detail.trainedAt ?? new Date(detail.ingestedAt).toISOString()}`;
         return { content: [{ type: 'text', text: `${header}\n\n---\n\n${detail.text}` }] };
       }
@@ -7195,6 +7420,19 @@ export async function startStdioMcpServer(deps: McpDeps): Promise<void> {
   // tool handlers can use it too (attribution of MCP-driven ingests).
   const { server } = createMcpServer(deps);
   const transport = new StdioServerTransport();
+  let connId: string | null = null;
+  const ensureStdioBound = (): string => {
+    if (!connId) {
+      connId = mcpRegistry.register('stdio');
+      mcpRegistry.bindServer(connId, server);
+    }
+    return connId;
+  };
+  const prevOnInitialized = server.oninitialized;
+  server.oninitialized = () => {
+    try { prevOnInitialized?.(); } catch { /* caller hook */ }
+    mcpRegistry.onConnectionReady(ensureStdioBound());
+  };
   await server.connect(transport);
 
   // We can't tell from outside whether anything is actually on stdin (parents
@@ -7202,13 +7440,12 @@ export async function startStdioMcpServer(deps: McpDeps): Promise<void> {
   // used, never send anything here). Poll for clientInfo for a while; if it
   // never shows up, no connection was real — leave the registry empty.
   const started = Date.now();
-  let connId: string | null = null;
   const probe = setInterval(() => {
     try {
       const ci = server.getClientVersion?.();
       if (ci?.name) {
-        if (!connId) connId = mcpRegistry.register('stdio');
-        mcpRegistry.setClientInfo(connId, ci.name, ci.version ?? 'unknown');
+        const id = ensureStdioBound();
+        mcpRegistry.setClientInfo(id, ci.name, ci.version ?? 'unknown');
         clearInterval(probe);
         return;
       }

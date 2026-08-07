@@ -10,12 +10,18 @@ import { randomUUID } from 'node:crypto';
  *   - clientInfo from the MCP `initialize` handshake (e.g. Claude Desktop
  *     sends `{ name: "claude-ai", version: "..." }`)
  *   - connection start time, last-activity time
+ *   - the live MCP `Server` handle (so we can push `tools/list_changed`)
  *
  * The registry is process-local; restarting the sidecar wipes it. That's
  * the right behavior — the App reads it fresh on every poll.
  */
 
 export type McpTransportKind = 'socket' | 'stdio' | 'http';
+
+/** Minimal surface we need from the SDK Server for tool-list refresh. */
+export interface McpToolListNotifier {
+  sendToolListChanged(): Promise<void>;
+}
 
 export interface McpConnection {
   id: string;
@@ -39,6 +45,9 @@ export interface McpConnection {
   sharingTokenId?: string;
 }
 
+/** How long after a listener bounce we keep nudging new sessions to re-list tools. */
+const TOOL_LIST_REFRESH_ARM_MS = 60_000;
+
 class McpRegistry {
   private connections = new Map<string, McpConnection>();
   /** Tracks distinct engram IDs accessed per connection for breadth detection. */
@@ -51,6 +60,15 @@ class McpRegistry {
    * sees a brief blip at most, no UI interaction required.
    */
   private kickers = new Map<string, () => void>();
+  /** Live SDK Server per connection — used to push tools/list_changed. */
+  private servers = new Map<string, McpToolListNotifier>();
+  /**
+   * When true, each connection that finishes `initialized` also gets a
+   * `tools/list_changed` nudge. Armed after MCP listener restart so relays
+   * that reconnect without the IDE reloading still re-fetch tools/list.
+   */
+  private notifyOnInit = false;
+  private notifyOnInitTimer: ReturnType<typeof setTimeout> | null = null;
 
   register(transport: McpTransportKind, kicker?: () => void): string {
     const id = randomUUID();
@@ -68,6 +86,66 @@ class McpRegistry {
     this.engramSets.set(id, new Set());
     if (kicker) this.kickers.set(id, kicker);
     return id;
+  }
+
+  /**
+   * Attach the live MCP Server for a connection so we can broadcast
+   * `notifications/tools/list_changed` when the visible tool set changes.
+   */
+  bindServer(id: string, server: McpToolListNotifier): void {
+    if (!this.connections.has(id)) return;
+    this.servers.set(id, server);
+  }
+
+  /**
+   * Called from transport layers once the client has sent `initialized`.
+   * If a post-restart refresh is armed, nudge this client to re-run tools/list.
+   */
+  onConnectionReady(id: string): void {
+    if (!this.notifyOnInit) return;
+    const server = this.servers.get(id);
+    if (!server) return;
+    void server.sendToolListChanged().catch(() => {
+      /* not ready / transport closed — fine */
+    });
+  }
+
+  /**
+   * Arm a short window where every newly-initialized connection receives
+   * `tools/list_changed`. Also notifies any connections already live.
+   * Used after `mcp.restartListener` (and similar socket bounces).
+   */
+  armToolListRefresh(ttlMs: number = TOOL_LIST_REFRESH_ARM_MS): void {
+    this.notifyOnInit = true;
+    if (this.notifyOnInitTimer) clearTimeout(this.notifyOnInitTimer);
+    this.notifyOnInitTimer = setTimeout(() => {
+      this.notifyOnInit = false;
+      this.notifyOnInitTimer = null;
+    }, ttlMs);
+    this.notifyOnInitTimer.unref?.();
+    void this.notifyToolListChanged();
+  }
+
+  /** True while {@link armToolListRefresh} window is open (tests / diagnostics). */
+  isToolListRefreshArmed(): boolean {
+    return this.notifyOnInit;
+  }
+
+  /**
+   * Push `notifications/tools/list_changed` to every bound live server.
+   * Returns how many notifications were sent without throwing.
+   */
+  async notifyToolListChanged(): Promise<number> {
+    let sent = 0;
+    for (const server of this.servers.values()) {
+      try {
+        await server.sendToolListChanged();
+        sent += 1;
+      } catch {
+        /* connection not initialized yet or already closed */
+      }
+    }
+    return sent;
   }
 
   setClientInfo(id: string, name: string, version: string): void {
@@ -88,6 +166,7 @@ class McpRegistry {
     this.connections.delete(id);
     this.engramSets.delete(id);
     this.kickers.delete(id);
+    this.servers.delete(id);
   }
 
   /**

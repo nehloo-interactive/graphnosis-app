@@ -36,6 +36,7 @@ import {
   type HealingLlmVerdict,
   makeHealingRecord,
 } from './healing-journal.js';
+import { isSystemEngram } from './docs-ingest.js';
 
 /** The result of a federated recall — derived from the host so brain-engine
  *  needn't import the secure-sync federation types directly. */
@@ -651,12 +652,22 @@ export class BrainEngine {
       this.host.loadSuppressedContradictions<SuppressedContradiction>(),
     ])
       .then(([saved, dismissals, suppressed]) => {
+        const systemDropped = saved.filter((c) => isSystemEngram(c.graphId)).length;
         this.contradictionPairs = saved.filter(
-          (c) => !dismissals.includes(pairKey(c.graphId, c.nodeA, c.nodeB)),
+          (c) => !dismissals.includes(pairKey(c.graphId, c.nodeA, c.nodeB))
+            && !isSystemEngram(c.graphId),
         );
         this.contradictionDismissals = new Set(dismissals);
         this.suppressedContradictions = suppressed;
         this.contradictionPairsLoaded = true;
+        if (systemDropped > 0) {
+          void this.persistContradictionQueue();
+          this.vitality.invalidate();
+          console.error(
+            `[brain] dropped ${systemDropped} system-engram contradiction pair(s) `
+            + `(docs/default Agempi) from the review queue`,
+          );
+        }
         this.retriageExistingQueue();
       })
       .catch((e) => {
@@ -929,14 +940,15 @@ export class BrainEngine {
       if (!this.isVitalityPresentationReady()) {
         const frozen = await this.frozenVitalitySnapshot();
         if (!frozen) return null;
-        const pendingDups = this.duplicatePairs.length;
+        const pendingDups = this.duplicatePairs.filter((p) => !isSystemEngram(p.graphId)).length;
         const detailed = await this.vitality.computeDetailed(pendingDups);
         return { ...detailed, overall: frozen.overall, byGraph: frozen.byGraph, settling: true };
       }
       this.vitalityPresentationReady = true;
       this.vitality.invalidate();
     }
-    const report = await this.vitality.computeDetailed(this.duplicatePairs.length, this.contradictionPairs.length);
+    const attn = this.getAttentionCounts();
+    const report = await this.vitality.computeDetailed(attn.duplicates, attn.contradictions);
     return { ...report, settling: false };
   }
 
@@ -977,12 +989,13 @@ export class BrainEngine {
     const resident = this.host.listGraphs();
     const missingResident = resident.filter((id) => byGraph[id] === undefined);
     if (missingResident.length > 0) {
+      const attn = this.getAttentionCounts();
       const pendingDups = typeof cached.pendingDuplicatePairs === 'number'
         && Number.isFinite(cached.pendingDuplicatePairs)
         ? cached.pendingDuplicatePairs
-        : this.duplicatePairs.length;
+        : attn.duplicates;
       try {
-        const live = await this.vitality.compute(pendingDups, this.contradictionPairs.length);
+        const live = await this.vitality.compute(pendingDups, attn.contradictions);
         if (Object.keys(byGraph).length === 0) {
           for (const [graphId, score] of Object.entries(live.byGraph)) {
             if (typeof score === 'number' && Number.isFinite(score)) {
@@ -1012,11 +1025,41 @@ export class BrainEngine {
   }
 
   getDuplicatePairs(): DuplicatePair[] {
+    this.purgeZombieDuplicatePairs();
     return this.duplicatePairs;
   }
 
+  /**
+   * Drop Check-in deck zombies: bundled docs/Agempi pairs, and exact-text
+   * 99%+ pairs that should have auto-healed (or are truncated date chips
+   * that only look like "judgment calls"). Called from the getter so a
+   * long-lived sidecar sheds stale queue rows without waiting for a scan.
+   */
+  private purgeZombieDuplicatePairs(): void {
+    const before = this.duplicatePairs.length;
+    if (before === 0) return;
+    this.duplicatePairs = this.duplicatePairs.filter((p) => {
+      if (isSystemEngram(p.graphId)) return false;
+      const a = (p.snippetA ?? '').trim();
+      const b = (p.snippetB ?? '').trim();
+      if (p.similarity >= 0.99 && a.length > 0 && a === b) return false;
+      return true;
+    });
+    if (this.duplicatePairs.length !== before) {
+      this.vitality.invalidate();
+      console.error(
+        `[brain] purged ${before - this.duplicatePairs.length} zombie duplicate pair(s) `
+        + `(system engrams and/or exact 99%+ twins)`,
+      );
+    }
+  }
+
   getContradictionPairs(): ContradictionPair[] {
-    return this.contradictionPairs;
+    // Queue tab = human-adjudication only. Medium/system pairs are Filtered.
+    return this.contradictionPairs.filter((p) =>
+      !isSystemEngram(p.graphId)
+      && (p.severity === 'high' || p.kind === 'policy'),
+    );
   }
 
   getContradictionHistory(): ContradictionPair[] {
@@ -1025,11 +1068,31 @@ export class BrainEngine {
     );
   }
 
+  /**
+   * Counts that drive Home / Ghampus "Needs attention" nags.
+   *
+   * Contradictions: HIGH severity only (identity / hard conflict). Medium
+   * noise stays in the Filtered audit lane after triage.
+   * Duplicates: user engrams only — never bundled docs/Agempi. Self-heal
+   * clears most; the sticky banner deliberately omits duplicates (see
+   * attention-surfaces) so Check-in's coherence note is not doubled.
+   *
+   * Until the first post-boot duplicate scan finishes, return zeros so a
+   * brand-new install is not greeted with a red banner before self-heal runs.
+   */
   getAttentionCounts(): { duplicates: number; contradictions: number; total: number } {
+    if (!this.firstDuplicateScanComplete && !this.vitalityPresentationReady) {
+      return { duplicates: 0, contradictions: 0, total: 0 };
+    }
+    const duplicates = this.duplicatePairs.filter((p) => !isSystemEngram(p.graphId)).length;
+    const contradictions = this.contradictionPairs.filter((p) =>
+      !isSystemEngram(p.graphId)
+      && (p.severity === 'high' || p.kind === 'policy'),
+    ).length;
     return {
-      duplicates: this.duplicatePairs.length,
-      contradictions: this.contradictionPairs.length,
-      total: this.duplicatePairs.length + this.contradictionPairs.length,
+      duplicates,
+      contradictions,
+      total: duplicates + contradictions,
     };
   }
 
@@ -1062,6 +1125,8 @@ export class BrainEngine {
       skipTriage?: boolean;
     },
   ): boolean {
+    // Bundled docs / default Agempi are not the owner's memory debt.
+    if (isSystemEngram(entry.graphId)) return false;
     const key = pairKey(entry.graphId, entry.nodeA, entry.nodeB);
     if (this.contradictionDismissals.has(key)) return false;
     if (this.contradictionPairs.some((c) => pairKey(c.graphId, c.nodeA, c.nodeB) === key)) {
@@ -1107,6 +1172,7 @@ export class BrainEngine {
       temporalVerdict = triage.temporalVerdict;
       sharedEntities = triage.meaningfulShared;
     } else {
+      // Policy rows skip semantic triage but still must not dump medium noise.
       sharedEntities = sharedEntities.filter((e) => e.trim().length >= 2);
       severity = severity ?? classifySeverity(snippetA, snippetB, sharedEntities);
       temporalVerdict = temporalVerdict ?? classifyTemporalVerdict(
@@ -1115,6 +1181,22 @@ export class BrainEngine {
         a?.validUntil,
         b?.validUntil,
       );
+      if ((entry.kind ?? 'semantic') !== 'policy' && severity !== 'high') {
+        this.recordSuppressedContradiction({
+          graphId: entry.graphId,
+          nodeA: entry.nodeA,
+          nodeB: entry.nodeB,
+          snippetA,
+          snippetB,
+          severity,
+          temporalVerdict,
+          reason: severity === 'low' ? 'low-severity' : 'medium-severity',
+          sharedEntities,
+          fromIngest: entry.fromIngest === true,
+          detectedAt: Date.now(),
+        });
+        return false;
+      }
     }
 
     this.contradictionPairs.push({
@@ -1221,6 +1303,7 @@ export class BrainEngine {
     const survivors: ContradictionPair[] = [];
     let moved = 0;
     for (const c of this.contradictionPairs) {
+      if (isSystemEngram(c.graphId)) { moved += 1; continue; }
       if ((c.kind ?? 'semantic') !== 'semantic') { survivors.push(c); continue; }
       const triage = evaluateContradictionTriage({
         snippetA: c.snippetA,
@@ -1251,7 +1334,10 @@ export class BrainEngine {
       this.contradictionPairs = survivors;
       void this.persistContradictionQueue();
       this.vitality.invalidate();
-      console.error(`[brain] re-triage: moved ${moved} now-filtered contradiction pair(s) from the review queue to the suppressed lane`);
+      console.error(
+        `[brain] re-triage: removed ${moved} contradiction pair(s) from the review queue `
+        + `(suppressed by triage and/or system engrams)`,
+      );
     }
   }
 
@@ -1462,6 +1548,8 @@ export class BrainEngine {
     description: string,
   ): void {
     if (!POLARITY_RE.test(snippetA) && !POLARITY_RE.test(snippetB)) return;
+    // Run full triage — skipTriage used to dump negation-artifact / medium
+    // polarity noise straight into the human queue on every fresh docs ingest.
     if (this.pushContradictionPair({
       graphId,
       nodeA,
@@ -1471,7 +1559,6 @@ export class BrainEngine {
       sharedEntities: [],
       description,
       kind: 'semantic',
-      skipTriage: true,
     })) {
       void this.persistContradictionQueue();
     }
@@ -1499,16 +1586,18 @@ export class BrainEngine {
     const yieldToLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
     let added = 0;
     try {
-      const graphs = opts.graphId ? [opts.graphId] : this.host.listGraphs();
-      if (graphs.length === 0) return;
-      const SLICE = opts.deep ? graphs.length : (opts.graphId ? 1 : 5);
-      const start = opts.graphId ? 0 : (this.contradictionScanCursor % graphs.length);
+      // Docs + default Agempi are not the owner's review debt (see isSystemEngram).
+      const scanGraphs = (opts.graphId ? [opts.graphId] : this.host.listGraphs())
+        .filter((id) => !isSystemEngram(id));
+      if (scanGraphs.length === 0) return;
+      const SLICE = opts.deep ? scanGraphs.length : (opts.graphId ? 1 : 5);
+      const start = opts.graphId ? 0 : (this.contradictionScanCursor % scanGraphs.length);
       const slice: string[] = [];
-      for (let i = 0; i < Math.min(SLICE, graphs.length); i++) {
-        slice.push(graphs[(start + i) % graphs.length]!);
+      for (let i = 0; i < Math.min(SLICE, scanGraphs.length); i++) {
+        slice.push(scanGraphs[(start + i) % scanGraphs.length]!);
       }
       if (!opts.graphId) {
-        this.contradictionScanCursor = (start + SLICE) % graphs.length;
+        this.contradictionScanCursor = (start + SLICE) % scanGraphs.length;
       }
 
       const known = new Set(this.contradictionPairs.map((c) => pairKey(c.graphId, c.nodeA, c.nodeB)));
@@ -1796,13 +1885,14 @@ export class BrainEngine {
   }
 
   async computeVitality(): Promise<VitalityReport> {
-    return this.vitality.compute(this.duplicatePairs.length, this.contradictionPairs.length);
+    const attn = this.getAttentionCounts();
+    return this.vitality.compute(attn.duplicates, attn.contradictions);
   }
 
   /** Retrieval-quality Memory Health report — powers the Autonomous
    *  Indelibility tab's health ring. */
   async getMemoryHealth(): Promise<MemoryHealth> {
-    return this.memoryHealth.compute(this.contradictionPairs.length);
+    return this.memoryHealth.compute(this.getAttentionCounts().contradictions);
   }
 
   /** Live cross-engram connection store — for the UI's cross-engram panel. */
@@ -2031,9 +2121,12 @@ export class BrainEngine {
    *  ever holding every engram's embedding working set hot at once (the OOM /
    *  swap cause on the stress cortex). */
   private selectDuplicateScanEngrams<T extends string>(all: T[]): T[] {
-    if (all.length <= MAX_SCAN_ENGRAMS_PER_CYCLE) return all;
+    // Never spend duplicate/auto-heal budget on bundled docs or default Agempi.
+    const user = all.filter((id) => !isSystemEngram(id));
+    if (user.length === 0) return [];
+    if (user.length <= MAX_SCAN_ENGRAMS_PER_CYCLE) return user;
     const lastMut = this.host.getMutationCursor() as Record<string, number>;
-    const byRecency = [...all].sort((a, b) => (lastMut[b] ?? 0) - (lastMut[a] ?? 0));
+    const byRecency = [...user].sort((a, b) => (lastMut[b] ?? 0) - (lastMut[a] ?? 0));
     const hot = byRecency.slice(0, MAX_SCAN_ENGRAMS_PER_CYCLE - 1);
     const cold = byRecency.slice(MAX_SCAN_ENGRAMS_PER_CYCLE - 1);
     const pick = cold[this.duplicateScanCursor % cold.length]!;
@@ -2215,8 +2308,31 @@ export class BrainEngine {
 
             // Classify: can the brain heal this pair autonomously (provably
             // no information loss), or does it need a human judgment call?
+            // Never park bundled docs/Agempi in the human Check-in deck.
+            if (isSystemEngram(graphId)) continue;
             const verdict = classifyHealingPair(a, b, snippetA, snippetB);
             if (verdict.bucket === 'needs-review') {
+              // Embed says ~identical and cleaned text matches after normalize
+              // — heal, don't invent a zombie review card for date chips etc.
+              if (
+                pair.similarity >= 0.99
+                && normalizeHealText(snippetA) === normalizeHealText(snippetB)
+              ) {
+                const aWins =
+                  a.confidence > b.confidence
+                  || (a.confidence === b.confidence && a.id < b.id);
+                healActions.push({
+                  graphId,
+                  survivorId: aWins ? a.id : b.id,
+                  supersededId: aWins ? b.id : a.id,
+                  survivorContent: snippetA,
+                  supersededContent: snippetB,
+                  rule: 'exact-duplicate',
+                  similarity: pair.similarity,
+                  decisionReason: '99%+ embed + identical normalized text',
+                });
+                continue;
+              }
               found.push({
                 id: randomUUID(),
                 graphId,
@@ -2316,6 +2432,7 @@ export class BrainEngine {
       }
 
       this.duplicatePairs.push(...found);
+      this.purgeZombieDuplicatePairs();
       // Keep the needs-review list bounded — highest-similarity pairs
       // first, since those are the most likely genuine same-fact pairs.
       if (this.duplicatePairs.length > MAX_DUPLICATE_PAIRS_STORED) {
@@ -3186,7 +3303,8 @@ export class BrainEngine {
       this.vitality.invalidate();
     }
     try {
-      const report = await this.vitality.compute(this.duplicatePairs.length, this.contradictionPairs.length);
+      const attn = this.getAttentionCounts();
+      const report = await this.vitality.compute(attn.duplicates, attn.contradictions);
       // Persist the live score so the NEXT cold boot can substitute it for
       // the inflated pre-scan estimate. Only persist after the first
       // duplicate scan has completed — otherwise we'd save the same
@@ -3202,8 +3320,8 @@ export class BrainEngine {
                 overall: report.overall,
                 computedAt: Date.now(),
                 byGraph: report.byGraph,
-                pendingDuplicatePairs: this.duplicatePairs.length,
-                pendingContradictionPairs: this.contradictionPairs.length,
+                pendingDuplicatePairs: attn.duplicates,
+                pendingContradictionPairs: attn.contradictions,
               },
             },
           });
@@ -3329,16 +3447,20 @@ const MIN_SUBSET_TOKENS = 4;
 const POLARITY_RE =
   /\b(not|no|never|none|nor|without|cannot|nu|f[ăa]r[ăa]|niciodat[ăa]|nici|nicio|niciun)\b|n['']t\b/i;
 
+function normalizeHealText(s: string): string {
+  return s.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 function classifyHealingPair(
   a: ClassifyNode,
   b: ClassifyNode,
   snippetA: string,
   snippetB: string,
 ): HealingVerdict {
-  // 1. Exact duplicate — byte-identical cleaned text. Zero information
-  //    difference; provably safe to drop one. Survivor = higher
-  //    confidence; deterministic id tiebreak.
-  if (snippetA === snippetB) {
+  // 1. Exact duplicate — byte-identical cleaned text (or NFC/case/space
+  //    equivalent). Zero information difference; provably safe to drop one.
+  //    Survivor = higher confidence; deterministic id tiebreak.
+  if (snippetA === snippetB || normalizeHealText(snippetA) === normalizeHealText(snippetB)) {
     const aWins =
       a.confidence > b.confidence ||
       (a.confidence === b.confidence && a.id < b.id);
@@ -3348,7 +3470,7 @@ function classifyHealingPair(
       bucket: 'heal',
       survivorId: survivor.id,
       supersededId: superseded.id,
-      survivorContent: snippetA, // identical to snippetB by definition
+      survivorContent: snippetA,
       supersededContent: snippetB,
       rule: 'exact-duplicate',
       decisionReason:

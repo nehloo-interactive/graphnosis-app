@@ -479,6 +479,7 @@ export interface ContradictionTriageInput {
 export type SuppressionReason =
   | 'insufficient-entities'
   | 'low-severity'
+  | 'medium-severity'
   | 'negation-artifact'
   | 'temporal-supersession'
   | 'ingest-gate'
@@ -544,13 +545,20 @@ export function evaluateContradictionTriage(input: ContradictionTriageInput): Co
   if (severity === 'low') {
     return { ...base, queue: false, reason: 'low-severity' };
   }
+  // Human review is reserved for HIGH-confidence identity / hard conflicts.
+  // Medium pairs (soft negation, number drift, vague topical overlap) go to
+  // the Filtered audit lane — self-heal + Filtered cover them without spamming
+  // a first-run Home banner with hundreds of docs-noise cards.
+  if (severity !== 'high') {
+    return { ...base, queue: false, reason: 'medium-severity' };
+  }
   if (isNearDuplicatePair(input.snippetA, input.snippetB)) {
     return { ...base, queue: false, reason: 'near-duplicate' };
   }
   if (isComplementaryPair(input.snippetA, input.snippetB)) {
     return { ...base, queue: false, reason: 'complementary' };
   }
-  if (!signals.any && severity !== 'high') {
+  if (!signals.any) {
     return { ...base, queue: false, reason: 'no-conflict-signal' };
   }
   if (input.ingest

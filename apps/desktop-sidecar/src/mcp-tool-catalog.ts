@@ -79,6 +79,8 @@ export const MCP_TOOL_CATALOG: McpToolCatalogEntry[] = [
   { name: 'set_engram_autonomy', shortDescription: "Set an engram's execution-autonomy level" },
   { name: 'get_skill_autonomy', shortDescription: "Read one skill's execution-autonomy state" },
   { name: 'set_skill_autonomy', shortDescription: "Set or clear one skill's autonomy override" },
+  { name: 'set_skill_role', shortDescription: "Set or clear one skill's Role focus line" },
+  { name: 'set_skill_roles', shortDescription: 'Batch-set Roles on many skills' },
   { name: 'savings_summary', shortDescription: 'Report model-cost savings from memory + routing' },
 ];
 

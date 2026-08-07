@@ -36,6 +36,8 @@ export interface SkillMaintenanceSchedulerDeps {
   skillTrainer: SkillTrainer;
   broadcastRaw: BroadcastRawFn;
   licenseValidator: LicenseValidator;
+  /** Open contradictions for a skill engram — caps auto-accept like Praxis. */
+  hasOpenContradictions?: (graphId: string) => boolean;
 }
 
 const TICK_MS = 90_000;
@@ -90,11 +92,16 @@ export class SkillMaintenanceScheduler {
 
     for (const sourceId of sourceIds) {
       try {
+        const entry = this.deps.host.getSettings().skillRetrainQueue?.[sourceId];
+        const hasOpen = entry && this.deps.hasOpenContradictions
+          ? this.deps.hasOpenContradictions(entry.graphId)
+          : false;
         const result = await retrainSingleQueuedSkill(
           this.deps.host,
           this.deps.skillTrainer,
           sourceId,
           totalActiveNodes,
+          { hasOpenContradictions: hasOpen },
         );
         if (result.ok) {
           retrained.push(sourceId);

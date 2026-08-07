@@ -330,6 +330,7 @@ function runListSkills(deps: AgentToolDeps, args: ListSkillsToolArgs): ListSkill
       origin: s.provenance ? 'pack' : 'local',
       ...(s.trainedAt !== undefined ? { trainedAt: s.trainedAt } : {}),
       ...(s.recallBreadth !== undefined ? { recallBreadth: s.recallBreadth } : {}),
+      ...(s.role !== undefined ? { role: s.role } : {}),
       ...(s.searchPreview !== undefined ? { searchPreview: s.searchPreview } : {}),
     })),
   };

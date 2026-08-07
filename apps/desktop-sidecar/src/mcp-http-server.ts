@@ -833,6 +833,12 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       mcpTransport: 'http',
     };
     const { server: mcpServer } = createMcpServer(sessionDeps);
+    mcpRegistry.bindServer(connId, mcpServer);
+    const prevOnInitialized = mcpServer.oninitialized;
+    mcpServer.oninitialized = () => {
+      try { prevOnInitialized?.(); } catch { /* caller hook */ }
+      mcpRegistry.onConnectionReady(connId);
+    };
     await mcpServer.connect(transport as unknown as Parameters<typeof mcpServer.connect>[0]);
     pollForClientInfo(connId, mcpServer);
     await transport.handleRequest(req, res, body);

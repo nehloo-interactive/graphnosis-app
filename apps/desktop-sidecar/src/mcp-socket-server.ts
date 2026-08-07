@@ -84,6 +84,12 @@ export async function startSocketMcpServer(opts: {
     }
 
     const { server: mcpServer } = createMcpServer(opts.deps);
+    mcpRegistry.bindServer(connId, mcpServer);
+    const prevOnInitialized = mcpServer.oninitialized;
+    mcpServer.oninitialized = () => {
+      try { prevOnInitialized?.(); } catch { /* caller hook */ }
+      mcpRegistry.onConnectionReady(connId);
+    };
 
     void mcpServer.connect(transport).then(() => {
       // After the SDK processes `initialize`, it stores the client's reported
