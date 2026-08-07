@@ -101,7 +101,14 @@ export function sanitizeDigestSummaryLine(raw: string): string {
   return line.trim();
 }
 
-/** Optional local-LLM one-liner over grouped counts — no sensitive content in prompt. */
+/**
+ * Optional local-LLM one-liner over grouped **counts only**.
+ *
+ * Callers must pass `llm` only when Local LLM is enabled and the backend is
+ * reachable (see `isLocalLlmReadyForCompanion`). Prompt never includes labels,
+ * previews, or memory text — sensitive tiers stay out of the model entirely.
+ * Failures are silent: digest falls back to the templated body.
+ */
 export async function maybeSummarizeDigest(
   llm: LocalLlm | null | undefined,
   notifications: NotificationEntry[],
@@ -109,22 +116,26 @@ export async function maybeSummarizeDigest(
   if (!llm || notifications.length === 0) return null;
 
   const groups = groupNotificationsByOrigin(notifications);
+  // Counts by origin bucket only — never labels / previews / engram names.
   const summaryInput = Array.from(groups.entries())
     .map(([kind, items]) => `${ORIGIN_KIND_LABELS[kind] ?? kind}: ${items.length}`)
     .join(', ');
 
   const prompt =
     `Summarize this inbound activity digest in one friendly sentence (max 25 words). ` +
-    `Only use the counts provided — do not invent details.\n\nCounts: ${summaryInput}`;
+    `Only use the counts provided — do not invent details, names, or topics.\n\nCounts: ${summaryInput}`;
 
   try {
     const output = await llm.complete({
       system:
-        'You write concise activity digests in plain text only. No markdown, no underscores, no bold, no quotes.',
+        'You write concise activity digests in plain text only. No markdown, no underscores, no bold, no quotes. ' +
+        'Never invent what arrived — only restate the counts in a natural sentence.',
       user: prompt,
     });
     const line = sanitizeDigestSummaryLine(output);
-    return line.length > 10 ? line : null;
+    // Cap length so a runaway model can't pad the digest.
+    if (line.length < 10 || line.length > 180) return null;
+    return line;
   } catch {
     return null;
   }
@@ -136,14 +147,54 @@ export function sanitizeAwayDigestBody(text: string): string {
   return text.replace(/(?<![\w/])_([^_\n]+?)_(?![\w/])/g, '$1');
 }
 
+/** Optional integrity / next-step context folded into the digest voice. */
+export interface AwayDigestExtras {
+  corrections?: number;
+  contradictions?: number;
+  duplicates?: number;
+  /** Allowlisted skill slug Ghampus may auto-preview next (read-only). */
+  suggestPreviewSkill?: string | null;
+}
+
+function buildIntegrityVoice(extras?: AwayDigestExtras): string {
+  if (!extras) return '';
+  const corrections = extras.corrections ?? 0;
+  const contradictions = extras.contradictions ?? 0;
+  const duplicates = extras.duplicates ?? 0;
+  if (corrections + contradictions + duplicates === 0) return '';
+
+  const bits: string[] = [];
+  if (corrections > 0) bits.push(`${corrections} correction${corrections === 1 ? '' : 's'}`);
+  if (contradictions > 0) {
+    bits.push(`${contradictions} contradiction${contradictions === 1 ? '' : 's'}`);
+  }
+  if (duplicates > 0) bits.push(`${duplicates} duplicate pair${duplicates === 1 ? '' : 's'}`);
+
+  let block =
+    `\n\n**Memory Integrity** — ${bits.join(', ')} awaiting your review. ` +
+    `I surface these; I don't silently rewrite attested memories. Open Foresight → Memory Integrity when you're ready.`;
+
+  const skill = extras.suggestPreviewSkill?.trim();
+  if (skill) {
+    const pretty = skill.replace(/-/g, ' ');
+    block += `\n\nI can **preview ${pretty}** (read-only SOP) so you see the steps before anything runs.`;
+  }
+  return block;
+}
+
 /** Full away digest text for ghampus-history.jsonl. */
 export async function buildAwayDigestText(
   notifications: NotificationEntry[],
   totalAvailable: number,
   llm?: LocalLlm | null,
+  extras?: AwayDigestExtras,
 ): Promise<string> {
+  const integrity = buildIntegrityVoice(extras);
+
   if (notifications.length === 0) {
-    return `${AWAY_DIGEST_PREFIX} (just now) — all quiet. Nothing new arrived in your cortex.`;
+    const quiet =
+      `${AWAY_DIGEST_PREFIX} (just now) — all quiet on inbound. Nothing new arrived in your cortex.`;
+    return sanitizeAwayDigestBody(quiet + integrity);
   }
 
   const body = buildGroupedDigestBody(notifications, totalAvailable);
@@ -151,5 +202,7 @@ export async function buildAwayDigestText(
   const summary = await maybeSummarizeDigest(llm ?? null, notifications);
   const summaryBlock = summary ? `\n\n${summary}` : '';
   const groupsBlock = groupLines.filter(Boolean).join('\n');
-  return sanitizeAwayDigestBody(`${AWAY_DIGEST_PREFIX} — ${headline}${summaryBlock}\n\n${groupsBlock}`);
+  return sanitizeAwayDigestBody(
+    `${AWAY_DIGEST_PREFIX} — ${headline}${summaryBlock}\n\n${groupsBlock}${integrity}`,
+  );
 }

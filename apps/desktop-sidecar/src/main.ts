@@ -42,6 +42,8 @@ import { UnattendedExecutor } from './unattended-executor.js';
 import { GhampusReminderScheduler } from './ghampus-reminders.js';
 import { GhampusProactiveTipsScheduler } from './ghampus-proactive-tips.js';
 import { GhampusVitalityNudgesScheduler } from './ghampus-vitality-nudges.js';
+import { GhampusCheckInScheduler } from './ghampus-check-in.js';
+import { runSafeSkillPreview } from './ghampus-safe-preview.js';
 import { emitGhampusRecoveryNudge } from './ghampus-recovery-nudge.js';
 import { SkillMaintenanceScheduler } from './skill-maintenance-scheduler.js';
 import { ContradictionHealthScheduler } from './contradiction-health-scheduler.js';
@@ -654,8 +656,13 @@ async function main(): Promise<void> {
   // reparents us to launchd (PID 1 on macOS/Linux). We poll for that and
   // self-terminate, releasing the cortex lock cleanly. .unref() so this
   // interval doesn't itself keep the event loop alive.
+  //
+  // Skip in personal-server / headless mode (GRAPHNOSIS_HTTP_UI=1): that
+  // process is meant to outlive the SSH/Terminal that started it. Orphaning
+  // to PID 1 is the success path there, not a crash.
   const originalPpid = process.ppid;
-  if (originalPpid > 1) {
+  const headlessPersonalServer = process.env.GRAPHNOSIS_HTTP_UI === '1';
+  if (!headlessPersonalServer && originalPpid > 1) {
     setInterval(() => {
       if (process.ppid === 1 && originalPpid !== 1) {
         console.error('[graphnosis-sidecar] parent process died; exiting cleanly.');
@@ -1169,23 +1176,34 @@ async function main(): Promise<void> {
             continue;
           }
           try {
-            // Three autonomy levels:
-            //   - 'auto-accept':  run trainSkill with save=true, the new
-            //                     version replaces the old via supersession.
-            //   - 'notify':       run with save=true (same as auto-accept),
-            //                     BUT also mark sourceId in
-            //                     skillRetrainNotifications so the UI
-            //                     surfaces a 🆕 dot until the user views it.
-            //   - 'preview-first': run with save=false, stash the result in
-            //                     skillRetrainPending so the user reviews
-            //                     before promotion. lastAutoRetrain still
-            //                     bumps so we don't propose every poll.
-            const willSave = cfg.autonomyLevel !== 'preview-first';
+            // Approval-first Praxis promotion (skill-train-admission):
+            //   - 'auto-accept': save only when not meta and no open contradictions
+            //   - 'notify':      draft + 🆕 badge (NOT silent write)
+            //   - 'preview-first': draft → pending review card
+            const { decideTrainAdmission } = await import('./skill-train-admission.js');
+            const { resolveEvolveAutonomyLevel, capPraxisByEvolve } = await import('@graphnosis-app/core/settings');
+            const hasOpenContradictions = (brainEngine?.getContradictionPairs() ?? [])
+              .some((p) => p.graphId === cfg.graphId);
+            const engramEvolve = resolveEvolveAutonomyLevel(host.getGraphMetadata(cfg.graphId));
+            const praxisAutonomy = capPraxisByEvolve(cfg.autonomyLevel, engramEvolve);
+            const admission = decideTrainAdmission({
+              caller: 'autopraxis',
+              skillLabel: detail.label,
+              isNewSkill: false,
+              requestedSave: true,
+              praxisEnabled: true,
+              praxisAutonomy,
+              hasOpenContradictions,
+            });
+            if (admission.refuse) {
+              console.warn(`[autoretrain] refused ${sourceId}: ${admission.reason}`);
+              continue;
+            }
             const result = await skillTrainer.trainSkill({
               skill: detail.text,
               graphId: cfg.graphId,
               skillName: detail.label,
-              save: willSave,
+              save: admission.save,
               ...(detail.recallBreadth !== undefined ? { recallBreadth: detail.recallBreadth } : {}),
               addedBy: 'graphnosis-autopraxis',
             });
@@ -1203,26 +1221,30 @@ async function main(): Promise<void> {
                 lastNodeCountSnapshot: totalActiveNodes,
               };
             }
-            // Branch on autonomy level for the per-level extras.
             const patch: Parameters<typeof host.setSettings>[0] = { skillAutoRetrain: next };
-            if (cfg.autonomyLevel === 'notify') {
+            if (admission.notify) {
               const notifs = new Set(settingsNow.skillRetrainNotifications ?? []);
               notifs.add(sourceId);
               patch.skillRetrainNotifications = [...notifs];
             }
-            if (cfg.autonomyLevel === 'preview-first') {
+            if (admission.stashAsProposal && !admission.save) {
               const pending = { ...(settingsNow.skillRetrainPending ?? {}) };
               pending[sourceId] = {
                 graphId: cfg.graphId,
                 proposedAt: Date.now(),
                 trained: result.trained,
+                kind: 'retrain',
+                sourceId,
                 ...(result.diffNotes !== undefined ? { diffNotes: result.diffNotes } : {}),
                 triggerReason,
               };
               patch.skillRetrainPending = pending;
             }
             await host.setSettings(patch);
-            console.log(`[autoretrain] retrained ${detail.label} (${sourceId}) via ${triggerReason} → ${cfg.autonomyLevel}`);
+            console.log(
+              `[autoretrain] ${admission.save ? 'saved' : 'drafted'} ${detail.label} (${sourceId}) ` +
+              `via ${triggerReason} → ${admission.promotion} (${admission.reason})`,
+            );
           } catch (e) {
             console.warn(`[autoretrain] retrain failed for ${sourceId}:`, e);
           }
@@ -1281,6 +1303,10 @@ async function main(): Promise<void> {
   const restartMcpListener = async (): Promise<void> => {
     await new Promise<void>((resolve) => mcpServer.close(() => resolve()));
     mcpServer = await startSocketMcpServer({ deps: mcpDeps, socketPath: mcpSocketPath });
+    // Relays reconnect on the new socket; arm a short window so each
+    // re-handshake also gets tools/list_changed (Cursor often keeps a
+    // stale schema after socket bounce alone).
+    mcpRegistry.armToolListRefresh();
   };
 
   // Mobile HTTP bridge starts below in the "Mobile HTTP servers" section
@@ -1356,6 +1382,18 @@ async function main(): Promise<void> {
     skillTrainer: skillTrainer ?? null,
     broadcastRaw,
     onAutoEligible: (card) => unattendedExecutor.onAutoEligible(card),
+    onSafePreview: (card) => {
+      void runSafeSkillPreview(
+        {
+          host,
+          skillTrainer: skillTrainer ?? null,
+          broadcastRaw,
+          cortexDir: env.cortexDir,
+        },
+        card.skillLabel,
+        card.why.replace(/\*\*/g, '').slice(0, 160) || 'Suggested by the proactive watcher.',
+      );
+    },
   });
   proactiveWatcher.start();
   unattendedExecutor.start();
@@ -1378,11 +1416,23 @@ async function main(): Promise<void> {
     cortexDir: env.cortexDir,
   });
   vitalityNudgesScheduler.start();
+  const checkInScheduler = new GhampusCheckInScheduler({
+    host,
+    brainEngine: brainEngine ?? null,
+    skillTrainer: skillTrainer ?? null,
+    broadcastRaw,
+    cortexDir: env.cortexDir,
+    getPendingCorrections: () => pendingDiffs.size,
+    getLlm: () => llm,
+  });
+  checkInScheduler.start();
   const skillMaintenanceScheduler = new SkillMaintenanceScheduler({
     host,
     skillTrainer,
     broadcastRaw,
     licenseValidator,
+    hasOpenContradictions: (graphId) =>
+      (brainEngine?.getContradictionPairs() ?? []).some((p) => p.graphId === graphId),
   });
   skillMaintenanceScheduler.start();
   const sidecarIdleMaintenance = new SidecarIdleMaintenance({ host, cortexDir: env.cortexDir, broadcastRaw });
@@ -1426,6 +1476,7 @@ async function main(): Promise<void> {
     unattendedExecutor,
     reminderScheduler,
     tipsScheduler,
+    checkInScheduler,
     skillMaintenanceScheduler,
     callMcpTool,
     ...(env.ssoRole
@@ -1528,6 +1579,10 @@ async function main(): Promise<void> {
         });
         httpBridgeLive = want;
         console.error(`[graphnosis-sidecar] mobile HTTP bridge listening on ${want.host}:${want.port}`);
+        // Same as socket restart: clients that reconnect after a bridge bounce
+        // should get tools/list_changed so a mid-session Role/tool catalog
+        // change is not stuck behind a stale Cursor/Claude cache.
+        mcpRegistry.armToolListRefresh();
       } catch (e) {
         // A port conflict here means another sidecar is still running and
         // holding the same port. Log clearly but don't crash — the rest of
@@ -1687,6 +1742,7 @@ async function main(): Promise<void> {
     setTimeout(() => { console.error('[graphnosis-sidecar] shutdown timed out — forcing exit'); process.exit(0); }, 5000).unref();
     try { brainEngine.stop(); } catch { /* may not have started (deferred boot) */ }
     try { unattendedExecutor.stop(); } catch { /* timer may be unarmed */ }
+    try { checkInScheduler.stop(); } catch { /* timer may be unarmed */ }
     await connectorManager.stop().catch(() => {});
     for (const graphId of host.listGraphs()) {
       try { await host.save(graphId); } catch { /* best-effort — don't block exit */ }
@@ -1701,13 +1757,16 @@ async function main(): Promise<void> {
   // (ppid → 1). Without this we keep running as a zombie: holding the cortex
   // lock, GBs of RAM, and piling up one orphan per relaunch. Detect the reparent
   // and shut down cleanly.
+  // Skip when GRAPHNOSIS_HTTP_UI=1 (headless personal server) — see earlier note.
   const bootPpid = process.ppid;
-  setInterval(() => {
-    if (process.ppid === 1 && bootPpid !== 1) {
-      console.error('[graphnosis-sidecar] parent app exited (orphaned) — shutting down');
-      void gracefulShutdown();
-    }
-  }, 2000).unref();
+  if (process.env.GRAPHNOSIS_HTTP_UI !== '1') {
+    setInterval(() => {
+      if (process.ppid === 1 && bootPpid !== 1) {
+        console.error('[graphnosis-sidecar] parent app exited (orphaned) — shutting down');
+        void gracefulShutdown();
+      }
+    }, 2000).unref();
+  }
 
   // Periodic allocator scavenge — but ONLY when the footprint is actually
   // elevated. Bun.gc(true) is a sync stop-the-world GC + bmalloc scavenge that

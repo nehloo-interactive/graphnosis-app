@@ -49,23 +49,44 @@ export type GhampusHistLine = {
   fragmentReview?: GhampusFragmentReviewPayload;
 };
 
+export const ghampusReplyContextSchema = z.object({
+  threadId: z.string().min(1),
+  parentId: z.string().min(1),
+  rootText: z.string().min(1),
+  parentText: z.string().min(1),
+  threadReplies: z.array(z.object({
+    kind: z.enum(['user', 'ghampus']),
+    text: z.string(),
+    messageId: z.string().optional(),
+  })).max(40).default([]),
+  mentions: z.array(z.string()).max(12).optional(),
+});
+
+export type GhampusReplyContextPayload = z.infer<typeof ghampusReplyContextSchema>;
+
 export function parseGhampusSendPayload(params: unknown): {
   text: string;
   turnId?: string;
+  messageId?: string;
   selectionContext?: GhampusSelectionContext;
   fragmentReview?: GhampusFragmentReviewPayload;
+  replyContext?: GhampusReplyContextPayload;
 } {
   const parsed = z.object({
     text: z.string(),
     turnId: z.string().optional(),
+    messageId: z.string().optional(),
     selectionContext: ghampusSelectionContextSchema.optional(),
     fragmentReview: ghampusFragmentReviewPayloadSchema.optional(),
+    replyContext: ghampusReplyContextSchema.optional(),
   }).parse(params ?? {});
   return {
     text: parsed.text,
     ...(parsed.turnId !== undefined ? { turnId: parsed.turnId } : {}),
+    ...(parsed.messageId !== undefined ? { messageId: parsed.messageId } : {}),
     ...(parsed.selectionContext !== undefined ? { selectionContext: parsed.selectionContext } : {}),
     ...(parsed.fragmentReview !== undefined ? { fragmentReview: parsed.fragmentReview } : {}),
+    ...(parsed.replyContext !== undefined ? { replyContext: parsed.replyContext } : {}),
   };
 }
 

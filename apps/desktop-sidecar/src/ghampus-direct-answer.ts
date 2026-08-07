@@ -69,10 +69,13 @@ const OLLAMA_DEFAULT_URL = 'http://127.0.0.1:11434';
 
 /** Live LLM/Ollama status — same facts as ipc llm:status (no hallucination). */
 export async function fetchGhampusLlmStatus(host: GraphnosisHost): Promise<GhampusLlmStatus> {
+  const settings = host.getSettings();
+  const backend = activeBackend('ollama');
+  const tagsUrl = `${(backend.baseUrl || OLLAMA_DEFAULT_URL).replace(/\/$/, '')}/api/tags`;
   let ollamaReachable = false;
   let installedModels: string[] = [];
   try {
-    const res = await fetch(`${OLLAMA_DEFAULT_URL}/api/tags`, {
+    const res = await fetch(tagsUrl, {
       signal: AbortSignal.timeout(2000),
     });
     if (res.ok) {
@@ -80,9 +83,7 @@ export async function fetchGhampusLlmStatus(host: GraphnosisHost): Promise<Ghamp
       const data = await res.json() as { models?: Array<{ name: string }> };
       installedModels = (data.models ?? []).map((m) => m.name);
     }
-  } catch { /* Ollama not running */ }
-  const settings = host.getSettings();
-  const backend = activeBackend('ollama');
+  } catch { /* backend not running */ }
   return {
     enabled: settings.ai.llmEnabled === true,
     activeModel: settings.ai?.llmModel ?? null,

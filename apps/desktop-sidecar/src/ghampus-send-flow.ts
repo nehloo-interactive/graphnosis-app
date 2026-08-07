@@ -430,10 +430,13 @@ async function runGhampusSkillTrain(
       ? mergeSkillImprovementDelta(skillBody, improvementDelta)
       : skillBody;
 
+    // User explicitly asked Ghampus to retrain — that IS the approval signal.
+    // MCP admission still requires approved:true before any write.
     const trainArgs: Record<string, unknown> = {
       skill: trainBody,
       skill_name: displayLabel,
       save: true,
+      approved: true,
     };
     if (parsed.targetEngram) trainArgs.target_engram = parsed.targetEngram;
 
@@ -496,19 +499,26 @@ export async function runGhampusSend(
   params: unknown,
   state: GhampusSendState,
 ): Promise<{ ok: true }> {
-  const { text, turnId, selectionContext, fragmentReview } = parseGhampusSendPayload(params);
+  const { text, turnId, messageId, selectionContext, fragmentReview, replyContext } = parseGhampusSendPayload(params);
   const llm = deps.llm?.() ?? null;
   const cortexDirForHistory = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
   const turnStarted = Date.now();
   const traceTurnId = turnId ?? `turn-${turnStarted}`;
+  const userMessageId = messageId ?? `user-${traceTurnId}`;
 
   const userMsg: Record<string, unknown> = {
     kind: 'user',
     text,
     ts: Date.now(),
     turnId: traceTurnId,
+    messageId: userMessageId,
     ...(selectionContext ? { selectionContext } : {}),
     ...(fragmentReview ? { fragmentReview } : {}),
+    ...(replyContext ? {
+      threadId: replyContext.threadId,
+      parentId: replyContext.parentId,
+      ...(replyContext.mentions?.length ? { mentions: replyContext.mentions } : {}),
+    } : {}),
   };
   if (cortexDirForHistory) {
     await appendGhampusHistoryMessage(cortexDirForHistory, userMsg);
@@ -528,6 +538,12 @@ export async function runGhampusSend(
       text: 'Local LLM is not available. Enable Ollama in **Settings → Models**.',
       ts: Date.now(),
       turnId: traceTurnId,
+      messageId: `ghampus-${traceTurnId}`,
+      citations: [{ kind: 'other', label: 'Local LLM offline', detail: 'Enable in Settings → Models' }],
+      ...(replyContext ? {
+        threadId: replyContext.threadId,
+        parentId: userMessageId,
+      } : {}),
     };
     if (cortexDirForHistory) {
       await appendGhampusHistoryMessage(cortexDirForHistory, noLlmMsg);
@@ -634,12 +650,21 @@ export async function runGhampusSend(
     ) => {
       finishPlanning();
       const trace = buildTraceSnapshot();
+      const { citationsFromTraceSteps } = await import('./ghampus-thread-context.js');
+      const citations = citationsFromTraceSteps(trace?.steps ?? []);
       const responseMsg = {
         kind: 'ghampus',
         text: responseText,
         ts: Date.now(),
         turnId: traceTurnId,
+        messageId: `ghampus-${traceTurnId}`,
         ...(trace ? { trace } : {}),
+        ...(citations.length ? { citations } : {}),
+        // Thread replies stay in the sidebar lane.
+        ...(replyContext ? {
+          threadId: replyContext.threadId,
+          parentId: userMessageId,
+        } : {}),
         // Routing-legibility chip (feature #41) — present only when the turn was
         // dispatched to a domain Agempus's skill. Additive + optional.
         ...(opts?.handledBy ? { handledBy: opts.handledBy } : {}),
@@ -1325,6 +1350,28 @@ export async function runGhampusSend(
           return;
         }
         await emitGhampusMsg(`Unknown command \`/${cmd}\`. Try \`/help\`.`);
+        return;
+      }
+
+      // ── Sidebar thread reply (parent + thread only — not full chat) ─────
+      if (replyContext) {
+        emitTrace({ stepId: stableTraceStepId('thread-reply'), status: 'running', label: 'Answering in thread' });
+        const {
+          buildThreadScopedSystemPrompt,
+          buildThreadScopedUserPrompt,
+        } = await import('./ghampus-thread-context.js');
+        const system = buildThreadScopedSystemPrompt();
+        const userPrompt = buildThreadScopedUserPrompt(text, replyContext);
+        const threadSynthId = stableTraceStepId('thread-synth');
+        emitTrace({ stepId: threadSynthId, status: 'running', label: 'Synthesizing thread reply' });
+        let answer = await llmCompleteBounded(llm, { system, user: userPrompt, signal: turnSignal }).catch(() => null);
+        throwIfCanceled();
+        answer = sanitizeResponse(answer ?? '');
+        if (!answer.trim()) {
+          answer = "I couldn't answer from this thread alone — try adding more detail, or ask in the main chat.";
+        }
+        emitTrace({ stepId: threadSynthId, status: 'ok', label: 'Synthesizing thread reply' });
+        await emitGhampusMsg(answer);
         return;
       }
 

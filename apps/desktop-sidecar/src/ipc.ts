@@ -56,6 +56,11 @@ import {
   promoteSkillSourcePreservingNodes,
   moveSourcePreservingSkillNodes,
 } from './skill-trainer.js';
+import {
+  buildSkillMetadataComment,
+  normalizeSkillRole,
+  parseSkillMetadata,
+} from './skill-role.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { CorrectionDiff } from './correction.js';
 import type { CorrectionOutcome } from './graphnosis-impl.js';
@@ -1234,6 +1239,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         };
       }
       await deps.host.setSettings((current) => ({ ai: { ...current.ai, disabledMcpTools: args.tools } }));
+      // Visible tool set changed — nudge clients that honor listChanged so
+      // they re-run tools/list without a Restart / Reload Window.
+      await mcpRegistry.notifyToolListChanged();
       return { ok: true };
     }
     case 'ai.getDisabledTools': {
@@ -2432,6 +2440,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       await deps.host.setGraphExecutionAutonomy(args.graphId, args.level);
       return { ok: true };
     }
+    case 'graphs.setEvolveAutonomy': {
+      // Per-Agempu Evolve dial — Praxis / auto-retrain promotion policy.
+      // Distinct from execution autonomy (L0–L3). null → preview-first default.
+      const args = z.object({
+        graphId: z.string(),
+        level: z.enum(['preview-first', 'notify', 'auto-accept']).nullable(),
+      }).parse(params);
+      await deps.host.setGraphEvolveAutonomy(args.graphId, args.level);
+      return { ok: true };
+    }
     case 'skills.setSkillAutonomy': {
       // Per-SKILL autonomy dial. `level: null` clears the override → the skill
       // inherits the engram default (which falls back to the global level). The
@@ -3021,6 +3039,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // direct-spawn clients). The App polls this for its inspector panel.
       return { connections: mcpRegistry.list() };
     }
+
+    case 'cortex:capabilities':
+    case 'cortex.capabilities': {
+      // Live host capability + skew record for thin clients (laptop → Mini).
+      // Not durable memory — process truth about this running sidecar.
+      const { getSidecarCapabilitiesReport } = await import('./sidecar-capabilities.js');
+      return getSidecarCapabilitiesReport();
+    }
+
     case 'settings.get':
     case 'settings:get': {
       return deps.host.getSettings();
@@ -5692,11 +5719,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         threadTurnCount: z.number().optional(),
         hoursSinceActive: z.number().optional(),
         pinnedEngramGraphId: z.string().nullable().optional(),
+        /** Default true — typing path must stay cheap. Pass false for enrich. */
+        light: z.boolean().optional(),
       }).parse(params ?? {});
+      const t0 = Date.now();
       const { buildGhampusComposeAssist } = await import('./ghampus-compose-assist.js');
       const licenseToken = await getEffectiveLicenseToken(deps);
       const proFeatures = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-      return buildGhampusComposeAssist(
+      const light = args.light !== false;
+      const result = await buildGhampusComposeAssist(
         {
           host: deps.host,
           brainEngine: deps.brainEngine ?? null,
@@ -5711,7 +5742,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           ...(args.hoursSinceActive !== undefined ? { hoursSinceActive: args.hoursSinceActive } : {}),
           ...(args.pinnedEngramGraphId !== undefined ? { pinnedEngramGraphId: args.pinnedEngramGraphId } : {}),
         },
+        { light },
       );
+      console.log(
+        `[ghampus-compose] assist ${Date.now() - t0}ms light=${light} intent=${result.primaryIntent} chars=${args.text.length}`,
+      );
+      return result;
     }
 
     case 'ghampus:input:assist-refine': {
@@ -5723,6 +5759,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         hoursSinceActive: z.number().optional(),
         pinnedEngramGraphId: z.string().nullable().optional(),
       }).parse(params ?? {});
+      const t0 = Date.now();
       const { buildGhampusComposeAssist, detectComposePrimaryIntent } = await import('./ghampus-compose-assist.js');
       const {
         needsComposeLlmRefine,
@@ -5749,6 +5786,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }
       const llm = deps.llm?.() ?? null;
       const refine = await refineComposeIntentWithLlm({ host: deps.host, llm }, args.text);
+      console.log(
+        `[ghampus-compose] assist-refine ${Date.now() - t0}ms refined=${refine.refined} llm=${Boolean(llm)} chars=${args.text.length}`,
+      );
       if (!refine.refined || !refine.fields) {
         return { refined: false as const, llmConfidence: refine.llmConfidence ?? null };
       }
@@ -5831,6 +5871,22 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // re-reads the newly active session rather than serving the old one.
       if (result.ok) invalidateGhampusHistoryCache();
       return result;
+    }
+
+    case 'ghampus:chats:pin': {
+      const args = z.object({ sessionId: z.string().min(1) }).parse(params ?? {});
+      const { pinGhampusChat } = await import('./ghampus-chat-list.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { ok: false as const, pins: [] as string[] };
+      return pinGhampusChat(cortexDir, args.sessionId);
+    }
+
+    case 'ghampus:chats:unpin': {
+      const args = z.object({ sessionId: z.string().min(1) }).parse(params ?? {});
+      const { unpinGhampusChat } = await import('./ghampus-chat-list.js');
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { ok: false as const, pins: [] as string[] };
+      return unpinGhampusChat(cortexDir, args.sessionId);
     }
 
     case 'ghampus:inbox:list': {
@@ -5983,16 +6039,59 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         return { emitted: false };
       }
 
-      const llm = deps.llm?.() ?? null;
-      let text = await buildAwayDigestText(notifications, totalAvailable, llm);
+      // Optional sweetener: Local LLM one-liner over counts only — never when
+      // the master switch is off or Ollama isn't reachable. Digest body itself
+      // is always free / templated (no Pro, no cloud charge).
+      const { isLocalLlmReadyForCompanion } = await import('./ghampus-llm-companion.js');
+      const llmReady = await isLocalLlmReadyForCompanion(deps.host);
+      const llm = llmReady ? (deps.llm?.() ?? null) : null;
       const brain = deps.brainEngine?.getAttentionCounts();
       const corrections = deps.pendingDiffs.size;
-      if (brain && (brain.contradictions > 0 || brain.duplicates > 0 || corrections > 0)) {
-        text += `\n\n**Memory Integrity:** ${corrections} correction(s), ${brain.contradictions} contradiction(s), ${brain.duplicates} duplicate pair(s) awaiting review — open Foresight → Memory Integrity.`;
+      const contradictions = brain?.contradictions ?? 0;
+      const duplicates = brain?.duplicates ?? 0;
+      let suggestPreviewSkill: string | null = null;
+      if (contradictions > 0) suggestPreviewSkill = 'consistency-audit';
+      else if (duplicates > 0 || corrections > 0) suggestPreviewSkill = 'cortex-gardening';
+
+      const text = await buildAwayDigestText(notifications, totalAvailable, llm, {
+        corrections,
+        contradictions,
+        duplicates,
+        suggestPreviewSkill,
+      });
+
+      const digestTs = Date.now();
+      const digestMsg = {
+        kind: 'ghampus',
+        text,
+        ts: digestTs,
+        messageId: `digest-${digestTs}`,
+        citations: [
+          { kind: 'other', label: 'Away digest', detail: 'Inbound activity since your last visit' },
+        ],
+      };
+      await appendGhampusHistoryMessage(cortexDir, digestMsg);
+      try {
+        deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: digestMsg });
+      } catch { /* non-fatal — opener path reloads history anyway */ }
+
+      // Kick safe auto-preview after digest lands (read-only SOP; cooldown inside).
+      if (suggestPreviewSkill && deps.cortexDir) {
+        try {
+          const { runSafeSkillPreview } = await import('./ghampus-safe-preview.js');
+          void runSafeSkillPreview(
+            {
+              host: deps.host,
+              skillTrainer: deps.skillTrainer ?? null,
+              broadcastRaw: deps.broadcastRaw,
+              cortexDir: deps.cortexDir,
+            },
+            suggestPreviewSkill,
+            'From your away digest — memory integrity needs attention.',
+          );
+        } catch { /* non-fatal */ }
       }
 
-      const digestMsg = { kind: 'ghampus', text, ts: Date.now() };
-      await appendGhampusHistoryMessage(cortexDir, digestMsg);
       return { emitted: true };
     }
     case 'ghampus:send': {
@@ -7008,6 +7107,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         }).optional(),
         // Opt-in for the local-LLM rewrite path. Default false → chunk-and-save.
         useLlmRewrite: z.boolean().optional(),
+        /** Per-skill Role focus line (max 40). Omitted on retrain preserves prior. */
+        role: z.string().optional(),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return null;
       const licenseToken = await getEffectiveLicenseToken(deps);
@@ -7062,13 +7163,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           },
         });
       };
+      // Desktop IPC is the human surface — honor requested save (default true
+      // for backward compat with older UI callers that omit the field).
+      const humanSave = args.save !== false;
       const result = await deps.skillTrainer.trainSkill({
         skill: args.skill,
         graphId: args.graphId,
         ...(args.skillName !== undefined ? { skillName: args.skillName } : {}),
         ...(args.focusGraphIds != null ? { focusGraphIds: args.focusGraphIds } : {}),
         ...(args.modelTarget !== undefined ? { modelTarget: args.modelTarget } : {}),
-        ...(args.save !== undefined ? { save: args.save } : {}),
+        save: humanSave,
         ...(args.recallBreadth != null ? { recallBreadth: args.recallBreadth } : {}),
         // Zod parses optional `goals` fields as `string | undefined`. The
         // TrainSkillInput shape (with `exactOptionalPropertyTypes`) wants
@@ -7077,6 +7181,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // the compile-time types.
         ...(args.goals !== undefined ? { goals: args.goals as import('./gsk-format.js').SkillGoals } : {}),
         ...(args.useLlmRewrite !== undefined ? { useLlmRewrite: args.useLlmRewrite } : {}),
+        ...(args.role !== undefined ? { role: args.role } : {}),
         onChunk,
         onStatus,
       });
@@ -7286,20 +7391,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     }
 
     case 'skill:acceptProposal': {
-      // Promote a pending retrain proposal: ingest its trained text as the
-      // new current version of the skill, then clear the pending entry.
-      // Same Pro gate as set-config — only Pro users can have a queue,
-      // so accepting one without a license shouldn't be possible, but
-      // we re-check defensively.
+      // Promote a pending proposal from the Train this? inbox:
+      //   - kind:'retrain' (default) → in-place trainSkill with existing label
+      //   - kind:'new' / draft:* key → create a fresh skill
+      // Also returns structuredDiff so the UI can show field-level changes.
       const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
       const licenseToken = await getEffectiveLicenseToken(deps);
       const denial = checkFeatureGate(licenseToken, 'skill-training', deps.licenseValidator, {
         subject: 'Accepting a retrain proposal',
       });
       if (denial) {
-        // `reason` kept as 'upgrade_required' — the desktop switches on it.
-        // The message is additive: this path previously refused with no words
-        // at all, so the UI had nothing truthful to show.
         return {
           ok: false,
           reason: 'upgrade_required',
@@ -7313,27 +7414,66 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const proposal = pending[args.sourceId];
       if (!proposal) return { ok: false, reason: 'not_found' };
       if (!deps.skillTrainer) return { ok: false, reason: 'trainer_unavailable' };
-      // Re-run trainSkill with save=true; this writes the proposal's text
-      // as a fresh version via the normal ingest path so vitality, history,
-      // and supersession all behave normally.
+      const isNew = proposal.kind === 'new' || args.sourceId.startsWith('draft:');
       try {
-        const dateStr = new Date().toISOString().slice(0, 10);
-        const label = `auto-praxis review (${dateStr})`;
+        let skillName: string;
+        let currentText = '';
+        if (isNew) {
+          skillName = (proposal.proposedLabel ?? 'Untitled skill').trim() || 'Untitled skill';
+        } else {
+          const sourceId = proposal.sourceId ?? args.sourceId;
+          const detail = deps.skillTrainer.getSkill(proposal.graphId, sourceId);
+          skillName = detail?.label?.replace(/^skill:\d+:/, '').replace(/\s*\(trained \d{4}-\d{2}-\d{2}\)\s*$/, '').trim()
+            || sourceId;
+          currentText = detail?.text ?? '';
+        }
+        const { diffSkillProposal } = await import('./skill-proposal-diff.js');
+        const structuredDiff = diffSkillProposal(currentText, proposal.trained);
+
         await deps.skillTrainer.trainSkill({
           skill: proposal.trained,
           graphId: proposal.graphId,
-          skillName: label,
+          skillName,
           save: true,
-          addedBy: 'graphnosis-autopraxis-accept',
+          addedBy: isNew ? 'graphnosis-train-accept-new' : 'graphnosis-autopraxis-accept',
         });
-        // Remove from pending.
         const next = { ...pending };
         delete next[args.sourceId];
         await deps.host.setSettings({ skillRetrainPending: next });
-        return { ok: true };
+        const notifs = (deps.host.getSettings().skillRetrainNotifications ?? [])
+          .filter((id) => id !== args.sourceId);
+        if (notifs.length !== (deps.host.getSettings().skillRetrainNotifications ?? []).length) {
+          await deps.host.setSettings({ skillRetrainNotifications: notifs });
+        }
+        return { ok: true, kind: isNew ? 'new' : 'retrain', structuredDiff };
       } catch (e) {
         return { ok: false, reason: 'accept_failed', message: e instanceof Error ? e.message : String(e) };
       }
+    }
+
+    case 'skill:diffProposal': {
+      // Structured field diff for the Accept card — does not write.
+      const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
+      const proposal = (deps.host.getSettings().skillRetrainPending ?? {})[args.sourceId];
+      if (!proposal) return { ok: false, reason: 'not_found' };
+      let currentText = '';
+      const isNew = proposal.kind === 'new' || args.sourceId.startsWith('draft:');
+      if (!isNew && deps.skillTrainer) {
+        const sourceId = proposal.sourceId ?? args.sourceId;
+        currentText = deps.skillTrainer.getSkill(proposal.graphId, sourceId)?.text ?? '';
+      }
+      const { diffSkillProposal, formatStructuredDiffForUi } = await import('./skill-proposal-diff.js');
+      const structuredDiff = diffSkillProposal(currentText, proposal.trained);
+      return {
+        ok: true,
+        kind: isNew ? 'new' : 'retrain',
+        structuredDiff,
+        summaryText: formatStructuredDiffForUi(structuredDiff),
+        proposedLabel: proposal.proposedLabel ?? null,
+        triggerReason: proposal.triggerReason,
+        trained: proposal.trained,
+        graphId: proposal.graphId,
+      };
     }
 
     case 'skill:rejectProposal': {
@@ -7359,6 +7499,31 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const settings = deps.host.getSettings();
       const map = settings.skillAutoRetrain ?? {};
       return map[args.sourceId] ?? null;
+    }
+
+    case 'skill:setRole': {
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        /** Focus line (max 40). Empty string or null clears the Role. */
+        role: z.string().nullable(),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return { ok: false, reason: 'trainer_unavailable' };
+      const result = await deps.skillTrainer.setSkillRole(args.graphId, args.sourceId, args.role);
+      return { ok: true, ...result };
+    }
+
+    case 'skill:setRoles': {
+      const args = z.object({
+        items: z.array(z.object({
+          graphId: z.string().min(1),
+          sourceId: z.string().min(1),
+          role: z.string(),
+        })).min(1),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return { ok: false, reason: 'trainer_unavailable' };
+      const result = await deps.skillTrainer.setSkillRoles(args.items);
+      return { ok: true, ...result };
     }
 
     case 'skill:setRetrainConfig': {
@@ -7412,7 +7577,27 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const clean = Object.fromEntries(
           Object.entries(args.config).filter(([, v]) => v !== undefined),
         ) as typeof args.config;
-        next[args.sourceId] = { ...clean, enabledAt } as typeof next[string];
+
+        // Meta/dispatch skills: never allow Praxis auto-accept (procedural authority).
+        // Also cap by the engram Evolve dial (per-Agempu ceiling).
+        let autonomyLevel = clean.autonomyLevel ?? 'preview-first';
+        try {
+          const { isMetaSkillLabel } = await import('./skill-autonomy.js');
+          const { resolveEvolveAutonomyLevel, capPraxisByEvolve } = await import('@graphnosis-app/core/settings');
+          const detail = deps.skillTrainer?.getSkill(clean.graphId, args.sourceId);
+          const label = detail?.label ?? args.sourceId;
+          if (isMetaSkillLabel(label) && autonomyLevel === 'auto-accept') {
+            autonomyLevel = 'preview-first';
+          }
+          const engramEvolve = resolveEvolveAutonomyLevel(deps.host.getGraphMetadata(clean.graphId));
+          autonomyLevel = capPraxisByEvolve(autonomyLevel, engramEvolve);
+        } catch { /* non-fatal — keep requested level */ }
+
+        next[args.sourceId] = {
+          ...clean,
+          autonomyLevel,
+          enabledAt,
+        } as typeof next[string];
       }
       await deps.host.setSettings({ skillAutoRetrain: next });
       return { ok: true };
@@ -7790,6 +7975,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     influentialNodeCount: z.number().int().min(0).optional(),
     recallBreadth: z.number().int().min(0).max(100).nullable().optional(),
     addedBy: z.string().optional(),
+    /** Per-skill Role focus line. Omitted on retrain preserves prior. */
+    role: z.string().optional(),
     goals: z.object({
       successLooksLike: z.string().default(''),
       outOfScope: z.string().default(''),
@@ -7806,35 +7993,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
   // Phase 3b — section walker. Plain text in storage; export-time formatter
   // is the only place that emits markdown decoration.
-  const metadataComment = [
-    `<!-- Graphnosis skill training metadata`,
-    `     trainedAt: ${new Date().toISOString()}`,
-    `     mode: memory-augmented`,
-    `     influentialNodes: ${args.influentialNodeCount ?? 0}`,
-    `     recallBreadth: ${args.recallBreadth ?? 50}`,
-    `-->`,
-  ].join('\n');
-
   // Split the assembled text on blank-line boundaries so each paragraph
   // becomes its own chunk. The free-tier UI assembles a single string here
   // — `args.text` may contain both the original skill and the recalled
   // memories joined together. We don't try to re-classify them: every
   // paragraph lands as role 'body' (the editor doesn't care).
   const bodyParagraphs = args.text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
-
-  const sections: Array<{ role: string; text: string }> = [];
-  sections.push({ role: 'metadata', text: metadataComment });
-  sections.push({ role: 'title', text: label });
-  for (const p of bodyParagraphs) sections.push({ role: 'body', text: p });
-  if (args.goals?.successLooksLike) {
-    sections.push({ role: 'goal-success', text: `Success: ${args.goals.successLooksLike}` });
-  }
-  if (args.goals?.outOfScope) {
-    sections.push({ role: 'goal-scope', text: `Out of scope: ${args.goals.outOfScope}` });
-  }
-  if (args.goals?.expectedOnCompletion) {
-    sections.push({ role: 'goal-done', text: `On completion: ${args.goals.expectedOnCompletion}` });
-  }
 
   // In-place rewrite path — mirrors trainSkill's Phase 3 logic so the free
   // memory-augmented save and the Pro train end up with identical on-disk
@@ -7858,6 +8022,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     .sort((a, b) => b.ingestedAt - a.ingestedAt);
   const existing = matching[0];
 
+  // Role: explicit arg wins (empty clears); otherwise preserve prior metadata.
+  let fallbackRole: string | undefined =
+    args.role !== undefined ? normalizeSkillRole(args.role) : undefined;
+
   let skillId: string;
   /** Legacy duplicate sources the engram DECLINED to release (see the loop below). */
   const duplicatesNotRemoved: Array<{ sourceId: string; refusedNodeIds?: string[]; error?: string }> = [];
@@ -7875,6 +8043,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const content = deps.host.getFullNodeContent(args.graphId, nid) ?? '';
       if (!content) continue;
       liveNodes.push({ content });
+      if (args.role === undefined && content.trimStart().startsWith('<!--')) {
+        const parsed = parseSkillMetadata(content);
+        if (parsed.role !== undefined) fallbackRole = parsed.role;
+      }
     }
     const ts = Date.now();
     await deps.host.skillSnapshots.append(args.graphId, {
@@ -7915,9 +8087,30 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       triggeredBy: 'ipc:skill:saveFallback:in-place',
       reason: 'pre-retrain clear (snapshot saved)',
     });
-    const newRef = `skill:${ts}:${baseName}`;
     skillId = existing.sourceId;
 
+    const metadataComment = buildSkillMetadataComment({
+      trainedAt: new Date().toISOString(),
+      mode: 'memory-augmented',
+      influentialNodes: args.influentialNodeCount ?? 0,
+      recallBreadth: args.recallBreadth ?? 50,
+      ...(fallbackRole !== undefined ? { role: fallbackRole } : {}),
+    });
+    const sections: Array<{ role: string; text: string }> = [];
+    sections.push({ role: 'metadata', text: metadataComment });
+    sections.push({ role: 'title', text: label });
+    for (const p of bodyParagraphs) sections.push({ role: 'body', text: p });
+    if (args.goals?.successLooksLike) {
+      sections.push({ role: 'goal-success', text: `Success: ${args.goals.successLooksLike}` });
+    }
+    if (args.goals?.outOfScope) {
+      sections.push({ role: 'goal-scope', text: `Out of scope: ${args.goals.outOfScope}` });
+    }
+    if (args.goals?.expectedOnCompletion) {
+      sections.push({ role: 'goal-done', text: `On completion: ${args.goals.expectedOnCompletion}` });
+    }
+
+    const newRef = `skill:${ts}:${baseName}`;
     // Insert every section into the cleared source. The metadata-comment
     // node leads so the editor's hidden-audit-row treatment matches the
     // Pro path.
@@ -7936,6 +8129,26 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
   } else {
     // First-time save for this skill name. Same as the legacy path: seed
     // the source via ingestClip(metadataComment) and append the rest.
+    const metadataComment = buildSkillMetadataComment({
+      trainedAt: new Date().toISOString(),
+      mode: 'memory-augmented',
+      influentialNodes: args.influentialNodeCount ?? 0,
+      recallBreadth: args.recallBreadth ?? 50,
+      ...(fallbackRole !== undefined ? { role: fallbackRole } : {}),
+    });
+    const sections: Array<{ role: string; text: string }> = [];
+    sections.push({ role: 'metadata', text: metadataComment });
+    sections.push({ role: 'title', text: label });
+    for (const p of bodyParagraphs) sections.push({ role: 'body', text: p });
+    if (args.goals?.successLooksLike) {
+      sections.push({ role: 'goal-success', text: `Success: ${args.goals.successLooksLike}` });
+    }
+    if (args.goals?.outOfScope) {
+      sections.push({ role: 'goal-scope', text: `Out of scope: ${args.goals.outOfScope}` });
+    }
+    if (args.goals?.expectedOnCompletion) {
+      sections.push({ role: 'goal-done', text: `On completion: ${args.goals.expectedOnCompletion}` });
+    }
     const first = sections.shift()!;
     const rec = await ingestClip(
       deps.host,

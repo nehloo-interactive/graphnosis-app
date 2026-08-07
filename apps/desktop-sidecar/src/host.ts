@@ -3498,6 +3498,22 @@ export class GraphnosisHost {
     await this.replaceGraphMetadata(graphId, updated);
   }
 
+  /** Per-Agempu Evolve dial (Praxis promotion policy). null clears → preview-first default. */
+  async setGraphEvolveAutonomy(
+    graphId: GraphId,
+    level: settingsMod.EvolveAutonomyLevel | null,
+  ): Promise<void> {
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const updated: settingsMod.GraphMetadata = { ...existing };
+    if (level === null) delete updated.evolveAutonomyLevel;
+    else updated.evolveAutonomyLevel = level;
+    await this.replaceGraphMetadata(graphId, updated);
+  }
+
   /**
    * Set (or clear) a single SKILL's per-skill execution-autonomy override,
    * keyed by its stable `sourceId` (stable across in-place retrain). The map

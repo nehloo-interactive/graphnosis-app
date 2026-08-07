@@ -223,12 +223,53 @@ export function rankEngramIdsByRecentActivity(host: GraphnosisHost): string[] {
     .map(([id]) => id);
 }
 
+/** Source walks are expensive — cache chip ranking across keystroke assists. */
+let rankedChipCache: { at: number; ids: string[] } | null = null;
+const RANKED_CHIP_CACHE_MS = 30_000;
+
+function rankedChipEngramIdsCached(host: GraphnosisHost): string[] {
+  const now = Date.now();
+  if (rankedChipCache && now - rankedChipCache.at < RANKED_CHIP_CACHE_MS) {
+    return rankedChipCache.ids;
+  }
+  const ids = rankEngramIdsByRecentActivity(host);
+  rankedChipCache = { at: now, ids };
+  return ids;
+}
+
+/** Cheap chip order for typing path — no listSources / recent-saves scan. */
+function cheapChipEngramIds(
+  all: ComposeEngramOption[],
+  pinnedGraphId?: string | null,
+): string[] {
+  const seen = new Set<string>();
+  const chips: string[] = [];
+  if (pinnedGraphId && all.some((e) => e.graphId === pinnedGraphId)) {
+    chips.push(pinnedGraphId);
+    seen.add(pinnedGraphId);
+  }
+  for (const e of [...all].sort((a, b) => {
+    const ap = a.tier === 'personal' || a.graphId === 'personal';
+    const bp = b.tier === 'personal' || b.graphId === 'personal';
+    if (ap !== bp) return ap ? -1 : 1;
+    return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
+  })) {
+    if (seen.has(e.graphId)) continue;
+    seen.add(e.graphId);
+    chips.push(e.graphId);
+    if (chips.length >= CHIP_LIMIT) break;
+  }
+  return chips;
+}
+
 function buildChipEngramIds(
   host: GraphnosisHost,
   all: ComposeEngramOption[],
   pinnedGraphId?: string | null,
+  light = false,
 ): string[] {
-  const ranked = rankEngramIdsByRecentActivity(host);
+  if (light) return cheapChipEngramIds(all, pinnedGraphId);
+  const ranked = rankedChipEngramIdsCached(host);
   const seen = new Set<string>();
   const chips: string[] = [];
 
@@ -606,8 +647,15 @@ export async function buildGhampusComposeAssist(
     intentOverride?: ComposeIntentFields;
     intentSource?: 'heuristic' | 'llm';
     llmConfidence?: number | null;
+    /**
+     * Typing-path assist: heuristics + chips only. Skips searchNodes,
+     * listSources ranking, and listNodes vitality probes so keystroke
+     * assists stay under a few ms even on large / remote cortices.
+     */
+    light?: boolean;
   },
 ): Promise<GhampusComposeAssist> {
+  const light = opts?.light === true;
   const intent = opts?.intentOverride ?? detectComposePrimaryIntent(text);
   const allEngrams = listAllEngrams(deps.host);
   const engramEntries = allEngrams.map((e) => ({
@@ -625,7 +673,7 @@ export async function buildGhampusComposeAssist(
 
   const resolvedSelected = resolveSelectedEngramFromHint(selectedEngramHint, allEngrams);
   const selectedEngramId = resolvedSelected?.graphId ?? null;
-  const chipEngramIds = buildChipEngramIds(deps.host, allEngrams, selectedEngramId);
+  const chipEngramIds = buildChipEngramIds(deps.host, allEngrams, selectedEngramId, light);
   const saveContent = intent.saveIntent ? extractSaveContent(text) : '';
   const createEngramOffer = buildCreateEngramOffer(
     selectedEngramHint,
@@ -637,7 +685,7 @@ export async function buildGhampusComposeAssist(
     : null;
 
   let duplicateWarning: GhampusComposeAssist['duplicateWarning'] = null;
-  if (intent.saveIntent && saveContent.length >= 24) {
+  if (!light && intent.saveIntent && saveContent.length >= 24) {
     duplicateWarning = await checkDuplicateWarning(deps.host, saveContent, intent.selectedEngramHint);
   }
 
@@ -699,12 +747,12 @@ export async function buildGhampusComposeAssist(
   }
 
   let recallPrefetchResult: GhampusComposeAssist['recallPrefetch'] = null;
-  if (intent.primaryIntent === 'recall' && text.trim().length >= 10) {
+  if (!light && intent.primaryIntent === 'recall' && text.trim().length >= 10) {
     recallPrefetchResult = await recallPrefetch(deps.host, text);
   }
 
   const atQuery = text.match(/@([\w\s.-]{0,40})$/);
-  const sourceMentions = atQuery?.[1] != null
+  const sourceMentions = !light && atQuery?.[1] != null
     ? filterSourceMentions(deps.host, atQuery[1])
     : [];
 
@@ -721,22 +769,24 @@ export async function buildGhampusComposeAssist(
   }
 
   let vitalityNudge: GhampusComposeAssist['vitalityNudge'] = null;
-  const targetId = intent.selectedEngramHint
-    ? resolveEngramFromUserHint(intent.selectedEngramHint, allEngrams.map((e) => ({
-      graphId: e.graphId,
-      displayName: e.displayName,
-      tier: e.tier,
-    })))?.graphId
-    : chipEngramIds[0];
-  if (intent.saveIntent && targetId) {
-    const nodes = deps.host.listNodes(targetId);
-    if (nodes.length === 0) {
-      const meta = allEngrams.find((e) => e.graphId === targetId);
-      vitalityNudge = {
-        engramId: targetId,
-        displayName: meta?.displayName ?? targetId,
-        message: 'This engram is empty — good place for a seed note.',
-      };
+  if (!light) {
+    const targetId = intent.selectedEngramHint
+      ? resolveEngramFromUserHint(intent.selectedEngramHint, allEngrams.map((e) => ({
+        graphId: e.graphId,
+        displayName: e.displayName,
+        tier: e.tier,
+      })))?.graphId
+      : chipEngramIds[0];
+    if (intent.saveIntent && targetId) {
+      const nodes = deps.host.listNodes(targetId);
+      if (nodes.length === 0) {
+        const meta = allEngrams.find((e) => e.graphId === targetId);
+        vitalityNudge = {
+          engramId: targetId,
+          displayName: meta?.displayName ?? targetId,
+          message: 'This engram is empty — good place for a seed note.',
+        };
+      }
     }
   }
 

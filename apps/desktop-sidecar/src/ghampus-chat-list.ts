@@ -35,6 +35,8 @@ export interface GhampusChatSummary {
   /** Epoch ms of the last turn, or the file mtime for a thread with no parsable turns. */
   updatedAt: number;
   active: boolean;
+  /** True when the user pinned this thread; pins render in a separate Pins section. */
+  pinned: boolean;
 }
 
 interface TitleCacheEntry {
@@ -49,8 +51,36 @@ function titleCachePath(cortexDir: string): string {
   return join(cortexDir, 'ghampus', 'session-titles.json');
 }
 
+function pinsPath(cortexDir: string): string {
+  return join(cortexDir, 'ghampus', 'session-pins.json');
+}
+
 function sessionsDir(cortexDir: string): string {
   return join(cortexDir, 'ghampus', 'sessions');
+}
+
+/**
+ * Ordered pin list (newest pin first). Missing / corrupt file → empty.
+ * Unknown session ids are filtered out by the caller once the live set is known.
+ */
+async function readPins(cortexDir: string): Promise<string[]> {
+  const raw = await readFile(pinsPath(cortexDir), 'utf8').catch(() => '');
+  if (!raw.trim()) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === 'string' && id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function writePins(cortexDir: string, pins: string[]): Promise<void> {
+  await writeFile(pinsPath(cortexDir), JSON.stringify(pins, null, 2), 'utf8');
+}
+
+function isSafeSessionId(sessionId: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(sessionId) && !sessionId.includes('..');
 }
 
 async function readTitleCache(cortexDir: string): Promise<TitleCache> {
@@ -156,6 +186,8 @@ export async function listGhampusChats(
   const cache = await readTitleCache(cortexDir);
   let cacheDirty = false;
   let llmBudget = MAX_LLM_TITLES_PER_PASS;
+  const pinOrder = await readPins(cortexDir);
+  const pinRank = new Map(pinOrder.map((id, i) => [id, i]));
 
   const chats: GhampusChatSummary[] = [];
   for (const sessionId of sessionIds) {
@@ -196,6 +228,7 @@ export async function listGhampusChats(
       turnCount: turns.length,
       updatedAt,
       active: sessionId === activeSessionId,
+      pinned: pinRank.has(sessionId),
     });
   }
 
@@ -210,8 +243,56 @@ export async function listGhampusChats(
   }
   if (cacheDirty) await writeTitleCache(cortexDir, cache);
 
-  chats.sort((a, b) => b.updatedAt - a.updatedAt);
+  // Prune stale pins (deleted sessions) so the pin file cannot grow forever.
+  const prunedPins = pinOrder.filter((id) => live.has(id));
+  if (prunedPins.length !== pinOrder.length) {
+    await writePins(cortexDir, prunedPins).catch(() => { /* non-fatal */ });
+  }
+
+  // Pins first (pin-order), then the rest newest-first. Cap applies to the
+  // combined list so a large pin set cannot hide every recent unpinned chat.
+  chats.sort((a, b) => {
+    const ap = a.pinned ? (pinRank.get(a.sessionId) ?? 0) : Number.POSITIVE_INFINITY;
+    const bp = b.pinned ? (pinRank.get(b.sessionId) ?? 0) : Number.POSITIVE_INFINITY;
+    if (ap !== bp) return ap - bp;
+    return b.updatedAt - a.updatedAt;
+  });
   return { chats: chats.slice(0, MAX_SESSIONS_LISTED), activeSessionId };
+}
+
+/**
+ * Pin a chat. Newest pin is prepended so it appears at the top of Pins.
+ * Idempotent — pinning an already-pinned id just moves it to the front.
+ */
+export async function pinGhampusChat(
+  cortexDir: string,
+  sessionId: string,
+): Promise<{ ok: boolean; pins: string[] }> {
+  if (!cortexDir || !sessionId || !isSafeSessionId(sessionId)) {
+    return { ok: false, pins: [] };
+  }
+  const exists = await stat(join(sessionsDir(cortexDir), `${sessionId}.jsonl`))
+    .then(() => true)
+    .catch(() => false);
+  if (!exists) return { ok: false, pins: await readPins(cortexDir) };
+  const pins = (await readPins(cortexDir)).filter((id) => id !== sessionId);
+  pins.unshift(sessionId);
+  await writePins(cortexDir, pins);
+  return { ok: true, pins };
+}
+
+/** Unpin a chat. Idempotent — unknown ids are a no-op success. */
+export async function unpinGhampusChat(
+  cortexDir: string,
+  sessionId: string,
+): Promise<{ ok: boolean; pins: string[] }> {
+  if (!cortexDir || !sessionId || !isSafeSessionId(sessionId)) {
+    return { ok: false, pins: [] };
+  }
+  const prev = await readPins(cortexDir);
+  const pins = prev.filter((id) => id !== sessionId);
+  if (pins.length !== prev.length) await writePins(cortexDir, pins);
+  return { ok: true, pins };
 }
 
 /**
@@ -226,7 +307,7 @@ export async function openGhampusChat(
 ): Promise<{ ok: boolean; activeSessionId: string }> {
   if (!cortexDir || !sessionId) return { ok: false, activeSessionId: '' };
   // Reject anything that could escape sessions/ — the id reaches us from the UI.
-  if (!/^[A-Za-z0-9._-]+$/.test(sessionId) || sessionId.includes('..')) {
+  if (!isSafeSessionId(sessionId)) {
     return { ok: false, activeSessionId: await ensureActiveGhampusSession(cortexDir) };
   }
   const exists = await stat(join(sessionsDir(cortexDir), `${sessionId}.jsonl`))
