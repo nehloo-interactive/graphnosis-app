@@ -615,6 +615,10 @@ export interface CrewRecord {
   createdAt: number;
 }
 
+/** Per-Agempu Evolve dial — how far Praxis / auto-retrain may promote writes. */
+export type EvolveAutonomyLevel = 'preview-first' | 'notify' | 'auto-accept';
+export const DEFAULT_EVOLVE_AUTONOMY_LEVEL: EvolveAutonomyLevel = 'preview-first';
+
 export interface GraphMetadata {
   /** Template the user picked on creation. Hints downstream UX (badges, sorting, default queries). */
   template: GraphTemplate;
@@ -729,6 +733,15 @@ export interface GraphMetadata {
    * `resolveEngramAutonomyLevel`.
    */
   executionAutonomyLevel?: ExecutionAutonomyLevel;
+
+  /**
+   * Per-Agempu Evolve dial — default promotion policy for Praxis / auto-retrain
+   * on skills in this engram (`preview-first` | `notify` | `auto-accept`).
+   * Distinct from `executionAutonomyLevel` (how far a matched skill may *run*).
+   * Absent = preview-first (approval before write). Caps per-skill Praxis
+   * auto-accept when the engram is stricter.
+   */
+  evolveAutonomyLevel?: EvolveAutonomyLevel;
 
   /**
    * Per-SKILL execution-autonomy overrides, keyed by the skill's stable
@@ -994,11 +1007,11 @@ export interface SkillAutoRetrainConfig {
   /** For 'vitality-decay' — retrain once the skill's vitality score drops below this. */
   vitalityThreshold?: number;
   /**
-   * What happens after each auto-retrain run.
-   *   - 'notify':       run the retrain, mark the skill as updated, show a notification.
-   *   - 'auto-accept':  run the retrain, write the new version, no review queue.
-   *   - 'preview-first': run the retrain, write to a review queue, user approves before promotion.
-   * v1 ships 'auto-accept' only; 'notify' and 'preview-first' will follow.
+   * What happens after each auto-retrain run (approval-first stance).
+   *   - 'preview-first': draft → review queue; user approves before promotion (default).
+   *   - 'notify':        draft + 🆕 badge — does NOT write until Accept (same spirit as Memory Integrity).
+   *   - 'auto-accept':   write immediately — only for skills the owner opted in; never meta/dispatch;
+   *                      refused while open contradictions exist on the target engram.
    */
   autonomyLevel: 'notify' | 'auto-accept' | 'preview-first';
   /** Unix-ms of the last completed auto-retrain (null = never). */
@@ -1010,22 +1023,31 @@ export interface SkillAutoRetrainConfig {
 }
 
 /**
- * Pending retrain proposal awaiting user review. Created by the scheduler
- * when a skill's AutoRetrainConfig is in `preview-first` autonomy. The
- * new text + diff notes are stored here; the existing skill source is
- * untouched until the user accepts the proposal.
+ * Pending skill proposal awaiting user review ("Train this?" inbox).
+ * Keyed in AppSettings.skillRetrainPending by existing sourceId (retrain)
+ * or `draft:<uuid>` (new skill from MCP / adaptive creation).
+ * Untouched on disk until Accept.
  */
 export interface SkillRetrainProposal {
-  /** Engram the skill lives in. */
+  /** Engram the skill lives in / will be created in. */
   graphId: string;
   /** Unix-ms when this proposal was generated. */
   proposedAt: number;
-  /** The retrained skill text the scheduler produced. */
+  /** Proposed skill text. */
   trained: string;
   /** Optional diff notes (only present when the LLM rewrite path ran). */
   diffNotes?: string;
   /** Which trigger fired — useful for the review-queue UI to render context. */
   triggerReason: string;
+  /**
+   * `retrain` (default) = in-place update of an existing sourceId key.
+   * `new` = create a fresh skill on Accept; map key is `draft:…`.
+   */
+  kind?: 'retrain' | 'new';
+  /** Required for kind:'new' — human label for the skill to create. */
+  proposedLabel?: string;
+  /** For kind:'retrain', the existing sourceId (same as map key when not a draft). */
+  sourceId?: string;
 }
 
 /**
@@ -1645,6 +1667,16 @@ export interface AgentSettings {
   /** Idle vitality nudge cards in Ghampus chat. Absent → defaults (enabled). */
   vitalityNudges?: GhampusVitalityNudgesSettings;
   /**
+   * Scheduled assistant check-ins in Ghampus's voice (integrity + inbound).
+   * Absent → defaults (enabled, ~4h cadence).
+   */
+  checkIns?: GhampusCheckInSettings;
+  /**
+   * Auto-walk allowlisted integrity/gardening skills as READ-ONLY SOP previews
+   * into the thread. Never mutates memory. Absent → defaults (enabled).
+   */
+  safeAutoPreview?: GhampusSafeAutoPreviewSettings;
+  /**
    * How far Ghampus may take a *matched* skill automatically — the execution
    * axis, distinct from the retrain-promotion `SkillAutoRetrainConfig.autonomyLevel`.
    *   - 'L0' manual  — never surface a card.
@@ -1717,6 +1749,32 @@ export function resolveExecutionAutonomyLevel(
     : DEFAULT_EXECUTION_AUTONOMY_LEVEL;
 }
 
+/** Resolve per-Agempu Evolve dial (approval-first default). */
+export function resolveEvolveAutonomyLevel(
+  meta?: Pick<GraphMetadata, 'evolveAutonomyLevel'> | null,
+): EvolveAutonomyLevel {
+  const lvl = meta?.evolveAutonomyLevel;
+  return lvl === 'preview-first' || lvl === 'notify' || lvl === 'auto-accept'
+    ? lvl
+    : DEFAULT_EVOLVE_AUTONOMY_LEVEL;
+}
+
+/**
+ * Cap a per-skill Praxis promotion by the engram Evolve dial.
+ * Rank: preview-first < notify < auto-accept (stricter wins).
+ */
+export function capPraxisByEvolve(
+  skillLevel: EvolveAutonomyLevel,
+  engramLevel: EvolveAutonomyLevel,
+): EvolveAutonomyLevel {
+  const rank: Record<EvolveAutonomyLevel, number> = {
+    'preview-first': 0,
+    notify: 1,
+    'auto-accept': 2,
+  };
+  return rank[skillLevel] <= rank[engramLevel] ? skillLevel : engramLevel;
+}
+
 /**
  * Resolve the execution-autonomy level for a single engram (its per-family
  * skill engram acting as a domain agent). Pure: takes the engram's metadata
@@ -1772,6 +1830,26 @@ export interface GhampusVitalityNudgesSettings {
   enabled?: boolean;
   /** Ms after sidecar start before first nudge tick. Default 180_000 (3 min). */
   startupDelayMs?: number;
+}
+
+/** Scheduled Ghampus check-in messages (assistant voice, not tip cards). */
+export interface GhampusCheckInSettings {
+  /** Master switch. Default true. */
+  enabled?: boolean;
+  /** Minimum ms between check-ins. Default 4 hours. */
+  intervalMs?: number;
+  /** Ms after sidecar start before the first eligible check-in. Default 7 min. */
+  startupDelayMs?: number;
+}
+
+/**
+ * Safe auto-preview: walk allowlisted skills (cortex-gardening, consistency-audit,
+ * skill-maintenance-review) as read-only SOP text into Ghampus. Never executes
+ * mutating steps and never edits attested memory.
+ */
+export interface GhampusSafeAutoPreviewSettings {
+  /** Master switch. Default true. */
+  enabled?: boolean;
 }
 
 /** Defaults for agent.skillMaintenance — enabled + idleOnly. */
@@ -1855,6 +1933,37 @@ export function resolveGhampusVitalityNudgesSettings(
   return {
     enabled: v?.enabled !== false,
     startupDelayMs,
+  };
+}
+
+const DEFAULT_CHECK_IN_INTERVAL_MS = 4 * 60 * 60_000;
+const DEFAULT_CHECK_IN_STARTUP_DELAY_MS = 7 * 60_000;
+
+/** Defaults for agent.checkIns — enabled, 4h cadence, 7 min startup. */
+export function resolveGhampusCheckInSettings(
+  agent?: AgentSettings | null,
+): Required<GhampusCheckInSettings> {
+  const c = agent?.checkIns;
+  const intervalMs = typeof c?.intervalMs === 'number' && c.intervalMs >= 60_000
+    ? c.intervalMs
+    : DEFAULT_CHECK_IN_INTERVAL_MS;
+  const startupDelayMs = typeof c?.startupDelayMs === 'number' && c.startupDelayMs >= 0
+    ? c.startupDelayMs
+    : DEFAULT_CHECK_IN_STARTUP_DELAY_MS;
+  return {
+    enabled: c?.enabled !== false,
+    intervalMs,
+    startupDelayMs,
+  };
+}
+
+/** Defaults for agent.safeAutoPreview — enabled. */
+export function resolveGhampusSafeAutoPreviewSettings(
+  agent?: AgentSettings | null,
+): Required<GhampusSafeAutoPreviewSettings> {
+  const s = agent?.safeAutoPreview;
+  return {
+    enabled: s?.enabled !== false,
   };
 }
 
@@ -2513,6 +2622,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     const tp = a.tips;
     const ms = a.memorySuggestions;
     const vn = a.vitalityNudges;
+    const ci = a.checkIns;
+    const sap = a.safeAutoPreview;
     agent = {
       enabled: typeof a.enabled === 'boolean' ? a.enabled : true,
       ...(a.executionAutonomyLevel === 'L0' || a.executionAutonomyLevel === 'L1'
@@ -2574,6 +2685,26 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
               ...(typeof vn.startupDelayMs === 'number' && vn.startupDelayMs >= 0
                 ? { startupDelayMs: vn.startupDelayMs }
                 : {}),
+            },
+          }
+        : {}),
+      ...(ci && typeof ci === 'object'
+        ? {
+            checkIns: {
+              ...(typeof ci.enabled === 'boolean' ? { enabled: ci.enabled } : {}),
+              ...(typeof ci.intervalMs === 'number' && ci.intervalMs >= 60_000
+                ? { intervalMs: ci.intervalMs }
+                : {}),
+              ...(typeof ci.startupDelayMs === 'number' && ci.startupDelayMs >= 0
+                ? { startupDelayMs: ci.startupDelayMs }
+                : {}),
+            },
+          }
+        : {}),
+      ...(sap && typeof sap === 'object'
+        ? {
+            safeAutoPreview: {
+              ...(typeof sap.enabled === 'boolean' ? { enabled: sap.enabled } : {}),
             },
           }
         : {}),

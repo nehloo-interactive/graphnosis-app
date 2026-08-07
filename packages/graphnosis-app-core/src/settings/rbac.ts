@@ -117,6 +117,8 @@ export const MCP_TOOL_CAPABILITIES: Readonly<Record<string, McpToolCapability[]>
   train_skill: ['skill-write'],
   rollback_skill: ['skill-write'],
   delete_skill: ['skill-write'],
+  set_skill_role: ['skill-write'],
+  set_skill_roles: ['skill-write'],
   export_skill: ['skill-export'],
   export_engram: ['engram-pack'],
   import_engram: ['engram-pack'],
