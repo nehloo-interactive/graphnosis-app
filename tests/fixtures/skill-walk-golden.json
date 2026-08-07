@@ -1,0 +1,48 @@
+{
+  "skill": { "sourceId": "skill:test-dispatch", "title": "Skill Dispatch" },
+  "requires": ["taskContext"],
+  "requiresTypes": { "taskContext": "string" },
+  "produces": ["matchedSkills"],
+  "constraints": {
+    "success": "Every matched skill is returned in priority order.",
+    "trigger": "Session start or explicit skill routing request."
+  },
+  "steps": [
+    {
+      "index": 1,
+      "text": "Recall standing instructions from graphnosis-skills engram.",
+      "supportingContext": []
+    },
+    {
+      "index": 2,
+      "text": "Walk skill-dispatch with the current task context.",
+      "calls": {
+        "targetSourceId": "skill:dispatch",
+        "targetTitle": "skill-dispatch",
+        "args": ["$taskContext"],
+        "captureAs": "dispatchPlan"
+      },
+      "supportingContext": ["Prefer deterministic recall before acting."]
+    },
+    {
+      "index": 3,
+      "text": "If vitality < 60, queue skill-maintenance before execution.",
+      "branchesTo": [4],
+      "supportingContext": []
+    },
+    {
+      "index": 4,
+      "text": "Return matched skill list to caller.",
+      "supportingContext": []
+    }
+  ],
+  "failureHandlers": [
+    {
+      "description": "No skills matched — fall back to session-start.",
+      "targetSourceId": "skill:session-start",
+      "targetTitle": "session-start",
+      "args": []
+    }
+  ],
+  "unanchoredContext": ["User prefers concise SOP summaries."]
+}

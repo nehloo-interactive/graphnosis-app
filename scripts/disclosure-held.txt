@@ -70,7 +70,6 @@ apps/desktop-sidecar/tests/studio-similarity-gate.test.mjs
 
 # --- sidecar lane, class (b) — fix not adopted / unshipped module -----------
 apps/desktop-sidecar/tests/_embed-oracle.mjs
-apps/desktop-sidecar/tests/contract-level-census.test.mjs
 apps/desktop-sidecar/tests/embedding-noise-floor.test.mjs
 apps/desktop-sidecar/tests/recall-coverage-partial.test.mjs
 apps/desktop-sidecar/tests/recall-coverage-withheld.test.mjs

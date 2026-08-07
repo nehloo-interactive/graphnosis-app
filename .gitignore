@@ -288,6 +288,10 @@ scripts/.sensitive-needles
 # mechanism text. Owner decision 2026-08-03: track it.
 !/apps/desktop-sidecar/tests/_contract-level.mjs
 
+# Contract-level census — version/shape tripwire for installed deps (SS040.5).
+# Class (a): no defect reproduction; only asserts package versions and type shape.
+!/apps/desktop-sidecar/tests/contract-level-census.test.mjs
+
 # Guard for the PDF line-joining contract. Class (a): it asserts required
 # behaviour and carries no defect mechanism. Added with the 1.32.0 fix — the
 # fail-closed default made it invisible to git until negated, which is the

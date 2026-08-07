@@ -57,14 +57,15 @@ import { test as nodeTest, after } from 'node:test';
 export const CENSUS = Object.freeze({
   'recall-coverage-partial.test.mjs': {
     dependency: '@nehloo-interactive/graphnosis-secure-sync',
-    installed: '0.3.0',
+    installed: '0.3.2',
     required: 'a federation that reports per-graph outcomes',
-    tag: 'secure-sync 0.3.0 installed; needs per-graph failure reporting',
+    tag: 'secure-sync 0.3.2 installed; needs per-graph failure reporting',
     evidence:
       'node_modules/@nehloo-interactive/graphnosis-secure-sync/dist/federation/index.d.ts — ' +
       '`AttachedGraphAudit` is `{ graphId, tier, nodesIncluded, tokensIncluded }` and ' +
       '`FederatedSubgraph` has no `complete` and no `failures`; `dist/federation/index.js` ' +
-      'is a bare `Promise.all`, i.e. all-or-nothing, so no partial result exists to report.',
+      'is a bare `Promise.all`, i.e. all-or-nothing, so no partial result exists to report. ' +
+      'Re-verified on installed 0.3.2 (0.3.0→0.3.2 is crypto/oplog only).',
     why:
       'These feed `summarizeRecallCoverage` a subgraph carrying `complete`, `failures`, ' +
       'or an audit `status`/`error`. Strip those fields — which is all the installed ' +
@@ -75,9 +76,9 @@ export const CENSUS = Object.freeze({
   },
   'recall-coverage-withheld.test.mjs': {
     dependency: '@nehloo-interactive/graphnosis-secure-sync',
-    installed: '0.3.0',
+    installed: '0.3.2',
     required: 'a federation that reports per-graph outcomes',
-    tag: 'secure-sync 0.3.0 installed; needs per-graph failure reporting',
+    tag: 'secure-sync 0.3.2 installed; needs per-graph failure reporting',
     evidence: 'same as recall-coverage-partial.test.mjs',
     why:
       'The whole file is the privacy property of the withheld+failed union. The ' +
@@ -88,9 +89,9 @@ export const CENSUS = Object.freeze({
   },
   'recall-partial-prompt.test.mjs': {
     dependency: '@nehloo-interactive/graphnosis-secure-sync',
-    installed: '0.3.0',
+    installed: '0.3.2',
     required: 'a federation that reports per-graph outcomes',
-    tag: 'secure-sync 0.3.0 installed; needs per-graph failure reporting',
+    tag: 'secure-sync 0.3.2 installed; needs per-graph failure reporting',
     evidence: 'same as recall-coverage-partial.test.mjs',
     why:
       'The two COMPLETE-path tests are genuinely end-to-end: they drive the real ' +

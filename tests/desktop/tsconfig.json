@@ -1,0 +1,31 @@
+{
+  // Typecheck for the apps/desktop TEST LANE ONLY.
+  //
+  // The suites run through tsx (esbuild), which STRIPS types without checking
+  // them — so without this a type error in the lane's own support code would
+  // ship silently. `tests/run-all.ts` runs this as the `desktop-lane-typecheck`
+  // row, the same way it runs `sidecar-build`.
+  //
+  // Scope is deliberately just `tests/desktop/**`. It does NOT typecheck
+  // `apps/desktop`: that project has 344 pre-existing `tsc` errors, and
+  // dragging them in here would either paper over them or make this row
+  // permanently red. They are untouched and out of scope.
+  //
+  // `typeRoots` points at apps/desktop-sidecar because that is where the
+  // workspace actually installed `@types/node` and `@types/jsdom` — the same
+  // package this lane resolves the jsdom runtime from. No new dependency and
+  // no install needed.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    "typeRoots": ["../../apps/desktop-sidecar/node_modules/@types"],
+    "types": ["node", "jsdom"],
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["**/*.ts"]
+}
