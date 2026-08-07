@@ -52,6 +52,11 @@ import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
 import { dispatchAuditMcpTool } from './mcp/handlers-audit.js';
 import { checkRecallSsoGate, SsoRecallRequiredError } from './catalog-sso-gate.js';
 import { resolveSkillRunActor } from './skill-runs.js';
+import {
+  contributingAudits,
+  noMatchSearchedCount,
+  sumAnsweredTierCounts,
+} from './federation-host.js';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
 // These caps apply per MCP connection (i.e. per AI client session). They exist
@@ -3380,6 +3385,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         },
         annotations: { title: 'Set skill autonomy' },
       },
+
       {
         name: 'import_engram',
         description:
@@ -3799,11 +3805,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // Counts and tier rollups are kept because they're useful for
         // "why did recall return nothing?" debugging and reveal nothing
         // about the user.
-        const tierSummary = sub.audit.reduce<Record<string, { n: number; t: number }>>((acc, a) => {
-          const slot = acc[a.tier] ?? (acc[a.tier] = { n: 0, t: 0 });
-          slot.n += a.nodesIncluded; slot.t += a.tokensIncluded;
-          return acc;
-        }, {});
+        // SS040.2: only answered rows carry counts; failed rows must not be
+        // summed or counted as "searched, no matches".
+        const tierSummary = sumAnsweredTierCounts(sub.audit);
         recallDbg(`[${toolName}] qLen=${args.query.length} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t tiers=${JSON.stringify(tierSummary)} graphs=${sub.audit.length}`);
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         // Audit footer — only list engrams that ACTUALLY contributed nodes
@@ -3815,7 +3819,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // for every 2 useful ones. The contributing engram names are
         // already visible in the prompt body as `## <displayName>` section
         // headers, so this footer is purely informational + tier signal.
-        const contributing = sub.audit.filter((a) => a.nodesIncluded > 0);
+        const contributing = contributingAudits(sub.audit);
         mcpAuditExtras.engramIds = contributing.map((a) => a.graphId);
         mcpAuditExtras.tokenBudget = {
           requestedTokens: budget.maxTokens,
@@ -3829,7 +3833,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           (r) => r.clientName === clientForAudit && !r.withdrawnAt && r.expiresAt > Date.now(),
         );
         if (consentRec) mcpAuditExtras.consentGrantId = consentRec.consentId;
-        const skippedCount = sub.audit.length - contributing.length;
+        const skippedCount = noMatchSearchedCount(sub.audit);
         const perGraphPart = contributing.length > 0
           ? ` Per-graph (tier · nodes · tokens): ${contributing.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ')}.`
           : '';
@@ -3906,8 +3910,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `total=${sub.nodesIncluded}n/${sub.tokensUsed}t`,
         );
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
-        const contributing = sub.audit.filter((a) => a.nodesIncluded > 0);
-        const skippedCount = sub.audit.length - contributing.length;
+        const contributing = contributingAudits(sub.audit);
+        const skippedCount = noMatchSearchedCount(sub.audit);
         const perGraphPart = contributing.length > 0
           ? ` Per-graph (tier · nodes · tokens): ${contributing.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ')}.`
           : '';
@@ -4946,7 +4950,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           'cross_search',
         );
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
-        const csContributing = sub.audit.filter(a => a.nodesIncluded > 0).length;
+        const csContributing = contributingAudits(sub.audit).length;
         const csHeadsUp = anomalyHeadsUp({
           kind: 'recall',
           nodesReturned: sub.nodesIncluded,

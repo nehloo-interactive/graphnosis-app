@@ -17,7 +17,7 @@ function sanitizeQuery(q: string): string {
   return q.replace(/[.*+?^${}()|[\]\\]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-import { Graphnosis, serializeSubgraph, embedNodes } from '@nehloo/graphnosis';
+import { Graphnosis, serializeSubgraph, embedNodes, asciiFoldAnalyzer } from '@nehloo/graphnosis';
 import type { EmbeddingAdapter, EmbeddingIndex, GraphNode, NodeId } from '@nehloo/graphnosis';
 import type {
   GraphnosisAdapter,
@@ -180,11 +180,16 @@ function deleteNodeReporting(g: Graphnosis, nodeId: string, reason: string, cons
 
 export class GraphnosisImpl implements GraphnosisAdapter {
   async create(graphId: string): Promise<Internal> {
-    return { graphId, instance: new Graphnosis({ name: graphId }), built: false };
+    // PLAN.4: pin ascii-fold (not the 0.11 default ascii-fold-en). Unpinned
+    // creates stamp a one-way door — 0.7.4 App builds cannot open them.
+    // Analyzer migrate (ROADMAP 5.7) is a separate, explicit opt-in later.
+    return { graphId, instance: new Graphnosis({ name: graphId, analyzer: asciiFoldAnalyzer }), built: false };
   }
 
   async loadFromBuffer(graphId: string, buffer: Uint8Array, hmacKey?: Uint8Array): Promise<Internal> {
-    const instance = new Graphnosis({ name: graphId });
+    // Same pin on load: runtime analyzer must match the stamp on existing
+    // user cortices (ascii-fold from ≤0.7.4 and from PLAN.4-pinned creates).
+    const instance = new Graphnosis({ name: graphId, analyzer: asciiFoldAnalyzer });
     // The SDK's fromBuffer takes a Node Buffer and a fail-closed hmacKey policy.
     instance.fromBuffer(Buffer.from(buffer), hmacKey ? { hmacKey: Buffer.from(hmacKey) } : undefined);
     return { graphId, instance, built: true };

@@ -9,6 +9,12 @@ import {
   type RecallCoverageInput,
 } from '../recall-coverage.js';
 import {
+  emptyHostRecall,
+  withHostPrompt,
+  type HostDigDeeperResult,
+  type HostRecallResult,
+} from '../federation-host.js';
+import {
   isEnrichmentCircuitOpen,
   logEnrichmentFailure,
   recordEnrichmentSuccess,
@@ -52,7 +58,7 @@ export interface RecallHost {
   opts: HostOptions;
   policyCfg: import('@nehloo-interactive/graphnosis-secure-sync').policy.PolicyConfig;
   llmGetter?: () => import('../correction.js').LocalLlm | null;
-  plasticityObserver?: (sub: federation.FederatedSubgraph) => void;
+  plasticityObserver?: (sub: { byGraph: Map<string, Array<{ nodeId: string }>>; prompt?: string }) => void;
   readonly graphs: Map<GraphId, {
     handle: import('../graphnosis-adapter.js').GraphHandle;
   }>;
@@ -99,7 +105,7 @@ export interface RecallHost {
        *  promote / lint). See the quarantine-visibility contract. */
       includeQuarantined?: boolean;
     },
-  ): Promise<federation.FederatedSubgraph>;
+  ): Promise<HostRecallResult>;
 }
 
 export type RecallOpts = {
@@ -119,7 +125,7 @@ export async function hostRecall(
   host: RecallHost,
   query: string,
   opts?: RecallOpts,
-): Promise<federation.FederatedSubgraph> {
+): Promise<HostRecallResult> {
     // ── Quarantine boundary (SINGLE centralized exclusion) ───────────────
     // The import-quarantine visibility contract: a quarantined (imported-but-
     // unpromoted) engram is invisible to ALL AI-facing recall. We enforce it
@@ -146,7 +152,7 @@ export async function hostRecall(
         if (baseOpts.onlyGraphIds && baseOpts.onlyGraphIds.length > 0) {
           const narrowed = baseOpts.onlyGraphIds.filter((id) => !qSet.has(id));
           if (narrowed.length === 0) {
-            return { byGraph: new Map(), prompt: '', tokensUsed: 0, nodesIncluded: 0, audit: [] };
+            return emptyHostRecall();
           }
         }
         opts = {
@@ -469,12 +475,21 @@ export async function hostRecall(
         if (!top || top.score < rescueThreshold) continue;
         byGraph.set(graphId, [{ graphId, nodeId: top.nodeId, score: top.score, text: top.text }]);
         const tokensEst = Math.ceil(top.text.length / 4);
-        (sub.audit as Array<{ graphId?: string; tier: string; nodesIncluded: number; tokensIncluded: number }>).push({
-          graphId,
-          tier: (host.getGraphMetadata(graphId) as { sensitivityTier?: string } | undefined)?.sensitivityTier ?? 'personal',
-          nodesIncluded: 1,
-          tokensIncluded: tokensEst,
-        });
+        // SS040.4: rescue rows MUST carry status:'ok'. A statusless row
+        // normalizes to ok in recall-coverage, but a typed FailedGraphAudit
+        // has no counts — omit status and a later narrow can mis-read the row.
+        {
+          const tierRaw = (host.getGraphMetadata(graphId) as { sensitivityTier?: string } | undefined)?.sensitivityTier;
+          const tier = tierRaw === 'public' || tierRaw === 'sensitive' ? tierRaw : 'personal';
+          sub.audit.push({
+            graphId,
+            tier,
+            status: 'ok',
+            nodesIncluded: 1,
+            tokensIncluded: tokensEst,
+            duplicatesDropped: 0,
+          });
+        }
         (sub as { nodesIncluded: number }).nodesIncluded += 1;
         (sub as { tokensUsed: number }).tokensUsed += tokensEst;
         rescuedCount += 1;
@@ -698,7 +713,7 @@ export async function hostRecall(
     if (partialNotice) {
       richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + partialNotice;
     }
-    return { ...sub, prompt: richPrompt };
+    return withHostPrompt(sub, richPrompt);
 }
 
 export async function hostDigDeeper(
@@ -712,13 +727,7 @@ export async function hostDigDeeper(
     consentedGraphIds?: string[];
     recallPriority?: WorkPriority;
   },
-): Promise<federation.FederatedSubgraph & {
-  digDeeperProvenance: {
-    contentMatch: { nodes: number; avgScore: number };
-    sourceFilenameExpansion: { nodes: number; sources: string[] };
-    crossEngramEntityHop: { nodes: number; viaEntities: string[]; sourceEngrams: number };
-  };
-}> {
+): Promise<HostDigDeeperResult> {
     // Stage 1: standard recall. This already does entity anchoring + GNN
     // expansion at recall-grade threshold (Batch 11). We use it as the
     // foundation and layer additional stages on top.

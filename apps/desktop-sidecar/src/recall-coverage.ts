@@ -19,38 +19,21 @@
  *
  * WHY THE INPUT IS TYPED STRUCTURALLY AND NOT AS `federation.FederatedSubgraph`.
  *
- * INSTALLED: `@nehloo-interactive/graphnosis-secure-sync` **0.3.0**. That is
- * the version the resolved package self-reports; `apps/desktop-sidecar/package.json`
- * asks for the git tag `#v0.3.1`, which is a TAG NAME and not a version — the
- * two do not agree, and the installed artifact is what governs. Re-check with:
+ * INSTALLED: `@nehloo-interactive/graphnosis-secure-sync` **0.4.0** (git tag
+ * `#v0.4.0`). Re-check with:
  *
  *   node -p "JSON.parse(require('fs').readFileSync( \
  *     'node_modules/@nehloo-interactive/graphnosis-secure-sync/package.json','utf8')).version"
  *
- * On 0.3.0 `dist/federation/index.js` runs a bare `Promise.all` over the graphs
- * — all-or-nothing, so there is no partial result to report — and
- * `dist/federation/index.d.ts` declares `AttachedGraphAudit` as exactly
- * `{ graphId, tier, nodesIncluded, tokensIncluded }` with a `FederatedSubgraph`
- * carrying no `complete` and no `failures`. Reading those fields through the
- * installed types would not compile.
+ * 0.4.0's `FederatedSubgraph` is a complete/incomplete discriminated union with
+ * `failures` / `withheld`, and audit rows are `AnsweredGraphAudit |
+ * FailedGraphAudit`. Reading structurally keeps this module compilable against
+ * older pins and against host-rebuilt shapes that always carry `prompt`.
  *
- * REQUIRED for anything below to fire: a federation that reports per-graph
- * outcomes — i.e. one that emits `complete: false`, a `failures` array, or an
- * audit `status`. No such version is installed.
- *
- * Reading structurally is correct on BOTH. On the installed build `complete` is
- * `undefined`, which this module treats as complete (accurately — that build has
- * no partial state to report), so IN PRODUCTION TODAY `summarizeRecallCoverage`
- * always returns `complete: true` with an empty `failures`, and
- * `renderPartialRecallNotice` always returns `''`. On a federation that does
- * produce the union the disclosure lights up with no further change here.
- *
- * CONSEQUENCE FOR THE TESTS. Because the installed producer cannot reach them,
- * every interesting branch below is exercised only by synthetic input. Those
- * tests are labeled CONTRACT-ONLY in the runner's own output — see
- * `tests/_contract-level.mjs` and the roll-up in
- * `tests/contract-level-census.test.mjs`. They are not skipped: this module has
- * no other coverage, so their assertions are the only thing holding it.
+ * On 0.4.0, `complete: false` + `failures` light up in production when any
+ * engram in scope does not answer. Edge ranks (rescue statusless rows,
+ * withheld>failed) are still exercised by synthetic CONTRACT-ONLY tests — see
+ * `tests/_contract-level.mjs`.
  *
  * Everything below is pure. No I/O, no host, no SDK — so the contract is
  * testable directly against `dist/recall-coverage.js`.

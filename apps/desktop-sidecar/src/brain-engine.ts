@@ -40,6 +40,11 @@ import {
 /** The result of a federated recall — derived from the host so brain-engine
  *  needn't import the secure-sync federation types directly. */
 type RecallResult = Awaited<ReturnType<GraphnosisHost['recall']>>;
+/** Plasticity sees the raw federation subgraph (prompt may be absent on incomplete). */
+type PlasticityRecall = {
+  byGraph: Map<string, Array<{ nodeId: string }>>;
+  prompt?: string;
+};
 
 /**
  * What a review-queue resolution actually did.
@@ -872,7 +877,7 @@ export class BrainEngine {
    * and gives the recalled nodes a small confidence boost. Both effects are
    * strengthen-only.
    */
-  onRecall(sub: RecallResult): void {
+  onRecall(sub: PlasticityRecall | RecallResult): void {
     const activated = new Set<string>();
     const loaded = new Set(this.host.listGraphs());
     for (const [graphId, items] of sub.byGraph) {
@@ -893,7 +898,12 @@ export class BrainEngine {
       }
     }
     this.reinforcement.noteCrossEngramRecall(activated);
-    try { this.reinforcement.enrichRecall(sub); } catch { /* best-effort enrichment */ }
+    // enrichRecall mutates prompt in place. Raw incomplete federation results
+    // have partialPrompt instead — skip until a host-rebuilt prompt is present.
+    if (typeof sub.prompt === 'string') {
+      try { this.reinforcement.enrichRecall(sub as { byGraph: Map<string, Array<{ nodeId: string }>>; prompt: string }); }
+      catch { /* best-effort enrichment */ }
+    }
   }
 
   /** UI-facing vitality.

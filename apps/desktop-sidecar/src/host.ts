@@ -3310,6 +3310,15 @@ export class GraphnosisHost {
   }
 
   /**
+   * @deprecated Use `replaceGraphMetadata`. Kept as an alias so local
+   * gitignored smoke artifacts (and any in-flight callers) that still name
+   * the old method keep working after the rename.
+   */
+  async setGraphMetadata(graphId: GraphId, metadata: settingsMod.GraphMetadata): Promise<void> {
+    return this.replaceGraphMetadata(graphId, metadata);
+  }
+
+  /**
    * MERGE fields into a graph's metadata entry, leaving every field you do not
    * name exactly as it was. The safe default: use this unless you are creating
    * the entry outright or deliberately removing a field.
@@ -6185,13 +6194,30 @@ export class GraphnosisHost {
     // crashed-between-saves / partial-sync shape) — the engine's answer is known
     // in advance, so nothing has to be destroyed to find it out. Checking here
     // makes the abort non-destructive for that whole class.
-    const undeletable = this.undeletableClaimedNodeIds(g, record.nodeIds ?? []);
+    //
+    // Hollow-shell exception: when the .gai was wiped (0 live nodes) and EVERY
+    // claimed id is a ghost, refusing would permanently strand
+    // materializeEmptyGraphFromBundle — the recovery path that exists to
+    // rebuild exactly this state from the content cache. Drop the ghosts and
+    // continue; partial-sync (some present, some missing) still refuses.
+    const claimed = record.nodeIds ?? [];
+    const undeletable = this.undeletableClaimedNodeIds(g, claimed);
     if (undeletable.length > 0) {
-      return this.reingestRefusalOutcome(
-        graphId, sourceId, record.ref, undeletable,
-        'Nothing was deleted and nothing was re-chunked — the source is exactly as it was, ' +
-        'and its cached content is intact.',
-      );
+      const liveCount = this.opts.adapter.inspectNodes(g.handle).length;
+      const hollowShell =
+        liveCount === 0 &&
+        claimed.length > 0 &&
+        undeletable.length === claimed.length;
+      if (!hollowShell) {
+        return this.reingestRefusalOutcome(
+          graphId, sourceId, record.ref, undeletable,
+          'Nothing was deleted and nothing was re-chunked — the source is exactly as it was, ' +
+          'and its cached content is intact.',
+        );
+      }
+      for (const ghostId of undeletable) {
+        g.sourceIndex.removeNode(sourceId, ghostId);
+      }
     }
     const blob = await this.readContentBlob(sourceId);
     if (!blob) {
@@ -7200,10 +7226,11 @@ export class GraphnosisHost {
    * have their connections strengthened ("fire together, wire together").
    * Never throws into the recall path.
    */
-  private plasticityObserver: ((sub: federation.FederatedSubgraph) => void) | undefined;
+  /** Raw federation result (pre host prompt rebuild). Prompt may be absent on incomplete. */
+  private plasticityObserver: ((sub: { byGraph: Map<string, Array<{ nodeId: string }>>; prompt?: string }) => void) | undefined;
 
   /** Register the recall observer. Called once at sidecar startup. */
-  setPlasticityObserver(fn: (sub: federation.FederatedSubgraph) => void): void {
+  setPlasticityObserver(fn: (sub: { byGraph: Map<string, Array<{ nodeId: string }>>; prompt?: string }) => void): void {
     this.plasticityObserver = fn;
   }
 
@@ -7220,7 +7247,7 @@ export class GraphnosisHost {
     this.llmGetter = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority; includeQuarantined?: boolean }): Promise<federation.FederatedSubgraph> {
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority; includeQuarantined?: boolean }): Promise<import('./federation-host.js').HostRecallResult> {
     return hostRecall(this as unknown as RecallHost, query, opts);
   }
 
@@ -7235,20 +7262,14 @@ export class GraphnosisHost {
    * complete one is how the system ends up asserting "you have no record of
    * that" about a memory it simply could not read.
    *
-   * Safe on the currently-pinned secure-sync (v0.3.1), whose federation is
-   * all-or-nothing and reports no failures: it returns `complete: true` there.
+   * On secure-sync ≥0.4.0, `complete: false` + `failures` light up when any
+   * engram in scope did not answer. Prefer this over counting `audit.length`.
    */
   recallCoverage(sub: RecallCoverageInput | null | undefined): RecallCoverage {
     return summarizeRecallCoverage(sub, (g) => this.getGraphMetadata(g)?.displayName ?? g);
   }
 
-  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority }): Promise<federation.FederatedSubgraph & {
-    digDeeperProvenance: {
-      contentMatch: { nodes: number; avgScore: number };
-      sourceFilenameExpansion: { nodes: number; sources: string[] };
-      crossEngramEntityHop: { nodes: number; viaEntities: string[]; sourceEngrams: number };
-    };
-  }> {
+  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority }): Promise<import('./federation-host.js').HostDigDeeperResult> {
     return hostDigDeeper(this as unknown as RecallHost, query, opts);
   }
 

@@ -18,6 +18,7 @@ import type { AgentToolName } from './agent-types.js';
 import { scopeCoversEngram } from '@graphnosis-app/core/settings';
 import { augmentMemoryWithTemporalContext, inferObligationFromText } from './ghampus-temporal-parse.js';
 import { stripInternalSourceRefPrefix } from './ghampus-recall-format.js';
+import { contributingAudits } from './federation-host.js';
 
 export interface AgentToolDeps {
   host: GraphnosisHost;
@@ -201,9 +202,7 @@ async function runRecall(deps: AgentToolDeps, args: RecallToolArgs): Promise<Rec
     budget,
     ...(args.onlyEngrams && args.onlyEngrams.length > 0 ? { onlyGraphIds: args.onlyEngrams } : {}),
   });
-  const contributing = sub.audit
-    .filter((a) => a.nodesIncluded > 0)
-    .map((a) => a.graphId);
+  const contributing = contributingAudits(sub.audit).map((a) => a.graphId);
   // Phase 4 sharing-integration: for each contributing engram, look up
   // whether the user has an active outbound sharing token covering it.
   // The presence of a share doesn't change the recall result — it just

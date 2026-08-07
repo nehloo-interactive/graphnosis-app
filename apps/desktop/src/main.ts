@@ -26459,7 +26459,8 @@ type RecallCoverage = {
 
 type RawRecallResult = {
   prompt: string; tokensUsed: number; nodesIncluded: number;
-  audit: Array<{ graphId: string; nodesIncluded: number; tokensIncluded: number }>;
+  // secure-sync ≥0.4: failed audit rows have status:'failed' and NO counts.
+  audit: Array<{ graphId: string; nodesIncluded?: number; tokensIncluded?: number; status?: string }>;
   byGraph: Record<string, unknown>;
   allCandidates?: Array<{ nodeId: string; graphId: string; score: number; text: string; type?: string }>;
   topScore?: number;
@@ -26553,7 +26554,7 @@ function renderRawRecallResult(
   }
 
   const meta = document.getElementById('studio-recall-meta');
-  const contributing = result.audit.filter((a) => a.nodesIncluded > 0).length;
+  const contributing = result.audit.filter((a) => (a.nodesIncluded ?? 0) > 0).length;
   if (meta) {
     meta.textContent =
       `${result.nodesIncluded} node${result.nodesIncluded === 1 ? '' : 's'} · ` +

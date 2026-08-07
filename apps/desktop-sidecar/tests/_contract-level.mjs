@@ -57,85 +57,73 @@ import { test as nodeTest, after } from 'node:test';
 export const CENSUS = Object.freeze({
   'recall-coverage-partial.test.mjs': {
     dependency: '@nehloo-interactive/graphnosis-secure-sync',
-    installed: '0.3.2',
+    installed: '0.4.0',
     required: 'a federation that reports per-graph outcomes',
-    tag: 'secure-sync 0.3.2 installed; needs per-graph failure reporting',
+    tag: 'secure-sync 0.4.0 — coverage disclosure is live (no contract column)',
     evidence:
       'node_modules/@nehloo-interactive/graphnosis-secure-sync/dist/federation/index.d.ts — ' +
-      '`AttachedGraphAudit` is `{ graphId, tier, nodesIncluded, tokensIncluded }` and ' +
-      '`FederatedSubgraph` has no `complete` and no `failures`; `dist/federation/index.js` ' +
-      'is a bare `Promise.all`, i.e. all-or-nothing, so no partial result exists to report. ' +
-      'Re-verified on installed 0.3.2 (0.3.0→0.3.2 is crypto/oplog only).',
+      '`FederatedSubgraph` is `CompleteFederatedSubgraph | IncompleteFederatedSubgraph` with ' +
+      '`complete` / `failures` / `withheld`; audit rows are `AnsweredGraphAudit | FailedGraphAudit`. ' +
+      'Re-verified on installed 0.4.0. Re-censused 2026-08-06: former CONTRACT-ONLY rows ' +
+      'became reachable when the producer landed.',
     why:
-      'These feed `summarizeRecallCoverage` a subgraph carrying `complete`, `failures`, ' +
-      'or an audit `status`/`error`. Strip those fields — which is all the installed ' +
-      'federation can hand back — and every one of them computes a DIFFERENT coverage ' +
-      '(measured: complete:true, zero failures, full answered count).',
-    contract: 10,
-    reachable: 5,
+      'Kept in the census so the suite still routes through contractLevelSuite (drift ' +
+      'protection). contract:0 because 0.4.0 can emit every shape these tests assert.',
+    contract: 0,
+    reachable: 15,
   },
   'recall-coverage-withheld.test.mjs': {
     dependency: '@nehloo-interactive/graphnosis-secure-sync',
-    installed: '0.3.2',
+    installed: '0.4.0',
     required: 'a federation that reports per-graph outcomes',
-    tag: 'secure-sync 0.3.2 installed; needs per-graph failure reporting',
+    tag: 'secure-sync 0.4.0 — coverage disclosure is live (no contract column)',
     evidence: 'same as recall-coverage-partial.test.mjs',
     why:
-      'The whole file is the privacy property of the withheld+failed union. The ' +
-      'installed federation emits neither `withheld` nor `failures`, so it cannot ' +
-      'produce that union at all — every case here is synthetic by necessity.',
-    contract: 6,
-    reachable: 0,
+      'Privacy properties of withheld+failed are now production shapes; still unit-tested ' +
+      'with synthetic inputs for the intersection e2e cannot safely force.',
+    contract: 0,
+    reachable: 6,
   },
   'recall-partial-prompt.test.mjs': {
     dependency: '@nehloo-interactive/graphnosis-secure-sync',
-    installed: '0.3.2',
+    installed: '0.4.0',
     required: 'a federation that reports per-graph outcomes',
-    tag: 'secure-sync 0.3.2 installed; needs per-graph failure reporting',
+    tag: 'secure-sync 0.4.0 — coverage disclosure is live (no contract column)',
     evidence: 'same as recall-coverage-partial.test.mjs',
     why:
-      'The two COMPLETE-path tests are genuinely end-to-end: they drive the real ' +
-      '`hostRecall` over the real installed federation, and that is the only branch ' +
-      'the installed build can reach. The three partial-path tests stamp the future ' +
-      'shape onto the subgraph after federation returned it.',
-    contract: 3,
-    reachable: 2,
+      'Partial-path tests stamp incomplete shapes for determinism; the producer that ' +
+      'emits them is installed, so they are no longer CONTRACT-ONLY.',
+    contract: 0,
+    reachable: 5,
   },
   'oplog-replay-source-rebind.test.mjs': {
     dependency: '@nehloo/graphnosis',
-    installed: '0.7.4',
+    installed: '0.11.0',
     required: '0.10.0 (indelible `edit`)',
-    tag: '@nehloo/graphnosis 0.7.4 installed; needs 0.10.0 indelible edit',
+    tag: '@nehloo/graphnosis 0.11.0 — indelible edit is live (no contract column)',
     evidence:
-      'dist/core/corrections/correction-engine.js:22 — on 0.7.4 `applyEdit` mutates the ' +
-      'node in place and returns `affectedNodeId: correction.nodeId`, so ' +
-      '`resultNodeId === nodeId` and the rebind branch never fires on an edit. These ' +
-      "four route `kind:'edit'` through the installed `applySupersede` instead, which " +
-      'is the same retire-and-mint 0.10.0 made `edit`.',
+      'node_modules/@nehloo/graphnosis/dist/core/corrections/correction-engine.d.ts — ' +
+      '`CorrectionResult.affectedNodeIds` present on 0.11.0. Re-censused 2026-08-06: ' +
+      'former CONTRACT-ONLY edit-rebind rows became reachable with the SDK pin.',
     why:
-      'Tests 1-5 and 10 are end-to-end on the installed SDK: `applySupersede` ' +
-      '(correction-engine.js:111) still delegates to `applyAdd`, which mints a fresh ' +
-      '`nanoid()`, so that half of the bug class is live today. The four labelled here ' +
-      'are the `edit` half, which is latent until the SDK is bumped.',
-    contract: 4,
-    reachable: 6,
+      'Kept in the census for drift protection via contractLevelSuite. contract:0 ' +
+      'because indelible edit + mint-on-edit are installed behaviour.',
+    contract: 0,
+    reachable: 10,
   },
   'indelible-edit-node-id.test.mjs': {
     dependency: '@nehloo/graphnosis',
-    installed: '0.7.4',
+    installed: '0.11.0',
     required: '0.11.0 (`CorrectionResult.affectedNodeIds`)',
-    tag: '@nehloo/graphnosis 0.7.4 installed; needs 0.11.0 affectedNodeIds',
+    tag: '@nehloo/graphnosis 0.11.0 — affectedNodeIds is live (no contract column)',
     evidence:
       'node_modules/@nehloo/graphnosis/dist/core/corrections/correction-engine.d.ts — ' +
-      "`CorrectionResult` is `{ applied, nodesAdded, nodesModified, nodesSuperseded, " +
-      'errors }`, with no `affectedNodeIds`. The installed SDK cannot return a ' +
-      'differing id, so it cannot distinguish the fixed code from the broken code.',
+      '`affectedNodeIds: NodeId[]` on CorrectionResult. Re-censused 2026-08-06.',
     why:
-      'Three tests drive the fake SDK at `sdkVersion: \'0.11.0\'` and assert on a ' +
-      'MINTED id. The rest run the installed 0.7.4 shape, or the refusal path, or a ' +
-      'static read of the source — all reachable today.',
-    contract: 3,
-    reachable: 8,
+      'Fake-SDK rows that asserted the 0.11 mint shape are now reachable against ' +
+      'the installed producer; legacy 0.8.0-shape fakes remain as regression guards.',
+    contract: 0,
+    reachable: 11,
   },
 });
 

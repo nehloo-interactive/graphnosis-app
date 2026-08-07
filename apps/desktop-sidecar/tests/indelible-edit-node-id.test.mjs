@@ -139,7 +139,7 @@ const SKILL_REF = 'skill:1730000000:demo-step';
 
 // ── singleNode: multi-chunk merge ───────────────────────────────────────────
 
-test.contract('singleNode merge records the id the correction PRODUCED, not the one passed in', async () => {
+test('singleNode merge records the id the correction PRODUCED, not the one passed in', async () => {
   // Simulated SDK 0.11.0 result shape (see file header) — the installed 0.8.0
   // cannot produce a differing id, so this is the only way to exercise it.
   const instance = makeInstance({ chunks: ['Step 4. Collect the letters of support, etc.', 'and verify each one.'], sourceRef: SKILL_REF, sdkVersion: '0.11.0' });
@@ -200,7 +200,7 @@ test('a REFUSED singleNode merge is surfaced instead of swallowed', async () => 
 
 // ── singleNode: single-chunk verbatim rewrite (the site with `catch {}`) ─────
 
-test.contract('singleNode verbatim rewrite records the produced id — the old code never updated it at all', async () => {
+test('singleNode verbatim rewrite records the produced id — the old code never updated it at all', async () => {
   // Simulated SDK 0.11.0 result shape (see file header).
   const instance = makeInstance({ chunks: ['Step 4. Collect the letters of support, etc.'], sourceRef: SKILL_REF, sdkVersion: '0.11.0' });
   const impl = new GraphnosisImpl();
@@ -262,7 +262,7 @@ test('no edit is attempted when the single chunk already carries the verbatim te
 
 // ── the appendText sourceRef-artifact rewrite ───────────────────────────────
 
-test.contract('the sourceRef-artifact rewrite records the produced id', async () => {
+test('the sourceRef-artifact rewrite records the produced id', async () => {
   // appendText prepends a synthetic `# <sourceRef>` H1, so short content
   // collapses to artifact nodes whose content IS the raw sourceRef. The
   // adapter rewrites the first one to the real text instead of deleting it and

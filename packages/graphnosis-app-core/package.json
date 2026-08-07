@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@nehloo-interactive/graphnosis-secure-sync": "github:nehloo-interactive/graphnosis-secure-sync#v0.3.2"
+    "@nehloo-interactive/graphnosis-secure-sync": "github:nehloo-interactive/graphnosis-secure-sync#v0.4.0"
   },
   "devDependencies": {
     "@types/libsodium-wrappers-sumo": "^0.7.8",

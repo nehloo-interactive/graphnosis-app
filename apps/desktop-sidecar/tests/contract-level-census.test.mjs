@@ -112,50 +112,42 @@ test('the version gates the census rests on still hold on the INSTALLED packages
   const version = (pkg) =>
     JSON.parse(read(path.join(SIDECAR, 'node_modules', pkg, 'package.json'))).version;
 
-  // secure-sync: the reachability claim is "federation is all-or-nothing and
-  // its audit row carries no status". Assert the SHAPE, not just the number —
-  // a version bump that keeps the old shape is not the event we care about.
-  //
-  // Pin moved 0.3.0 → 0.3.2 (crypto/oplog only). Federation d.ts re-read on
-  // the installed 0.3.2 artifact: still AttachedGraphAudit without status,
-  // FederatedSubgraph without complete/failures, Promise.all all-or-nothing.
-  // The number had to move with the pin so this tripwire can gate 0.4.0;
-  // leaving it at 0.3.0 made the baseline red and blamed every later arm.
-  assert.equal(version('@nehloo-interactive/graphnosis-secure-sync'), '0.3.2',
+  // secure-sync 0.4.0 (SS040.5): the producer that reports per-graph outcomes
+  // IS installed. Assert the SHAPE is present — a pin that claims 0.4.0 but
+  // ships the old AttachedGraphAudit flat row would silently re-disable
+  // incomplete-recall disclosure. Re-censused 2026-08-06: recall-coverage
+  // suites moved contract→reachable (contract:0 in _contract-level.mjs).
+  assert.equal(version('@nehloo-interactive/graphnosis-secure-sync'), '0.4.0',
     'secure-sync moved. Re-derive which recall-coverage tests are reachable before trusting the census.');
   const fed = read(path.join(SIDECAR, 'node_modules/@nehloo-interactive/graphnosis-secure-sync/dist/federation/index.d.ts'));
-  for (const field of ['complete', 'failures', 'status']) {
-    assert.ok(
-      !new RegExp(`^\\s*${field}[?]?:`, 'm').test(fed),
-      `federation now declares \`${field}\` — a partial recall may be REACHABLE. ` +
-      `The recall-coverage suites may no longer be contract-level; re-census them.`,
-    );
-  }
+  assert.ok(
+    /complete:\s*true/.test(fed) && /complete:\s*false/.test(fed),
+    'federation 0.4.0 must declare the complete/incomplete discriminated union',
+  );
+  assert.ok(
+    /^\s*failures:/.test(fed) || /failures:\s*GraphFailure/.test(fed),
+    'federation 0.4.0 must declare `failures` on the incomplete branch',
+  );
+  assert.ok(
+    /status:\s*'ok'|status:\s*'failed'|GraphRecallStatus/.test(fed),
+    'federation 0.4.0 must declare audit status (ok|failed)',
+  );
+  // Guard the regression: flat AttachedGraphAudit without status must stay gone.
+  assert.ok(
+    !/interface AttachedGraphAudit/.test(fed),
+    'AttachedGraphAudit returned — incomplete-recall disclosure would go dark again',
+  );
 
-  // SDK: `edit` is in-place until 0.10.0, and `CorrectionResult.affectedNodeIds`
-  // does not exist until 0.11.0.
-  //
-  // The pin moved BACKWARD for app 1.31.0: 0.8.0 -> ^0.7.4, because 0.8.0
-  // changed the default analyzer id to `ascii-fold-en` and 0.7.4 has no
-  // analyzer resolver, so a cortex built on 0.8.0 throws AnalyzerMismatchError
-  // in the released 1.30.0. This tripwire fired on that move, as designed. It
-  // was not silenced — all three gates below were RE-READ from the installed
-  // 0.7.4 artifact before the number changed, and all three still hold:
-  //   - `applyEdit` (dist/core/corrections/correction-engine.js:22) mutates the
-  //     node in place and returns `affectedNodeId: correction.nodeId`, so
-  //     `resultNodeId === nodeId` and the rebind branch still never fires;
-  //   - `applySupersede` (:111) still calls `applyAdd`, which mints via
-  //     `nanoid()`, and returns the NEW id — so the supersede half of
-  //     oplog-replay-source-rebind is still live today;
-  //   - `CorrectionResult` still has exactly the five fields below.
-  // A backward move can only make MORE of the census contract-level, never
-  // less, which is the safe direction for this file's claim.
-  assert.equal(version('@nehloo/graphnosis'), '0.7.4',
-    'the SDK moved. oplog-replay-source-rebind 6-9 and indelible-edit-node-id may now be reachable.');
+  // SDK 0.11.0: indelible edit + CorrectionResult.affectedNodeIds are live.
+  // Re-censused 2026-08-06 with PLAN.4 asciiFoldAnalyzer pin on App creates.
+  // Shape gate FLIPPED — absence of affectedNodeIds would mean we pinned the
+  // wrong artifact and the mint-id merge path went dark again.
+  assert.equal(version('@nehloo/graphnosis'), '0.11.0',
+    'the SDK moved. Re-derive oplog-replay-source-rebind / indelible-edit-node-id before trusting the census.');
   const corrections = read(path.join(SIDECAR, 'node_modules/@nehloo/graphnosis/dist/core/corrections/correction-engine.d.ts'));
   assert.ok(
-    !/affectedNodeIds/.test(corrections),
-    'CorrectionResult now carries affectedNodeIds — indelible-edit-node-id is no longer contract-level.',
+    /affectedNodeIds/.test(corrections),
+    'CorrectionResult on 0.11.0 must carry affectedNodeIds',
   );
 });
 
@@ -179,10 +171,15 @@ test('the roll-up is printed, so the green total cannot be read as end-to-end co
   // figures from the runner itself instead.
   process.stderr.write(
     `\n════ CONTRACT-LEVEL CENSUS — apps/desktop-sidecar/tests ════\n` +
-    `${contract} tests in this directory are CONTRACT-LEVEL against a dependency\n` +
-    `version that is NOT INSTALLED. They run, and their assertions are enforced,\n` +
-    `but no production run on this build can reach the state they describe.\n` +
-    `DO NOT read the suite's pass total as that much end-to-end coverage.\n\n` +
+    (contract > 0
+      ? `${contract} tests in this directory are CONTRACT-LEVEL against a dependency\n` +
+        `version that is NOT INSTALLED. They run, and their assertions are enforced,\n` +
+        `but no production run on this build can reach the state they describe.\n` +
+        `DO NOT read the suite's pass total as that much end-to-end coverage.\n\n`
+      : `No CONTRACT-LEVEL tests remain — every formerly latent producer in this\n` +
+        `census is now installed (secure-sync 0.4.0 + SDK 0.11.0). The files below\n` +
+        `still route through contractLevelSuite so a future pin regress cannot\n` +
+        `quietly revive an unlabelled contract column.\n\n`) +
     `${rows.join('\n')}\n\n` +
     `  contract-level : ${contract}\n` +
     `  reachable      : ${reachable}  (within these ${files.length} files only)\n\n` +
@@ -194,9 +191,9 @@ test('the roll-up is printed, so the green total cannot be read as end-to-end co
     `════════════════════════════════════════════════════════════\n`,
   );
 
-  // The roll-up is the point of the file; a zero here would mean the labelling
-  // silently stopped working, not that the problem went away.
-  assert.ok(contract > 0, 'the census reported no contract-level tests — the labelling has come undone');
+  // Census files must stay registered. contract:0 is legitimate once every
+  // producer those suites were waiting on is installed (SS 0.4 + SDK 0.11).
+  assert.ok(files.length > 0, 'the census has no entries — the labelling has come undone');
   assert.equal(contract + reachable, files.reduce((n, f) => {
     const s = callSites(read(path.join(HERE, f)));
     return n + s.contract + s.reachable;
