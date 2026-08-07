@@ -5221,7 +5221,7 @@ async function paintRetrainSchedule(): Promise<void> {
   // Gate the controls on (a) Pro license and (b) the skill having been
   // saved (no sourceId = nothing to schedule).
   const status = await app().ipcLicenseStatus();
-  const isPro = status.present && !!status.valid;
+  const isPro = Boolean(status.present && status.valid);
   const sourceId = active?.skillId;
   const canEdit = isPro && !!sourceId;
   // Free users see the upgrade card instead of a row of dead disabled

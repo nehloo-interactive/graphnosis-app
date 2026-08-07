@@ -60,8 +60,19 @@ export function offerSidecarRecovery(): void {
   });
 }
 
+/** Lock-screen DOM refs — typed so `noUncheckedIndexedAccess` does not treat
+ *  every `els.foo` as possibly undefined (Record index access would). */
+interface UnlockEls {
+  cortexDir: HTMLInputElement;
+  passphrase: HTMLInputElement;
+  btnUnlock: HTMLButtonElement;
+  btnLock: HTMLButtonElement;
+  bootStatusText: HTMLElement;
+  unlockStatus: HTMLElement;
+}
+
 /** Populated by initUnlock() from main.ts `els`. */
-let els!: Record<string, HTMLElement>;
+let els!: UnlockEls;
 
 const UI_ERROR_PREFIX = 'GRAPHNOSIS_UI_ERROR:';
 
@@ -165,7 +176,7 @@ async function detectRuntimeMode(): Promise<void> {
   setCortexMode(last === 'remote');
 }
 
-export function initUnlock(unlockEls: Record<string, HTMLElement>): void {
+export function initUnlock(unlockEls: UnlockEls): void {
   els = unlockEls;
   wireUnlockHandlers();
   wireCortexLockHandlers();
